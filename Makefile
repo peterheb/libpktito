@@ -124,8 +124,23 @@ models/%.pkf: $(SRC)/%/%.nemo
 # ---------------------------------------------------------------- tests ----
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
+TESTS := tests/kcheck tests/mathcheck
 
-.PHONY: models clean
+# tests/kref.o is backend/ref under other names, built with this backend's
+# flags, so that kcheck holds the backend to ref bit for bit in one binary.
+tests/kcheck: tests/kcheck.c tests/kref.o $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/kcheck.c tests/kref.o $(LIB_OBJ) $(LDLIBS)
+tests/mathcheck: tests/mathcheck.c core/vmath.h
+	$(CC) $(CFLAGS) $(INC) -o $@ tests/mathcheck.c $(LDLIBS)
+
+check-c: pkito $(TESTS)
+	./tests/mathcheck
+	./tests/kcheck $(MODEL)
+
+check-math: tests/mathcheck
+	./tests/mathcheck --all
+
+.PHONY: models check-c check-math clean
 
 clean:
-	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d
+	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS)
