@@ -70,6 +70,11 @@ void pk_k_quantize(pk_act *a, const float *x, size_t xs);
 void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                   uint32_t rows, const pk_act *a, int add);
 
+/* The most blocks of activations a product may have (a->n / a->qb): a
+ * backend may keep a value a block on its stack. 512 blocks of 32 is an
+ * input of 16384, which core/model.c holds every matrix to. */
+#define PK_MAX_BLOCKS 512
+
 /* ------------------------------------------------------ float products --
  *
  * For t < T and r < rows:
@@ -182,7 +187,8 @@ typedef struct {
 } pk_fft;
 
 /* Floats of scratch pk_k_stft may use at n points: two arrays of n/2
- * complex points, eight lanes wide. */
+ * complex points, eight lanes wide, 64-byte aligned (a backend may address
+ * it as vectors). */
 #define PK_K_STFT_SCRATCH(n) (8 * (size_t)(n))
 
 /* The power spectrum: window w is the n samples at x[w], times the window,

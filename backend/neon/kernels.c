@@ -204,24 +204,37 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
     }
 }
 
-/* Panel by panel, each in its two halves of 8 rows, four columns at a time
- * across the half: a half panel's weights are read from memory once and
- * from cache for every other column. */
+/* Activation bytes a column block may hold: the columns a call takes at a
+ * time, across all of its panels, so that the block stays in L2 while every
+ * half panel's weights stream past it. Without the blocking, a 750-column
+ * product re-read all its activations (3 MB at 4096 inputs) from L3 for
+ * every half panel. */
+#ifndef PK_Q8_BLOCK_BYTES
+#define PK_Q8_BLOCK_BYTES (192 * 1024)
+#endif
+
+/* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
+ * four columns at a time across the half. */
 void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                   uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n;
-    for (uint32_t r = 0; r < rows; r += 16) {
-        const int8_t *wp = w + (size_t)r * n;
-        float *o = out + r;
-        const float *b = bias ? bias + r : NULL;
-        for (uint32_t h = 0; h < 4; h += 2) {
-            uint32_t t = 0;
-            for (; t + 4 <= a->T; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4);
-            switch (a->T - t) {
-            case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3); break;
-            case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2); break;
-            case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1); break;
-            default: break;
+    uint32_t cb = PK_Q8_BLOCK_BYTES / n;
+    cb = cb < 4 ? 4 : cb & ~3u;
+    for (uint32_t c0 = 0; c0 < a->T; c0 += cb) {
+        const uint32_t c1 = a->T - c0 < cb ? a->T : c0 + cb;
+        for (uint32_t r = 0; r < rows; r += 16) {
+            const int8_t *wp = w + (size_t)r * n;
+            float *o = out + r;
+            const float *b = bias ? bias + r : NULL;
+            for (uint32_t h = 0; h < 4; h += 2) {
+                uint32_t t = c0;
+                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4);
+                switch (c1 - t) {
+                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3); break;
+                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2); break;
+                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1); break;
+                default: break;
+                }
             }
         }
     }

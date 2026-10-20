@@ -91,6 +91,12 @@ OPT     ?= -O3
 CFLAGS  ?= $(OPT) $(BFLAGS) -std=c11 -ffp-contract=off -Wall -Wextra -Wpedantic
 LDLIBS  ?= -lm -lpthread
 
+# make PROFILE=1: `pkito bench` also prints what each stage costs. Timing a
+# stage at a time costs a little; quote bench without it.
+ifeq ($(PROFILE),1)
+  CFLAGS += -DPK_PROFILE
+endif
+
 INC := -Icore -Ibackend
 LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/decoder.c \
            core/tokens.c core/asr.c core/vad.c core/segment.c core/wav.c core/resample.c

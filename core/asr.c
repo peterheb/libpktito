@@ -138,14 +138,20 @@ long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks) {
         return 0;
     if (T0 > UINT32_MAX / 4 || reserve(a, T0))
         return -1;
-    pk_mel(a->m, x, n, a->feat, a->mel_scratch, a->win);
+    PROF(PK_P_MEL, pk_mel(a->m, x, n, a->feat, a->mel_scratch, a->win));
     uint32_t Te = pk_encode(a, (uint32_t)T0);
-    long nt = pk_decode(a, Te);
+    long nt;
+    PROF(PK_P_DEC, nt = pk_decode(a, Te));
     *toks = a->toks;
     return nt;
 }
 
 const char *pk_backend(void) { return pk_k_name(); }
+
+#ifdef PK_PROFILE
+double pk_prof[PK_NPROF];
+double pk_prof_now(void) { return pk_os_now(); }
+#endif
 
 /* ---------------------------------------------------------------- chunks --- */
 

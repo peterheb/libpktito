@@ -70,9 +70,12 @@ static float awkward(float scale) {
     }
 }
 
+/* zeroed and 64-byte aligned, as the engine's buffers are */
 static void *xmalloc(size_t n) {
-    void *p = calloc(n ? n : 1, 1);
+    n = (n + 63) & ~(size_t)63;
+    void *p = aligned_alloc(64, n ? n : 64);
     if (!p) { fprintf(stderr, "kcheck: out of memory\n"); exit(2); }
+    memset(p, 0, n ? n : 64);
     return p;
 }
 
@@ -131,7 +134,12 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
     float *ws = xmalloc(rows * sizeof *ws), *b = xmalloc(rows * sizeof *b);
     float *x = xmalloc((size_t)T * n * sizeof *x);
     for (uint32_t r = 0; r < rows; r++) {
-        ws[r] = sreal ? sreal[r] : (rnd() % 8 ? 0.01f * (frand() + 1.5f) : 0.0f);
+        if (sreal)
+            ws[r] = sreal[r];
+        else if (rnd() % 8)
+            ws[r] = 0.01f * (frand() + 1.5f);
+        else
+            ws[r] = 0.0f;
         b[r] = awkward(1.0f);
         for (uint32_t k = 0; k < n; k++)
             *wq_at(w, n, r, k) = wreal ? *wq_at((int8_t *)wreal, n, r, k)
@@ -144,7 +152,10 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
     float *o1 = xmalloc((size_t)T * os * sizeof *o1), *o2 = xmalloc((size_t)T * os * sizeof *o2);
     for (size_t i = 0; i < (size_t)T * os; i++) o1[i] = o2[i] = awkward(1.0f);
     /* a run of panels from the middle, as the pool splits rows */
-    uint32_t r0 = rows > 16 && rnd() % 2 ? 16 * (rnd() % (rows / 16)) : 0, nr = rows - r0;
+    uint32_t r0 = 0;
+    if (rows > 16 && rnd() % 2)
+        r0 = 16 * (rnd() % (rows / 16));
+    uint32_t nr = rows - r0;
     pk_k_gemm_q8(o1 + r0, os, w + (size_t)r0 * n, ws + r0, bias ? b + r0 : NULL, nr, &a, add);
     ref_gemm_q8(o2 + r0, os, w + (size_t)r0 * n, ws + r0, bias ? b + r0 : NULL, nr, &a, add);
     char msg[160];
@@ -222,7 +233,8 @@ static void gemm_f32_case(uint32_t rows, uint32_t ld, uint32_t k0, uint32_t n, u
 
 static void rows_cases(void) {
     for (int rep = 0; rep < 40; rep++) {
-        uint32_t T = 1 + rnd() % 21, n = 16 * (1 + rnd() % 80);
+        uint32_t T = 1 + rnd() % 21;
+        uint32_t n = 16 * (1 + rnd() % 80);
         size_t xs = n + 16 * (rnd() % 3);
         float *x = xmalloc((size_t)T * xs * sizeof *x), *w = xmalloc(n * sizeof *w);
         float *b = xmalloc(n * sizeof *b);
@@ -280,8 +292,11 @@ static void rows_cases(void) {
 static void conv_cases(void) {
     for (int rep = 0; rep < 30; rep++) {
         /* the convolution module's depthwise one, a block of channels */
-        uint32_t T = 1 + rnd() % 40, C = 16 * (1 + rnd() % 20), K = 1 + 2 * (rnd() % 6);
-        uint32_t c0 = 16 * (rnd() % (C / 16)), nc = 16 * (1 + rnd() % ((C - c0) / 16));
+        uint32_t T = 1 + rnd() % 40;
+        uint32_t C = 16 * (1 + rnd() % 20);
+        uint32_t K = 1 + 2 * (rnd() % 6);
+        uint32_t c0 = 16 * (rnd() % (C / 16));
+        uint32_t nc = 16 * (1 + rnd() % ((C - c0) / 16));
         float *x = xmalloc((size_t)T * C * 4), *w = xmalloc((size_t)C * K * 4), *b = xmalloc(C * 4);
         float *o1 = xmalloc((size_t)T * C * 4), *o2 = xmalloc((size_t)T * C * 4);
         for (size_t i = 0; i < (size_t)T * C; i++) x[i] = awkward(2.0f);
@@ -293,9 +308,12 @@ static void conv_cases(void) {
         free(x); free(w); free(b); free(o1); free(o2);
 
         /* the subsampling's, from one channel and depthwise, a window of rows */
-        uint32_t Ti = 1 + rnd() % 30, Fi = 1 + rnd() % 70, Cc = 16 * (1 + rnd() % 4);
+        uint32_t Ti = 1 + rnd() % 30;
+        uint32_t Fi = 1 + rnd() % 70;
+        uint32_t Cc = 16 * (1 + rnd() % 4);
         uint32_t To = (Ti + 1) / 2, Fo = (Fi + 1) / 2;
-        uint32_t t0 = rnd() % To, t1 = t0 + 1 + rnd() % (To - t0);
+        uint32_t t0 = rnd() % To;
+        uint32_t t1 = t0 + 1 + rnd() % (To - t0);
         uint32_t r0 = t0 ? 2 * t0 - 1 : 0;
         for (int dw = 0; dw < 2; dw++) {
             uint32_t cin = dw ? Cc : 1;
@@ -370,21 +388,37 @@ static void model_cases(const char *path) {
 }
 
 int main(int argc, char **argv) {
+    /* each rnd() in a statement of its own: the order a compiler evaluates
+     * a call's arguments in is its own, and the cases should be the same
+     * on every compiler */
     for (int rep = 0; rep < 60; rep++) {
         uint32_t n = 32 * (1 + rnd() % 40);
-        quant_case(1 + rnd() % 20, n, rnd() % 2 ? 32 : n, n + 32 * (rnd() % 2), rep % 3 ? 1.0f : 1e4f);
+        uint32_t T = 1 + rnd() % 20;
+        uint32_t qb = rnd() % 2 ? 32 : n;
+        size_t xs = n + 32 * (rnd() % 2);
+        quant_case(T, n, qb, xs, rep % 3 ? 1.0f : 1e4f);
     }
     static const uint32_t ns[] = { 32, 64, 96, 256, 640, 1024, 4096 };
     for (int rep = 0; rep < 120; rep++) {
-        uint32_t n = ns[rnd() % 7], rows = 16 * (1 + rnd() % 24);
+        uint32_t n = ns[rnd() % 7];
+        uint32_t rows = 16 * (1 + rnd() % 24);
         uint32_t T = rep % 4 == 0 ? 1 : 1 + rnd() % 37;
         if (n == 4096 && rows > 64) rows = 64;
-        gemm_q8_case("random", rows, n, T, rnd() % 3 ? 32 : n, rnd() % 2, rnd() % 2, NULL, NULL, NULL);
+        uint32_t qb = rnd() % 3 ? 32 : n;
+        int add = rnd() % 2;
+        int bias = rnd() % 2;
+        gemm_q8_case("random", rows, n, T, qb, add, bias, NULL, NULL, NULL);
     }
     for (int rep = 0; rep < 80; rep++) {
-        uint32_t rows = 16 * (1 + rnd() % 12), ld = 1 + rnd() % 200, k0 = rnd() % ld;
-        uint32_t n = 1 + rnd() % (ld - k0), T = 1 + rnd() % 23;
-        gemm_f32_case(rows, ld, k0, n, T, n + rnd() % 9, rnd() % 3, rnd() % 2);
+        uint32_t rows = 16 * (1 + rnd() % 12);
+        uint32_t ld = 1 + rnd() % 200;
+        uint32_t k0 = rnd() % ld;
+        uint32_t n = 1 + rnd() % (ld - k0);
+        uint32_t T = 1 + rnd() % 23;
+        size_t xs = n + rnd() % 9;
+        int bias = rnd() % 3;
+        int relu = rnd() % 2;
+        gemm_f32_case(rows, ld, k0, n, T, xs, bias, relu);
     }
     rows_cases();
     conv_cases();

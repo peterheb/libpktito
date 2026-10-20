@@ -294,47 +294,46 @@ static void att_item(void *arg, int item, int th) {
 static void ff(pk_asr *a, uint32_t T, const float *nw, const float *nb, const pk_q8 *up,
                const pk_q8 *down) {
     const uint32_t D = a->m->d_model, F = a->m->ff_dim;
-    norm(a, a->h, a->x, T, nw, nb);
-    pk_quantize(a, &a->act, a->h, D, T, D, QB);
-    pk_gemm(a, a->u, F, up, NULL, &a->act, 0);
+    PROF(PK_P_NORM, norm(a, a->h, a->x, T, nw, nb));
+    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->h, D, T, D, QB));
+    PROF(PK_P_FF, pk_gemm(a, a->u, F, up, NULL, &a->act, 0));
     silu_job sj = { a->u, (size_t)T * F, 16384 };
-    pk_par(a, silu_item, &sj, (int)((sj.n + sj.step - 1) / sj.step));
-    pk_quantize(a, &a->act, a->u, F, T, F, QB);
-    pk_gemm(a, a->x, D, down, NULL, &a->act, 1);       /* the 0.5 is in down */
+    PROF(PK_P_FF, pk_par(a, silu_item, &sj, (int)((sj.n + sj.step - 1) / sj.step)));
+    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->u, F, T, F, QB));
+    PROF(PK_P_FF, pk_gemm(a, a->x, D, down, NULL, &a->act, 1));     /* the 0.5 is in down */
 }
 
 static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     const pk_model *m = a->m;
-    const uint32_t D = m->d_model, H = m->n_heads, dk = D / H;
+    const uint32_t D = m->d_model, H = m->n_heads;
     float *k = a->o, *v = a->h;          /* free between their uses below */
 
     ff(a, T, L->ff1_nw, L->ff1_nb, &L->ff1_up, &L->ff1_down);
 
-    norm(a, a->u, a->x, T, L->att_nw, L->att_nb);
-    pk_quantize(a, &a->act, a->u, D, T, D, QB);
-    pk_gemm(a, a->q, D, &L->q, NULL, &a->act, 0);
-    pk_gemm(a, k, D, &L->k, NULL, &a->act, 0);
-    pk_gemm(a, v, D, &L->v, NULL, &a->act, 0);
-    pk_gemm(a, a->p, D, &L->pos, NULL, &a->ape, 0);
+    PROF(PK_P_NORM, norm(a, a->u, a->x, T, L->att_nw, L->att_nb));
+    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->u, D, T, D, QB));
+    PROF(PK_P_QKV, pk_gemm(a, a->q, D, &L->q, NULL, &a->act, 0);
+                   pk_gemm(a, k, D, &L->k, NULL, &a->act, 0);
+                   pk_gemm(a, v, D, &L->v, NULL, &a->act, 0);
+                   pk_gemm(a, a->p, D, &L->pos, NULL, &a->ape, 0));
     att_job aj = { a, L, k, v, T, up16(T), up16(2 * T - 1) + 16 };
-    pk_par(a, repack_item, &aj, (int)H);
-    pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK)));
-    pk_quantize(a, &a->act, a->o, D, T, D, QB);
-    pk_gemm(a, a->x, D, &L->o, NULL, &a->act, 1);
-    (void)dk;
+    PROF(PK_P_ATT, pk_par(a, repack_item, &aj, (int)H);
+                   pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
+    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
+    PROF(PK_P_ATTO, pk_gemm(a, a->x, D, &L->o, NULL, &a->act, 1));
 
-    norm(a, a->h, a->x, T, L->conv_nw, L->conv_nb);
-    pk_quantize(a, &a->act, a->h, D, T, D, QB);
-    pk_gemm(a, a->u, 2 * D, &L->pw1, NULL, &a->act, 0);
+    PROF(PK_P_NORM, norm(a, a->h, a->x, T, L->conv_nw, L->conv_nb));
+    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->h, D, T, D, QB));
+    PROF(PK_P_CONV, pk_gemm(a, a->u, 2 * D, &L->pw1, NULL, &a->act, 0));
     glu_job gj = { a->h, a->u, T, D };
-    pk_par(a, glu_item, &gj, (int)((T + 15) / 16));
     dw_job dj = { a->o, a->h, L, T, D, m->conv_kernel };
-    pk_par(a, dw_item, &dj, (int)((D + 63) / 64));
-    pk_quantize(a, &a->act, a->o, D, T, D, QB);
-    pk_gemm(a, a->x, D, &L->pw2, NULL, &a->act, 1);
+    PROF(PK_P_DW, pk_par(a, glu_item, &gj, (int)((T + 15) / 16));
+                  pk_par(a, dw_item, &dj, (int)((D + 63) / 64)));
+    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
+    PROF(PK_P_CONV, pk_gemm(a, a->x, D, &L->pw2, NULL, &a->act, 1));
 
     ff(a, T, L->ff2_nw, L->ff2_nb, &L->ff2_up, &L->ff2_down);
-    norm(a, a->x, a->x, T, L->out_nw, L->out_nb);
+    PROF(PK_P_NORM, norm(a, a->x, a->x, T, L->out_nw, L->out_nb));
 }
 
 uint32_t pk_encode(pk_asr *a, uint32_t T0) {
@@ -344,13 +343,13 @@ uint32_t pk_encode(pk_asr *a, uint32_t T0) {
     if (!T0)
         return 0;
     sub_job sj = { a, T0, T1, T2, T3 };
-    pk_par(a, sub_item, &sj, (int)((T3 + PK_SUB_BLOCK - 1) / PK_SUB_BLOCK));
-    pk_quantize(a, &a->act, a->s5, (size_t)F3 * C, T3, F3 * C, QB);
-    pk_gemm(a, a->x, D, &m->sub_out, m->out_b, &a->act, 0);
+    PROF(PK_P_SUB, pk_par(a, sub_item, &sj, (int)((T3 + PK_SUB_BLOCK - 1) / PK_SUB_BLOCK));
+                   pk_quantize(a, &a->act, a->s5, (size_t)F3 * C, T3, F3 * C, QB);
+                   pk_gemm(a, a->x, D, &m->sub_out, m->out_b, &a->act, 0));
 
     pos_job pj = { a, T3 };
-    pk_par(a, pos_item, &pj, (int)((2 * T3 - 1 + 15) / 16));
-    pk_quantize(a, &a->ape, a->pe, D, 2 * T3 - 1, D, QB);
+    PROF(PK_P_POS, pk_par(a, pos_item, &pj, (int)((2 * T3 - 1 + 15) / 16));
+                   pk_quantize(a, &a->ape, a->pe, D, 2 * T3 - 1, D, QB));
 
     for (uint32_t i = 0; i < m->n_layers; i++)
         layer(a, &m->layers[i], T3);

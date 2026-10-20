@@ -335,8 +335,9 @@ static int q8t(pk_file *f, const char *name, uint32_t rows, uint32_t cols, pk_q8
         return fail(f->err, f->errlen, "tensor %s is %s %ux%u; the model's is q8 %ux%u", name,
                     t.type == PK_F32 ? "f32" : "q8", (unsigned)t.dims[0], (unsigned)t.dims[1],
                     (unsigned)rows, (unsigned)cols);
-    if (rows % PK_QR || cols % 32)
-        return fail(f->err, f->errlen, "tensor %s: a q8 matrix is 16 rows by 32 columns at a time", name);
+    if (rows % PK_QR || cols % 32 || cols / 32 > PK_MAX_BLOCKS)
+        return fail(f->err, f->errlen, "tensor %s: a q8 matrix is 16 rows by 32 columns at a time, "
+                    "and at most %d columns", name, 32 * PK_MAX_BLOCKS);
     snprintf(sname, sizeof sname, "%s.scale", name);
     if (f32t(f, sname, rows, 1, &out->s))
         return -1;

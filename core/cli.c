@@ -14,6 +14,7 @@
  * (pk_chunks in pkito.h).
  */
 #include "pkito.h"
+#include "asr.h"
 #include "os.h"
 #include "resample.h"
 #include "wav.h"
@@ -27,7 +28,8 @@
 #define READ_FRAMES 16384
 
 static const char *usage =
-    "usage: pkito [options] FILE.wav        the transcript\n"
+    "usage: pkito [options] FILE.wav...     the transcript (of several: a line each,\n"
+    "                                       the file's name, a tab and its text)\n"
     "       pkito bench [options] FILE.wav  how fast this machine transcribes it\n"
     "       pkito info [options]            what the model file says about itself\n"
     "FILE may be - for stdin.\n"
@@ -42,7 +44,8 @@ static const char *usage =
 
 typedef struct {
     const char *cmd, *in, *model;
-    int threads, json, srt, verbose;
+    const char **ins;                /* every input file; in is the first */
+    int nin, threads, json, srt, verbose;
     double max_chunk;
 } opts;
 
@@ -68,6 +71,9 @@ static void parse(int argc, char **argv, opts *o) {
     memset(o, 0, sizeof *o);
     o->cmd = "text";
     o->max_chunk = 30;
+    o->ins = calloc((size_t)argc, sizeof *o->ins);
+    if (!o->ins)
+        die("out of memory");
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "-h") || !strcmp(a, "--help")) { fputs(usage, stdout); exit(0); }
@@ -79,13 +85,15 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--srt")) o->srt = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
-        else if (!o->in && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")))
+        else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")))
             o->cmd = a;
-        else if (o->in) die("one input file, not '%s' and '%s'", o->in, a);
-        else o->in = a;
+        else o->ins[o->nin++] = a;
     }
+    o->in = o->nin ? o->ins[0] : NULL;
     if (o->json && o->srt)
         die("--json or --srt, not both");
+    if (o->nin > 1 && (o->srt || strcmp(o->cmd, "text")))
+        die("one input file for %s", o->srt ? "--srt" : o->cmd);
     if (!o->in && strcmp(o->cmd, "info")) {
         fputs(usage, stderr);
         exit(1);
@@ -226,13 +234,13 @@ static void srt_time(double s) {
     printf("%02ld:%02ld:%02ld,%03ld", ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000);
 }
 
-static int transcribe(const opts *o, pk_model *m) {
+/* One file through the transcriber: its chunks, printed as -o asks. With
+ * several files a line each, the file's name, a tab and its chunks' text. */
+static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, int many,
+                            double *audio_s, double *vad_total, double *asr_total) {
     size_t n;
     const int rate = pk_model_rate(m);
-    float *x = read_audio(o->in, rate, &n, o);
-    pk_asr *a = pk_asr_new(m, o->threads);
-    if (!a)
-        die("out of memory");
+    float *x = read_audio(path, rate, &n, o);
     size_t nc;
     double vad_s;
     pk_seg *c = chunks_of(m, x, n, o->max_chunk, &nc, &vad_s);
@@ -240,14 +248,20 @@ static int transcribe(const opts *o, pk_model *m) {
     char *text = malloc(cap);
     if (!text)
         die("out of memory");
-    double asr_s = 0, fs = pk_model_frame_seconds(m);
-    if (o->json)
+    double fs = pk_model_frame_seconds(m);
+    if (many && !o->json)
+        printf("%s\t", path);
+    if (o->json && many) {
+        printf("{\"file\": ");
+        json_str(path);
+        printf(", \"chunks\": [");
+    } else if (o->json)
         printf("[");
     for (size_t i = 0; i < nc; i++) {
         const pk_tok *t;
         double t0 = pk_os_now();
         long nt = pk_asr_run(a, x + c[i].start, (size_t)(c[i].end - c[i].start), &t);
-        asr_s += pk_os_now() - t0;
+        *asr_total += pk_os_now() - t0;
         if (nt < 0)
             die("out of memory");
         size_t len;
@@ -276,21 +290,43 @@ static int transcribe(const opts *o, pk_model *m) {
             printf(" --> ");
             srt_time(end);
             printf("\n%s\n\n", text);
+        } else if (many) {
+            printf("%s%s", i && len ? " " : "", text);
         } else if (len) {
             puts(text);
         }
         fflush(stdout);
     }
     if (o->json)
-        printf("\n]\n");
-    if (o->verbose)
-        fprintf(stderr, "pkito: %.1f s of audio in %zu chunk%s: VAD %.2f s, transcription %.2f s "
-                "(%.1fx real time), %s, %d threads\n", (double)n / rate, nc, nc == 1 ? "" : "s",
-                vad_s, asr_s, (double)n / rate / (asr_s + vad_s), pk_backend(),
-                o->threads ? o->threads : pk_os_cores());
+        printf(many ? "\n]}" : "\n]\n");
+    else if (many)
+        putchar('\n');
+    *audio_s += (double)n / rate;
+    *vad_total += vad_s;
     free(text);
     free(c);
     free(x);
+}
+
+static int transcribe(const opts *o, pk_model *m) {
+    pk_asr *a = pk_asr_new(m, o->threads);
+    if (!a)
+        die("out of memory");
+    double audio_s = 0, vad_s = 0, asr_s = 0;
+    int many = o->nin > 1;
+    if (o->json && many)
+        printf("[");
+    for (int i = 0; i < o->nin; i++) {
+        if (o->json && many)
+            printf(i ? ",\n" : "\n");
+        transcribe_file(o, o->ins[i], m, a, many, &audio_s, &vad_s, &asr_s);
+    }
+    if (o->json && many)
+        printf("\n]\n");
+    if (o->verbose)
+        fprintf(stderr, "pkito: %.1f s of audio: VAD %.2f s, transcription %.2f s (%.1fx real "
+                "time), %s, %d threads\n", audio_s, vad_s, asr_s, audio_s / (asr_s + vad_s),
+                pk_backend(), o->threads ? o->threads : pk_os_cores());
     pk_asr_free(a);
     return 0;
 }
@@ -320,6 +356,15 @@ static int bench(const opts *o, pk_model *m) {
         best = dt < best ? dt : best;
     }
     double audio = (double)n / rate;
+#ifdef PK_PROFILE
+    static const char *stage[PK_NPROF] = { "mel", "subsampling", "positions", "layer norms",
+        "quantize", "feed-forward", "q k v pos", "attention", "attention out", "conv pw1 pw2",
+        "glu + depthwise", "decoder" };
+    double total = 0;
+    for (int i = 0; i < PK_NPROF; i++) total += pk_prof[i];
+    for (int i = 0; i < PK_NPROF; i++)
+        printf("  %-16s %7.1f ms a run  %5.1f%%\n", stage[i], pk_prof[i] / 5 * 1e3, 100 * pk_prof[i] / total);
+#endif
     printf("model     %s\n", pk_model_name(m));
     printf("backend   %s, %d threads\n", pk_backend(), o->threads ? o->threads : pk_os_cores());
     printf("audio     %.1f s in %zu chunk%s, %ld tokens\n", audio, nc, nc == 1 ? "" : "s", ntok);
@@ -346,5 +391,6 @@ int main(int argc, char **argv) {
     int rc = !strcmp(o.cmd, "bench") ? bench(&o, m) : !strcmp(o.cmd, "info") ? info(m)
            : transcribe(&o, m);
     pk_model_free(m);
+    free(o.ins);
     return rc;
 }
