@@ -41,14 +41,18 @@ static const char *usage =
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
     "                        a longer recording is cut at its silences\n"
     "      --json            chunks as JSON: start, end, text and every token's time\n"
+    "      --stream          read FILE as it arrives (a pipe, a microphone) and print\n"
+    "                        each stretch of speech as its pause ends it\n"
+    "      --pause MS        with --stream, the silence that ends a stretch (1000):\n"
+    "                        shorter is sooner and less accurate\n"
     "      --srt             subtitles, a cue a chunk\n"
     "  -v, --verbose         say what was read, how, and how long it took\n";
 
 typedef struct {
     const char *cmd, *in, *model;
     const char **ins;                /* every input file; in is the first */
-    int nin, threads, json, srt, verbose;
-    double max_chunk;
+    int nin, threads, json, srt, verbose, stream;
+    double max_chunk, pause_ms;
 } opts;
 
 static void die(const char *fmt, ...) {
@@ -73,6 +77,7 @@ static void parse(int argc, char **argv, opts *o) {
     memset(o, 0, sizeof *o);
     o->cmd = "text";
     o->max_chunk = 30;
+    o->pause_ms = 1000;
     o->ins = calloc((size_t)argc, sizeof *o->ins);
     if (!o->ins)
         die("out of memory");
@@ -83,8 +88,10 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "-m") || !strcmp(a, "--model")) { if (!v) die("%s wants a file", a); o->model = v; i++; }
         else if (!strcmp(a, "-t") || !strcmp(a, "--threads")) { o->threads = (int)num(a, v, 1, 256); i++; }
         else if (!strcmp(a, "--max-chunk")) { o->max_chunk = num(a, v, 1, 3600); i++; }
+        else if (!strcmp(a, "--pause")) { o->pause_ms = num(a, v, 32, 10000); i++; }
         else if (!strcmp(a, "--json")) o->json = 1;
         else if (!strcmp(a, "--srt")) o->srt = 1;
+        else if (!strcmp(a, "--stream")) o->stream = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
         else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")
@@ -95,8 +102,10 @@ static void parse(int argc, char **argv, opts *o) {
     o->in = o->nin ? o->ins[0] : NULL;
     if (o->json && o->srt)
         die("--json or --srt, not both");
-    if (o->nin > 1 && (o->srt || strcmp(o->cmd, "text")))
-        die("one input file for %s", o->srt ? "--srt" : o->cmd);
+    if (o->nin > 1 && (o->srt || o->stream || strcmp(o->cmd, "text")))
+        die("one input file for %s", o->srt ? "--srt" : o->stream ? "--stream" : o->cmd);
+    if (o->stream && o->srt)
+        die("--stream or --srt, not both");
     if (!o->in && strcmp(o->cmd, "info")) {
         fputs(usage, stderr);
         exit(1);
@@ -334,6 +343,157 @@ static int transcribe(const opts *o, pk_model *m) {
     return 0;
 }
 
+/* --stream: the recording as it arrives. Silero's VADIterator watches it
+ * a frame at a time, and each stretch of speech is transcribed when a pause
+ * of --pause ends it, with 30 ms of padding either side. The pause is a
+ * trade: a line appears that long after the speaker stops, and a shorter
+ * stretch is heard with less context. Over tools/corpus.py's long-form set
+ * (12 recordings, 45 minutes) WER fell from 3.10% at Silero's own 100 ms to
+ * 1.66% at 1000 ms for v2 (4.02% to 1.89% for v3), and no further at 1500
+ * (README, "Streaming"). Speech that runs past --max-chunk without a pause
+ * is cut at the quietest frame of its last third. The audio is kept only
+ * from the start of the current stretch, so a stream may run for days. */
+static int stream(const opts *o, pk_model *m) {
+    char err[256];
+    const int rate = pk_model_rate(m);
+    pk_wav_info info;
+    pk_wav *w = pk_wav_open(o->in, &info, err, sizeof err);
+    if (!w)
+        die("%s", err);
+    pk_resampler *rs = NULL;
+    if (info.rate != (uint32_t)rate && !(rs = pk_resampler_new(info.rate, (uint32_t)rate)))
+        die("%s: cannot resample from %u Hz", o->in, (unsigned)info.rate);
+    pk_vad *v = pk_vad_new(m);
+    pk_asr *a = pk_asr_new(m, o->threads);
+    pk_seg_params sp;
+    pk_seg_defaults(&sp);
+    sp.min_silence_ms = o->pause_ms;
+    pk_iter it;
+    pk_iter_init(&it, rate, &sp);
+    const int64_t max_len = (int64_t)(o->max_chunk * rate);
+    /* buf holds the samples from `base` on; probs the frames' probabilities
+     * since then, for the cut */
+    size_t cap = (size_t)max_len + 4 * rate, have = 0, pcap = cap / PK_VAD_SAMPLES + 2;
+    float *buf = malloc(cap * sizeof *buf), *probs = malloc(pcap * sizeof *probs);
+    float *in = malloc(PK_VAD_SAMPLES * sizeof *in), *rsout = NULL;
+    size_t rsn = 0, rspos = 0;
+    if (rs)
+        rsout = malloc(pk_resample_room(rs, PK_VAD_SAMPLES) * sizeof *rsout);
+    char *text = malloc(1 << 16);
+    if (!v || !a || !buf || !probs || !in || (rs && !rsout) || !text)
+        die("out of memory");
+    int64_t base = 0, start = -1, frame_at = 0;
+    double fs = pk_model_frame_seconds(m);
+    (void)fs;
+
+    /* transcribe [s, e) of the stream and drop what is before e */
+    #define EMIT(s_, e_) do {                                                        \
+        int64_t s0 = (s_) < base ? base : (s_), e0 = (e_);                            \
+        const pk_tok *t;                                                              \
+        /* an end the iterator found before a forced cut is no stretch */             \
+        if (e0 <= s0) break;                                                          \
+        long nt = pk_asr_run(a, buf + (s0 - base), (size_t)(e0 - s0), &t);            \
+        if (nt < 0) die("out of memory");                                             \
+        size_t len = pk_text(m, t, (size_t)nt, text, 1 << 16);                        \
+        if (len) {                                                                    \
+            if (o->json) {                                                            \
+                printf("{\"start\": %.3f, \"end\": %.3f, \"text\": ",                  \
+                       (double)s0 / rate, (double)e0 / rate);                         \
+                json_str(text);                                                       \
+                printf("}\n");                                                        \
+            } else                                                                    \
+                puts(text);                                                           \
+            fflush(stdout);                                                           \
+        }                                                                             \
+    } while (0)
+
+    for (int done = 0; !done;) {
+        /* the next frame at the model's rate */
+        size_t got = 0;
+        while (got < PK_VAD_SAMPLES) {
+            if (rs) {
+                if (rspos == rsn) {
+                    size_t r = pk_wav_read(w, in, PK_VAD_SAMPLES);
+                    rsn = r ? pk_resample(rs, in, r, rsout) : pk_resample_flush(rs, rsout);
+                    rspos = 0;
+                    if (!r && !rsn) { done = 1; break; }
+                }
+                size_t k = rsn - rspos < PK_VAD_SAMPLES - got ? rsn - rspos : PK_VAD_SAMPLES - got;
+                memcpy(in + got, rsout + rspos, k * sizeof *in);
+                rspos += k;
+                got += k;
+            } else {
+                size_t r = pk_wav_read(w, in + got, PK_VAD_SAMPLES - got);
+                if (!r) { done = 1; break; }
+                got += r;
+            }
+        }
+        if (!got)
+            break;
+        if (got < PK_VAD_SAMPLES)
+            memset(in + got, 0, (PK_VAD_SAMPLES - got) * sizeof *in);
+        if (have + PK_VAD_SAMPLES > cap) {                     /* never in speech: drop the old */
+            size_t keep = (size_t)rate;
+            memmove(buf, buf + have - keep, keep * sizeof *buf);
+            base += (int64_t)(have - keep);
+            have = keep;
+        }
+        memcpy(buf + have, in, got * sizeof *in);
+        have += got;
+        float p = pk_vad_prob(v, in);
+        size_t fi = (size_t)((frame_at - base) / PK_VAD_SAMPLES);
+        if (fi < pcap) probs[fi] = p;
+        frame_at += PK_VAD_SAMPLES;
+        int64_t at;
+        int e = pk_iter_step(&it, p, &at);
+        if (e == PK_START)
+            start = at;
+        else if (e == PK_END && start >= 0) {
+            EMIT(start, at);
+            start = -1;
+        } else if (start >= 0 && frame_at - start >= max_len) {
+            /* no pause in max_len: cut at the quietest frame of the last third */
+            int64_t from = start + 2 * max_len / 3, best = frame_at;
+            float lo = 2;
+            for (int64_t f = from; f + PK_VAD_SAMPLES <= frame_at; f += PK_VAD_SAMPLES) {
+                size_t k = (size_t)((f - base) / PK_VAD_SAMPLES);
+                if (k < pcap && probs[k] < lo) { lo = probs[k]; best = f + PK_VAD_SAMPLES / 2; }
+            }
+            EMIT(start, best);
+            start = best;
+        }
+        if (start < 0 && have > (size_t)rate) {                /* outside speech keep a second */
+            size_t drop = have - (size_t)rate;
+            memmove(buf, buf + drop, (size_t)rate * sizeof *buf);
+            base += (int64_t)drop;
+            have = (size_t)rate;
+            size_t df = drop / PK_VAD_SAMPLES;
+            if (df < pcap) memmove(probs, probs + df, (pcap - df) * sizeof *probs);
+        } else if (start >= 0 && start - base > (int64_t)rate) {
+            size_t drop = (size_t)(start - base) - (size_t)rate;
+            drop -= drop % PK_VAD_SAMPLES;
+            memmove(buf, buf + drop, (have - drop) * sizeof *buf);
+            base += (int64_t)drop;
+            have -= drop;
+            size_t df = drop / PK_VAD_SAMPLES;
+            if (df < pcap) memmove(probs, probs + df, (pcap - df) * sizeof *probs);
+        }
+    }
+    if (start >= 0 && base + (int64_t)have > start)
+        EMIT(start, base + (int64_t)have);
+    #undef EMIT
+    pk_wav_close(w);
+    pk_resampler_free(rs);
+    pk_vad_free(v);
+    pk_asr_free(a);
+    free(buf);
+    free(probs);
+    free(in);
+    free(rsout);
+    free(text);
+    return 0;
+}
+
 /* Transcribe the file five times; the best time is what a quiet machine
  * does. */
 static int bench(const opts *o, pk_model *m) {
@@ -430,7 +590,7 @@ int main(int argc, char **argv) {
     pk_model *m = load_model(o.model, argv[0]);
     int rc = !strcmp(o.cmd, "bench") ? bench(&o, m) : !strcmp(o.cmd, "info") ? info(m)
            : !strcmp(o.cmd, "segments") || !strcmp(o.cmd, "probs") ? vad(&o, m)
-           : transcribe(&o, m);
+           : o.stream ? stream(&o, m) : transcribe(&o, m);
     pk_model_free(m);
     free(o.ins);
     return rc;

@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--against")
     ap.add_argument("--save")
     ap.add_argument("--threads", type=int, default=0)
+    ap.add_argument("--max-chunk", default="3600", help="pkito's --max-chunk (default: whole recordings)")
     a = ap.parse_args()
 
     files, refs = [], {}
@@ -39,7 +40,7 @@ def main():
                     path = os.path.join(d, name)
                     files.append(path)
                     refs[path] = text
-    cmd = [a.pkito, "-m", a.model, "--max-chunk", "3600"]
+    cmd = [a.pkito, "-m", a.model, "--max-chunk", a.max_chunk]
     if a.threads:
         cmd += ["-t", str(a.threads)]
     out = {}
@@ -52,7 +53,8 @@ def main():
     if missing:
         sys.exit("no transcript for %s" % missing[:3])
     e, n = wer.wer([(refs[p], out[p]) for p in files])
-    print("%s: %d recordings, WER %.2f%% (%d/%d)" % (os.path.basename(a.model), len(files), 100 * e / n, e, n))
+    print("%s, --max-chunk %s: %d recordings, WER %.2f%% (%d/%d)" % (
+        os.path.basename(a.model), a.max_chunk, len(files), 100 * e / n, e, n))
     if a.against:
         with open(a.against, encoding="utf-8") as f:
             other = json.load(f)
