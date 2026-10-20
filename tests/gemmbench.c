@@ -16,6 +16,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,11 +47,16 @@ static uint32_t rnd(void) {
 }
 
 static void *amalloc(size_t n) {
-    n = (n + 63) & ~(size_t)63;
-    void *p = aligned_alloc(64, n);
-    if (!p) { fprintf(stderr, "gemmbench: out of memory\n"); exit(2); }
-    memset(p, 0, n);
+    unsigned char *raw = calloc(1, n + 64), *p;
+    if (!raw) { fprintf(stderr, "gemmbench: out of memory\n"); exit(2); }
+    p = raw + 64 - ((uintptr_t)raw & 63);
+    p[-1] = (unsigned char)(p - raw);
     return p;
+}
+
+static void xfree(void *p) {
+    if (p)
+        free((unsigned char *)p - ((unsigned char *)p)[-1]);
 }
 
 typedef struct {
@@ -127,7 +133,7 @@ int main(int argc, char **argv) {
                m0 != m1 ? "  (clock moved)" : "");
         tot_mac += macs;
         tot_s += best;
-        free(w); free(q); free(ws); free(d); free(out);
+        xfree(w); xfree(q); xfree(ws); xfree(d); xfree(out);
     }
     double f = mhz > 0 ? mhz : cur_mhz();
     printf("  all four            %8.2f ms  %6.2f GMAC/s  %5.2f MAC/cycle/core\n", tot_s * 1e3,
@@ -157,7 +163,7 @@ int main(int argc, char **argv) {
         double macs = 400.0 * rows * n * TL;
         printf("  L1-resident 64x256 T 48 %6.2f GMAC/s  %5.2f MAC/cycle (one thread)\n",
                macs / best * 1e-9, f > 0 ? macs / best / (f * 1e6) : 0.0);
-        free(w); free(q); free(ws); free(d); free(out);
+        xfree(w); xfree(q); xfree(ws); xfree(d); xfree(out);
     }
     return 0;
 }

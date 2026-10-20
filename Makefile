@@ -97,14 +97,20 @@ endif
 # and an add that the code wrote apart: a contraction gcc makes on one target
 # and not another would round differently there. Fusion is spelt out, with
 # fmaf, where it is meant.
+# Windows builds under MSYS2 (UCRT64) or another MinGW-w64: pthreads from
+# winpthreads, linked in, so that pkito.exe runs outside the shell it was
+# built in with nothing beside it.
 ifeq ($(UNAME_S),Darwin)
   PLATFLAGS := -D_DARWIN_C_SOURCE
+else ifneq ($(filter MINGW% MSYS% UCRT% CLANG%,$(UNAME_S)),)
+  PLATFLAGS := -D_WIN32_WINNT=0x0A00
+  PLATLIBS := -static
 else
   PLATFLAGS := -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 endif
 OPT     ?= -O3
 CFLAGS  ?= $(OPT) $(BFLAGS) -std=c11 -ffp-contract=off -Wall -Wextra -Wpedantic
-LDLIBS  ?= -lm -lpthread
+LDLIBS  ?= -lm -lpthread $(PLATLIBS)
 
 # make PROFILE=1: `pkito bench` also prints what each stage costs. Timing a
 # stage at a time costs a little; quote bench without it.
@@ -206,7 +212,7 @@ check-c: pkito $(TESTS) examples/transcribe
 	  ./pkito --json -m $$f tests/data/test.wav | cmp -s - tests/data/test.$$v.json \
 	    && echo "test.wav: $$v transcript is ref's, every token and time" \
 	    || { echo "test.wav: FAIL - $$v transcript differs from tests/data/test.$$v.json"; exit 1; }; done
-	@./examples/transcribe $(MODEL) tests/data/test.wav | cut -d' ' -f3- > tests/example.out; \
+	@./examples/transcribe $(MODEL) tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/example.out; \
 	  ./pkito -m $(MODEL) tests/data/test.wav | cmp -s - tests/example.out \
 	  && echo "examples/transcribe: the CLI's transcript, through the library alone" \
 	  || { echo "examples/transcribe: FAIL - not the CLI's transcript"; exit 1; }; rm -f tests/example.out

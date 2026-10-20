@@ -16,6 +16,7 @@
 #include "kernels.h"
 #include "os.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,11 +31,16 @@ static uint32_t rnd(void) {
 }
 
 static void *xmalloc(size_t n) {
-    n = (n + 63) & ~(size_t)63;
-    void *p = aligned_alloc(64, n ? n : 64);
-    if (!p) { fprintf(stderr, "q8bench: out of memory\n"); exit(2); }
-    memset(p, 0, n ? n : 64);
+    unsigned char *raw = calloc(1, n + 64), *p;
+    if (!raw) { fprintf(stderr, "q8bench: out of memory\n"); exit(2); }
+    p = raw + 64 - ((uintptr_t)raw & 63);
+    p[-1] = (unsigned char)(p - raw);
     return p;
+}
+
+static void xfree(void *p) {
+    if (p)
+        free((unsigned char *)p - ((unsigned char *)p)[-1]);
 }
 
 /* rows a call takes: the whole matrix, or core/encoder.c's pk_gemm slice */
@@ -62,7 +68,7 @@ static void run(const char *what, uint32_t rows, uint32_t n, uint32_t T, uint32_
     double macs = (double)rows * n * T;
     printf("%-22s %5u x %-5u T %4u qb %4u  %8.3f ms  %6.1f GMAC/s\n", what, rows, n, T, qb,
            best * 1e3, macs / best * 1e-9);
-    free(w); free(ws); free(x); free(out); free(a.q); free(a.d);
+    xfree(w); xfree(ws); xfree(x); xfree(out); xfree(a.q); xfree(a.d);
 }
 
 int main(int argc, char **argv) {

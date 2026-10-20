@@ -24,6 +24,7 @@
 #include "vmath.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,13 +71,19 @@ static float awkward(float scale) {
     }
 }
 
-/* zeroed and 64-byte aligned, as the engine's buffers are */
+/* zeroed and 64-byte aligned, as the engine's buffers are: aligned by hand,
+ * since Windows' C runtime has no aligned_alloc that free() releases */
 static void *xmalloc(size_t n) {
-    n = (n + 63) & ~(size_t)63;
-    void *p = aligned_alloc(64, n ? n : 64);
-    if (!p) { fprintf(stderr, "kcheck: out of memory\n"); exit(2); }
-    memset(p, 0, n ? n : 64);
+    unsigned char *raw = calloc(1, n + 64), *p;
+    if (!raw) { fprintf(stderr, "kcheck: out of memory\n"); exit(2); }
+    p = raw + 64 - ((uintptr_t)raw & 63);
+    p[-1] = (unsigned char)(p - raw);
     return p;
+}
+
+static void xfree(void *p) {
+    if (p)
+        free((unsigned char *)p - ((unsigned char *)p)[-1]);
 }
 
 static int same(const char *what, const void *a, const void *b, size_t n, size_t esz) {
@@ -119,7 +126,7 @@ static void quant_case(uint32_t T, uint32_t n, uint32_t qb, size_t xs, float sca
             if (g_bad++ < 30) printf("FAIL ref quantize: -128 at %zu\n", i);
             break;
         }
-    free(x); free(a1.q); free(a1.d); free(a2.q); free(a2.d);
+    xfree(x); xfree(a1.q); xfree(a1.d); xfree(a2.q); xfree(a2.d);
 }
 
 /* q8 matrix element (r, k) in the panel layout */
@@ -184,7 +191,7 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
                     break;
                 }
             }
-    free(w); free(ws); free(b); free(x); free(a.q); free(a.d); free(o1); free(o2);
+    xfree(w); xfree(ws); xfree(b); xfree(x); xfree(a.q); xfree(a.d); xfree(o1); xfree(o2);
 }
 
 /* ------------------------------------------------------ float products --- */
@@ -226,7 +233,7 @@ static void gemm_f32_case(uint32_t rows, uint32_t ld, uint32_t k0, uint32_t n, u
                 break;
             }
         }
-    free(wfull); free(x); free(b); free(o1); free(o2);
+    xfree(wfull); xfree(x); xfree(b); xfree(o1); xfree(o2);
 }
 
 /* -------------------------------------------------- rows and reductions --- */
@@ -284,8 +291,8 @@ static void rows_cases(void) {
         ref_lstm(h2, c2, gt, H);
         same("lstm h", h1, h2, H, 4);
         same("lstm c", c1, c2, H, 4);
-        free(x); free(w); free(b); free(o1); free(o2); free(s1); free(s2); free(u1); free(u2);
-        free(g); free(g1); free(g2); free(gt); free(h1); free(h2); free(c1); free(c2);
+        xfree(x); xfree(w); xfree(b); xfree(o1); xfree(o2); xfree(s1); xfree(s2); xfree(u1); xfree(u2);
+        xfree(g); xfree(g1); xfree(g2); xfree(gt); xfree(h1); xfree(h2); xfree(c1); xfree(c2);
     }
 }
 
@@ -307,7 +314,7 @@ static void conv_cases(void) {
         pk_k_dwconv(o1 + c0, C, x + c0, C, T, nc, w + (size_t)c0 * K, b + c0, K);
         ref_dwconv(o2 + c0, C, x + c0, C, T, nc, w + (size_t)c0 * K, b + c0, K);
         same("dwconv", o1, o2, (size_t)T * C, 4);
-        free(x); free(w); free(b); free(o1); free(o2);
+        xfree(x); xfree(w); xfree(b); xfree(o1); xfree(o2);
 
         /* the subsampling's, from one channel and depthwise, a window of rows */
         uint32_t Ti = 1 + rnd() % 30;
@@ -332,7 +339,7 @@ static void conv_cases(void) {
             ref_conv3x3s2(p2, inw, r0, Ti, Fi, Cc, dw, wc, bc, relu, t0, t1);
             same(dw ? "conv3x3s2 depthwise" : "conv3x3s2 one channel", p1, p2,
                  (size_t)(t1 - t0) * Fo * Cc, 4);
-            free(in); free(wc); free(bc); free(p1); free(p2);
+            xfree(in); xfree(wc); xfree(bc); xfree(p1); xfree(p2);
         }
     }
 }
@@ -362,8 +369,8 @@ static void stft_cases(void) {
         pk_k_stft(o1, m + 1, xs, count, &f, s1);
         ref_stft(o2, m + 1, xs, count, &f, s2);
         same("stft", o1, o2, (size_t)count * (m + 1), 4);
-        free(rev); free(win); free(fc); free(fs); free(sig); free(xs); free(o1); free(o2);
-        free(s1); free(s2);
+        xfree(rev); xfree(win); xfree(fc); xfree(fs); xfree(sig); xfree(xs); xfree(o1); xfree(o2);
+        xfree(s1); xfree(s2);
     }
 }
 
@@ -385,7 +392,7 @@ static void model_cases(const char *path) {
         float *x = xmalloc((size_t)T * q->cols * 4);
         for (size_t k = 0; k < (size_t)T * q->cols; k++) x[k] = awkward(3.0f);
         gemm_q8_case("real", q->rows, q->cols, T, i < 5 ? 32 : q->cols, i % 2, i % 3 == 0, q->q, q->s, x);
-        free(x);
+        xfree(x);
     }
     pk_model_free(m);
 }

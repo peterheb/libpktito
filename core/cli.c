@@ -673,6 +673,7 @@ static int info(pk_model *m) {
 
 int main(int argc, char **argv) {
     opts o;
+    pk_os_stdio();
     parse(argc, argv, &o);
     pk_model *m = load_model(o.model, argv[0]);
     int rc = !strcmp(o.cmd, "bench") ? bench(&o, m) : !strcmp(o.cmd, "info") ? info(m)
