@@ -128,7 +128,9 @@ PYTHON ?= $(firstword $(wildcard .venv/bin/python) $(shell command -v python3))
 SRC    ?= models/src
 VAD    ?= $(SRC)/silero-vad/src/silero_vad/data/silero_vad.onnx
 models: models/parakeet-tdt-0.6b-v2.pkf models/parakeet-tdt-0.6b-v3.pkf
-models/%.pkf: $(SRC)/%/%.nemo
+models/parakeet-tdt-0.6b-v2.pkf: $(SRC)/parakeet-tdt-0.6b-v2/parakeet-tdt-0.6b-v2.nemo
+models/parakeet-tdt-0.6b-v3.pkf: $(SRC)/parakeet-tdt-0.6b-v3/parakeet-tdt-0.6b-v3.nemo
+models/%.pkf:
 	$(PYTHON) tools/pkito-tools convert $< $(VAD) $@
 
 # ---------------------------------------------------------------- tests ----
