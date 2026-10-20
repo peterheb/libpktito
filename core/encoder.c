@@ -145,13 +145,25 @@ static void norm(pk_asr *a, float *out, const float *x, uint32_t T, const float 
     pk_par(a, norm_item, &j, (int)((T + 15) / 16));
 }
 
-typedef struct { float *x; size_t n, step; } silu_job;
+/* The feed-forward's hidden activations SiLU'd and quantized in one pass,
+ * a frame at a time through a row of thread scratch: the [T][F] array
+ * (12 MB at a minute) is read once and never written back, where a SiLU
+ * pass in place and then pk_quantize read it twice and wrote it once, and
+ * on a Pi 5 that traffic, not the arithmetic, set the pace. The values
+ * quantized are the same floats. */
+typedef struct { pk_asr *a; const float *x; uint32_t T; } siluq_job;
 
-static void silu_item(void *arg, int i, int th) {
-    (void)th;
-    silu_job *j = arg;
-    size_t i0 = (size_t)i * j->step;
-    pk_k_silu(j->x + i0, j->n - i0 < j->step ? j->n - i0 : j->step);
+static void siluq_item(void *arg, int i, int th) {
+    siluq_job *j = arg;
+    pk_act *act = &j->a->act;
+    float *row = j->a->tws[th].row;
+    const uint32_t n = act->n, nb = n / act->qb;
+    for (uint32_t t = (uint32_t)i * 16; t < min32((uint32_t)i * 16 + 16, j->T); t++) {
+        memcpy(row, j->x + (size_t)t * n, n * sizeof *row);
+        pk_k_silu(row, n);
+        pk_act one = { act->q + (size_t)t * n, act->d + (size_t)t * nb, n, act->qb, 1 };
+        pk_k_quantize(&one, row, n);
+    }
 }
 
 typedef struct { float *out; const float *x; uint32_t T, D; } glu_job;
@@ -384,9 +396,11 @@ static void ff(pk_asr *a, uint32_t T, const float *nw, const float *nb, const pk
     PROF(PK_P_NORM, norm(a, a->h, a->x, T, nw, nb));
     PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->h, D, T, D, QB));
     PROF(PK_P_FF, pk_gemm(a, a->u, F, up, NULL, &a->act, 0));
-    silu_job sj = { a->u, (size_t)T * F, 16384 };
-    PROF(PK_P_FF, pk_par(a, silu_item, &sj, (int)((sj.n + sj.step - 1) / sj.step)));
-    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->u, F, T, F, QB));
+    a->act.n = F;
+    a->act.qb = QB;
+    a->act.T = T;
+    siluq_job sq = { a, a->u, T };
+    PROF(PK_P_QUANT, pk_par(a, siluq_item, &sq, (int)((T + 15) / 16)));
     PROF(PK_P_FF, pk_gemm(a, a->x, D, down, NULL, &a->act, 1));     /* the 0.5 is in down */
 }
 

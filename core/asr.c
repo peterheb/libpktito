@@ -72,6 +72,7 @@ static int reserve(pk_asr *a, size_t T0) {
             CARVE(w->sc, PK_ATT_BLOCK * Tp, sizeof(float));
             CARVE(w->bd, PK_ATT_BLOCK * (Tp + 32), sizeof(float));
             CARVE(w->mel, pk_mel_thread_scratch(m), sizeof(float));
+            CARVE(w->row, F, sizeof(float));
         }
         if (!pass) {
             mem = malloc((size_t)p + 64);

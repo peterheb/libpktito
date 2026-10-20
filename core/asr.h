@@ -34,6 +34,7 @@ typedef struct {
     float  *qu, *qv;                 /* a block of queries plus each position bias */
     float  *sc, *bd;                 /* its scores, and their position half */
     float  *mel;                     /* a block of power spectra, and the FFT's scratch */
+    float  *row;                     /* a frame of the feed-forward's hidden activations */
 } pk_thread_ws;
 
 struct pk_asr {

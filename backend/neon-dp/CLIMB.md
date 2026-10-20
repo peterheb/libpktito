@@ -218,3 +218,22 @@ The VAD's products are among them (0.069 -> 0.059 s for test.wav's). 30 s
 chunks 3.920 -> 3.847 s. The one-column tile (MR 16, the VAD's step)
 still keeps its accumulators on the stack; it is a small part of a small
 stage.
+
+## 2026-10-20 - the feed-forward's SiLU folded into its quantize
+
+Same Pi 5. Quantize does not scale with threads: 235 ms on one, 145 on
+two, 163 on four, where the feed-forward's int8 products scale 3.77 times
+on four (7.44 s, 3.73, 1.98). Most of what quantize reads is the
+feed-forward's hidden activations, [T][4096] floats, 12 MB at a minute,
+which a SiLU pass first read and wrote back in place. Now one pass takes
+a frame at a time through a 16 KB row of thread scratch, SiLU then
+quantize, and the array is read once and never written:
+
+| | feed-forward | quantize | minute | 30 s chunks |
+|---|---|---|---|---|
+| d6afe66 | 1978 ms | 163 ms | 4.358 s | 3.847 s |
+| SiLU in the quantize pass | 1827 ms | 213 ms | 4.244-4.248 s | 3.791 s |
+
+(The SiLU's arithmetic moved from the feed-forward's row of the profile
+to quantize's.) The 12900HK and the M4 Pro did not move, inside their
+spreads: their caches and memory keep up either way.
