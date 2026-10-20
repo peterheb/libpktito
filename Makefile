@@ -153,6 +153,7 @@ models/%.pkf:
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
 TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck
+BENCHES := tests/q8bench tests/gemmbench
 
 # tests/kref.o is backend/ref under other names, built with this backend's
 # flags, so that kcheck holds the backend to ref bit for bit in one binary.
@@ -164,6 +165,15 @@ tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/wavcheck: tests/wavcheck.c core/wav.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o $(LDLIBS)
+
+# The int8 product alone, for the kernel climbs, and not part of any check:
+# q8bench on one thread (backend/avx2/CLIMB.md's numbers), gemmbench over
+# threads dealt as the pool deals them, with MAC/cycle (backend/neon's).
+tests/q8bench: tests/q8bench.c $(BACK_SRC:.c=.o) core/os.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/q8bench.c $(BACK_SRC:.c=.o) core/os.o $(LDLIBS)
+tests/gemmbench: tests/gemmbench.c $(BACK_SRC:.c=.o)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/gemmbench.c $(BACK_SRC:.c=.o) $(LDLIBS)
+benches: $(BENCHES)
 
 # check-c needs a compiler and nothing else but MODEL, so it runs on any
 # board: the math library; every kernel against ref; the model file's
@@ -272,9 +282,9 @@ remote:
 	  --exclude '/tests/*check' ./ $(HOST):$(RDIR)/
 	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pkito bench -m $(MODEL) $(BENCH)'
 
-.PHONY: models check-c check-sanitize check-math remote clean
+.PHONY: models check-c check-sanitize check-math remote clean benches
 
 clean:
-	rm -f pkito libpkito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS)
+	rm -f pkito libpkito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
 	rm -f tests/*-san tests/pkito-tsan tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM

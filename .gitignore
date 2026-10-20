@@ -27,3 +27,4 @@ __pycache__/
 /libpkito.a
 /tests/pkito-tsan
 /tests/q8bench
+/tests/gemmbench

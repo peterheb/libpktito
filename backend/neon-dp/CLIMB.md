@@ -253,3 +253,26 @@ quantize; the last norm, whose output is the residual stream, stays.
 
 (The four norms' arithmetic is in quantize's row now.) The 12900HK and
 the M4 Pro did not move outside their spreads.
+
+## 2026-10-20 - backend/neon's A53 climb merged, and a block of 32 unrolled
+
+The A53 climb (backend/neon/CLIMB.md) changed the int8 product's shared
+code: the column-block loop moved into q8_cols, and q8_tile took a range
+of blocks and a partial-sum buffer for ARMv8.0's chunks of 1024 inputs.
+For SDOT the tile stays 8 x 4, the column blocks 192 KB, and the chunks are
+compiled out. Same Pi 5, merged tree:
+
+| | minute | 30 s chunks |
+|---|---|---|
+| 9793aab | 4.186-4.189 s | 3.737 s |
+| merged | 4.155-4.162 s | 3.714-3.718 s |
+
+gemmbench, one A76 at 2.4 GHz, T 750: feed-forward up 19.2 MAC/cycle, down
+17.6, the attention's 19.0, conv pw1 19.1, all four 18.5; the L1-resident
+case 18.9.
+
+Rejected, the encoder's blocks of 32 inputs unrolled (q8_tile told at
+compile time that qb is 32, the main tiles only): before the merge, with
+q8bench, feed-forward down 40.4 -> 43.7 GMAC/s and the others 45.4 ->
+44.9; on the merged tree, with gemmbench, all four shapes 44.5 -> 43.1
+GMAC/s and the L1-resident case 45.4 -> 42.6. The tile stays as it is.
