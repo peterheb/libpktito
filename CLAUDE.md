@@ -80,8 +80,9 @@ allows.
 
 - Commit at milestones, with the numbers in the message.
 - The boards: an i9-12900HK (AVX2, AVX-VNNI) at phebert@192.168.86.119, a
-  Pi 3B+ (Cortex-A53, 905 MB) at phebert@192.168.86.155; neon-dp is measured
-  on an M4 Pro here until a Pi 5 is up. One job at a time on a board when
+  Pi 3B+ (Cortex-A53, 905 MB) at phebert@192.168.86.155, a Pi 5 (Cortex-A76,
+  4 GB) at phebert@192.168.86.79, and the M4 Pro here, the one machine that
+  is also in use while measuring. One job at a time on a board when
   measuring.
 - When a request comes with a reason, weigh the reason. If it points
   somewhere other than the literal ask, say so.
