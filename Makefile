@@ -130,7 +130,8 @@ models/%.pkf: $(SRC)/%/%.nemo
 # ---------------------------------------------------------------- tests ----
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
-TESTS := tests/kcheck tests/mathcheck
+TINY  := tests/data/tiny.pkf
+TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck
 
 # tests/kref.o is backend/ref under other names, built with this backend's
 # flags, so that kcheck holds the backend to ref bit for bit in one binary.
@@ -138,10 +139,40 @@ tests/kcheck: tests/kcheck.c tests/kref.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/kcheck.c tests/kref.o $(LIB_OBJ) $(LDLIBS)
 tests/mathcheck: tests/mathcheck.c core/vmath.h
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/mathcheck.c $(LDLIBS)
+tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
+tests/wavcheck: tests/wavcheck.c core/wav.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o $(LDLIBS)
 
+# check-c needs a compiler and nothing else but MODEL, so it runs on any
+# board: the math library, every kernel against ref, the model file's
+# validator on its malformed corpus and the whole engine on the tiny model
+# (tests/data/tiny.pkf, `pkito-tools tiny` writes it), the WAV reader on its
+# own, and the CLI on the tiny model's 35 s recording, which it cuts into
+# chunks.
 check-c: pkito $(TESTS)
 	./tests/mathcheck
 	./tests/kcheck $(MODEL)
+	./tests/pkfcheck $(TINY) tests/pkfcheck.wav
+	./tests/wavcheck tests/wavcheck.tmp
+	@./pkito -m $(TINY) --json tests/pkfcheck.wav > tests/pkfcheck.json \
+	  && ./pkito -m $(TINY) --srt tests/pkfcheck.wav > /dev/null \
+	  && ./pkito -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
+	  && echo "pkito: the tiny model through the CLI, chunked, three ways" \
+	  || { echo "pkito: FAIL on the tiny model"; exit 1; }
+	@rm -f tests/pkfcheck.wav tests/pkfcheck.json
+
+# The two parsers of untrusted bytes and the engine behind them, under ASan
+# and UBSan, on the same corpora, against backend/ref. Apart from check-c
+# because not every board's compiler ships the sanitizer runtimes.
+SAN := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+check-sanitize:
+	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/pkfcheck-san \
+	  tests/pkfcheck.c $(LIB_SRC) backend/ref/kernels.c $(LDLIBS)
+	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/wavcheck-san \
+	  tests/wavcheck.c core/wav.c $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./tests/pkfcheck-san $(TINY)
+	ASAN_OPTIONS=detect_leaks=0 ./tests/wavcheck-san tests/wavcheck.tmp
 
 check-math: tests/mathcheck
 	./tests/mathcheck --all
@@ -160,7 +191,9 @@ remote:
 	  --exclude '/tests/*check' ./ $(HOST):$(RDIR)/
 	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pkito bench -m $(MODEL) $(BENCH)'
 
-.PHONY: models check-c check-math remote clean
+.PHONY: models check-c check-sanitize check-math remote clean
 
 clean:
 	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS)
+	rm -f tests/*-san tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
+	rm -rf tests/*.dSYM

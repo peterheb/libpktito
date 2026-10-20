@@ -7,6 +7,9 @@
 /tests/mathcheck
 /tests/pkfcheck
 /tests/pkfcheck-san
+/tests/*.tmp
+/tests/pkfcheck.wav
+/tests/pkfcheck.json
 /tests/wavcheck
 /tests/wavcheck-san
 /tests/fftcheck

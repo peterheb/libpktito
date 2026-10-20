@@ -38,6 +38,12 @@ typedef struct pk_model pk_model;
 /* A .pkf file, mapped and checked before anything in it is used. NULL on
  * failure, with the reason in err (which may be NULL). */
 pk_model *pk_model_load(const char *path, char *err, size_t errlen);
+
+/* The same from a copy the caller holds - a file embedded in a binary, or
+ * read some other way. The bytes are copied, so they need not outlive the
+ * call, and the copy is a second one in memory where pk_model_load's
+ * mapping is the page cache's only one: for a file, load it. */
+pk_model *pk_model_from_bytes(const void *bytes, size_t n, char *err, size_t errlen);
 void      pk_model_free(pk_model *m);
 
 /* The model's name ("parakeet-tdt-0.6b-v2"), and a value from the file's
