@@ -394,3 +394,29 @@ runs the minute whole in 0.909-0.912 s and in 30 s chunks in 0.829-0.830
 (1.682 as a build of its own); the Core 3 304, Windows, 1.393-1.402 and
 1.307-1.313 (1.392-1.405, 1.290-1.312). kcheck tests every backend the CPU
 can run and skips the rest with a line: avx512-vnni on both.
+
+## 2026-10-20 - f13e826's portable builds on a Zen 4 and a Zen 5
+
+Measured by another session on Peter's machines, idle, the v2 model,
+best of five; the binaries built here (sha256 checked): pkito.exe on the
+Core 3 304 with MSYS2's UCRT64 gcc 16.2, the Linux one on the 12900HK with
+gcc 15.2.
+
+A Ryzen 7 PRO 8840HS (Zen 4: AVX512-VNNI, no AVX-VNNI), Windows 11, 8
+threads, the exe with no PKITO_KERNELS: it runs avx512-vnni, the minute
+whole 0.607 s and in 30 s chunks 0.537 s, and writes test.wav's v3
+transcript byte for byte. `PKITO_KERNELS=avx2-vnni` is refused, exit 1;
+`PKITO_KERNELS=avx2` 1.196 and 1.120 s. The AVX-VNNI build of 89890df died
+there on its first VPDPBUSD.
+
+A Ryzen 9 9950X (Zen 5, both encodings), 16 threads, whole and in chunks:
+
+| | avx2-vnni (picked) | avx512-vnni | avx2 |
+|---|---|---|---|
+| Windows, the exe | 0.283, 0.235 s | 0.282, 0.241 | 0.524, 0.498 |
+| WSL2, the Linux binary | 0.323, 0.296 | 0.322, 0.283 | 0.595, 0.552 |
+
+Both write the v3 transcript byte for byte; built from source there,
+check-c passes with all three backends in kcheck. The two encodings stay
+level. The UCRT64 gcc 16.2 exe beats 89890df's cross-built gcc 13 one by
+about 20% natively (0.235 against 0.291 s in chunks).

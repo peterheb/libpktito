@@ -12,11 +12,11 @@ And says, how do I get to Dublin? And the answer that comes back is, well, I
 wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
 
-A minute of English speech takes 0.31 s on a Ryzen 9 9950X (194 times
+A minute of English speech takes 0.24 s on a Ryzen 9 9950X (255 times
 real time), 0.49 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
-Core 3 304 under Windows, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry
-Pi 3B+, cut at its pauses as `./pkito` cuts it by default. Every backend
-computes the same bits on every machine.
+Core 3 304, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut
+at its pauses as `./pkito` cuts it by default. Every backend computes the
+same bits on every machine.
 
 ## What this is
 
@@ -120,16 +120,19 @@ And the bits are the same everywhere. `tests/data/test.v2.json` and
 its time, and `make check-c` holds every backend on every machine to them
 byte for byte: so far `neon-dp` on an M4 Pro (Apple clang 21) and a Pi 5
 (gcc 14.2), `neon` on a Pi 3B+ (gcc 14.2) and the M4 Pro, `avx2` and
-`avx2-vnni` on a 12900HK (gcc 15.2), `avx2-vnni` on a Core 3 304 under
-Windows 11 (MSYS2's gcc 16.2), `avx2` and `avx2-vnni` in both its encodings
-on a Ryzen 9 9950X (gcc 15.2), and `ref`.
+`avx2-vnni` on a 12900HK (gcc 15.2) and on a Core 3 304 under Windows 11
+(MSYS2's gcc 16.2), `avx2-vnni`, `avx512-vnni` and `avx2` on a Ryzen 9
+9950X (gcc 15.2), and `ref`; and the 304's Windows build, copied as it was,
+runs `avx512-vnni` on a Zen 4 and all three on the 9950X, the same bytes.
 
 ## How fast
 
 `./pkito bench`: Silero's test.wav (60 s of English), best of five,
-2026-10-20, each machine at its default thread count and, for two, at
-one. Seconds, and how many times real time, for the minute whole
-(`--max-chunk 60`, 750 encoder frames) and in the default 30 s chunks:
+2026-10-20. A machine's first row is what it picks itself, its default
+thread count and the fastest backend its CPU can run; the rows under it
+force another backend (`PKITO_KERNELS`) or one thread. Seconds, and how
+many times real time, for the minute whole (`--max-chunk 60`, 750 encoder
+frames) and in the default 30 s chunks:
 
 | | backend | threads | whole | in 30 s chunks |
 |---|---|---|---|---|
@@ -141,8 +144,10 @@ one. Seconds, and how many times real time, for the minute whole
 | | `avx2` | 14 | 1.682 (36x) | 1.597 (38x) |
 | | `avx2` | 1 | 6.80 (8.8x) | 6.12 (9.8x) |
 | Intel Core 3 304, Windows 11 | `avx2-vnni` | 5 | 1.392 (43x) | 1.290 (47x) |
-| AMD Ryzen 9 9950X, Linux under WSL2 | `avx2-vnni` | 16 | 0.328 (183x) | 0.310 (194x) |
-| | `avx2` | 16 | 0.615 (98x) | 0.604 (99x) |
+| AMD Ryzen 9 9950X, Windows 11 | `avx2-vnni` | 16 | 0.283 (212x) | 0.235 (255x) |
+| | `avx512-vnni` | 16 | 0.282 (213x) | 0.241 (249x) |
+| | `avx2` | 16 | 0.524 (115x) | 0.498 (120x) |
+| AMD Ryzen 7 PRO 8840HS, Windows 11 | `avx512-vnni` | 8 | 0.607 (99x) | 0.537 (112x) |
 | Raspberry Pi 5, Cortex-A76 2.4 GHz | `neon-dp` | 4 | 4.150 (14.5x) | 3.710 (16.2x) |
 | Raspberry Pi 3B+, Cortex-A53 1.4 GHz | `neon` | 4 | 48.1 (1.2x) | 44.6 (1.3x) |
 
