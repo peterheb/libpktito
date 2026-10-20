@@ -847,6 +847,12 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
 
 #ifdef PK_AVX_VNNI
 const char *pk_k_name(void) { return "avx2-vnni (x86-64 AVX2 + FMA: VPDPBUSD int8, fp32)"; }
+#if defined(__AVXVNNI__)
+const char *const pk_k_needs[] = { "avx2", "fma", "avxvnni", NULL };
+#else
+const char *const pk_k_needs[] = { "avx2", "fma", "avx512vnni", "avx512vl", NULL };
+#endif
 #else
 const char *pk_k_name(void) { return "avx2 (x86-64 AVX2 + FMA: VPMADDUBSW int8, fp32)"; }
+const char *const pk_k_needs[] = { "avx2", "fma", NULL };
 #endif

@@ -202,4 +202,11 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
 /* The backend's name and what it was built for, for `pkito bench`. */
 const char *pk_k_name(void);
 
+/* The CPU features the backend's code uses, NULL-ended: "avx2", "fma",
+ * "avxvnni", "avx512vnni", "avx512vl" on x86, "asimddp" (ARMv8.2's dot
+ * product) on ARM. A model does not load on a CPU without one of them
+ * (core/model.c), which says so where the first kernel would have died on
+ * an illegal instruction, without a word on Windows. */
+extern const char *const pk_k_needs[];
+
 #endif /* PK_KERNELS_H */

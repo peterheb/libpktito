@@ -12,6 +12,7 @@
  * no such check: every byte is a valid one.
  */
 #include "model.h"
+#include "kernels.h"
 #include "os.h"
 #include "pkf.h"
 
@@ -599,9 +600,23 @@ static int open_buffer(pk_model *m, char *why, size_t whylen) {
     return rc;
 }
 
+/* 0, or -1 and why, if this CPU cannot run the backend the library was
+ * built with: a binary copied to another machine (backend/kernels.h,
+ * pk_k_needs). */
+static int cpu_ok(char *err, size_t errlen) {
+    const char *lack = pk_os_cpu_lacks(pk_k_needs);
+    if (!lack)
+        return 0;
+    return fail(err, errlen, "this pkito was built for %s, which uses %s, and this CPU does not "
+                "have it: build pkito on this machine, and make picks the backend it can run",
+                pk_k_name(), lack);
+}
+
 pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
     char why[256];
     size_t size = 0;
+    if (cpu_ok(err, errlen))
+        return NULL;
     const unsigned char *map = pk_map_file(path, &size, why, sizeof why);
     if (!map) {
         fail(err, errlen, "%s: %s", path, why);
@@ -625,6 +640,8 @@ pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
 
 pk_model *pk_model_from_bytes(const void *bytes, size_t n, char *err, size_t errlen) {
     char why[256];
+    if (cpu_ok(err, errlen))
+        return NULL;
     if ((uint64_t)n > PK_FILE_MAX) {
         fail(err, errlen, "%zu bytes is larger than any model file", n);
         return NULL;

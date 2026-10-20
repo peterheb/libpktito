@@ -258,3 +258,82 @@ double pk_os_now(void) {
 void pk_os_stdio(void) {}
 
 #endif
+
+/* -------------------------------------------------------- CPU features --- */
+
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+#include <cpuid.h>
+
+/* CPUID's bits for each feature, and the register state the operating
+ * system must have switched on (XCR0) for its instructions to run: YMM's
+ * for AVX2's, and the mask and ZMM registers too for any EVEX instruction,
+ * the 256-bit ones included. */
+static int cpu_has(const char *f) {
+    unsigned a, b, c, d, xcr0 = 0;
+    if (!__get_cpuid(1, &a, &b, &c, &d))
+        return 0;
+    const int fma = (c >> 12) & 1, osxsave = (c >> 27) & 1;
+    if (osxsave) {
+        unsigned lo, hi;
+        __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+        xcr0 = lo;
+    }
+    const int ymm = (xcr0 & 0x6) == 0x6, zmm = (xcr0 & 0xe6) == 0xe6;
+    unsigned b7 = 0, c7 = 0, a71 = 0;
+    if (__get_cpuid_count(7, 0, &a, &b, &c, &d)) {
+        b7 = b;
+        c7 = c;
+        if (a >= 1 && __get_cpuid_count(7, 1, &a, &b, &c, &d))
+            a71 = a;
+    }
+    if (!strcmp(f, "fma"))
+        return fma && ymm;
+    if (!strcmp(f, "avx2"))
+        return ((b7 >> 5) & 1) && ymm;
+    if (!strcmp(f, "avxvnni"))
+        return ((a71 >> 4) & 1) && ymm;
+    if (!strcmp(f, "avx512vnni"))
+        return ((c7 >> 11) & 1) && zmm;
+    if (!strcmp(f, "avx512vl"))
+        return ((b7 >> 31) & 1) && zmm;
+    return 1;
+}
+
+#elif defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+#ifndef HWCAP_ASIMDDP
+#define HWCAP_ASIMDDP (1 << 20)
+#endif
+
+static int cpu_has(const char *f) {
+    if (!strcmp(f, "asimddp"))
+        return (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
+    return 1;
+}
+
+#elif (defined(__aarch64__) || defined(_M_ARM64)) && defined(PK_WINDOWS)
+#ifndef PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
+#define PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE 43
+#endif
+
+static int cpu_has(const char *f) {
+    if (!strcmp(f, "asimddp"))
+        return IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) != 0;
+    return 1;
+}
+
+#else /* macOS on Apple silicon, whose every core has the dot product, and the rest */
+
+static int cpu_has(const char *f) {
+    (void)f;
+    return 1;
+}
+
+#endif
+
+const char *pk_os_cpu_lacks(const char *const *needs) {
+    for (; *needs; needs++)
+        if (!cpu_has(*needs))
+            return *needs;
+    return NULL;
+}

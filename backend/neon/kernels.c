@@ -791,6 +791,8 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
 
 #ifdef PK_NEON_DOTPROD
 const char *pk_k_name(void) { return "neon-dp (ARMv8.2 NEON: SDOT int8, fp32)"; }
+const char *const pk_k_needs[] = { "asimddp", NULL };
 #else
 const char *pk_k_name(void) { return "neon (ARMv8.0 NEON: SMULL/SADALP int8, fp32)"; }
+const char *const pk_k_needs[] = { NULL };      /* NEON is part of AArch64 */
 #endif

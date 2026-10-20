@@ -36,7 +36,9 @@
 typedef struct pk_model pk_model;
 
 /* A .pkf file, mapped and checked before anything in it is used. NULL on
- * failure, with the reason in err (which may be NULL). */
+ * failure, with the reason in err (which may be NULL): a file that cannot
+ * be read or is not a sound model, or a CPU without the instructions this
+ * build of pkito uses. */
 pk_model *pk_model_load(const char *path, char *err, size_t errlen);
 
 /* The same from a copy the caller holds - a file embedded in a binary, or

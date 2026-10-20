@@ -29,4 +29,9 @@ double pk_os_now(void);
  * Windows' C runtime translates line ends by default. Nothing elsewhere. */
 void pk_os_stdio(void);
 
+/* The first of the NULL-ended features (backend/kernels.h's pk_k_needs)
+ * this CPU, or its operating system, cannot run; NULL if none. A feature
+ * it has no way to ask about counts as there. */
+const char *pk_os_cpu_lacks(const char *const *needs);
+
 #endif /* PK_OS_H */

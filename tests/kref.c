@@ -12,4 +12,5 @@
 #define pk_k_lstm      ref_lstm
 #define pk_k_stft      ref_stft
 #define pk_k_name      ref_name
+#define pk_k_needs     ref_needs
 #include "../backend/ref/kernels.c"

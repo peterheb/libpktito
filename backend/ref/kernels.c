@@ -243,3 +243,4 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
 }
 
 const char *pk_k_name(void) { return "ref (scalar C)"; }
+const char *const pk_k_needs[] = { NULL };
