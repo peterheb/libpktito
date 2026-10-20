@@ -494,3 +494,24 @@ multiply-adds in 3.02 s on four cores. f32_tile is priced at 2.46 (20
 loads and 64 FMLA a step). Main's d6afe66, which turns gcc's first
 scheduling pass off around the float products, has not been measured on
 the A53.
+
+## 2026-10-20 - on main after the merge: the float products' gcc pragma, measured here
+
+Main's d6afe66 turned gcc's first scheduling pass off around the float
+products, for the A76's spills (backend/neon-dp/CLIMB.md). On this Pi 3B+,
+the merged tree (with main's convolution rewrites and fused quantizes),
+`make PROFILE=1`, the default bench, each run after the SoC cooled below
+55 C:
+
+| | attention | minute (3 chunks) |
+|---|---|---|
+| the pass off (the pragma) | 2312 ms | 44.960 s |
+| the pass on | 2035 ms | 44.618 s |
+
+The A53 runs in order, and the scheduled code with its spills is faster
+there than the unscheduled code without them. The pragma now applies to
+neon-dp only. The merged tree with the pragma: 45.001 and 44.984 s in
+three chunks, 48.863 s whole, from 47.3 s on 2d27ca0; peak RSS 652 MB, and
+692 MB whole. Without it, the change that makes it neon-dp's: 44.586 and
+44.636 s in three chunks, 48.116 s whole, attention 2038 ms; check-c
+passing.

@@ -360,8 +360,11 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
  * and 86% without, 870 ms of the minute against 727, while the int8 tile
  * above needs it (1977 ms without it against 1976 with). Taking the inputs
  * two at a time to make room spilled nothing and ran slower still, 920 ms
- * (backend/neon-dp/CLIMB.md). Clang does not have the pass. */
-#if defined(__GNUC__) && !defined(__clang__)
+ * (backend/neon-dp/CLIMB.md). The A53, in order, is the other way round:
+ * the scheduled code with its spills is the faster there, 2035 ms of
+ * attention a minute against 2312 (backend/neon/CLIMB.md), so the pass is
+ * turned off for neon-dp only. Clang does not have the pass. */
+#if defined(__GNUC__) && !defined(__clang__) && defined(PK_NEON_DOTPROD)
 #pragma GCC push_options
 #pragma GCC optimize("no-schedule-insns")
 #endif
@@ -434,7 +437,7 @@ void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t 
     }
 }
 
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__) && !defined(__clang__) && defined(PK_NEON_DOTPROD)
 #pragma GCC pop_options
 #endif
 
