@@ -221,3 +221,48 @@ P-cores at 4.9 and 5.0 GHz; the E-cores' 3.8 is 76% of the fastest), the M4
 Pro 8 (its performance cores; 12 before). `pkito bench` with no -t, three
 runs: 1.057, 1.062, 1.056 s, against 1.194 at the old default of 14: -11%.
 A Pi's cores are one kind, so it keeps all four.
+
+## The float attention and what is left (after H4, six threads)
+
+Profile: feed-forward 42.2%, float attention 24.2%, q k v pos 13.3%, conv
+pw1/pw2 7.9%, attention out 2.9%, subsampling 2.3%, mel 2.1% (serial),
+decoder 1.7% (serial), quantize 1.6%, the rest under 1%. turbostat: 45.08 W,
+busy 3042 MHz - the clock did not rise; the cap binds as before and the work
+a cycle is what moved. The attention's float products alone (a throwaway
+f32 bench, one P-core): scores 752 x 128 x 16 66.7 GMAC/s, positions 65.8,
+context 128 x 750 x 16 67.9 - 13.8 MAC/cycle against the 16 that two FMA
+ports allow, 87%. The int8 tile is at 47 against the ~51 that its per-block
+float work allows (8 VPDPBUSD, a VCVTDQ2PS and a VFMADD an accumulator a
+block on ports 0 and 1), 92%. Both are near what their arithmetic allows;
+past here the gain is in how the work is spread.
+
+## H5, before the edit: split each product by columns as well as rows
+
+pk_gemm deals a product out in 64-row slices: 16 of them for every
+1024-row matrix (q, k, v, o, pw2, both ff downs, pos - 60% of the int8 work
+at T 750), which six threads take in 2.67 rounds, the last a third idle:
+~11% of those jobs, ~5% of the run. Cut each slice's columns into chunks too,
+enough that a job has at least four items a thread (and a chunk at least 48
+columns): 16 x 3 = 48 items, 8 rounds, none short. Each call then copies
+(H1's XOR) only its own columns, so the copying does not grow; the panels'
+weight sums are taken once a call instead of once a slice, about 0.4% more.
+Bit-exact by construction: every output is still one call's, with ref's
+arithmetic. On four or eight threads 16 slices were already whole rounds,
+so they should not move. Predict six threads 1.057 -> ~1.01 s.
+
+**H5, measured.** The rule as written ("four items a thread") would have
+chosen 32 items, which six threads also take with a third of the last round
+idle; what matters is how full the last round is. So pk_gemm picks the
+number of column chunks, 1 to 8 (chunks of whole 12-column tiles, at least
+48 columns), whose last round is least idle: 16 slices x 3 chunks on six
+threads, and 1 chunk wherever the slices are whole rounds already (four and
+eight threads at 1024 rows, any count at 4096). `--json` output (text and
+every token's time) identical at 1 and 6 threads and to main's build.
+
+| build | threads | min | median | max | was (median) |
+|---|---|---|---|---|---|
+| avx2-vnni | 6 | 1.015 | 1.017 | 1.021 | 1.057 |
+| avx2 | 6 | 1.890 | 1.891 | 1.937 | 1.997 |
+
+and avx2-vnni at 1, 4 and 8 threads unchanged (3.39-3.41, 1.244-1.247,
+1.200-1.203 s); at 5, 1.188 -> 1.113-1.117. Kept.

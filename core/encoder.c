@@ -78,23 +78,50 @@ typedef struct {
     const float *bias;
     const pk_act *act;
     int add;
-    uint32_t step;
+    uint32_t step, rb, cstep;
 } gemm_job;
 
 static void gemm_item(void *arg, int i, int th) {
     (void)th;
     gemm_job *j = arg;
-    uint32_t r0 = (uint32_t)i * j->step, nr = min32(j->step, j->w->rows - r0);
-    pk_k_gemm_q8(j->out + r0, j->os, j->w->q + (size_t)r0 * j->w->cols, j->w->s + r0,
-                 j->bias ? j->bias + r0 : NULL, nr, j->act, j->add);
+    uint32_t r0 = ((uint32_t)i % j->rb) * j->step, nr = min32(j->step, j->w->rows - r0);
+    uint32_t c0 = ((uint32_t)i / j->rb) * j->cstep, nc = min32(j->cstep, j->act->T - c0);
+    pk_act sub = *j->act;
+    sub.q += (size_t)c0 * sub.n;
+    sub.d += (size_t)c0 * (sub.n / sub.qb);
+    sub.T = nc;
+    pk_k_gemm_q8(j->out + (size_t)c0 * j->os + r0, j->os, j->w->q + (size_t)r0 * j->w->cols,
+                 j->w->s + r0, j->bias ? j->bias + r0 : NULL, nr, &sub, j->add);
 }
 
-/* Rows in blocks of 64: enough items to balance a pool of a dozen, few
- * enough that each streams its weights through once for all the columns. */
+/* Rows in slices of 64: few enough that each streams its weights through
+ * once for its columns, and (pool item sizes, backend/avx2/CLIMB.md) the
+ * size that measured best against 32 and 128. And the columns in chunks
+ * when that fills the pool's last round: a 1024-row matrix is 16 slices,
+ * which six threads take in three rounds with the last a third idle, and in
+ * three chunks of columns 48 items, eight whole rounds (H5 there). A chunk
+ * is whole tiles of 3 and 4 columns, and at least 48 columns, so that a
+ * call's per-call work - the backend's copy of its columns, its panels'
+ * sums - stays a few percent of it. Every output is still one call's, so
+ * the bits do not depend on the split. */
 void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
              const pk_act *act, int add) {
-    gemm_job j = { out, os, w, bias, act, add, 64 };
-    pk_par(a, gemm_item, &j, (int)((w->rows + j.step - 1) / j.step));
+    const uint32_t step = 64, rb = (w->rows + step - 1) / step, nth = (uint32_t)a->nth;
+    uint32_t best = 1, best_idle = UINT32_MAX, best_all = 1;
+    for (uint32_t cc = 1; cc <= 8 && (cc == 1 || act->T / cc >= 48); cc++) {
+        uint32_t items = rb * cc, all = (items + nth - 1) / nth * nth;
+        /* the idle share of the last round, compared as fractions */
+        if ((uint64_t)(all - items) * best_all < (uint64_t)best_idle * all) {
+            best = cc;
+            best_idle = all - items;
+            best_all = all;
+        }
+    }
+    uint32_t cstep = (act->T + best - 1) / best;
+    cstep = best > 1 ? (cstep + 11) / 12 * 12 : act->T;
+    uint32_t cc = cstep ? (act->T + cstep - 1) / cstep : 1;
+    gemm_job j = { out, os, w, bias, act, add, step, rb, cstep ? cstep : 1 };
+    pk_par(a, gemm_item, &j, (int)(rb * cc));
 }
 
 typedef struct {
