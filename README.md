@@ -12,20 +12,23 @@ And says, how do I get to Dublin? And the answer that comes back is, well, I
 wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
 
-A minute of English speech takes 0.51 s on an M4 Pro (118 times real time,
-eight cores), 1.02 s on a Core i9-12900HK, and 58 s on a Raspberry Pi 3B+'s
-four Cortex-A53s. Every backend computes the same bits on every machine.
+A minute of English speech takes 0.49 s on an M4 Pro (122 times real
+time), 0.83 s on a Core i9-12900HK, 1.3 s on a Core 3 304 under Windows,
+3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut at its pauses
+as `./pkito` cuts it by default. Every backend computes the same bits on
+every machine.
 
 ## What this is
 
 | | |
 |---|---|
 | models | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints |
-| backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `avx2-vnni` (Alder Lake and later, Zen 5), `avx2` (Haswell and later), `ref` (scalar C, anything) |
+| backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `avx2-vnni` (Alder Lake and later, Zen 5; built with AVX512-VNNI's encoding for Ice Lake, Tiger Lake and Zen 4, which has not yet run on one), `avx2` (Haswell and later), `ref` (scalar C, anything) |
 | numerics | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8") |
 | what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles |
 | audio | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; any channel count; any rate, brought to 16 kHz |
 | dependencies | the C library, libm and pthreads |
+| systems | Linux, macOS, and Windows 10 and later (built with MSYS2's MinGW-w64 gcc) |
 
 ## Try it
 
@@ -33,6 +36,10 @@ four Cortex-A53s. Every backend computes the same bits on every machine.
 make                          # backend detected: neon-dp, neon, avx2-vnni, avx2 or ref
 make BACKEND=ref              # scalar C, for anything
 ```
+
+On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
+`pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pkito.exe is linked
+statically and runs from cmd or PowerShell as well.
 
 Then a model, converted once from NVIDIA's checkpoint and Silero's VAD. The
 converter is Python with numpy and nothing else: it reads the `.nemo`
@@ -49,10 +56,11 @@ make models                   # models/parakeet-tdt-0.6b-v2.pkf (624 MB), -v3.pk
 
 Copy a `.pkf` to a board beside the binary; the board needs no Python, and
 memory for the file (it is mapped, and the page cache is its one copy) and
-some 50 to 150 MB besides at the default chunking, more threads taking more:
-670 MB at its peak on a Pi 3B+ with v2, 750 MB on an M4 Pro at eight
-threads. A 512 MB board (a Pi Zero 2 W) cannot hold an int8 0.6B model;
-README, "Why int8", has what 4-bit would cost. Then:
+some 25 to 90 MB besides at the default chunking, more threads taking more:
+652 MB at its peak on a Pi 3B+ with v2, 651 MB on a Pi 5, 663 MB on a
+12900HK at 14 threads, 711 MB on an M4 Pro at 12. A 512 MB board (a Pi
+Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
+4-bit would cost. Then:
 
 ```sh
 ./pkito talk.wav                        # the transcript
@@ -103,24 +111,30 @@ frames, and vadito holds those to onnxruntime's within 1.4e-5.
 And the bits are the same everywhere. `tests/data/test.v2.json` and
 `test.v3.json` are the transcripts `ref` writes for test.wav, every token and
 its time, and `make check-c` holds every backend on every machine to them
-byte for byte: so far `neon-dp` on an M4 Pro (Apple clang 21), `neon` on a
-Pi 3B+ (gcc 14.2), `avx2` and `avx2-vnni` on a 12900HK (gcc 15.2), and `ref`.
+byte for byte: so far `neon-dp` on an M4 Pro (Apple clang 21) and a Pi 5
+(gcc 14.2), `neon` on a Pi 3B+ (gcc 14.2) and the M4 Pro, `avx2` and
+`avx2-vnni` on a 12900HK (gcc 15.2), `avx2-vnni` on a Core 3 304 under
+Windows 11 (MSYS2's gcc 16.2), and `ref`.
 
 ## How fast
 
 `./pkito bench`: Silero's test.wav (60 s of English), best of five,
-2026-10-20. Seconds, and how many times real time:
+2026-10-20, each machine at its default thread count and, for two, at
+one. Seconds, and how many times real time, for the minute whole
+(`--max-chunk 60`, 750 encoder frames) and in the default 30 s chunks:
 
-| | backend | threads | whole (750 frames) | in 30 s chunks |
+| | backend | threads | whole | in 30 s chunks |
 |---|---|---|---|---|
-| Apple M4 Pro | `neon-dp` | 8 | 0.509 (118x) | |
-| | `neon` | 12 | 1.223 (49x) | |
-| | `ref` | 12 | 22.1 (2.7x) | |
-| Intel Core i9-12900HK | `avx2-vnni` | 6 | 1.019 (59x) | |
-| | `avx2-vnni` | 1 | 3.42 (18x) | |
-| | `avx2` | 6 | 1.937 (31x) | |
-| | `avx2` | 1 | 6.77 (8.9x) | |
-| Raspberry Pi 3B+, Cortex-A53 1.4 GHz | `neon` | 4 | | 58.4 (1.0x) |
+| Apple M4 Pro | `neon-dp` | 12 | 0.487 (123x) | 0.490 (122x) |
+| | `neon` | 12 | 1.047 (57x) | 1.040 (58x) |
+| | `ref` | 12 | 20.6 (2.9x) | 21.6 (2.8x) |
+| Intel Core i9-12900HK | `avx2-vnni` | 14 | 0.909 (66x) | 0.828 (72x) |
+| | `avx2-vnni` | 1 | 3.28 (18.3x) | 2.84 (21x) |
+| | `avx2` | 14 | 1.682 (36x) | 1.597 (38x) |
+| | `avx2` | 1 | 6.80 (8.8x) | 6.12 (9.8x) |
+| Intel Core 3 304, Windows 11 | `avx2-vnni` | 5 | 1.392 (43x) | 1.290 (47x) |
+| Raspberry Pi 5, Cortex-A76 2.4 GHz | `neon-dp` | 4 | 4.150 (14.5x) | 3.710 (16.2x) |
+| Raspberry Pi 3B+, Cortex-A53 1.4 GHz | `neon` | 4 | 48.1 (1.2x) | 44.6 (1.3x) |
 
 Against [parakeet.cpp](https://github.com/mudler/parakeet.cpp) (ggml, its
 q8_0 files) on the same 100 LibriSpeech test-clean recordings, the M4 Pro's
@@ -133,19 +147,26 @@ CPU at eight threads, both transcripts through one normalizer:
 | pkito, v3 | 1.88% | 119x |
 | parakeet.cpp, v3 q8_0 | 1.96% | 30x (its Metal GPU path: 90x) |
 
-Where the time goes (`make PROFILE=1`, the M4 Pro at eight threads, the minute
-whole): the feed-forward modules' int8 products 44%, the attention's float
-products 22%, q k v and the positions 14%, the convolution module 8%, the
-decoder 3%, the features and subsampling 4%. The int8 product runs at about
-56% of the M4's SDOT peak there, and at 47 multiply-adds a cycle of VNNI's 64
-on a 12900HK P-core, about 92% of what its per-block float work leaves.
+Where the time goes (`make PROFILE=1`, the minute whole). On the M4 Pro
+at eight threads: the feed-forward modules' int8 products 44%, the
+attention's float products 22%, q k v and the positions 14%, the
+convolution module 9%, the decoder 3%, the attention's output 3%,
+quantizing 3%, the features and subsampling 2%. On a Pi 5 at four, in
+that order: 43%, 20%, 13%, 10%, 3%, 3%, 5% and 3%; quantizing, which waits
+on memory there, is the share that grows. The int8 product runs at about
+56% of the M4's SDOT peak, at 19 multiply-adds a cycle of SDOT's 32 on an
+A76 (about 81% of what its blocks' float work leaves), and at 47 of VNNI's
+64 on a 12900HK P-core (about 92%).
 
-The default thread count is one a physical core of the fastest kind. On the
-12900HK, whose 45 W limit it reaches on one core already, six threads on the
-P-cores take 1.06 s and anything from 7 to 20 1.18 to 1.22 s: a slower core
-holding a pass's last item keeps the others waiting, six hundred passes a
-recording, and takes watts from them besides. backend/*/CLIMB.md has every
-measurement the kernels rest on.
+The default thread count is one a physical core of every kind (a second
+thread on an SMT core adds nothing). A chip's slower cores take fewer of
+each pass's items and still add their share: a Core 3 304, one P-core and
+four E-cores, runs the minute whole in 5.02 s on its P-core and 1.39 s on
+all five; a 12900HK in 0.96 s on its six P-cores and 0.91 s on all 14
+(though 8, 16 and 18 threads take 1.10 to 1.15 s there, the same in every
+pass); an M4 Pro in 0.50 s on its eight performance cores and 0.49 s on
+all 12. backend/*/CLIMB.md has every measurement the kernels and the
+defaults rest on.
 
 ## Why int8
 
