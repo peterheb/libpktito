@@ -178,3 +178,131 @@ the M4 Pro in main's commit; an A76 has not been asked).
 | 3-column tile + 48 KB blocks | **51.801 s** | **51.793 s** |
 
 -11.6%, against a spread of 0.3%. Kept.
+
+## Where the int8 product stands (after H1 + H3)
+
+gprof of a one-thread transcription (`-pg`, 181 s): pk_k_gemm_q8 87.6%,
+pk_k_gemm_f32 4.5% (the attention, the VAD), pk_k_conv3x3s2 2.0%,
+pk_k_silu 1.7%, pk_k_quantize 0.9%, pk_k_dwconv 0.7%, the attention's
+repack 0.6%, pk_k_softmax 0.5%, the rest below 0.4% each. The four-thread
+profile's 5% for the subsampling is its pointwise convolutions' and its
+projection's int8 products, not its 3x3 convolutions.
+
+gemmbench now also runs the kernel with everything in L1 (64 rows of 256
+inputs, 48 columns, 400 calls): **2.40 MAC/cycle**, against 2.25 on the ff
+up shape and 2.10 on ff down at one thread. The 3-column loop priced at
+pinfer's rates, its per-block epilogue included (2 ADDP, 2 SCVTF, 2 FMLA by
+element a column every four iterations, already minimal in gcc's output),
+is about 74 cycles per 192 MACs, 2.6 MAC/cycle: the instruction stream runs
+at 92% of its price, and the memory system takes another 7% alone and about
+11% more at four threads. What is left is in the instruction count.
+
+## H4 - eight activation bytes a load
+
+Stated before the edit. Per column and pair of groups the activations are
+`ldr s` + `dup`, twice: four issue slots. One `ldr d` (`vld1_s8`) and two
+DUPs by element (`vdupq_lane_s32` lanes 0 and 1) are three. That is 3 of the
+~74 cycles of a 3-column iteration: predicted gemmbench +3 to +5% at one
+thread, L1-resident case included.
+
+### H4, measured: rejected
+
+gemmbench at one thread 3.07 -> 2.84 GMAC/s (-7.5%), L1-resident 2.40 ->
+2.27 MAC/cycle; four threads 11.25 -> 10.13. gcc 14 took the 8-byte load
+apart again - two `ldr s` and two `dup` per column, as before - and added
+address arithmetic for the second load (objdump: six more integer ops an
+iteration). The instruction order is gcc's to choose in C, and it chose
+worse; only an asm loop would hold it to the form priced.
+
+## The four-thread profile after H1 + H3
+
+`make PROFILE=1`, 51.74 s: feed-forward 29.04 s (56.0%), q k v pos 7.67
+(14.8%), conv pw1 pw2 4.66 (9.0%), attention 3.02 (5.8%), subsampling 2.82
+(5.4%), attention out 1.59 (3.1%), decoder 1.02 (2.0%), quantize 0.77,
+glu + depthwise 0.47, mel 0.44, layer norms 0.35. The int8 products run at
+10.4 GMAC/s in the feed-forward (the 4096-input ff down among them) and
+11.3-11.7 in the others.
+
+## H5 - prefetch the weight stream
+
+Stated before the edit. pinfer measured PRFM nearly free on this core (it
+takes its AGU slot and never stalls). A half panel's weights are 32 bytes
+of every 64-byte group, a stride of 64 through the panel, which the A53's
+prefetcher may or may not follow ahead of an in-order core that stalls on
+every miss. A `prfm pldl1keep` (`__builtin_prefetch(g + D, 0, 3)`) every
+pair of groups, D bytes ahead, for D = 256 and 512. Predicted: ff down at
+four threads +3 to +8%, the 1024-input shapes flat.
+
+### H5, measured: rejected
+
+gemmbench, GMAC/s, all four shapes (two passes; 0 is no prefetch):
+
+| distance | 4 threads | | 1 thread | L1-resident |
+|---|---|---|---|---|
+| 0 | 11.03, 11.05 | | 3.08 | 2.40 MAC/cycle |
+| 256 B | 10.68, 10.76 | | | |
+| 512 B | 10.64, 10.79 | | 2.98 | 2.30 |
+
+-3% everywhere, the L1-resident case included, where there is nothing to
+fetch: a PRFM an iteration costs this loop more than its issue slot.
+
+The four-thread repeats of one configuration have drifted by 4-8% between
+sessions (ff down at 48 KB: 10.31, 9.88, 9.46, 9.46, 10.68, 9.79), so a
+four-thread conclusion here wants an effect larger than that, or the bench.
+
+## Why the 4096-input product loses at four threads
+
+Two candidates, the second measured to be the one:
+
+1. *Four threads thrash the shared L2 with four column blocks.* gemmbench
+   can deal its items column-block-major, every thread on the same block of
+   activations at once (which core/encoder.c's pk_gemm does not do). ff down
+   at four threads, GMAC/s, blocks of 0 (rows only, as now), 24, 48, 96
+   columns: 10.68 / 9.70 / 10.25 / 10.10, and again 9.79 / 10.29 / 9.75 /
+   9.70 - nothing outside the drift. Rejected, and with it the idea of
+   changing pk_gemm's dealing for this.
+2. *A half panel of 4096 inputs does not fit L1.* Its 32 bytes of every
+   64-byte group span 64 KB of cache lines, twice the A53's L1D, so every
+   3-column tile streams them in again from the L2 the four cores share; at
+   1024 inputs they are 16 KB and stay. Rows fixed at 1024, MAC/cycle a core:
+
+   | inputs | 1 thread | 2 threads | 4 threads |
+   |---|---|---|---|
+   | 1024 | 2.24 | 2.22 | 2.17 |
+   | 2048 | 2.13 | 2.14 | 2.01 |
+   | 3072 | 2.08 | 2.07 | 1.88 |
+   | 4096 | 2.10 | 2.04 | 1.74 |
+
+   Flat alone, falling with width at four threads: the L2's bandwidth,
+   shared, against a weight stream that should have been in L1.
+
+## H6 - the inputs in chunks of 1024
+
+Stated before the edit. For a product of more than 1024 inputs (the
+ff down, 4096) with columns to reuse its weights over, take the inputs in
+chunks of 1024 (32 blocks), outermost within a column block: each panel's
+chunk is 16 KB of lines, used by both its halves and every tile of the
+block from L1. Each output's chain of block FMAs is the same chain in the
+same order, its float accumulator kept in thread-local memory between
+chunks (stored and reloaded exactly), so the bits cannot change; a chunk
+of activations is 1 KB a column, so a column block can be 48 columns
+again. Predicted: ff down at four threads +15 to +25% (towards the 2.17 of
+1024 inputs), alone +3 to +7%; the bench -3 to -5%.
+
+### H6, measured: kept
+
+gemmbench, GMAC/s (MAC/cycle a core at 1400 MHz):
+
+| | 1 thread | 4 threads |
+|---|---|---|
+| ff down, before (the six repeats above) | 2.94-2.96 | 9.46-10.68 |
+| **ff down, chunks of 1024** | 2.96 (2.11) | **11.41 (2.04)** |
+| all four shapes | 3.07 (2.19) | 11.89 (2.12) |
+
+and the width sweep at four threads, MAC/cycle a core, 1024 / 2048 / 3072
+/ 4096 inputs: 2.15 / 2.07 / 2.07 / 2.04, where it was 2.17 / 2.01 / 1.88 /
+1.74. Alone nothing moved, as a second thread's absence would have it.
+`./pkito bench`: **49.164 s and 49.171 s**, from 51.80: -5.1%. gcc 14's
+-Warray-bounds read the whole product's null partial-sum pointer as an
+array of no floats and warned on the stores it never makes; the tiles of
+a whole product get a real 32-float buffer they do not touch.

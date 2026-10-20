@@ -140,16 +140,30 @@ static inline int8x16_t rep4(const int8_t *p) {
     return vreinterpretq_s8_s32(vdupq_n_s32(v));
 }
 
+/* Blocks [b0, b1) of the product, for NC columns from t0. A tile that
+ * takes all the blocks starts its float accumulators at zero and finishes
+ * the outputs; one that takes a chunk of them (pk_k_gemm_q8 below) starts
+ * from part, where the chunk before left them, unless it is the first, and
+ * leaves them there unless it is the last - the same chain of fused
+ * multiply-adds, in the same order, stored and reloaded exactly. part is
+ * NC columns of 8 floats. */
 static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
              const float *ws, const float *bias, const pk_act *a, uint32_t t0, int add,
-             const int NC) {
+             uint32_t b0, uint32_t b1, float *part, int first, int last, const int NC) {
     const uint32_t qb = a->qb, nb = n / qb;
     float32x4_t f[4][2];
-    for (int c = 0; c < NC; c++) f[c][0] = f[c][1] = vdupq_n_f32(0.0f);
+    for (int c = 0; c < NC; c++) {
+        if (first) {
+            f[c][0] = f[c][1] = vdupq_n_f32(0.0f);
+        } else {
+            f[c][0] = vld1q_f32(part + 8 * c);
+            f[c][1] = vld1q_f32(part + 8 * c + 4);
+        }
+    }
     const int8_t *x[4];
     for (int c = 0; c < NC; c++) x[c] = a->q + (size_t)(t0 + c) * n;
-    for (uint32_t b = 0; b < nb; b++) {
+    for (uint32_t b = b0; b < b1; b++) {
 #ifdef PK_NEON_DOTPROD
         int32x4_t s[4][2];
         for (int c = 0; c < NC; c++) s[c][0] = s[c][1] = vdupq_n_s32(0);
@@ -209,6 +223,13 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
         }
 #endif
     }
+    if (!last) {
+        for (int c = 0; c < NC; c++) {
+            vst1q_f32(part + 8 * c, f[c][0]);
+            vst1q_f32(part + 8 * c + 4, f[c][1]);
+        }
+        return;
+    }
     const float32x4_t s0 = vld1q_f32(ws + 4 * h), s1 = vld1q_f32(ws + 4 * h + 4);
     for (int c = 0; c < NC; c++) {
         float *o = out + (size_t)(t0 + c) * os + 4 * h;
@@ -242,32 +263,75 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
 #endif
 #endif
 
-/* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
- * four columns at a time across the half. */
-void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                  uint32_t rows, const pk_act *a, int add) {
-    const uint32_t n = a->n;
-    uint32_t cb = PK_Q8_BLOCK_BYTES / n;
-    cb = cb < 4 ? 4 : cb & ~3u;
-    for (uint32_t c0 = 0; c0 < a->T; c0 += cb) {
-        const uint32_t c1 = a->T - c0 < cb ? a->T : c0 + cb;
-        for (uint32_t r = 0; r < rows; r += 16) {
-            const int8_t *wp = w + (size_t)r * n;
-            float *o = out + r;
-            const float *b = bias ? bias + r : NULL;
-            for (uint32_t h = 0; h < 4; h += 2) {
-                uint32_t t = c0;
-                for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC)
-                    q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, PK_Q8_NC);
-                switch (c1 - t) {
-                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3); break;
-                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2); break;
-                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1); break;
-                default: break;
-                }
+/* One column block's tiles over every panel, blocks [b0, b1) of each */
+static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                    uint32_t rows, const pk_act *a, int add, uint32_t c0, uint32_t c1,
+                    uint32_t b0, uint32_t b1, float *part, uint32_t cb) {
+    const uint32_t n = a->n, nb = n / a->qb;
+    const int first = b0 == 0, last = b1 == nb;
+    /* a whole product's tiles neither read nor write their partial sums;
+     * they get somewhere real to not touch, which keeps gcc's
+     * -Warray-bounds from reasoning about a null one */
+    float none[4 * 8];
+    for (uint32_t r = 0; r < rows; r += 16) {
+        const int8_t *wp = w + (size_t)r * n;
+        float *o = out + r;
+        const float *b = bias ? bias + r : NULL;
+        for (uint32_t h = 0; h < 4; h += 2) {
+            /* this half panel's partial sums: 8 floats a column of the block */
+            float *ph = part ? part + ((size_t)(r / 8 + h / 2) * cb) * 8 : NULL;
+            uint32_t t = c0;
+#define Q8_TILE(NC) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, b0, b1, \
+                            ph ? ph + (size_t)(t - c0) * 8 : none, first, last, NC)
+            for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC) Q8_TILE(PK_Q8_NC);
+            switch (c1 - t) {
+            case 3: Q8_TILE(3); break;
+            case 2: Q8_TILE(2); break;
+            case 1: Q8_TILE(1); break;
+            default: break;
             }
+#undef Q8_TILE
         }
     }
+}
+
+/* Inputs a chunk takes, on ARMv8.0: a product wider than this is taken a
+ * chunk at a time within each column block, so that a panel's weights for
+ * the chunk - 16 KB of cache lines at 1024 - stay in the A53's 32 KB L1D
+ * for both its halves and every tile of the block. Whole, a 4096-input half
+ * panel's weights span 64 KB of lines, and every tile streamed them again
+ * from the L2 the four cores share (CLIMB.md, 2026-10-20, H6). The partial
+ * sums between chunks live in part: at most 64 rows (pk_gemm's slices) by
+ * one block's columns. */
+#ifndef PK_NEON_DOTPROD
+#define PK_Q8_KCHUNK 1024
+#define PK_Q8_KCHUNK_ROWS 64
+#define PK_Q8_KCHUNK_COLS (PK_Q8_BLOCK_BYTES / PK_Q8_KCHUNK)
+#endif
+
+/* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
+ * PK_Q8_NC columns at a time across the half. */
+void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                  uint32_t rows, const pk_act *a, int add) {
+    const uint32_t n = a->n, nb = n / a->qb;
+#ifdef PK_Q8_KCHUNK
+    if (n > PK_Q8_KCHUNK && PK_Q8_KCHUNK % a->qb == 0 && rows <= PK_Q8_KCHUNK_ROWS && a->T > 1) {
+        static _Thread_local float part[PK_Q8_KCHUNK_ROWS / 8 * PK_Q8_KCHUNK_COLS * 8];
+        const uint32_t kb = PK_Q8_KCHUNK / a->qb, cb = PK_Q8_KCHUNK_COLS;
+        for (uint32_t c0 = 0; c0 < a->T; c0 += cb) {
+            const uint32_t c1 = a->T - c0 < cb ? a->T : c0 + cb;
+            for (uint32_t b0 = 0; b0 < nb; b0 += kb)
+                q8_cols(out, os, w, ws, bias, rows, a, add, c0, c1, b0,
+                        nb - b0 < kb ? nb : b0 + kb, part, cb);
+        }
+        return;
+    }
+#endif
+    uint32_t cb = PK_Q8_BLOCK_BYTES / n;
+    cb = cb < 4 ? 4 : cb & ~3u;
+    for (uint32_t c0 = 0; c0 < a->T; c0 += cb)
+        q8_cols(out, os, w, ws, bias, rows, a, add, c0, a->T - c0 < cb ? a->T : c0 + cb, 0, nb,
+                NULL, cb);
 }
 
 /* ------------------------------------------------------ float products --- */
