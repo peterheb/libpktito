@@ -232,6 +232,6 @@ remote:
 .PHONY: models check-c check-sanitize check-math remote clean
 
 clean:
-	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS)
+	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) tests/tokcheck
 	rm -f tests/*-san tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM
