@@ -1,9 +1,7 @@
 /* core/os.h on POSIX (Linux, macOS, the BSDs), and the plain-C fallback.
  *
- * The cores: Linux's topology gives the physical cores, SMT siblings
- * counted once, because the encoder's matrix products keep a core's integer
- * units busy and a second thread on it measured nothing (backend CLIMB.md
- * files have the numbers per board). On macOS, sysctl's physical count.
+ * The cores: the physical cores of the fastest kind, from Linux's sysfs
+ * topology and cpufreq or macOS's sysctl (pk_os_cores says why).
  */
 #include "os.h"
 
@@ -54,36 +52,59 @@ void pk_unmap(const unsigned char *p, size_t size) {
         munmap((void *)p, size);
 }
 
+#ifdef __linux__
+static long sysfs_long(long cpu, const char *what) {
+    char path[128];
+    long v = -1;
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%ld/%s", cpu, what);
+    FILE *f = fopen(path, "r");
+    if (f) {
+        if (fscanf(f, "%ld", &v) != 1)
+            v = -1;
+        fclose(f);
+    }
+    return v;
+}
+#endif
+
+/* One thread a physical core of the fastest kind. A chip with two kinds of
+ * core (Intel's P and E, ARM's big and LITTLE, Apple's performance and
+ * efficiency) runs the encoder fastest on the fast kind alone: a slow core
+ * holding a job's last item keeps the fast ones waiting at the job's end,
+ * six hundred jobs a recording, and on a power-capped chip it takes their
+ * watts too. An i9-12900HK: 6 threads on its P-cores 1.062 s, 14 on every
+ * core 1.191 s (backend/avx2/CLIMB.md, "Threads"); an M4 Pro: 8 on its
+ * performance cores 0.512 s, 12 on all 0.523 s. A second thread on a core
+ * (SMT) measured nothing either, so siblings count once. On Linux the fast
+ * kind is the cores whose cpufreq maximum is within 10% of the fastest's
+ * (an Intel part's favoured cores turbo a bin or two higher than the rest
+ * of their kind); where cpufreq says nothing, every core counts. */
 int pk_os_cores(void) {
 #ifdef __APPLE__
     int phys = 0;
     size_t len = sizeof phys;
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &phys, &len, NULL, 0) == 0 && phys > 0)
+        return phys;
+    len = sizeof phys;
     if (sysctlbyname("hw.physicalcpu", &phys, &len, NULL, 0) == 0 && phys > 0)
         return phys;
 #endif
 #ifdef __linux__
-    /* one per distinct (package, core) pair among the online cpus */
-    long online = sysconf(_SC_NPROCESSORS_ONLN);
+    long ncpu = sysconf(_SC_NPROCESSORS_CONF), fmax = 0;
+    if (ncpu > 4096)
+        ncpu = 4096;
+    for (long c = 0; c < ncpu; c++) {
+        long f = sysfs_long(c, "cpufreq/cpuinfo_max_freq");
+        fmax = f > fmax ? f : fmax;
+    }
+    /* one per distinct (package, core) pair among the fast cpus */
     int seen[1024], nseen = 0;
-    for (long c = 0; c < online && c < 4096; c++) {
-        char path[128];
-        int pkg = 0, core = -1;
-        FILE *f;
-        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%ld/topology/core_id", c);
-        if (!(f = fopen(path, "r")))
+    for (long c = 0; c < ncpu; c++) {
+        long core = sysfs_long(c, "topology/core_id"), pkg = sysfs_long(c, "topology/physical_package_id");
+        long f = sysfs_long(c, "cpufreq/cpuinfo_max_freq");
+        if (core < 0 || (fmax > 0 && f > 0 && 10 * f < 9 * fmax))
             continue;
-        if (fscanf(f, "%d", &core) != 1)
-            core = -1;
-        fclose(f);
-        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%ld/topology/physical_package_id", c);
-        if ((f = fopen(path, "r"))) {
-            if (fscanf(f, "%d", &pkg) != 1)
-                pkg = 0;
-            fclose(f);
-        }
-        if (core < 0)
-            continue;
-        int key = pkg * 65536 + core, dup = 0;
+        int key = (int)((pkg < 0 ? 0 : pkg) * 65536 + core), dup = 0;
         for (int i = 0; i < nseen; i++)
             dup |= seen[i] == key;
         if (!dup && nseen < 1024)

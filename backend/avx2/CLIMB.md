@@ -171,3 +171,53 @@ that ports 0 and 1 allow it. As predicted. Kept. The engine:
 (A side effect worth writing down: with |w| as the unsigned factor a weight
 of -128 multiplies correctly, VPABSB leaving it 0x80 = 128 unsigned, where
 the old form's VPSIGNB w, x wrapped it. No converted file has one.)
+
+## Threads (avx2-vnni after H3)
+
+`pkito bench -t N`, best of 5, one run each; scheduler's placement unless
+taskset is given:
+
+| threads | where | s |
+|---|---|---|
+| 4 | | 1.241 |
+| 5 | | 1.188 |
+| **6** | | **1.062** |
+| 6 | taskset one a P-core (0,2,4,6,8,10) | 1.062 |
+| 7 | | 1.206 |
+| 8 | | 1.192 |
+| 10 | | 1.223 |
+| 12 | | 1.183 |
+| 12 | taskset P-cores and their siblings (0-11) | 1.110 |
+| 14 | (the default: pk_os_cores(), every physical core) | 1.194 |
+| 14 | taskset one a core, P and E | 1.191 |
+| 20 | | 1.199 |
+| 8 | taskset E-cores only (12-19) | 2.010 |
+
+Six threads, one a P-core, is the best by 11-15%, and the default (14) is
+12% slower than it. A seventh thread lands on an E-core or a sibling: it
+takes power from the six (the package is at 45 W already), and an E-core's
+item is two to three times a P-core's, so whenever it holds the last item of
+a job - six hundred jobs a run - five P-cores wait for it. The M4 Pro said
+the same with less to lose (`neon-dp`, 8 performance threads 0.512 s, 12
+with the efficiency cores 0.523 s). **The default should be the physical
+cores of the fastest kind**: on Linux the cores whose cpufreq maximum is
+within 10% of the fastest's (6 here; every core on a Pi, whose cores are one
+kind), on macOS hw.perflevel0.physicalcpu. H4.
+
+**Slice size** (core/encoder.c's pk_gemm, rows a pool item), six threads,
+three runs each: 32 rows 1.087-1.089 s, **64 rows 1.057-1.059**, 128 rows
+1.146-1.148, 256 rows 1.166-1.169. Each call copies its column blocks'
+activations (the XOR, H1) and takes its panels' weight sums - 3-5% of a
+64-row slice in q8bench's sliced mode - so smaller is dearer; larger leaves
+too few items for six threads (1024 rows in 128s is 8 items: a second round
+of two). 64 stays.
+
+## H4: the default thread count, the fastest kind of core (core/os.c)
+
+pk_os_cores() counts the physical cores whose cpufreq maximum is within 10%
+of the fastest's (sysfs; every core where cpufreq says nothing), and on macOS
+hw.perflevel0.physicalcpu before hw.physicalcpu. Here it now answers 6 (the
+P-cores at 4.9 and 5.0 GHz; the E-cores' 3.8 is 76% of the fastest), the M4
+Pro 8 (its performance cores; 12 before). `pkito bench` with no -t, three
+runs: 1.057, 1.062, 1.056 s, against 1.194 at the old default of 14: -11%.
+A Pi's cores are one kind, so it keeps all four.

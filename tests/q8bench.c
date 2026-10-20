@@ -1,8 +1,10 @@
 /* The int8 product alone, on one thread: what the backend's q8 tile does
  * per cycle, without the rest of the encoder around it.
  *
- *     ./tests/q8bench [T] [REPS]
+ *     ./tests/q8bench [T] [REPS] [SLICE]
  *
+ * SLICE, if given, calls the kernel a slice of that many rows at a time, as
+ * core/encoder.c's pk_gemm does (64), so a per-call cost shows.
  * Runs pk_k_gemm_q8 on the encoder's three shapes - a feed-forward's two
  * (4096 x 1024 and 1024 x 4096) and the attention's (1024 x 1024) - at T
  * columns (750: a minute of audio) with the encoder's blocks of 32, and
@@ -35,6 +37,9 @@ static void *xmalloc(size_t n) {
     return p;
 }
 
+/* rows a call takes: the whole matrix, or core/encoder.c's pk_gemm slice */
+static uint32_t g_slice;
+
 static void run(const char *what, uint32_t rows, uint32_t n, uint32_t T, uint32_t qb, int reps) {
     int8_t *w = xmalloc((size_t)rows * n);
     float *ws = xmalloc(rows * sizeof *ws), *x = xmalloc((size_t)T * n * sizeof *x);
@@ -47,7 +52,10 @@ static void run(const char *what, uint32_t rows, uint32_t n, uint32_t T, uint32_
     double best = 1e30;
     for (int i = 0; i < reps; i++) {
         double t0 = pk_os_now();
-        pk_k_gemm_q8(out, rows, w, ws, NULL, rows, &a, 0);
+        uint32_t step = g_slice && g_slice < rows ? g_slice : rows;
+        for (uint32_t r = 0; r < rows; r += step)
+            pk_k_gemm_q8(out + r, rows, w + (size_t)r * n, ws + r, NULL,
+                         rows - r < step ? rows - r : step, &a, 0);
         double dt = pk_os_now() - t0;
         best = dt < best ? dt : best;
     }
@@ -60,7 +68,9 @@ static void run(const char *what, uint32_t rows, uint32_t n, uint32_t T, uint32_
 int main(int argc, char **argv) {
     uint32_t T = argc > 1 ? (uint32_t)atoi(argv[1]) : 750;
     int reps = argc > 2 ? atoi(argv[2]) : 5;
-    printf("q8bench: %s, one thread\n", pk_k_name());
+    g_slice = argc > 3 ? (uint32_t)atoi(argv[3]) : 0;
+    printf("q8bench: %s, one thread, %s\n", pk_k_name(),
+           g_slice ? "a call a slice of rows, as pk_gemm calls it" : "one call a matrix");
     run("feed-forward up", 4096, 1024, T, 32, reps);
     run("feed-forward down", 1024, 4096, T, 32, reps);
     run("attention q", 1024, 1024, T, 32, reps);
