@@ -151,19 +151,48 @@ static void norm(pk_asr *a, float *out, const float *x, uint32_t T, const float 
  * pass in place and then pk_quantize read it twice and wrote it once, and
  * on a Pi 5 that traffic, not the arithmetic, set the pace. The values
  * quantized are the same floats. */
-typedef struct { pk_asr *a; const float *x; uint32_t T; } siluq_job;
+typedef struct { pk_asr *a; const float *x, *w, *b; uint32_t T; } rowq_job;
+
+/* row t of the int8 activations from the n floats at x */
+static void quant_row(pk_act *act, uint32_t t, const float *x) {
+    const uint32_t nb = act->n / act->qb;
+    pk_act one = { act->q + (size_t)t * act->n, act->d + (size_t)t * nb, act->n, act->qb, 1 };
+    pk_k_quantize(&one, x, act->n);
+}
 
 static void siluq_item(void *arg, int i, int th) {
-    siluq_job *j = arg;
+    rowq_job *j = arg;
     pk_act *act = &j->a->act;
     float *row = j->a->tws[th].row;
-    const uint32_t n = act->n, nb = n / act->qb;
     for (uint32_t t = (uint32_t)i * 16; t < min32((uint32_t)i * 16 + 16, j->T); t++) {
-        memcpy(row, j->x + (size_t)t * n, n * sizeof *row);
-        pk_k_silu(row, n);
-        pk_act one = { act->q + (size_t)t * n, act->d + (size_t)t * nb, n, act->qb, 1 };
-        pk_k_quantize(&one, row, n);
+        memcpy(row, j->x + (size_t)t * act->n, act->n * sizeof *row);
+        pk_k_silu(row, act->n);
+        quant_row(act, t, row);
     }
+}
+
+/* A layer norm straight into the int8 activations, the same way: its
+ * output was read only by the quantize after it, 3 MB at a minute written
+ * and read again, four times a layer. */
+static void normq_item(void *arg, int i, int th) {
+    rowq_job *j = arg;
+    pk_act *act = &j->a->act;
+    float *row = j->a->tws[th].row;
+    for (uint32_t t = (uint32_t)i * 16; t < min32((uint32_t)i * 16 + 16, j->T); t++) {
+        pk_k_layernorm(row, act->n, j->x + (size_t)t * act->n, act->n, 1, act->n, j->w, j->b,
+                       j->a->m->ln_eps);
+        quant_row(act, t, row);
+    }
+}
+
+/* a->act for T frames of n floats at x, through item, which takes 16 */
+static void rowq(pk_asr *a, void (*item)(void *, int, int), const float *x, uint32_t T,
+                 uint32_t n, const float *w, const float *b) {
+    a->act.n = n;
+    a->act.qb = QB;
+    a->act.T = T;
+    rowq_job j = { a, x, w, b, T };
+    pk_par(a, item, &j, (int)((T + 15) / 16));
 }
 
 typedef struct { float *out; const float *x; uint32_t T, D; } glu_job;
@@ -393,14 +422,9 @@ static void att_item(void *arg, int item, int th) {
 static void ff(pk_asr *a, uint32_t T, const float *nw, const float *nb, const pk_q8 *up,
                const pk_q8 *down) {
     const uint32_t D = a->m->d_model, F = a->m->ff_dim;
-    PROF(PK_P_NORM, norm(a, a->h, a->x, T, nw, nb));
-    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->h, D, T, D, QB));
+    PROF(PK_P_QUANT, rowq(a, normq_item, a->x, T, D, nw, nb));
     PROF(PK_P_FF, pk_gemm(a, a->u, F, up, NULL, &a->act, 0));
-    a->act.n = F;
-    a->act.qb = QB;
-    a->act.T = T;
-    siluq_job sq = { a, a->u, T };
-    PROF(PK_P_QUANT, pk_par(a, siluq_item, &sq, (int)((T + 15) / 16)));
+    PROF(PK_P_QUANT, rowq(a, siluq_item, a->u, T, F, NULL, NULL));
     PROF(PK_P_FF, pk_gemm(a, a->x, D, down, NULL, &a->act, 1));     /* the 0.5 is in down */
 }
 
@@ -411,8 +435,7 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
 
     ff(a, T, L->ff1_nw, L->ff1_nb, &L->ff1_up, &L->ff1_down);
 
-    PROF(PK_P_NORM, norm(a, a->u, a->x, T, L->att_nw, L->att_nb));
-    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->u, D, T, D, QB));
+    PROF(PK_P_QUANT, rowq(a, normq_item, a->x, T, D, L->att_nw, L->att_nb));
     panel_job vj = { a->vp, (size_t)T * 16, &L->v, &a->act };
     PROF(PK_P_QKV, pk_gemm(a, a->q, D, &L->q, NULL, &a->act, 0);
                    pk_gemm(a, k, D, &L->k, NULL, &a->act, 0);
@@ -424,8 +447,7 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
     PROF(PK_P_ATTO, pk_gemm(a, a->x, D, &L->o, NULL, &a->act, 1));
 
-    PROF(PK_P_NORM, norm(a, a->h, a->x, T, L->conv_nw, L->conv_nb));
-    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->h, D, T, D, QB));
+    PROF(PK_P_QUANT, rowq(a, normq_item, a->x, T, D, L->conv_nw, L->conv_nb));
     PROF(PK_P_CONV, pk_gemm(a, a->u, 2 * D, &L->pw1, NULL, &a->act, 0));
     glu_job gj = { a->h, a->u, T, D };
     dw_job dj = { a->o, a->h, L, T, D, m->conv_kernel };

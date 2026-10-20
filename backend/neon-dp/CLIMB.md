@@ -237,3 +237,19 @@ quantize, and the array is read once and never written:
 (The SiLU's arithmetic moved from the feed-forward's row of the profile
 to quantize's.) The 12900HK and the M4 Pro did not move, inside their
 spreads: their caches and memory keep up either way.
+
+## 2026-10-20 - the layer norms into their quantize
+
+Same Pi 5. Four of a layer's five layer norms (both feed-forwards', the
+attention's, the convolution module's) wrote [T][1024] floats, 3 MB at a
+minute, that only the quantize after them read. Each now goes a frame at
+a time through the same row of thread scratch as the SiLU, norm then
+quantize; the last norm, whose output is the residual stream, stays.
+
+| | layer norms | quantize | minute | 30 s chunks |
+|---|---|---|---|---|
+| dfec31c | 77 ms | 213 ms | 4.244-4.248 s | 3.791 s |
+| norms in the quantize passes | 13 ms | 219 ms | 4.186-4.189 s | 3.737 s |
+
+(The four norms' arithmetic is in quantize's row now.) The 12900HK and
+the M4 Pro did not move outside their spreads.
