@@ -352,8 +352,8 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
                    pk_gemm(a, v, D, &L->v, NULL, &a->act, 0);
                    pk_gemm(a, a->p, D, &L->pos, NULL, &a->ape, 0));
     att_job aj = { a, L, k, v, T, up16(T), up16(2 * T - 1) + 16 };
-    PROF(PK_P_ATT, pk_par(a, repack_item, &aj, (int)(H * ((T + PK_REPACK - 1) / PK_REPACK)));
-                   pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
+    PROF(PK_P_REPACK, pk_par(a, repack_item, &aj, (int)(H * ((T + PK_REPACK - 1) / PK_REPACK))));
+    PROF(PK_P_ATT, pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
     PROF(PK_P_ATTO, pk_gemm(a, a->x, D, &L->o, NULL, &a->act, 1));
 

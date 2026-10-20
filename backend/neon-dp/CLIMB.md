@@ -51,3 +51,48 @@ four pipes and has not been measured against a 16x2 or 8x3 on a core with
 two; PK_Q8_BLOCK_BYTES (192 KB) against the A76's 512 KB L2 and a 2 MB L3
 shared by four; and whether the float attention's share on the A76 makes an
 int8 attention worth its rounding.
+
+## 2026-10-20 - the Pi 5 baseline
+
+Raspberry Pi 5, 4 x Cortex-A76 at 2.4 GHz (performance governor, 60 C under
+load, never throttled), 4 GB, Debian, gcc 14.2, `-march=armv8.2-a+dotprod
+-mtune=cortex-a76 -O3 -ffp-contract=off`. Tree 02f692f plus the profile's
+repack split. check-c passes: every kernel ref's bits, both transcripts of
+test.wav byte for byte. Four threads.
+
+| test.wav | best of 5 | real time |
+|---|---|---|
+| whole (750 frames) | 4.934 s | 12.2x |
+| 30 s chunks (3) | 4.371 s | 13.7x, and 0.069 s of VAD |
+
+The stage split, whole (`make PROFILE=1`):
+
+| stage | ms | share |
+|---|---|---|
+| feed-forward | 1969 | 39.8% |
+| attention products (scores, positions, softmax, context) | 891 | 18.0% |
+| q k v and the positions' projection | 544 | 11.0% |
+| conv pw1 pw2 | 338 | 6.8% |
+| subsampling | 330 | 6.7% |
+| attention repack | 285 | 5.8% |
+| quantize | 163 | 3.3% |
+| decoder | 128 | 2.6% |
+| attention out | 122 | 2.5% |
+| glu + depthwise | 80 | 1.6% |
+| layer norms | 77 | 1.6% |
+| mel, positions | 26 | 0.5% |
+
+The feed-forward is 302 G multiply-adds in 1.97 s: 38 G a core, 16 a cycle,
+half of SDOT's 32 (two 128-bit pipes). The attention's products run at
+about 3.7 FMAs a cycle of FMLA's 8. Three things stand out against the M4,
+whose split this resembles otherwise:
+
+* the repack is 5.8%, for moving 18 MB a layer: K's and P's panels are a
+  transpose, written a float at a time with each store a cache line apart
+  (core/encoder.c, repack_item);
+* the subsampling is 6.7%, where its arithmetic (7 G int8 multiply-adds and
+  0.3 G float) should take about 80 ms: its 3x3 convolutions run channel
+  group outermost, so a block's 2.3 MB of output is walked 64 times;
+* quantize is 3.3%, for one pass over each product's input.
+
+Each is a kernel or a loop order; none changes a bit.

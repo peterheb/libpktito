@@ -17,8 +17,8 @@
 /* make PROFILE=1: wall time in each stage of a transcription, read on the
  * calling thread around whole passes, never inside a kernel, and printed by
  * `pkito bench`. */
-enum { PK_P_MEL, PK_P_SUB, PK_P_POS, PK_P_NORM, PK_P_QUANT, PK_P_FF, PK_P_QKV, PK_P_ATT,
-       PK_P_ATTO, PK_P_CONV, PK_P_DW, PK_P_DEC, PK_NPROF };
+enum { PK_P_MEL, PK_P_SUB, PK_P_POS, PK_P_NORM, PK_P_QUANT, PK_P_FF, PK_P_QKV, PK_P_REPACK,
+       PK_P_ATT, PK_P_ATTO, PK_P_CONV, PK_P_DW, PK_P_DEC, PK_NPROF };
 #ifdef PK_PROFILE
 extern double pk_prof[PK_NPROF];
 double pk_prof_now(void);
