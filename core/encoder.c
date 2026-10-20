@@ -182,30 +182,57 @@ static void relu(float *x, size_t n) {
         x[i] = x[i] > 0 ? x[i] : 0;
 }
 
+/* A window of rows of one stage: the rows [lo, hi) of an image n floats a
+ * row, from buf on. Sliding it to start at row lo2 keeps the rows it still
+ * holds from there, moved down to the front. */
+typedef struct { float *buf; size_t n; uint32_t lo, hi; } rows_win;
+
+static void slide(rows_win *r, uint32_t lo2) {
+    if (r->hi > lo2)
+        memmove(r->buf, r->buf + (size_t)(lo2 - r->lo) * r->n, (size_t)(r->hi - lo2) * r->n * sizeof(float));
+    else
+        r->hi = lo2;
+    r->lo = lo2;
+}
+
 /* PK_SUB_BLOCK encoder frames [b0, b1) through the whole subsampling, on
- * one thread: each stage computes the rows the next stage's taps reach,
- * which overlap the neighbouring blocks' by a row or two, the cost of
- * keeping a block's buffers small. A row is the same bits whichever block
- * computes it, and every block writes only its own rows of s5. */
+ * one thread, an output row at a time: a stride-2 tap set reads rows 2t-1
+ * .. 2t+1, so each stage keeps a window of the three rows the next reads,
+ * one of them the window before's, and computes the rest. The stages'
+ * windows are 192 KB and 96 KB at 256 channels, which stay in L2; a block
+ * of each whole (2.3 MB, then 557 KB twice) did not, and four threads were
+ * then held up on memory, every stage taking two or three times what it
+ * took on one (backend/neon-dp/CLIMB.md). The rows a block reads overlap
+ * the neighbouring blocks' by one or two, computed twice; a row is the same
+ * bits whichever block computes it, and every block writes only its own
+ * rows of s5. */
 static void sub_item(void *arg, int item, int th) {
     sub_job *j = arg;
     pk_asr *a = j->a;
     const pk_model *m = a->m;
     pk_thread_ws *w = &a->tws[th];
-    const uint32_t C = m->sub_channels, F0 = m->n_mels;
-    const uint32_t F1 = (F0 + 1) / 2, F2 = (F1 + 1) / 2, F3 = (F2 + 1) / 2;
+    const uint32_t C = m->sub_channels, F0 = m->n_mels, F1 = F0 / 2, F2 = F0 / 4, F3 = F0 / 8;
     const uint32_t b0 = (uint32_t)item * PK_SUB_BLOCK, b1 = min32(b0 + PK_SUB_BLOCK, j->T3);
-    /* a stride-2 tap set reads rows 2t-1 .. 2t+1 */
-    const uint32_t r2a = b0 ? 2 * b0 - 1 : 0, r2b = min32(2 * b1, j->T2);
-    const uint32_t r1a = r2a ? 2 * r2a - 1 : 0, r1b = min32(2 * r2b, j->T1);
+    rows_win s1 = { w->s1, (size_t)F1 * C, 0, 0 }, s3 = { w->s3, (size_t)F2 * C, 0, 0 };
+    pk_act act = { w->aq, w->ad, C, QB, F2 };
 
-    pk_k_conv3x3s2(w->s1, a->feat, 0, j->T0, F0, C, 0, m->conv0_w, m->conv0_b, 1, r1a, r1b);
-    pk_k_conv3x3s2(w->s2, w->s1, r1a, j->T1, F1, C, 1, m->dw1_w, m->dw1_b, 0, r2a, r2b);
-    pk_act act = { w->aq, w->ad, C, QB, (r2b - r2a) * F2 };
-    pk_k_quantize(&act, w->s2, C);
-    pk_k_gemm_q8(w->s3, C, m->sub_pw1.q, m->sub_pw1.s, m->pw1_b, C, &act, 0);
-    relu(w->s3, (size_t)(r2b - r2a) * F2 * C);
-    pk_k_conv3x3s2(w->s4, w->s3, r2a, j->T2, F2, C, 1, m->dw2_w, m->dw2_b, 0, b0, b1);
+    for (uint32_t t = b0; t < b1; t++) {
+        slide(&s3, t ? 2 * t - 1 : 0);
+        for (const uint32_t hi3 = min32(2 * t + 2, j->T2); s3.hi < hi3; s3.hi++) {
+            const uint32_t u = s3.hi, hi1 = min32(2 * u + 2, j->T1);
+            slide(&s1, u ? 2 * u - 1 : 0);
+            pk_k_conv3x3s2(s1.buf + (size_t)(s1.hi - s1.lo) * s1.n, a->feat, 0, j->T0, F0, C, 0,
+                           m->conv0_w, m->conv0_b, 1, s1.hi, hi1);
+            s1.hi = hi1;
+            pk_k_conv3x3s2(w->s2, s1.buf, s1.lo, j->T1, F1, C, 1, m->dw1_w, m->dw1_b, 0, u, u + 1);
+            pk_k_quantize(&act, w->s2, C);
+            float *o3 = s3.buf + (size_t)(u - s3.lo) * s3.n;
+            pk_k_gemm_q8(o3, C, m->sub_pw1.q, m->sub_pw1.s, m->pw1_b, C, &act, 0);
+            relu(o3, s3.n);
+        }
+        pk_k_conv3x3s2(w->s4 + (size_t)(t - b0) * F3 * C, s3.buf, s3.lo, j->T2, F2, C, 1,
+                       m->dw2_w, m->dw2_b, 0, t, t + 1);
+    }
     act.T = (b1 - b0) * F3;
     pk_k_quantize(&act, w->s4, C);
     /* row t of s5 is frame t's [F3][C], which is sub.out's input order */

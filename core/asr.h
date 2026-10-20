@@ -6,9 +6,9 @@
 #include "model.h"
 #include "pool.h"
 
-/* Encoder frames the subsampling computes at a time on one thread: its
- * stages' buffers then stay about 3.5 MB a thread at 256 channels, where
- * a whole 30 s recording's first stage alone would be 98 MB. */
+/* Encoder frames the subsampling deals to a thread at a time. Its stages
+ * run a row at a time inside one (core/encoder.c, sub_item), so this sets
+ * only how often the rows at a block's edges are computed twice. */
 #define PK_SUB_BLOCK 8
 
 /* Queries the attention takes at a time on one thread */
@@ -28,7 +28,7 @@ double pk_prof_now(void);
 #endif
 
 typedef struct {
-    float  *s1, *s2, *s3, *s4;       /* the subsampling's stages, one block's rows */
+    float  *s1, *s2, *s3, *s4;       /* the subsampling's stages: windows of rows, and a block's output */
     int8_t *aq;                      /* its pointwise convolutions' int8 input */
     float  *ad;
     float  *qu, *qv;                 /* a block of queries plus each position bias */

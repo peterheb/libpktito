@@ -33,8 +33,9 @@ static int reserve(pk_asr *a, size_t T0) {
     const size_t Tp = up16z(Te), Pp = up16z(R) + 16;
     size_t widest = U > F3 * C ? U : F3 * C;
     widest = widest > D ? widest : D;
-    const size_t s1 = (4 * PK_SUB_BLOCK + 3) * F1 * C, s2 = (2 * PK_SUB_BLOCK + 1) * F2 * C;
-    const size_t s4 = PK_SUB_BLOCK * F3 * C;
+    /* the subsampling's windows (core/encoder.c, sub_item) */
+    const size_t s1 = 3 * F1 * C, s2 = F2 * C, s3 = 3 * F2 * C, s4 = PK_SUB_BLOCK * F3 * C;
+    const size_t sq = s2 > s4 ? s2 : s4;
 
     void *mem = NULL;
     for (int pass = 0; pass < 2; pass++) {
@@ -62,10 +63,10 @@ static int reserve(pk_asr *a, size_t T0) {
             pk_thread_ws *w = &a->tws[t];
             CARVE(w->s1, s1, sizeof(float));
             CARVE(w->s2, s2, sizeof(float));
-            CARVE(w->s3, s2, sizeof(float));
+            CARVE(w->s3, s3, sizeof(float));
             CARVE(w->s4, s4, sizeof(float));
-            CARVE(w->aq, s2, 1);
-            CARVE(w->ad, s2 / 32, sizeof(float));
+            CARVE(w->aq, sq, 1);
+            CARVE(w->ad, sq / 32, sizeof(float));
             CARVE(w->qu, PK_ATT_BLOCK * dk, sizeof(float));
             CARVE(w->qv, PK_ATT_BLOCK * dk, sizeof(float));
             CARVE(w->sc, PK_ATT_BLOCK * Tp, sizeof(float));

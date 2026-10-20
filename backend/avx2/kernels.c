@@ -599,39 +599,115 @@ void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, u
     }
 }
 
+/* The subsampling's 3x3 convolutions a row of output at a time and, in it,
+ * eight channels by eight columns at once: eight chains of FMAs in flight,
+ * where a column at a time was one, and the whole block a channel group at
+ * a time read every row of a 2 MB input once a group. A row's three input
+ * rows stay in L2. Each column's taps are ref's, in ref's order: the rows
+ * outside the image are left out of every column, and the columns a tap
+ * would read past an edge (the first, and the last of an odd width) are
+ * taken one at a time. The weights are put tap-major first, CONV_CW
+ * channels at a time, a group's nine taps one run. */
+#define CONV_CW 256
+
+typedef struct {
+    const float *row[3];     /* the input rows inside the image, column 0 */
+    int di[3], n;            /* each one's tap row */
+    uint32_t cin;
+} conv_rows;
+
+/* column f alone, the taps past either edge skipped */
+static __m256 conv_col(const conv_rows *r, const float *wg, uint32_t f, uint32_t Fi, uint32_t c,
+                       int depthwise) {
+    __m256 acc = _mm256_setzero_ps();
+    for (int i = 0; i < r->n; i++)
+        for (int dj = 0; dj < 3; dj++) {
+            int64_t fi = 2 * (int64_t)f + dj - 1;
+            if (fi < 0 || fi >= Fi)
+                continue;
+            const float *p = r->row[i] + (size_t)fi * r->cin;
+            __m256 v = depthwise ? _mm256_loadu_ps(p + c) : _mm256_broadcast_ss(p);
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(wg + (3 * r->di[i] + dj) * 8), v, acc);
+        }
+    return acc;
+}
+
+/* columns f .. f+7, every tap inside the image */
+static inline __attribute__((always_inline))
+void conv_8(__m256 acc[8], const conv_rows *r, const float *wg, uint32_t f, uint32_t c,
+            int depthwise) {
+    const size_t s = r->cin;
+    for (int q = 0; q < 8; q++)
+        acc[q] = _mm256_setzero_ps();
+    for (int i = 0; i < r->n; i++) {
+        const float *p = r->row[i] + (size_t)(2 * f - 1) * s + (depthwise ? c : 0);
+        const float *wk = wg + 3 * r->di[i] * 8;
+        const __m256 w0 = _mm256_loadu_ps(wk), w1 = _mm256_loadu_ps(wk + 8);
+        const __m256 w2 = _mm256_loadu_ps(wk + 16);
+        for (int q = 0; q < 8; q++) {
+            const float *x = p + (size_t)(2 * q) * s;
+            __m256 x0 = depthwise ? _mm256_loadu_ps(x) : _mm256_broadcast_ss(x);
+            __m256 x1 = depthwise ? _mm256_loadu_ps(x + s) : _mm256_broadcast_ss(x + s);
+            __m256 x2 = depthwise ? _mm256_loadu_ps(x + 2 * s) : _mm256_broadcast_ss(x + 2 * s);
+            acc[q] = _mm256_fmadd_ps(w2, x2, _mm256_fmadd_ps(w1, x1, _mm256_fmadd_ps(w0, x0, acc[q])));
+        }
+    }
+}
+
+static inline __m256 conv_out(__m256 acc, __m256 bv, int relu) {
+    __m256 v = _mm256_add_ps(acc, bv);
+    return relu ? _mm256_max_ps(v, _mm256_setzero_ps()) : v;   /* 0 for a NaN and for -0, as ref */
+}
+
+static void conv_row(float *o, const conv_rows *r, const float *wt, const float *b, uint32_t cn,
+                     uint32_t C, uint32_t Fi, int depthwise, int relu) {
+    const uint32_t Fo = (Fi + 1) / 2, fe = Fi % 2 ? Fo - 1 : Fo;   /* [1, fe): no edge */
+    for (uint32_t c = 0; c < cn; c += 8) {
+        const float *wg = wt + (size_t)(c / 8) * 72;
+        const __m256 bv = _mm256_loadu_ps(b + c);
+        uint32_t f = 0;
+        if (fe > 8) {
+            _mm256_storeu_ps(o + c, conv_out(conv_col(r, wg, 0, Fi, c, depthwise), bv, relu));
+            /* the last eight overlap the eight before when fe - 1 is not a multiple */
+            for (f = 1; f < fe; f += 8) {
+                const uint32_t g = f + 8 <= fe ? f : fe - 8;
+                __m256 acc[8];
+                if (depthwise)
+                    conv_8(acc, r, wg, g, c, 1);
+                else
+                    conv_8(acc, r, wg, g, c, 0);
+                for (int q = 0; q < 8; q++)
+                    _mm256_storeu_ps(o + (size_t)(g + q) * C + c, conv_out(acc[q], bv, relu));
+            }
+            f = fe;
+        }
+        for (; f < Fo; f++)
+            _mm256_storeu_ps(o + (size_t)f * C + c,
+                             conv_out(conv_col(r, wg, f, Fi, c, depthwise), bv, relu));
+    }
+}
+
 void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
                     uint32_t C, int depthwise, const float *w, const float *b, int relu,
                     uint32_t t0, uint32_t t1) {
     const uint32_t Fo = (Fi + 1) / 2, cin = depthwise ? C : 1;
-    const __m256 zero = _mm256_setzero_ps();
-    for (uint32_t c = 0; c < C; c += 8) {
-        __m256 wt[9];
-        for (int k = 0; k < 9; k++) {
-            float v[8];
-            for (int i = 0; i < 8; i++) v[i] = w[(size_t)(c + i) * 9 + k];
-            wt[k] = _mm256_loadu_ps(v);
-        }
-        const __m256 bv = _mm256_loadu_ps(b + c);
-        for (uint32_t t = t0; t < t1; t++)
-            for (uint32_t f = 0; f < Fo; f++) {
-                __m256 acc = zero;
-                for (int di = 0; di < 3; di++) {
-                    int64_t ti = 2 * (int64_t)t + di - 1;
-                    if (ti < 0 || ti >= Ti)
-                        continue;
-                    for (int dj = 0; dj < 3; dj++) {
-                        int64_t fi = 2 * (int64_t)f + dj - 1;
-                        if (fi < 0 || fi >= Fi)
-                            continue;
-                        const float *p = in + ((size_t)(ti - r0) * Fi + (size_t)fi) * cin;
-                        __m256 v = depthwise ? _mm256_loadu_ps(p + c) : _mm256_broadcast_ss(p);
-                        acc = _mm256_fmadd_ps(wt[3 * di + dj], v, acc);
-                    }
-                }
-                __m256 v = _mm256_add_ps(acc, bv);
-                if (relu) v = _mm256_max_ps(v, zero);      /* 0 for a NaN and for -0, as ref */
-                _mm256_storeu_ps(out + ((size_t)(t - t0) * Fo + f) * C + c, v);
+    float wt[9 * CONV_CW];
+    for (uint32_t c0 = 0; c0 < C; c0 += CONV_CW) {
+        const uint32_t cn = C - c0 < CONV_CW ? C - c0 : CONV_CW;
+        for (uint32_t c = 0; c < cn; c++)
+            for (int k = 0; k < 9; k++)
+                wt[(c / 8) * 72 + k * 8 + c % 8] = w[(size_t)(c0 + c) * 9 + k];
+        for (uint32_t t = t0; t < t1; t++) {
+            conv_rows r = { .n = 0, .cin = cin };
+            for (int di = 0; di < 3; di++) {
+                int64_t ti = 2 * (int64_t)t + di - 1;
+                if (ti < 0 || ti >= Ti)
+                    continue;
+                r.row[r.n] = in + (size_t)(ti - r0) * Fi * cin + (depthwise ? c0 : 0);
+                r.di[r.n++] = di;
             }
+            conv_row(out + (size_t)(t - t0) * Fo * C + c0, &r, wt, b + c0, cn, C, Fi, depthwise, relu);
+        }
     }
 }
 

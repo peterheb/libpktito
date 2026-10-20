@@ -415,40 +415,114 @@ void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, u
         }
 }
 
+/* The subsampling's 3x3 convolutions a row of output at a time and, in it,
+ * four channels by eight columns at once: eight chains of FMAs in flight,
+ * where a column at a time was one chain, four cycles a link, and the whole
+ * block a channel group at a time read every row of a 2 MB input once a
+ * group. A row's three input rows stay in L2. Each column's taps are ref's,
+ * in ref's order: the rows outside the image are left out of every column,
+ * and the columns a tap would read past an edge (the first, and the last of
+ * an odd width) are taken one at a time. The weights are put tap-major
+ * first, CONV_CW channels at a time, a group's nine taps one run. */
+#define CONV_CW 256
+
+typedef struct {
+    const float *row[3];     /* the input rows inside the image, column 0 */
+    int di[3], n;            /* each one's tap row */
+    uint32_t cin;
+} conv_rows;
+
+/* column f alone, the taps past either edge skipped */
+static float32x4_t conv_col(const conv_rows *r, const float *wg, uint32_t f, uint32_t Fi,
+                            uint32_t c, int depthwise) {
+    float32x4_t acc = vdupq_n_f32(0.0f);
+    for (int i = 0; i < r->n; i++)
+        for (int dj = 0; dj < 3; dj++) {
+            int64_t fi = 2 * (int64_t)f + dj - 1;
+            if (fi < 0 || fi >= Fi)
+                continue;
+            const float *p = r->row[i] + (size_t)fi * r->cin;
+            float32x4_t v = depthwise ? vld1q_f32(p + c) : vld1q_dup_f32(p);
+            acc = vfmaq_f32(acc, vld1q_f32(wg + (3 * r->di[i] + dj) * 4), v);
+        }
+    return acc;
+}
+
+/* columns f .. f+7, every tap inside the image */
+static inline __attribute__((always_inline))
+void conv_8(float32x4_t acc[8], const conv_rows *r, const float *wg, uint32_t f, uint32_t c,
+            int depthwise) {
+    const size_t s = r->cin;
+    for (int q = 0; q < 8; q++)
+        acc[q] = vdupq_n_f32(0.0f);
+    for (int i = 0; i < r->n; i++) {
+        const float *p = r->row[i] + (size_t)(2 * f - 1) * s + (depthwise ? c : 0);
+        const float *wk = wg + 3 * r->di[i] * 4;
+        const float32x4_t w0 = vld1q_f32(wk), w1 = vld1q_f32(wk + 4), w2 = vld1q_f32(wk + 8);
+        for (int q = 0; q < 8; q++) {
+            const float *x = p + (size_t)(2 * q) * s;
+            float32x4_t x0 = depthwise ? vld1q_f32(x) : vld1q_dup_f32(x);
+            float32x4_t x1 = depthwise ? vld1q_f32(x + s) : vld1q_dup_f32(x + s);
+            float32x4_t x2 = depthwise ? vld1q_f32(x + 2 * s) : vld1q_dup_f32(x + 2 * s);
+            acc[q] = vfmaq_f32(vfmaq_f32(vfmaq_f32(acc[q], w0, x0), w1, x1), w2, x2);
+        }
+    }
+}
+
+static inline float32x4_t conv_out(float32x4_t acc, float32x4_t bv, int relu) {
+    float32x4_t v = vaddq_f32(acc, bv);
+    const float32x4_t zero = vdupq_n_f32(0.0f);
+    return relu ? vbslq_f32(vcgtq_f32(v, zero), v, zero) : v;
+}
+
+static void conv_row(float *o, const conv_rows *r, const float *wt, const float *b, uint32_t cn,
+                     uint32_t C, uint32_t Fi, int depthwise, int relu) {
+    const uint32_t Fo = (Fi + 1) / 2, fe = Fi % 2 ? Fo - 1 : Fo;   /* [1, fe): no edge */
+    for (uint32_t c = 0; c < cn; c += 4) {
+        const float *wg = wt + (size_t)(c / 4) * 36;
+        const float32x4_t bv = vld1q_f32(b + c);
+        uint32_t f = 0;
+        if (fe > 8) {
+            vst1q_f32(o + c, conv_out(conv_col(r, wg, 0, Fi, c, depthwise), bv, relu));
+            /* the last eight overlap the eight before when fe - 1 is not a multiple */
+            for (f = 1; f < fe; f += 8) {
+                const uint32_t g = f + 8 <= fe ? f : fe - 8;
+                float32x4_t acc[8];
+                if (depthwise)
+                    conv_8(acc, r, wg, g, c, 1);
+                else
+                    conv_8(acc, r, wg, g, c, 0);
+                for (int q = 0; q < 8; q++)
+                    vst1q_f32(o + (size_t)(g + q) * C + c, conv_out(acc[q], bv, relu));
+            }
+            f = fe;
+        }
+        for (; f < Fo; f++)
+            vst1q_f32(o + (size_t)f * C + c, conv_out(conv_col(r, wg, f, Fi, c, depthwise), bv, relu));
+    }
+}
+
 void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
                     uint32_t C, int depthwise, const float *w, const float *b, int relu,
                     uint32_t t0, uint32_t t1) {
     const uint32_t Fo = (Fi + 1) / 2, cin = depthwise ? C : 1;
-    const float32x4_t zero = vdupq_n_f32(0.0f);
-    for (uint32_t c = 0; c < C; c += 4) {
-        /* the four channels' nine taps, tap-major */
-        float32x4_t wt[9];
-        for (int k = 0; k < 9; k++) {
-            float v[4] = { w[(size_t)c * 9 + k], w[(size_t)(c + 1) * 9 + k],
-                           w[(size_t)(c + 2) * 9 + k], w[(size_t)(c + 3) * 9 + k] };
-            wt[k] = vld1q_f32(v);
-        }
-        const float32x4_t bv = vld1q_f32(b + c);
-        for (uint32_t t = t0; t < t1; t++)
-            for (uint32_t f = 0; f < Fo; f++) {
-                float32x4_t acc = zero;
-                for (int di = 0; di < 3; di++) {
-                    int64_t ti = 2 * (int64_t)t + di - 1;
-                    if (ti < 0 || ti >= Ti)
-                        continue;
-                    for (int dj = 0; dj < 3; dj++) {
-                        int64_t fi = 2 * (int64_t)f + dj - 1;
-                        if (fi < 0 || fi >= Fi)
-                            continue;
-                        const float *p = in + ((size_t)(ti - r0) * Fi + (size_t)fi) * cin;
-                        float32x4_t v = depthwise ? vld1q_f32(p + c) : vdupq_n_f32(p[0]);
-                        acc = vfmaq_f32(acc, wt[3 * di + dj], v);
-                    }
-                }
-                float32x4_t v = vaddq_f32(acc, bv);
-                if (relu) v = vbslq_f32(vcgtq_f32(v, zero), v, zero);
-                vst1q_f32(out + ((size_t)(t - t0) * Fo + f) * C + c, v);
+    float wt[9 * CONV_CW];
+    for (uint32_t c0 = 0; c0 < C; c0 += CONV_CW) {
+        const uint32_t cn = C - c0 < CONV_CW ? C - c0 : CONV_CW;
+        for (uint32_t c = 0; c < cn; c++)
+            for (int k = 0; k < 9; k++)
+                wt[(c / 4) * 36 + k * 4 + c % 4] = w[(size_t)(c0 + c) * 9 + k];
+        for (uint32_t t = t0; t < t1; t++) {
+            conv_rows r = { .n = 0, .cin = cin };
+            for (int di = 0; di < 3; di++) {
+                int64_t ti = 2 * (int64_t)t + di - 1;
+                if (ti < 0 || ti >= Ti)
+                    continue;
+                r.row[r.n] = in + (size_t)(ti - r0) * Fi * cin + (depthwise ? c0 : 0);
+                r.di[r.n++] = di;
             }
+            conv_row(out + (size_t)(t - t0) * Fo * C + c0, &r, wt, b + c0, cn, C, Fi, depthwise, relu);
+        }
     }
 }
 

@@ -310,7 +310,8 @@ static void conv_cases(void) {
         /* the subsampling's, from one channel and depthwise, a window of rows */
         uint32_t Ti = 1 + rnd() % 30;
         uint32_t Fi = 1 + rnd() % 70;
-        uint32_t Cc = 16 * (1 + rnd() % 4);
+        /* one in six past 256 channels, which a backend may take in parts */
+        uint32_t Cc = 16 * (1 + rnd() % 4) + (rep % 6 == 5 ? 256 : 0);
         uint32_t To = (Ti + 1) / 2, Fo = (Fi + 1) / 2;
         uint32_t t0 = rnd() % To;
         uint32_t t1 = t0 + 1 + rnd() % (To - t0);

@@ -123,3 +123,45 @@ Now (whole, `make PROFILE=1`, 4.754 s): feed-forward 1976 ms (41.5%),
 attention 867 (18.2%), q k v pos 544 (11.4%), subsampling 343 (7.2%), conv
 pw1 pw2 338 (7.1%), quantize 161 (3.4%), decoder 126 (2.6%), attention out
 123 (2.6%), repack 103 (2.2%). Next: the subsampling's loop order.
+
+## 2026-10-20 - the subsampling
+
+Same Pi 5, compiler and flags; four threads, best of five, check-c passing
+for each row.
+
+| tree | whole | 30 s chunks | subsampling |
+|---|---|---|---|
+| b55ce56 | 4.741 s | 4.169 s | 343 ms |
+| pk_k_conv3x3s2 a row at a time, 4 channels by 8 columns at once | 4.601 s | 4.026 s | 197 ms |
+| and the first stage made a window at a time, the 3 rows the second's next output row reads | 4.537 s | | 115 ms |
+| windows for 2, 3 and 4 output rows instead (rejected) | 4.547, 4.567, 4.585 s | | 129, 150, 165 ms |
+| every stage a row at a time, each keeping the 3 rows the next reads | 4.505 s | 3.920 s | 90 ms |
+
+An instrumented build (not committed) timed each stage's calls inside the
+items, summed over the threads, a run:
+
+| ms of thread time | conv0 | dw1 | pw1 | dw2 | pw2 |
+|---|---|---|---|---|---|
+| b55ce56, 4 threads | 510 | 562 | 130 | 64 | 32 |
+| the new kernel, 4 threads | 229 | 261 | 141 | 39 | 32 |
+| the new kernel, 1 thread | 79 | 69 | 92 | 12 | 22 |
+| first stage in windows, 4 threads | 82 | 78 | 142 | 30 | 28 |
+| first stage in windows, 1 thread | 70 | 44 | 91 | 11 | 22 |
+
+The old kernel ran a channel group outermost over the block: one chain of
+nine FMAs at a time, four cycles a link, and the block's whole input (2.3
+MB for dw1) read again for every group. The new one keeps eight chains in
+flight and works a row at a time, which more than halved both
+convolutions. Then the one-thread row showed what was left: the same
+stages took two to three times as long on four threads as on one. Each
+thread's block of the first stage was 2.3 MB and of the next two 557 KB,
+none of which stays in a 512 KB L2, so four threads were waiting on
+memory. Made a row at a time, each stage keeps only the three rows the
+next reads (192 KB for the first, 96 KB for the third) and moves the one
+it still needs down the window. Windows wider than one output row lost
+each time they grew. The thread buffers fell from about 3.5 MB to 0.6 MB
+a thread.
+
+The M4 Pro (eight threads) went from 12.6 to 10.2 ms in this stage, and
+the 12900HK (avx2-vnni, six threads) from 19.5 to 17.5 ms; neither L2
+was overflowing, so only the kernel's chains helped there.
