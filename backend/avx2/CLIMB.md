@@ -352,3 +352,33 @@ SetThreadAffinityMask; three interleaved passes, five threads: the minute
 whole 1.408, 1.394, 1.393 s pinned against 1.419, 1.438, 1.401 unpinned;
 30 s chunks 1.289, 1.436, 1.296 against 1.299, 1.306, 1.303. About 1%,
 inside the spread, so the pool keeps its plain counter.
+
+## 2026-10-20 - a Ryzen 9 9950X: the EVEX VPDPBUSD runs, and both encodings agree
+
+Measured by another session on Peter's Ryzen 9 9950X (Zen 5, 16 cores, 32
+threads, AVX-VNNI and AVX512-VNNI both), Linux under WSL2, gcc 15.2, tree
+89890df, with no other load (1-minute load under 2). WSL2 shows the real
+topology, so the default is 16 threads. check-c passed on all three builds:
+every kernel ref's bits (kcheck, 1525 cases), both transcripts of test.wav
+byte for byte. The second build is AVX512-VNNI's EVEX VPDPBUSD at 256
+bits (`BFLAGS="-mavx2 -mfma -mavx512vnni -mavx512vl"`; every one of
+kernels.o's 219 VPDPBUSDs 62-prefixed), the encoding that had not run
+before.
+
+| build | default (16) whole | -t 1 | -t 8 | -t 32 | 30 s chunks | q8bench, 1 thread (ff up / down / att q) |
+|---|---|---|---|---|---|---|
+| avx2-vnni, VEX (the Makefile's choice) | 0.328 s | 2.656 | 0.380 | 0.355 | 0.310 | 257.4 / 252.0 / 260.5 GMAC/s |
+| avx2-vnni, EVEX | 0.332 | 2.628 | 0.379 | 0.319 | 0.303 | 260.0 / 256.3 / 265.2 |
+| avx2 | 0.615 | 4.817 | 0.681 | 0.551 | 0.604 | 117.9 / 118.1 / 119.3 |
+
+The two encodings are level within 1-2%, inside the spread (a recheck of
+the VEX build's default gave 0.334 and 0.333; -t 32 wanders 0.350-0.374).
+VNNI over avx2 is 1.85x end to end and 2.2x in the product alone.
+
+The same machine under native Windows, cross-built with Ubuntu's mingw-w64
+gcc 13 (msvcrt, winpthreads, static): check-c passed with every line the
+same; 16 threads 0.298-0.303 s whole and 0.294 s in 30 s chunks, about 10%
+faster than under WSL2. That toolchain's msvcrt printf did not know %zu (46
+-Wformat warnings), so the Makefile's Windows branch now defines
+__USE_MINGW_ANSI_STDIO; under MSYS2's UCRT64 the output is the same bytes
+with it (check-c on the Core 3 304).

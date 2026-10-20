@@ -35,8 +35,9 @@
 /* VPDPBUSD in whichever encoding the build has: AVX-VNNI's VEX form
  * (Alder Lake and later, Zen 5), or AVX512-VNNI's EVEX form at 256 bits
  * (Ice Lake, Tiger Lake, Sapphire Rapids, Zen 4), the same operation. The
- * Makefile asks for the one the CPU has. Only the VEX form has run here
- * (backend/avx2/CLIMB.md); the EVEX one is built, not yet measured. */
+ * Makefile asks for the one the CPU has. A Ryzen 9 9950X, which has both,
+ * ran both: ref's bits from each, and the same speed within 2%
+ * (backend/avx2/CLIMB.md, 2026-10-20). */
 #if defined(__AVXVNNI__)
 #define PK_DPBUSD(acc, u8, s8) _mm256_dpbusd_avx_epi32(acc, u8, s8)
 #elif defined(__AVX512VNNI__) && defined(__AVX512VL__)

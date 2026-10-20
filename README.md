@@ -12,18 +12,18 @@ And says, how do I get to Dublin? And the answer that comes back is, well, I
 wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
 
-A minute of English speech takes 0.49 s on an M4 Pro (122 times real
-time), 0.83 s on a Core i9-12900HK, 1.3 s on a Core 3 304 under Windows,
-3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut at its pauses
-as `./pkito` cuts it by default. Every backend computes the same bits on
-every machine.
+A minute of English speech takes 0.31 s on a Ryzen 9 9950X (194 times
+real time), 0.49 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
+Core 3 304 under Windows, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry
+Pi 3B+, cut at its pauses as `./pkito` cuts it by default. Every backend
+computes the same bits on every machine.
 
 ## What this is
 
 | | |
 |---|---|
 | models | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints |
-| backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `avx2-vnni` (Alder Lake and later, Zen 5; built with AVX512-VNNI's encoding for Ice Lake, Tiger Lake and Zen 4, which has not yet run on one), `avx2` (Haswell and later), `ref` (scalar C, anything) |
+| backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `avx2-vnni` (Alder Lake and later and Zen 5 with AVX-VNNI; Ice Lake, Tiger Lake and Zen 4 with AVX512-VNNI's encoding of the same instruction), `avx2` (Haswell and later), `ref` (scalar C, anything) |
 | numerics | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8") |
 | what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles |
 | audio | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; any channel count; any rate, brought to 16 kHz |
@@ -114,7 +114,8 @@ its time, and `make check-c` holds every backend on every machine to them
 byte for byte: so far `neon-dp` on an M4 Pro (Apple clang 21) and a Pi 5
 (gcc 14.2), `neon` on a Pi 3B+ (gcc 14.2) and the M4 Pro, `avx2` and
 `avx2-vnni` on a 12900HK (gcc 15.2), `avx2-vnni` on a Core 3 304 under
-Windows 11 (MSYS2's gcc 16.2), and `ref`.
+Windows 11 (MSYS2's gcc 16.2), `avx2` and `avx2-vnni` in both its encodings
+on a Ryzen 9 9950X (gcc 15.2), and `ref`.
 
 ## How fast
 
@@ -133,6 +134,8 @@ one. Seconds, and how many times real time, for the minute whole
 | | `avx2` | 14 | 1.682 (36x) | 1.597 (38x) |
 | | `avx2` | 1 | 6.80 (8.8x) | 6.12 (9.8x) |
 | Intel Core 3 304, Windows 11 | `avx2-vnni` | 5 | 1.392 (43x) | 1.290 (47x) |
+| AMD Ryzen 9 9950X, Linux under WSL2 | `avx2-vnni` | 16 | 0.328 (183x) | 0.310 (194x) |
+| | `avx2` | 16 | 0.615 (98x) | 0.604 (99x) |
 | Raspberry Pi 5, Cortex-A76 2.4 GHz | `neon-dp` | 4 | 4.150 (14.5x) | 3.710 (16.2x) |
 | Raspberry Pi 3B+, Cortex-A53 1.4 GHz | `neon` | 4 | 48.1 (1.2x) | 44.6 (1.3x) |
 

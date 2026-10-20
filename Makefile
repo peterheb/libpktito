@@ -99,11 +99,13 @@ endif
 # fmaf, where it is meant.
 # Windows builds under MSYS2 (UCRT64) or another MinGW-w64: pthreads from
 # winpthreads, linked in, so that pkito.exe runs outside the shell it was
-# built in with nothing beside it.
+# built in with nothing beside it; and MinGW's own printf, since a
+# toolchain on the old msvcrt runtime has none that knows %zu (UCRT's does,
+# and its output is the same bytes either way: check-c on the Core 3 304).
 ifeq ($(UNAME_S),Darwin)
   PLATFLAGS := -D_DARWIN_C_SOURCE
 else ifneq ($(filter MINGW% MSYS% UCRT% CLANG%,$(UNAME_S)),)
-  PLATFLAGS := -D_WIN32_WINNT=0x0A00
+  PLATFLAGS := -D_WIN32_WINNT=0x0A00 -D__USE_MINGW_ANSI_STDIO=1
   PLATLIBS := -static
 else
   PLATFLAGS := -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
