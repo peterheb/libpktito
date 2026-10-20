@@ -1,0 +1,68 @@
+MIT License
+
+Copyright (c) 2026 the pkito authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+The model files are not covered by the license above.
+
+A .pkf file that tools/pkito-tools writes holds the weights of one of NVIDIA's
+Parakeet TDT checkpoints, rounded to int8 and rearranged, and those weights
+are NVIDIA's, under the Creative Commons Attribution 4.0 International
+license (https://creativecommons.org/licenses/by/4.0/):
+
+  parakeet-tdt-0.6b-v2  https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
+  parakeet-tdt-0.6b-v3  https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+
+Whoever shares a .pkf shares those weights, modified, and owes NVIDIA the
+attribution CC-BY-4.0 asks for; every .pkf carries it in its "notice"
+metadata (`pkito info` prints it). The architecture core/ implements is
+NeMo's (https://github.com/NVIDIA-NeMo/NeMo, Apache-2.0), reimplemented from
+its description and its code's arithmetic, without NeMo's code.
+
+-------------------------------------------------------------------------------
+
+A .pkf also holds Silero VAD's weights, and core/vad.c and core/segment.c
+are a port of Silero VAD's model and of its two state machines (by way of
+vadito, whose code core/wav.c, core/resample.c and core/vmath.h also come
+from, under the MIT license above). Silero's notice:
+
+MIT License
+
+Copyright (c) 2020-present Silero Team
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

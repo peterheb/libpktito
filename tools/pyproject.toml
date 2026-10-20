@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pkito-tools"
+version = "0.1.0"
+description = "Convert NVIDIA's Parakeet TDT .nemo checkpoints to pkito's .pkf, and check the result"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24"]
+
+[project.scripts]
+pkito-tools = "pkito_tools.cli:main"
+
+[tool.setuptools]
+packages = ["pkito_tools"]

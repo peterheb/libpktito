@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Run pkito-tools straight out of the tree, without installing it."""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pkito_tools.cli import main
+
+sys.exit(main())
