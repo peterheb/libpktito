@@ -397,22 +397,67 @@ void pk_k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint
     }
 }
 
+/* The convolution module's depthwise convolution 64 channels and 64 frames
+ * at a time and, in that, four channels by eight frames at once: eight
+ * chains of FMAs in flight, where a frame at a time was one chain. The taps
+ * are turned tap-major on the stack first. The frames whose taps would read
+ * past either end are taken one at a time, those taps skipped, as ref. */
+#define PK_DW_KMAX 63          /* the model file's bound (core/model.c) */
+#define DW_TB 64
+
+static float32x4_t dw_one(const float *x, size_t xs, uint32_t T, const float *wg, uint32_t K,
+                          uint32_t t) {
+    float32x4_t acc = vdupq_n_f32(0.0f);
+    for (uint32_t j = 0; j < K; j++) {
+        int64_t s = (int64_t)t + j - K / 2;
+        if (s >= 0 && s < T)
+            acc = vfmaq_f32(acc, vld1q_f32(wg + 4 * j), vld1q_f32(x + (size_t)s * xs));
+    }
+    return acc;
+}
+
 void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
                  const float *w, const float *b, uint32_t K) {
-    for (uint32_t t = 0; t < T; t++)
-        for (uint32_t c = 0; c < C; c += 4) {
-            /* lane j is channel c + j; its taps are K apart in w */
-            float32x4_t acc = vdupq_n_f32(0.0f);
-            for (uint32_t j = 0; j < K; j++) {
-                int64_t s = (int64_t)t + j - K / 2;
-                if (s < 0 || s >= T)
-                    continue;
-                float wt[4] = { w[(size_t)c * K + j], w[(size_t)(c + 1) * K + j],
-                                w[(size_t)(c + 2) * K + j], w[(size_t)(c + 3) * K + j] };
-                acc = vfmaq_f32(acc, vld1q_f32(wt), vld1q_f32(x + (size_t)s * xs + c));
+    const uint32_t h = K / 2, end = T > h ? T - h : 0;     /* [h, end): every tap inside */
+    float wt[64 * PK_DW_KMAX];
+    for (uint32_t c0 = 0; c0 < C; c0 += 64) {
+        const uint32_t cn = C - c0 < 64 ? C - c0 : 64;
+        for (uint32_t c = 0; c < cn; c++)
+            for (uint32_t j = 0; j < K; j++)
+                wt[(c / 4) * K * 4 + j * 4 + c % 4] = w[(size_t)(c0 + c) * K + j];
+        for (uint32_t t0 = 0; t0 < T; t0 += DW_TB) {
+            const uint32_t t1 = T - t0 < DW_TB ? T : t0 + DW_TB;
+            const uint32_t lo = t0 > h ? t0 : h, hi = t1 < end ? t1 : end;
+            for (uint32_t c = 0; c < cn; c += 4) {
+                const float *wg = wt + (size_t)(c / 4) * K * 4, *xc = x + c0 + c;
+                const float32x4_t bv = vld1q_f32(b + c0 + c);
+                float *oc = out + c0 + c;
+                uint32_t t = t0;
+                if (hi >= lo + 8) {
+                    for (; t < lo; t++)
+                        vst1q_f32(oc + (size_t)t * os, v_silu(vaddq_f32(dw_one(xc, xs, T, wg, K, t), bv)));
+                    /* the last eight overlap the eight before when hi - lo is not a multiple */
+                    for (; t < hi; t += 8) {
+                        const uint32_t g = t + 8 <= hi ? t : hi - 8;
+                        float32x4_t acc[8];
+                        for (int q = 0; q < 8; q++)
+                            acc[q] = vdupq_n_f32(0.0f);
+                        for (uint32_t j = 0; j < K; j++) {
+                            const float32x4_t wj = vld1q_f32(wg + 4 * j);
+                            const float *p = xc + (size_t)(g + j - h) * xs;
+                            for (int q = 0; q < 8; q++)
+                                acc[q] = vfmaq_f32(acc[q], wj, vld1q_f32(p + (size_t)q * xs));
+                        }
+                        for (int q = 0; q < 8; q++)
+                            vst1q_f32(oc + (size_t)(g + q) * os, v_silu(vaddq_f32(acc[q], bv)));
+                    }
+                    t = hi;
+                }
+                for (; t < t1; t++)
+                    vst1q_f32(oc + (size_t)t * os, v_silu(vaddq_f32(dw_one(xc, xs, T, wg, K, t), bv)));
             }
-            vst1q_f32(out + (size_t)t * os + c, v_silu(vaddq_f32(acc, vld1q_f32(b + c))));
         }
+    }
 }
 
 /* The subsampling's 3x3 convolutions a row of output at a time and, in it,

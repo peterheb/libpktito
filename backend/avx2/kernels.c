@@ -572,29 +572,67 @@ void pk_k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint
     }
 }
 
-/* the taps of 16 channels at a time, turned tap-major on the stack so that
- * a vector of them is one load */
-#define PK_DW_KMAX 63
+/* The convolution module's depthwise convolution 64 channels and 64 frames
+ * at a time and, in that, eight channels by eight frames at once: eight
+ * chains of FMAs in flight, where a frame at a time was two. The taps are
+ * turned tap-major on the stack first. The frames whose taps would read
+ * past either end are taken one at a time, those taps skipped, as ref. */
+#define PK_DW_KMAX 63          /* the model file's bound (core/model.c) */
+#define DW_TB 64
+
+static __m256 dw_one(const float *x, size_t xs, uint32_t T, const float *wg, uint32_t K,
+                     uint32_t t) {
+    __m256 acc = _mm256_setzero_ps();
+    for (uint32_t j = 0; j < K; j++) {
+        int64_t s = (int64_t)t + j - K / 2;
+        if (s >= 0 && s < T)
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(wg + 8 * j), _mm256_loadu_ps(x + (size_t)s * xs), acc);
+    }
+    return acc;
+}
 
 void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
                  const float *w, const float *b, uint32_t K) {
-    float wt[PK_DW_KMAX * 16];
-    for (uint32_t c0 = 0; c0 < C; c0 += 16) {
-        for (uint32_t j = 0; j < K; j++)
-            for (uint32_t i = 0; i < 16; i++) wt[j * 16 + i] = w[(size_t)(c0 + i) * K + j];
-        const __m256 b0 = _mm256_loadu_ps(b + c0), b1 = _mm256_loadu_ps(b + c0 + 8);
-        for (uint32_t t = 0; t < T; t++) {
-            __m256 a0 = _mm256_setzero_ps(), a1 = a0;
-            for (uint32_t j = 0; j < K; j++) {
-                int64_t s = (int64_t)t + j - K / 2;
-                if (s < 0 || s >= T)
-                    continue;
-                const float *p = x + (size_t)s * xs + c0;
-                a0 = _mm256_fmadd_ps(_mm256_loadu_ps(wt + j * 16), _mm256_loadu_ps(p), a0);
-                a1 = _mm256_fmadd_ps(_mm256_loadu_ps(wt + j * 16 + 8), _mm256_loadu_ps(p + 8), a1);
+    const uint32_t h = K / 2, end = T > h ? T - h : 0;     /* [h, end): every tap inside */
+    float wt[64 * PK_DW_KMAX];
+    for (uint32_t c0 = 0; c0 < C; c0 += 64) {
+        const uint32_t cn = C - c0 < 64 ? C - c0 : 64;
+        for (uint32_t c = 0; c < cn; c++)
+            for (uint32_t j = 0; j < K; j++)
+                wt[(c / 8) * K * 8 + j * 8 + c % 8] = w[(size_t)(c0 + c) * K + j];
+        for (uint32_t t0 = 0; t0 < T; t0 += DW_TB) {
+            const uint32_t t1 = T - t0 < DW_TB ? T : t0 + DW_TB;
+            const uint32_t lo = t0 > h ? t0 : h, hi = t1 < end ? t1 : end;
+            for (uint32_t c = 0; c < cn; c += 8) {
+                const float *wg = wt + (size_t)(c / 8) * K * 8, *xc = x + c0 + c;
+                const __m256 bv = _mm256_loadu_ps(b + c0 + c);
+                float *oc = out + c0 + c;
+                uint32_t t = t0;
+                if (hi >= lo + 8) {
+                    for (; t < lo; t++)
+                        _mm256_storeu_ps(oc + (size_t)t * os,
+                                         v_silu(_mm256_add_ps(dw_one(xc, xs, T, wg, K, t), bv)));
+                    /* the last eight overlap the eight before when hi - lo is not a multiple */
+                    for (; t < hi; t += 8) {
+                        const uint32_t g = t + 8 <= hi ? t : hi - 8;
+                        __m256 acc[8];
+                        for (int q = 0; q < 8; q++)
+                            acc[q] = _mm256_setzero_ps();
+                        for (uint32_t j = 0; j < K; j++) {
+                            const __m256 wj = _mm256_loadu_ps(wg + 8 * j);
+                            const float *p = xc + (size_t)(g + j - h) * xs;
+                            for (int q = 0; q < 8; q++)
+                                acc[q] = _mm256_fmadd_ps(wj, _mm256_loadu_ps(p + (size_t)q * xs), acc[q]);
+                        }
+                        for (int q = 0; q < 8; q++)
+                            _mm256_storeu_ps(oc + (size_t)(g + q) * os, v_silu(_mm256_add_ps(acc[q], bv)));
+                    }
+                    t = hi;
+                }
+                for (; t < t1; t++)
+                    _mm256_storeu_ps(oc + (size_t)t * os,
+                                     v_silu(_mm256_add_ps(dw_one(xc, xs, T, wg, K, t), bv)));
             }
-            _mm256_storeu_ps(out + (size_t)t * os + c0, v_silu(_mm256_add_ps(a0, b0)));
-            _mm256_storeu_ps(out + (size_t)t * os + c0 + 8, v_silu(_mm256_add_ps(a1, b1)));
         }
     }
 }

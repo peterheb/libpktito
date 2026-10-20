@@ -165,3 +165,27 @@ a thread.
 The M4 Pro (eight threads) went from 12.6 to 10.2 ms in this stage, and
 the 12900HK (avx2-vnni, six threads) from 19.5 to 17.5 ms; neither L2
 was overflowing, so only the kernel's chains helped there.
+
+## 2026-10-20 - the depthwise convolution, and the column blocks
+
+Same Pi 5. pk_k_dwconv (the convolution module's, nine taps over time)
+now takes 64 frames and 64 channels at a time and, in that, four channels
+by eight frames at once, eight chains of FMAs where there was one, with
+the taps tap-major on the stack instead of gathered at every tap. Its
+stage (with the GLU) went from 80 to 72 ms and the minute from 4.505 to
+4.496 s: the stage reads and writes three [T][D] arrays of 3 MB a layer,
+none of which stays in cache, so it waits on memory more than on FMAs.
+
+PK_Q8_BLOCK_BYTES, the activations an int8 product holds per column
+block, measured on the whole minute: 64 KB 4.507 s, 96 KB 4.502, 128 KB
+4.497, 192 KB 4.500 and 4.512, 256 KB 4.494. Nothing outside the spread,
+so it stays at 192 KB. A 64-row slice's weights stay in L2 at every size
+here, and the activations stream past them either way.
+
+q8bench on one A76 (`./tests/q8bench 750 5 64`): the feed-forward up
+product 45.4 GMAC/s, down 40.4, the attention's 45.5: 18.9 multiply-adds
+a cycle at 2.4 GHz. Every accumulator's block of 32 inputs is eight SDOTs
+and three more vector instructions on the same two pipes (the zeroing,
+SCVTF, and the FMA into the float sum), so 23.3 a cycle is this format's
+ceiling on the A76; the kernel is at 81% of it alone, and at about 16 a
+cycle with four threads in the encoder.

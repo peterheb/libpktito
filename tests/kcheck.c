@@ -291,10 +291,12 @@ static void rows_cases(void) {
 
 static void conv_cases(void) {
     for (int rep = 0; rep < 30; rep++) {
-        /* the convolution module's depthwise one, a block of channels */
-        uint32_t T = 1 + rnd() % 40;
+        /* the convolution module's depthwise one, a block of channels; a
+         * third of the time past the 64 frames a backend may take at once,
+         * a fifth of the time a kernel up to the file's bound */
+        uint32_t T = 1 + rnd() % (rep % 3 == 2 ? 200 : 40);
         uint32_t C = 16 * (1 + rnd() % 20);
-        uint32_t K = 1 + 2 * (rnd() % 6);
+        uint32_t K = 1 + 2 * (rnd() % (rep % 5 == 4 ? 32 : 6));
         uint32_t c0 = 16 * (rnd() % (C / 16));
         uint32_t nc = 16 * (1 + rnd() % ((C - c0) / 16));
         float *x = xmalloc((size_t)T * C * 4), *w = xmalloc((size_t)C * K * 4), *b = xmalloc(C * 4);
