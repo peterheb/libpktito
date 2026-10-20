@@ -1,6 +1,6 @@
 /* Silero VAD: one 32 ms frame of 16 kHz audio in, the probability that it
  * is speech out. pkito runs it over a long recording to cut it at its
- * silences into pieces the encoder can take whole (core/transcribe.c).
+ * silences into pieces the encoder can take whole (pk_chunks, core/asr.c).
  *
  * This is vadito's model (core/vad.c there), with the 8 kHz branch left
  * out because Parakeet hears 16 kHz only, and with the weights bound from a

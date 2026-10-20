@@ -127,7 +127,7 @@ void    pk_vad_free(pk_vad *v);
 float pk_vad_prob(pk_vad *v, const float *frame);
 void  pk_vad_probs(pk_vad *v, const float *x, size_t n, float *probs);
 
-/* get_speech_timestamps' parameters (vadito.h has the story of each);
+/* get_speech_timestamps' parameters (vadito's core/vadito.h has the story of each);
  * pk_seg_defaults sets Silero's defaults. */
 typedef struct {
     double threshold;                      /* 0.5 */

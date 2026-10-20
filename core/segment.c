@@ -2,10 +2,11 @@
  *
  * pk_segments is get_speech_timestamps_from_probs and pk_iter_step is
  * VADIterator.__call__, both from silero_vad/utils_vad.py at v6.2.3, line
- * for line. The port is literal on purpose. These are what a Silero user's
- * timestamps come out of, so an answer that differs by one frame is a
- * different answer, and tests/segcheck.py holds both to the Python on
- * random and real probability sequences.
+ * for line: vadito's port (core/segment.c there), renamed. The port is
+ * literal on purpose. These are what a Silero user's timestamps come out
+ * of, so an answer that differs by one frame is a different answer, and
+ * vadito's tests/segcheck.py holds both to the Python on 3000 random and
+ * real probability sequences.
  *
  * Literal includes the arithmetic. Python mixes ints and floats freely
  * here: a sample position is an int, a duration in samples is a float
