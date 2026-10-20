@@ -10,13 +10,15 @@
  *
  * x86 has no instruction that multiplies signed bytes by signed bytes.
  * VPMADDUBSW multiplies unsigned by signed and adds pairs into 16 bits,
- * saturating; with the activation's sign moved onto the weight (VPSIGNB:
- * |x| times w * sign(x)) both factors are at most 127, a pair at most
+ * saturating; with the weight's sign moved onto the activation (VPSIGNB:
+ * |w| times x * sign(w)) both factors are at most 127, a pair at most
  * 2 * 127^2, and nothing saturates - which is why pk_k_quantize never makes
- * -128. VPDPBUSD multiplies unsigned by signed into 32 bits with no
- * saturation, so the activation can be offset into unsigned instead,
- * x + 128, and 128 times the block's weight sum taken back off: one
- * instruction a group where the sign trick takes four.
+ * -128. (A weight of -128, which no converted file has, would still be
+ * right: VPABSB leaves it 0x80, which VPMADDUBSW reads as 128, and a pair
+ * of 128 * 127 fits.) VPDPBUSD multiplies unsigned by signed into 32 bits with no
+ * saturation, so one factor can be offset into unsigned instead - the
+ * weight, w + 128 - and 128 times the block's sum of the other taken back
+ * off: one instruction a group where the sign trick takes four.
  *
  * Every kernel computes backend/ref's bits (tests/kcheck): the int8 sums
  * are integers, and every float operation is ref's in each lane, VMAXPS and
@@ -130,44 +132,252 @@ void pk_k_quantize(pk_act *a, const float *x, size_t xs) {
         }
 }
 
+/* Activation bytes a column block may hold: the columns a call takes at a
+ * time, across all of its panels, so that the block stays in L2 while every
+ * panel's weights stream past it. */
+#ifndef PK_Q8_BLOCK_BYTES
+#define PK_Q8_BLOCK_BYTES (192 * 1024)
+#endif
+
+#ifdef PK_AVX_VNNI
+
+/* VPDPBUSD takes one factor unsigned. Offsetting it by 128 (an XOR of its
+ * sign bit) makes the product
+ *
+ *   sum (u + 128) v = sum u v + 128 sum v
+ *
+ * and the second term is taken back off. Which factor carries the offset is
+ * a question of what the correction costs. At T >= PK_Q8_XOFF columns the
+ * activations do: they are XORed once a column block into a thread-local
+ * copy, so the inner loop does no XOR at all, and the correction is 128
+ * times each block's sum of a panel's weights, taken a panel at a time: 1/cb
+ * of the product. A narrower product (the decoder, one column) offsets the
+ * weights instead - an XOR a weight vector, for every column of the tile -
+ * and the correction is each column's block sum of activations, 1/rows of
+ * the product, where the weights' sums would have cost as much as the
+ * product itself (CLIMB.md, H1). */
+#define PK_Q8_XOFF 16
+
+static void colsums(int32_t *cs, const pk_act *a) {
+    const uint32_t n = a->n, qb = a->qb, nb = n / qb;
+    const __m256i one = _mm256_set1_epi8(1);
+    for (uint32_t t = 0; t < a->T; t++) {
+        const int8_t *x = a->q + (size_t)t * n;
+        for (uint32_t b = 0; b < nb; b++) {
+            __m256i s = _mm256_setzero_si256();
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 32)
+                s = _mm256_dpbusd_avx_epi32(s, one, _mm256_loadu_si256((const __m256i *)(const void *)(x + k)));
+            __m128i q = _mm_add_epi32(_mm256_castsi256_si128(s), _mm256_extracti128_si256(s, 1));
+            q = _mm_add_epi32(q, _mm_shuffle_epi32(q, 0x4E));
+            q = _mm_add_epi32(q, _mm_shuffle_epi32(q, 0xB1));
+            cs[(size_t)t * nb + b] = _mm_cvtsi128_si32(q) * 128;
+        }
+    }
+}
+
+/* One tile: a whole panel, 16 rows in two vectors, by NC columns (up to
+ * three: 6 integer and 6 float accumulators, the two weight vectors and a
+ * broadcast in 15 of the 16 ymm registers). Each block's exact integer sums
+ * go into the float accumulators by one fused multiply-add, as ref's chain.
+ *
+ * XOFF: x is the column block's offset copy (row t0 - c0 of it at
+ * x + (t0 - c0) n) and wsum the panel's weight sums, two vectors a block.
+ * Otherwise x is the activations and cs the tile's columns' sums. */
+/* one group of four inputs into the tile: g the group's 64 weight bytes,
+ * k the group's first input */
+#define PK_Q8_GROUP(g, k)                                                           \
+    do {                                                                            \
+        __m256i w0 = _mm256_loadu_si256((const __m256i *)(const void *)(g));        \
+        __m256i w1 = _mm256_loadu_si256((const __m256i *)(const void *)((g) + 32)); \
+        if (!XOFF) {                                                                \
+            w0 = _mm256_xor_si256(w0, off);                                         \
+            w1 = _mm256_xor_si256(w1, off);                                         \
+        }                                                                           \
+        for (int c = 0; c < NC; c++) {                                              \
+            int32_t v;                                                              \
+            memcpy(&v, x[c] + (k), 4);                                              \
+            const __m256i xb = _mm256_set1_epi32(v);                                \
+            if (XOFF) {                                                             \
+                s0[c] = _mm256_dpbusd_avx_epi32(s0[c], xb, w0);                     \
+                s1[c] = _mm256_dpbusd_avx_epi32(s1[c], xb, w1);                     \
+            } else {                                                                \
+                s0[c] = _mm256_dpbusd_avx_epi32(s0[c], w0, xb);                     \
+                s1[c] = _mm256_dpbusd_avx_epi32(s1[c], w1, xb);                     \
+            }                                                                       \
+        }                                                                           \
+    } while (0)
+
+static inline __attribute__((always_inline))
+void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws,
+             const float *bias, const pk_act *a, uint32_t t0, int add,
+             const uint8_t *xo, const __m256i *wsum, const int32_t *cs, const int XOFF,
+             const int NC) {
+    const uint32_t qb = a->qb, nb = n / qb;
+    const __m256i off = _mm256_set1_epi8((char)0x80);
+    __m256 f0[3], f1[3];
+    const uint8_t *x[3];
+    for (int c = 0; c < NC; c++) {
+        f0[c] = f1[c] = _mm256_setzero_ps();
+        x[c] = XOFF ? xo + (size_t)c * n : (const uint8_t *)(a->q + (size_t)(t0 + c) * n);
+    }
+    for (uint32_t b = 0; b < nb; b++) {
+        __m256i s0[3], s1[3];
+        for (int c = 0; c < NC; c++) s0[c] = s1[c] = _mm256_setzero_si256();
+        if (qb == 32) {
+            /* the encoder's blocks: eight groups at constant offsets, which
+             * gcc keeps the accumulators in place across (H2) */
+            const int8_t *g = w + (size_t)b * 32 * 16;
+            const uint32_t k = b * 32;
+            PK_Q8_GROUP(g, k);
+            PK_Q8_GROUP(g + 64, k + 4);
+            PK_Q8_GROUP(g + 128, k + 8);
+            PK_Q8_GROUP(g + 192, k + 12);
+            PK_Q8_GROUP(g + 256, k + 16);
+            PK_Q8_GROUP(g + 320, k + 20);
+            PK_Q8_GROUP(g + 384, k + 24);
+            PK_Q8_GROUP(g + 448, k + 28);
+        } else {
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4)
+                PK_Q8_GROUP(w + (size_t)k * 16, k);
+        }
+        for (int c = 0; c < NC; c++) {
+            __m256i c0v, c1v;
+            if (XOFF) {
+                c0v = wsum[2 * b];
+                c1v = wsum[2 * b + 1];
+            } else {
+                c0v = c1v = _mm256_set1_epi32(cs[(size_t)c * nb + b]);
+            }
+            const __m256 d = _mm256_set1_ps(a->d[(size_t)(t0 + c) * nb + b]);
+            f0[c] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(s0[c], c0v)), d, f0[c]);
+            f1[c] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(s1[c], c1v)), d, f1[c]);
+        }
+    }
+    const __m256 sc0 = _mm256_loadu_ps(ws), sc1 = _mm256_loadu_ps(ws + 8);
+    for (int c = 0; c < NC; c++) {
+        float *o = out + (size_t)(t0 + c) * os;
+        __m256 v0 = _mm256_mul_ps(f0[c], sc0), v1 = _mm256_mul_ps(f1[c], sc1);
+        if (bias) {
+            v0 = _mm256_add_ps(v0, _mm256_loadu_ps(bias));
+            v1 = _mm256_add_ps(v1, _mm256_loadu_ps(bias + 8));
+        }
+        if (add) {
+            v0 = _mm256_add_ps(_mm256_loadu_ps(o), v0);
+            v1 = _mm256_add_ps(_mm256_loadu_ps(o + 8), v1);
+        }
+        _mm256_storeu_ps(o, v0);
+        _mm256_storeu_ps(o + 8, v1);
+    }
+}
+
+/* the tiles of one panel over columns [c0, c1), three at a time */
+#define PK_Q8_TILES(XOFF, XO, WSUM, CS)                                             \
+    do {                                                                            \
+        uint32_t t = c0;                                                            \
+        for (; t + 3 <= c1; t += 3)                                                 \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 3);     \
+        if (c1 - t == 2)                                                            \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 2);     \
+        else if (c1 - t == 1)                                                       \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 1);     \
+    } while (0)
+
+void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                  uint32_t rows, const pk_act *a, int add) {
+    const uint32_t n = a->n, nb = n / a->qb;
+    if (a->T < PK_Q8_XOFF) {
+        int32_t cs[PK_Q8_XOFF * PK_MAX_BLOCKS];
+        colsums(cs, a);
+        const uint32_t c0 = 0, c1 = a->T;
+        for (uint32_t r = 0; r < rows; r += 16) {
+            const int8_t *wp = w + (size_t)r * n;
+            float *o = out + r;
+            const float *b = bias ? bias + r : NULL;
+            PK_Q8_TILES(0, NULL, NULL, cs + (size_t)(t - c0) * nb);
+        }
+        return;
+    }
+    static _Thread_local _Alignas(64) uint8_t xoff[PK_Q8_BLOCK_BYTES + 3 * 32 * PK_MAX_BLOCKS];
+    __m256i wsum[2 * PK_MAX_BLOCKS];
+    const __m256i one = _mm256_set1_epi8(1), off = _mm256_set1_epi8((char)0x80);
+    uint32_t cb = PK_Q8_BLOCK_BYTES / n;
+    cb = cb < 3 ? 3 : cb - cb % 3;
+    for (uint32_t c0 = 0; c0 < a->T; c0 += cb) {
+        const uint32_t c1 = a->T - c0 < cb ? a->T : c0 + cb;
+        const int8_t *src = a->q + (size_t)c0 * n;
+        for (size_t i = 0; i < (size_t)(c1 - c0) * n; i += 32)
+            _mm256_store_si256((__m256i *)(void *)(xoff + i),
+                               _mm256_xor_si256(_mm256_loadu_si256((const __m256i *)(const void *)(src + i)), off));
+        for (uint32_t r = 0; r < rows; r += 16) {
+            const int8_t *wp = w + (size_t)r * n;
+            float *o = out + r;
+            const float *b = bias ? bias + r : NULL;
+            for (uint32_t blk = 0; blk < nb; blk++) {
+                __m256i s0 = _mm256_setzero_si256(), s1 = s0;
+                for (uint32_t k = blk * a->qb; k < (blk + 1) * a->qb; k += 4) {
+                    const int8_t *g = wp + (size_t)k * 16;
+                    s0 = _mm256_dpbusd_avx_epi32(s0, one, _mm256_loadu_si256((const __m256i *)(const void *)g));
+                    s1 = _mm256_dpbusd_avx_epi32(s1, one, _mm256_loadu_si256((const __m256i *)(const void *)(g + 32)));
+                }
+                wsum[2 * blk] = _mm256_slli_epi32(s0, 7);
+                wsum[2 * blk + 1] = _mm256_slli_epi32(s1, 7);
+            }
+            PK_Q8_TILES(1, xoff + (size_t)(t - c0) * n, wsum, NULL);
+        }
+    }
+}
+
+#else /* VPMADDUBSW */
+
+/* one group of four inputs into the tile: g the half panel's 32 weight
+ * bytes, k the group's first input. |w| once for every column, then each
+ * column's x sign(w), so that VPMADDUBSW multiplies |w| by it: w x, with
+ * both factors at most 127 and a pair at most 2 * 127^2 (CLIMB.md, H3). */
+#define PK_Q8_GROUP(g, k)                                                          \
+    do {                                                                           \
+        const __m256i wv = _mm256_loadu_si256((const __m256i *)(const void *)(g)); \
+        const __m256i wa = _mm256_abs_epi8(wv);                                    \
+        for (int c = 0; c < NC; c++) {                                             \
+            const __m256i xb = _mm256_set1_epi32(load32(x[c] + (k)));              \
+            const __m256i p = _mm256_maddubs_epi16(wa, _mm256_sign_epi8(xb, wv));  \
+            s[c] = _mm256_add_epi32(s[c], _mm256_madd_epi16(p, ones));             \
+        }                                                                          \
+    } while (0)
+
 /* One tile: 8 rows (half a panel, bytes 32h .. 32h+31 of each group) by NC
  * columns. Each block's integer sums go into the float accumulators by one
- * fused multiply-add, as ref's chain. wsum (VNNI only) is 128 times each
- * block's weight sums for the half panel, a vector of eight rows a block. */
+ * fused multiply-add, as ref's chain. */
 static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, const float *ws,
-             const float *bias, const pk_act *a, uint32_t t0, int add, const __m256i *wsum,
-             const int NC) {
+             const float *bias, const pk_act *a, uint32_t t0, int add, const int NC) {
     const uint32_t qb = a->qb, nb = n / qb;
     __m256 f[4];
     for (int c = 0; c < NC; c++) f[c] = _mm256_setzero_ps();
     const int8_t *x[4];
     for (int c = 0; c < NC; c++) x[c] = a->q + (size_t)(t0 + c) * n;
-#ifndef PK_AVX_VNNI
     const __m256i ones = _mm256_set1_epi16(1);
-    (void)wsum;
-#else
-    const __m256i off = _mm256_set1_epi8((char)0x80);
-#endif
+    const int8_t *wh = w + 32 * h;
     for (uint32_t b = 0; b < nb; b++) {
         __m256i s[4];
         for (int c = 0; c < NC; c++) s[c] = _mm256_setzero_si256();
-        for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4) {
-            const __m256i wv = _mm256_loadu_si256((const __m256i *)(const void *)(w + (size_t)k * 16 + 32 * h));
-            for (int c = 0; c < NC; c++) {
-                __m256i xb = _mm256_set1_epi32(load32(x[c] + k));
-#ifdef PK_AVX_VNNI
-                s[c] = _mm256_dpbusd_avx_epi32(s[c], _mm256_xor_si256(xb, off), wv);
-#else
-                __m256i p = _mm256_maddubs_epi16(_mm256_sign_epi8(xb, xb), _mm256_sign_epi8(wv, xb));
-                s[c] = _mm256_add_epi32(s[c], _mm256_madd_epi16(p, ones));
-#endif
-            }
+        if (qb == 32) {
+            /* the encoder's blocks: eight groups at constant offsets, which
+             * gcc keeps the accumulators in place across (H2, H3) */
+            const int8_t *g = wh + (size_t)b * 32 * 16;
+            const uint32_t k = b * 32;
+            PK_Q8_GROUP(g, k);
+            PK_Q8_GROUP(g + 64, k + 4);
+            PK_Q8_GROUP(g + 128, k + 8);
+            PK_Q8_GROUP(g + 192, k + 12);
+            PK_Q8_GROUP(g + 256, k + 16);
+            PK_Q8_GROUP(g + 320, k + 20);
+            PK_Q8_GROUP(g + 384, k + 24);
+            PK_Q8_GROUP(g + 448, k + 28);
+        } else {
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4)
+                PK_Q8_GROUP(wh + (size_t)k * 16, k);
         }
         for (int c = 0; c < NC; c++) {
-#ifdef PK_AVX_VNNI
-            s[c] = _mm256_sub_epi32(s[c], wsum[b]);
-#endif
             __m256 d = _mm256_set1_ps(a->d[(size_t)(t0 + c) * nb + b]);
             f[c] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[c]), d, f[c]);
         }
@@ -182,41 +392,13 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
     }
 }
 
-/* Activation bytes a column block may hold: the columns a call takes at a
- * time, across all of its panels, so that the block stays in L2 while every
- * half panel's weights stream past it. Without the blocking, a 750-column
- * product re-read all its activations (3 MB at 4096 inputs) from L3 for
- * every half panel, and a 12900HK ran 6 threads no faster than 20. */
-#ifndef PK_Q8_BLOCK_BYTES
-#define PK_Q8_BLOCK_BYTES (192 * 1024)
-#endif
-
 /* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
- * four columns at a time across the half. With VNNI a half panel's block
- * sums are taken once per call and kept for every column block. */
+ * four columns at a time across the half. */
 void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                   uint32_t rows, const pk_act *a, int add) {
-    const uint32_t n = a->n, nb = n / a->qb;
+    const uint32_t n = a->n;
     uint32_t cb = PK_Q8_BLOCK_BYTES / n;
     cb = cb < 4 ? 4 : cb & ~3u;
-#ifdef PK_AVX_VNNI
-    /* 128 x every block's weight sum, for each half panel of the call */
-    static _Thread_local __m256i wsum_tls[64 / 8 * PK_MAX_BLOCKS];
-    __m256i *wsum_all = rows <= 64 ? wsum_tls : NULL;
-    const __m256i one = _mm256_set1_epi8(1);
-    if (wsum_all)
-        for (uint32_t hp = 0; hp < rows / 8; hp++)
-            for (uint32_t blk = 0; blk < nb; blk++) {
-                __m256i s = _mm256_setzero_si256();
-                const int8_t *g = w + (size_t)(hp / 2) * 16 * n + 32 * (hp % 2);
-                for (uint32_t k = blk * a->qb; k < (blk + 1) * a->qb; k += 4)
-                    s = _mm256_dpbusd_avx_epi32(s, one, _mm256_loadu_si256((const __m256i *)(const void *)(g + (size_t)k * 16)));
-                wsum_all[hp * nb + blk] = _mm256_slli_epi32(s, 7);
-            }
-    __m256i wsum_one[PK_MAX_BLOCKS];
-#else
-    (void)nb;
-#endif
     for (uint32_t c0 = 0; c0 < a->T; c0 += cb) {
         const uint32_t c1 = a->T - c0 < cb ? a->T : c0 + cb;
         for (uint32_t r = 0; r < rows; r += 16) {
@@ -224,32 +406,20 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
             float *o = out + r;
             const float *b = bias ? bias + r : NULL;
             for (uint32_t h = 0; h < 2; h++) {
-                const __m256i *wsum = NULL;
-#ifdef PK_AVX_VNNI
-                if (wsum_all)
-                    wsum = wsum_all + (size_t)(r / 8 + h) * nb;
-                else {
-                    for (uint32_t blk = 0; blk < nb; blk++) {
-                        __m256i s = _mm256_setzero_si256();
-                        for (uint32_t k = blk * a->qb; k < (blk + 1) * a->qb; k += 4)
-                            s = _mm256_dpbusd_avx_epi32(s, one, _mm256_loadu_si256((const __m256i *)(const void *)(wp + (size_t)k * 16 + 32 * h)));
-                        wsum_one[blk] = _mm256_slli_epi32(s, 7);
-                    }
-                    wsum = wsum_one;
-                }
-#endif
                 uint32_t t = c0;
-                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, wsum, 4);
+                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4);
                 switch (c1 - t) {
-                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, wsum, 3); break;
-                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, wsum, 2); break;
-                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, wsum, 1); break;
+                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3); break;
+                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2); break;
+                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1); break;
                 default: break;
                 }
             }
         }
     }
 }
+
+#endif
 
 /* ------------------------------------------------------ float products --- */
 
