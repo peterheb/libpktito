@@ -266,3 +266,48 @@ every token's time) identical at 1 and 6 threads and to main's build.
 
 and avx2-vnni at 1, 4 and 8 threads unchanged (3.39-3.41, 1.244-1.247,
 1.200-1.203 s); at 5, 1.188 -> 1.113-1.117. Kept.
+
+## H6 (rejected): the weights offset at every T
+
+Would drop the activations' copy (H1) for an XOR of the two weight vectors a
+group, which Golden Cove can issue on port 5, idle in this tile, and the
+columns' sums. q8bench, one P-core, sliced as pk_gemm calls it: 205.1,
+191.3, 204.7 GMAC/s against the copy's 221.2, 212.1, 221.3; whole matrices
+223.2, 207.7, 222.4 against 229.5, 213.5, 229.3. The column sums' horizontal
+adds cost more than the copy does. Rejected; the copy stays for T >= 16.
+
+## (rejected on paper) VPMADDWD on sign-extended int16 for avx2
+
+VPMADDWD multiplies 16-bit pairs with no saturation, so the activations
+could be widened once a call and the weights a group (VPMOVSXBW, port 5) and
+the sign trick dropped. Per group of four inputs and four columns that is 8
+VPMADDWD (ports 0, 1), 2 VPMOVSXBW (5) and 8 VPADDD (0, 1, 5): 18 ALU uops on
+three ports, 6 cycles, the same ~21 MAC/cycle as the VPMADDUBSW form's 17
+uops (12 of them on ports 0 and 1). No gain to measure; not written.
+
+## Where this climb ends (H1-H5 kept)
+
+tests/kcheck: ref's bits on avx2 and avx2-vnni. `--json` output (text and
+token times, test.wav whole) and the default 30 s chunked text are main's,
+byte for byte, from both builds. pkito bench, test.wav whole, 5 runs:
+
+| build | threads | before (median) | after (min / median / max) |
+|---|---|---|---|
+| avx2-vnni | 1 | 5.512 | 3.375 / 3.420 / 3.470 |
+| avx2-vnni | 6 | 1.656 | 1.014 / 1.018 / 1.021 |
+| avx2-vnni | default | 1.194 (14 threads) | 1.018 (6: H4) |
+| avx2 | 1 | 7.709 | 6.762 / 6.766 / 6.798 |
+| avx2 | 6 | 2.260 | 1.891 / 1.896 / 1.938 |
+
+The int8 product alone (q8bench, one P-core at ~4.85 GHz, encoder shapes):
+avx2-vnni 113 -> 229 GMAC/s (23 -> 47 MAC/cycle, 92% of what its per-block
+float work allows), avx2 73 -> 90 (15 -> 18.6, ~93% of its ports' 20). The
+profile at six threads, avx2-vnni: feed-forward 42.3%, float attention 25.2%
+(its products at 87% of the FMA ports' rate), q k v pos 12.6%, conv 7.5%,
+attention out 2.8%, subsampling 2.4%, mel 2.2% and decoder 1.8% (both on one
+thread), quantize 1.7%.
+
+Left for core/, measured but not changed here: the mel (22 ms of 1018 at six
+threads) runs on the calling thread while five wait, and could be split by
+frames; the attention's repack is one item a head, 8 items for 6 threads.
+Each would be 1-2%.
