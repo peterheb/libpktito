@@ -146,7 +146,21 @@ check-c: pkito $(TESTS)
 check-math: tests/mathcheck
 	./tests/mathcheck --all
 
-.PHONY: models check-c check-math clean
+# The loop a board gets: the tree to HOST:$(RDIR) (the models too, rsync
+# sends only what changed), then the build, the compiler half of the checks
+# and a bench, there. BENCH names the recording; Silero's test.wav, from a
+# vadito checkout beside the tree, is the default.
+HOST  ?=
+RDIR  ?= pkito
+BENCH ?= ../vadito/tests/data/test.wav
+remote:
+	@[ -n "$(HOST)" ] || { echo "make remote HOST=user@board"; exit 1; }
+	rsync -a --delete --exclude .venv --exclude .venv-nemo --exclude .git --exclude '*.o' \
+	  --exclude '*.d' --exclude /pkito --exclude 'models/src' --exclude 'models/corpus' \
+	  --exclude '/tests/*check' ./ $(HOST):$(RDIR)/
+	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pkito bench -m $(MODEL) $(BENCH)'
+
+.PHONY: models check-c check-math remote clean
 
 clean:
 	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS)
