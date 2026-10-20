@@ -96,3 +96,30 @@ whose split this resembles otherwise:
 * quantize is 3.3%, for one pass over each product's input.
 
 Each is a kernel or a loop order; none changes a bit.
+
+## 2026-10-20 - the attention's repack
+
+Same Pi 5, compiler and flags; four threads, best of five, check-c passing
+for each row (every transcript byte for byte, so none changes a bit).
+
+| tree | whole | 30 s chunks | repack | attention |
+|---|---|---|---|---|
+| fde7b8b, the baseline above | 4.934 s | 4.371 s | 285 ms | 891 ms |
+| K's, V's and P's panels written a dimension's 16 keys at a time | 4.863 s | | 192 ms | |
+| no repack: V into panels by its product, K and P as written, each block's scores and position products transposed instead (rejected) | 5.064 s | 4.221 s | 0 | 1293 ms |
+| V into panels by its product; K and P transposed 16 keys at a time; the queries plus biases made a block at a time in att_item | 4.741 s | 4.169 s | 103 ms | 867 ms |
+
+The rejected row moved the transposes from K and P (T x dk a head) to the
+scores (T x 16 a block, T/16 blocks a head: T squared over 16 a head), and
+its st and bt buffers, 48 KB each at 750 frames, left L1 for every block.
+It won at 30 s chunks, where T is a third, and lost whole. The last row
+keeps what both got right: V's product writes the panel layout the context
+product reads (one pk_k_gemm_q8 a 16-row panel, columns 16 floats apart),
+and the two transposes that remain are written as runs. The q k v stage
+did not move (544 ms either way), so writing V's panels in place is free.
+Memory fell by two [T][D] arrays (qu and qv, now 2 x 64 x dk a thread).
+
+Now (whole, `make PROFILE=1`, 4.754 s): feed-forward 1976 ms (41.5%),
+attention 867 (18.2%), q k v pos 544 (11.4%), subsampling 343 (7.2%), conv
+pw1 pw2 338 (7.1%), quantize 161 (3.4%), decoder 126 (2.6%), attention out
+123 (2.6%), repack 103 (2.2%). Next: the subsampling's loop order.

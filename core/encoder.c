@@ -235,24 +235,60 @@ static void pos_item(void *arg, int i, int th) {
 
 /* ----------------------------------------------------------- attention --- */
 
+/* V straight into pk_k_gemm_f32's panels by the int8 product, with nothing
+ * to repack after: (key j, dimension d) of head h is at
+ *
+ *   vp + ((h dk + d) / 16) T 16 + j 16 + d % 16
+ *
+ * which is the product's 16-row panel r / 16 laid out with its columns 16
+ * floats apart, so one call a panel, os 16, writes it in place. A 64-row
+ * slice an item, as pk_gemm deals them. */
+typedef struct { float *out; size_t ps; const pk_q8 *w; const pk_act *act; } panel_job;
+
+static void panel_item(void *arg, int i, int th) {
+    (void)th;
+    panel_job *j = arg;
+    for (uint32_t r = (uint32_t)i * 64; r < min32((uint32_t)i * 64 + 64, j->w->rows); r += 16)
+        pk_k_gemm_q8(j->out + (size_t)(r / 16) * j->ps, 16, j->w->q + (size_t)r * j->w->cols,
+                     j->w->s + r, NULL, 16, j->act, 0);
+}
+
 typedef struct {
     pk_asr *a;
     const pk_layer *L;
-    const float *k, *v;
+    const float *k;          /* K, [T][D], as its product wrote it */
     uint32_t T, Tp, Pp;
 } att_job;
 
-/* A head's K and V and P as pk_k_gemm_f32 panels, and its queries with the
- * two position biases added, for a block of 64 frames (and the block's 128
- * rows of the position table) - H times the frames over 64 items, which a
- * pool of any size can balance where one item a head could not:
+/* K and the position table as pk_k_gemm_f32 panels, a head and 64 frames
+ * (and 128 rows of the table) an item:
  *
  *   kp: (d, key j)      at ((j/16) dk + d) 16 + j%16     keys padded to Tp with zeros
- *   vp: (key j, d)      at ((d/16) Tp + j) 16 + d%16
  *   pp: (d, position m) at ((m/16) dk + d) 16 + m%16     positions padded to Pp
  *
- * The last block writes the zeros past the end. */
+ * Each is a transpose, so a panel's sixteen rows are read while a
+ * dimension's sixteen values are written as one run: the rows stay in L1
+ * and every store lands beside the last. A row at a time put each store a
+ * cache line from the one before, and that copy, with V's and the queries'
+ * beside it, was 5.8% of a Pi 5's minute; V now needs none (panel_item),
+ * the queries are made a block at a time where they are used (att_item),
+ * and what is left is 2.2%. Taking K and P as their products leave them
+ * and transposing each block's scores instead, which grows with T squared,
+ * was slower: 5.08 s a minute where this is 4.75 (backend/neon-dp/CLIMB.md). */
 #define PK_REPACK 64
+
+static void panels_t(float *dst, const float *src, size_t ld, uint32_t r0, uint32_t r1,
+                     uint32_t n, uint32_t dk) {
+    for (uint32_t p0 = r0; p0 < r1; p0 += 16) {
+        const float *rows[16];
+        for (uint32_t i = 0; i < 16; i++)
+            rows[i] = p0 + i < n ? src + (size_t)(p0 + i) * ld : NULL;
+        float *d0 = dst + (size_t)(p0 / 16) * dk * 16;
+        for (uint32_t d = 0; d < dk; d++)
+            for (uint32_t i = 0; i < 16; i++)
+                d0[d * 16 + i] = rows[i] ? rows[i][d] : 0.0f;
+    }
+}
 
 static void repack_item(void *arg, int item, int th) {
     (void)th;
@@ -260,30 +296,10 @@ static void repack_item(void *arg, int item, int th) {
     pk_asr *a = j->a;
     const uint32_t D = a->m->d_model, dk = D / a->m->n_heads, T = j->T, R = 2 * T - 1;
     const uint32_t nb = (T + PK_REPACK - 1) / PK_REPACK, h = (uint32_t)item / nb, b = (uint32_t)item % nb;
-    float *kp = a->kp + (size_t)h * j->Tp * dk, *vp = a->vp + (size_t)h * j->Tp * dk;
-    float *pp = a->pp + (size_t)h * j->Pp * dk;
-    const uint32_t t0 = b * PK_REPACK, t1 = b + 1 == nb ? j->Tp : min32(t0 + PK_REPACK, T);
-    for (uint32_t t = t0; t < t1; t++) {
-        const float *kr = j->k + (size_t)t * D + h * dk, *vr = j->v + (size_t)t * D + h * dk;
-        for (uint32_t d = 0; d < dk; d++) {
-            kp[((size_t)(t / 16) * dk + d) * 16 + t % 16] = t < T ? kr[d] : 0.0f;
-            vp[((size_t)(d / 16) * j->Tp + t) * 16 + d % 16] = t < T ? vr[d] : 0.0f;
-        }
-        if (t >= T)
-            continue;
-        const float *qr = a->q + (size_t)t * D + h * dk;
-        float *qu = a->qu + (size_t)t * D + h * dk, *qv = a->qv + (size_t)t * D + h * dk;
-        for (uint32_t d = 0; d < dk; d++) {
-            qu[d] = qr[d] + j->L->bias_u[h * dk + d];
-            qv[d] = qr[d] + j->L->bias_v[h * dk + d];
-        }
-    }
-    const uint32_t r0 = 2 * t0, r1 = b + 1 == nb ? j->Pp : min32(2 * t0 + 2 * PK_REPACK, R);
-    for (uint32_t r = r0; r < r1; r++) {
-        const float *pr = a->p + (size_t)r * D + h * dk;
-        for (uint32_t d = 0; d < dk; d++)
-            pp[((size_t)(r / 16) * dk + d) * 16 + r % 16] = r < R ? pr[d] : 0.0f;
-    }
+    const uint32_t t0 = b * PK_REPACK, t1 = b + 1 == nb ? j->Tp : t0 + PK_REPACK;
+    const uint32_t r0 = 2 * t0, r1 = b + 1 == nb ? j->Pp : r0 + 2 * PK_REPACK;
+    panels_t(a->kp + (size_t)h * j->Tp * dk, j->k + h * dk, D, t0, t1, T, dk);
+    panels_t(a->pp + (size_t)h * j->Pp * dk, a->p + h * dk, D, r0, r1, R, dk);
 }
 
 /* One head over PK_ATT_BLOCK queries [i0, i1):
@@ -304,24 +320,33 @@ static void att_item(void *arg, int item, int th) {
     const uint32_t nb = (T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK;
     const uint32_t h = (uint32_t)item / nb, i0 = ((uint32_t)item % nb) * PK_ATT_BLOCK;
     const uint32_t i1 = min32(i0 + PK_ATT_BLOCK, T), nq = i1 - i0;
-    float *sc = a->tws[th].sc, *bd = a->tws[th].bd;
-    const float *kp = a->kp + (size_t)h * j->Tp * dk, *vp = a->vp + (size_t)h * j->Tp * dk;
-    const float *pp = a->pp + (size_t)h * j->Pp * dk;
+    pk_thread_ws *w = &a->tws[th];
+    const float *kp = a->kp + (size_t)h * j->Tp * dk, *pp = a->pp + (size_t)h * j->Pp * dk;
+    const float *bu = j->L->bias_u + h * dk, *bv = j->L->bias_v + h * dk;
 
-    pk_k_gemm_f32(sc, j->Tp, kp, dk, j->Tp, dk, a->qu + (size_t)i0 * D + h * dk, D, nq, NULL, 0, 0);
+    /* the block's queries with each position bias, a query a row */
+    for (uint32_t i = 0; i < nq; i++) {
+        const float *q = a->q + (size_t)(i0 + i) * D + h * dk;
+        for (uint32_t d = 0; d < dk; d++) {
+            w->qu[i * dk + d] = q[d] + bu[d];
+            w->qv[i * dk + d] = q[d] + bv[d];
+        }
+    }
+    pk_k_gemm_f32(w->sc, j->Tp, kp, dk, j->Tp, dk, w->qu, dk, nq, NULL, 0, 0);
     const uint32_t m_lo = T - i1, m_hi = 2 * T - 2 - i0, m_a = m_lo & ~15u;
     const uint32_t rows = up16(m_hi + 1 - m_a);
-    pk_k_gemm_f32(bd, rows, pp + (size_t)(m_a / 16) * dk * 16, dk, rows, dk,
-                  a->qv + (size_t)i0 * D + h * dk, D, nq, NULL, 0, 0);
+    pk_k_gemm_f32(w->bd, rows, pp + (size_t)(m_a / 16) * dk * 16, dk, rows, dk, w->qv, dk, nq,
+                  NULL, 0, 0);
     const float scale = 1.0f / sqrtf((float)dk);
     for (uint32_t i = i0; i < i1; i++) {
-        float *s = sc + (size_t)(i - i0) * j->Tp;
-        const float *b = bd + (size_t)(i - i0) * rows + (T - 1 - i) - m_a;
+        float *s = w->sc + (size_t)(i - i0) * j->Tp;
+        const float *b = w->bd + (size_t)(i - i0) * rows + (T - 1 - i) - m_a;
         for (uint32_t k = 0; k < T; k++)
             s[k] = s[k] + b[k];
         pk_k_softmax(s, T, scale);
     }
-    pk_k_gemm_f32(a->o + (size_t)i0 * D + h * dk, D, vp, j->Tp, dk, T, sc, j->Tp, nq, NULL, 0, 0);
+    pk_k_gemm_f32(a->o + (size_t)i0 * D + h * dk, D, a->vp + (size_t)h * (dk / 16) * T * 16, T, dk,
+                  T, w->sc, j->Tp, nq, NULL, 0, 0);
 }
 
 /* --------------------------------------------------------------- layers --- */
@@ -341,17 +366,18 @@ static void ff(pk_asr *a, uint32_t T, const float *nw, const float *nb, const pk
 static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     const pk_model *m = a->m;
     const uint32_t D = m->d_model, H = m->n_heads;
-    float *k = a->o, *v = a->h;          /* free between their uses below */
+    float *k = a->o;                     /* free until the attention writes it */
 
     ff(a, T, L->ff1_nw, L->ff1_nb, &L->ff1_up, &L->ff1_down);
 
     PROF(PK_P_NORM, norm(a, a->u, a->x, T, L->att_nw, L->att_nb));
     PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->u, D, T, D, QB));
+    panel_job vj = { a->vp, (size_t)T * 16, &L->v, &a->act };
     PROF(PK_P_QKV, pk_gemm(a, a->q, D, &L->q, NULL, &a->act, 0);
                    pk_gemm(a, k, D, &L->k, NULL, &a->act, 0);
-                   pk_gemm(a, v, D, &L->v, NULL, &a->act, 0);
+                   pk_par(a, panel_item, &vj, (int)((L->v.rows + 63) / 64));
                    pk_gemm(a, a->p, D, &L->pos, NULL, &a->ape, 0));
-    att_job aj = { a, L, k, v, T, up16(T), up16(2 * T - 1) + 16 };
+    att_job aj = { a, L, k, T, up16(T), up16(2 * T - 1) + 16 };
     PROF(PK_P_REPACK, pk_par(a, repack_item, &aj, (int)(H * ((T + PK_REPACK - 1) / PK_REPACK))));
     PROF(PK_P_ATT, pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));

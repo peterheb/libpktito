@@ -24,3 +24,6 @@ __pycache__/
 /tests/example.out
 /tests/segcheck
 /tests/rscheck
+/libpkito.a
+/tests/pkito-tsan
+/tests/q8bench

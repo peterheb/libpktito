@@ -47,13 +47,11 @@ static int reserve(pk_asr *a, size_t T0) {
         CARVE(a->h, Te * D, sizeof(float));
         CARVE(a->u, Te * U, sizeof(float));
         CARVE(a->q, Te * D, sizeof(float));
-        CARVE(a->qu, Te * D, sizeof(float));
-        CARVE(a->qv, Te * D, sizeof(float));
         CARVE(a->o, Te * D, sizeof(float));
         CARVE(a->pe, R * D, sizeof(float));
         CARVE(a->p, R * D, sizeof(float));
         CARVE(a->kp, H * Tp * dk, sizeof(float));
-        CARVE(a->vp, H * Tp * dk, sizeof(float));
+        CARVE(a->vp, Te * D, sizeof(float));
         CARVE(a->pp, H * Pp * dk, sizeof(float));
         CARVE(a->act.q, Te * widest, 1);
         CARVE(a->act.d, Te * widest / 32, sizeof(float));
@@ -68,6 +66,8 @@ static int reserve(pk_asr *a, size_t T0) {
             CARVE(w->s4, s4, sizeof(float));
             CARVE(w->aq, s2, 1);
             CARVE(w->ad, s2 / 32, sizeof(float));
+            CARVE(w->qu, PK_ATT_BLOCK * dk, sizeof(float));
+            CARVE(w->qv, PK_ATT_BLOCK * dk, sizeof(float));
             CARVE(w->sc, PK_ATT_BLOCK * Tp, sizeof(float));
             CARVE(w->bd, PK_ATT_BLOCK * (Tp + 32), sizeof(float));
             CARVE(w->mel, pk_mel_thread_scratch(m), sizeof(float));

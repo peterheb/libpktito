@@ -31,7 +31,8 @@ typedef struct {
     float  *s1, *s2, *s3, *s4;       /* the subsampling's stages, one block's rows */
     int8_t *aq;                      /* its pointwise convolutions' int8 input */
     float  *ad;
-    float  *sc, *bd;                 /* attention scores, and their position half */
+    float  *qu, *qv;                 /* a block of queries plus each position bias */
+    float  *sc, *bd;                 /* its scores, and their position half */
     float  *mel;                     /* a block of power spectra, and the FFT's scratch */
 } pk_thread_ws;
 
@@ -50,7 +51,7 @@ struct pk_asr {
     /* the encoder, Te frames */
     float *s5;                       /* [Te][F3 C]: the subsampling's output, flattened */
     float *x, *h, *u;                /* [Te][D], [Te][D], [Te][max(F, 2D)] */
-    float *q, *qu, *qv, *o;          /* [Te][D] */
+    float *q, *o;                    /* [Te][D] */
     float *pe, *p;                   /* [2Te-1][D]: positions, and their projection */
     float *kp, *vp, *pp;             /* K, V and P per head, as pk_k_gemm_f32 panels */
     pk_act act, ape;                 /* int8 activations; the positions' */
