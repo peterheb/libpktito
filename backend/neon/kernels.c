@@ -242,6 +242,18 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
 
 /* ------------------------------------------------------ float products --- */
 
+/* gcc's scheduling before register allocation hoists a tile's sixteen
+ * weight loads ahead of its sixteen accumulators and spills them: on a Pi
+ * 5 (gcc 14.2) the attention's products ran at 71% of FMLA's peak with it
+ * and 86% without, 870 ms of the minute against 727, while the int8 tile
+ * above needs it (1977 ms without it against 1976 with). Taking the inputs
+ * two at a time to make room spilled nothing and ran slower still, 920 ms
+ * (backend/neon-dp/CLIMB.md). Clang does not have the pass. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("no-schedule-insns")
+#endif
+
 /* MR vectors of 4 rows by NC columns of out, accumulated in registers.
  * Vector m is lanes 4(m%4) .. 4(m%4)+3 of panel m/4, so a tile of 16 rows
  * is one panel and reads its weights as one stream. The inputs are taken
@@ -309,6 +321,10 @@ void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t 
         }
     }
 }
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 /* ------------------------------------------------- reductions and rows --- */
 

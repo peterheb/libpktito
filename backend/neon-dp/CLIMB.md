@@ -189,3 +189,32 @@ and three more vector instructions on the same two pipes (the zeroing,
 SCVTF, and the FMA into the float sum), so 23.3 a cycle is this format's
 ceiling on the A76; the kernel is at 81% of it alone, and at about 16 a
 cycle with four threads in the encoder.
+
+## 2026-10-20 - the attention's float products: gcc's first scheduling pass
+
+Same Pi 5. The attention stage split by an instrumented build (ms of
+thread time a run, four threads; one thread gives the same within 2%, so
+none of it waits on memory): scores 1008, position products 1055, context
+1015, softmax with the position add 348, queries plus biases 72. The
+three products are about 14 G FMA lanes each, so 5.7 lanes a cycle of
+FMLA's 8.
+
+gcc 14.2 spills in f32_tile: its scheduling before register allocation
+(-fschedule-insns, on at -O3 with -fsched-pressure) hoists all sixteen
+weight vectors of a step ahead of the sixteen accumulators, and the 4x4
+tile's loop stores and reloads them. Built without that pass:
+
+| build | feed-forward | attention | minute |
+|---|---|---|---|
+| -O3 | 1977 ms | 870 ms | 4.501-4.510 s |
+| -O3 -fno-schedule-insns, everything | 2270 ms | 728 ms | 4.812-4.819 s |
+| -O3, the inputs two at a time in f32_tile (no spill, but register moves at every back edge; rejected) | 1975 ms | 921 ms | 4.555 s |
+| -O3, the pass off for the float products only (pragma) | 1978 ms | 728 ms | 4.358 s |
+
+The int8 tile needs the pass and the float tile is hurt by it, so a
+gcc-only pragma turns it off around the float products: their 4x4 loop is
+then 64 FMLAs and 20 loads with nothing else, about 86% of FMLA's peak.
+The VAD's products are among them (0.069 -> 0.059 s for test.wav's). 30 s
+chunks 3.920 -> 3.847 s. The one-column tile (MR 16, the VAD's step)
+still keeps its accumulators on the stack; it is a small part of a small
+stage.
