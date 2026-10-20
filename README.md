@@ -284,7 +284,7 @@ of the checkpoint, its licence and the attribution CC-BY-4.0 asks for, the
 VAD's source and licence, the converter's version and the recipe. `pkito
 info` prints it. The loader holds every extent, shape, type and value of the
 file to what the architecture and docs/MEMORY_SAFETY.md say before it forms
-a pointer, and tests/pkfcheck runs 29,059 malformed files at it.
+a pointer, and tests/pkfcheck runs 29,058 malformed files at it.
 
 `tools/pkito-tools convert` writes one; `info` lists one; `ref` runs the
 float64 reference on a WAV from either a `.nemo` or a `.pkf`; `tiny` writes

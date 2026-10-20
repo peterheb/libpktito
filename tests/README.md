@@ -10,7 +10,7 @@ needs is not there.
 |---|---|---|
 | `mathcheck` | check-c (`--all`: check-math) | core/vmath.h's exp, tanh, sigmoid and log to the double result over every float, its sin and cos over the positional encoding's angles, and sqrt(x * x) == \|x\| wherever x * x is normal |
 | `kcheck` | check-c | every kernel of the backend built to backend/ref's bits, on random and awkward data and on the model's real matrices, and ref's int8 product to its definition |
-| `pkfcheck` | check-c, check-sanitize | the model file's validator and binder on tests/data/tiny.pkf and 29,059 malformed versions of it, and the whole engine on the tiny model (docs/MEMORY_SAFETY.md) |
+| `pkfcheck` | check-c, check-sanitize | the model file's validator and binder on tests/data/tiny.pkf and 29,058 malformed versions of it, and the whole engine on the tiny model (docs/MEMORY_SAFETY.md) |
 | `wavcheck` | check-c, check-sanitize | the WAV reader on every prefix of a valid file and each field of fmt wrong |
 | test.wav | check-c | `./pkito probs` against tests/data/test.probs.txt (vadito's bits) and `./pkito --json` against test.v2.json and test.v3.json (ref's transcripts, every token and time), byte for byte |
 | `examples/transcribe` | check-c | the library alone gives the CLI's transcript |

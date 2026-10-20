@@ -35,6 +35,7 @@
  */
 #include "model.h"
 #include "pkf.h"
+#include "vmath.h"
 #include "pkito.h"
 #include "wav.h"
 
@@ -715,12 +716,16 @@ static uint32_t rnd(void) {
     return (uint32_t)((g_rng * 0x2545F4914F6CDD1Dull) >> 32);
 }
 
-/* a recording: a tone that comes and goes, and noise */
+/* a recording: a tone that comes and goes, and noise. The sine is
+ * core/vmath.h's, not libm's, whose last bits differ between platforms: a
+ * random model's transcript of this follows them, and with it the number
+ * of cases the text checks make, which should be the same everywhere. */
 static float *audio(size_t n) {
     float *x = malloc((n ? n : 1) * sizeof *x);
     for (size_t i = 0; i < n; i++) {
-        float on = (i / 8000) % 3 ? 1.0f : 0.01f;
-        x[i] = 0.3f * on * sinf((float)i * 0.05f) + 0.05f * ((float)(rnd() >> 8) / 16777216.0f - 0.5f);
+        float on = (i / 8000) % 3 ? 1.0f : 0.01f, sn, cs;
+        pk_sincosf((float)i * 0.05f, &sn, &cs);
+        x[i] = 0.3f * on * sn + 0.05f * ((float)(rnd() >> 8) / 16777216.0f - 0.5f);
     }
     return x;
 }
