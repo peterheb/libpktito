@@ -222,6 +222,15 @@ check-sanitize:
 	ASAN_OPTIONS=detect_leaks=0 ./tests/pkfcheck-san $(TINY)
 	ASAN_OPTIONS=detect_leaks=0 ./tests/wavcheck-san tests/wavcheck.tmp
 
+# The thread pool and every pass split over it, under ThreadSanitizer: a
+# transcription and a stream on six threads, which must report nothing.
+check-tsan:
+	$(CC) -O1 -g -fsanitize=thread -std=c11 -ffp-contract=off $(BFLAGS) $(PLATFLAGS) $(INC) \
+	  -o tests/pkito-tsan core/cli.c $(LIB_SRC) $(BACK_SRC) $(LDLIBS)
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pkito-tsan -t 6 -m $(MODEL) tests/data/test.wav > /dev/null
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pkito-tsan -t 6 --stream -m $(MODEL) tests/data/test.wav > /dev/null
+	@echo "check-tsan: no race on six threads"
+
 check-math: tests/mathcheck
 	./tests/mathcheck --all
 
@@ -243,5 +252,5 @@ remote:
 
 clean:
 	rm -f pkito libpkito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) tests/tokcheck
-	rm -f tests/*-san tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
+	rm -f tests/*-san tests/pkito-tsan tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM
