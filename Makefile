@@ -192,9 +192,18 @@ check-c: pkito $(TESTS) examples/transcribe
 # them against float32's transcripts from tools/quantcheck.py. Each is
 # skipped with a line when what it needs is not here.
 PYNEMO ?= $(firstword $(wildcard .venv-nemo/bin/python) $(PYTHON))
+SILERO ?= $(firstword $(wildcard $(SRC)/silero-vad-master) $(wildcard $(SRC)/silero-vad))
+PYTESTS := tests/tokcheck tests/segcheck tests/rscheck
 tests/tokcheck: tests/tokcheck.c core/model.o core/os.o core/tokens.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/tokcheck.c core/model.o core/os.o core/tokens.o $(LDLIBS)
-check-python: pkito tests/tokcheck
+tests/segcheck: tests/segcheck.c core/segment.o
+	$(CC) $(CFLAGS) $(INC) -o $@ tests/segcheck.c core/segment.o $(LDLIBS)
+tests/rscheck: tests/rscheck.c core/resample.o
+	$(CC) $(CFLAGS) $(INC) -o $@ tests/rscheck.c core/resample.o $(LDLIBS)
+check-python: pkito $(PYTESTS)
+	@if [ -n "$(SILERO)" ]; then SILERO=$(SILERO) $(PYNEMO) -W ignore tests/segcheck.py tests/segcheck || exit 1; \
+	else echo "segcheck: no silero-vad checkout in $(SRC) - skipped"; fi
+	@$(PYNEMO) -W ignore tests/rscheck.py tests/rscheck || exit 1
 	@for v in v2 v3; do n=$(SRC)/parakeet-tdt-0.6b-$$v/parakeet-tdt-0.6b-$$v.nemo; \
 	  f=models/parakeet-tdt-0.6b-$$v.pkf; \
 	  if [ -f $$n ] && [ -f $$f ]; then $(PYNEMO) tests/tokcheck.py tests/tokcheck $$n $$f || exit 1; \
@@ -251,6 +260,6 @@ remote:
 .PHONY: models check-c check-sanitize check-math remote clean
 
 clean:
-	rm -f pkito libpkito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) tests/tokcheck
+	rm -f pkito libpkito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS)
 	rm -f tests/*-san tests/pkito-tsan tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM

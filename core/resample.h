@@ -4,8 +4,8 @@
  * brought to it with torchaudio's Resample at its defaults: a Hann-windowed
  * sinc, six zero crossings each side, cut off at 0.99 of the lower Nyquist,
  * with the kernel computed the way the transform computes it. This is
- * vadito's resampler (core/resample.c there), which vadito's tests/rscheck.py
- * holds to torchaudio's output to 1.8e-7. NeMo's own loader
+ * vadito's resampler (core/resample.c there), which tests/rscheck.py holds
+ * to torchaudio's output to 1.8e-7 on thirteen rate pairs. NeMo's own loader
  * resamples with librosa's soxr instead, so for a file that is not at 16 kHz
  * pkito hears a slightly different input from NeMo's; at 16 kHz, the same.
  *
