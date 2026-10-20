@@ -203,7 +203,10 @@ fraction of the attention's cost. The 60 s outlier is one 58 s chunk that
 came out as its last sentence: NeMo 3.0 in float32 and the float64 reference
 lose the same on the same samples, and a start 2 ms earlier avoids it in all
 three. That is the model's own failure, and a reason not to hand it long
-stretches.
+stretches. At 30 s it did not happen once over every speaker of test-clean
+(40 recordings, 2.6 hours, 350 chunks a model): the slowest chunk came out
+at 3.1 tokens a second against a median of 5.3, and WER was 1.89% (v2) and
+2.27% (v3) over its 23,874 words.
 
 ## Streaming
 
