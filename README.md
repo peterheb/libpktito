@@ -47,7 +47,12 @@ git clone --depth 1 --branch v6.2.3 https://github.com/snakers4/silero-vad model
 make models                   # models/parakeet-tdt-0.6b-v2.pkf (624 MB), -v3.pkf (648 MB)
 ```
 
-Copy a `.pkf` to a board beside the binary; the board needs no Python. Then:
+Copy a `.pkf` to a board beside the binary; the board needs no Python, and
+memory for the file (it is mapped, and the page cache is its one copy) and
+some 50 to 150 MB besides at the default chunking, more threads taking more:
+670 MB at its peak on a Pi 3B+ with v2, 750 MB on an M4 Pro at eight
+threads. A 512 MB board (a Pi Zero 2 W) cannot hold an int8 0.6B model;
+README, "Why int8", has what 4-bit would cost. Then:
 
 ```sh
 ./pkito talk.wav                        # the transcript
