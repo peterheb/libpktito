@@ -13,7 +13,7 @@ wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
 
 A minute of English speech takes 0.51 s on an M4 Pro (118 times real time,
-eight cores), 1.66 s on a Core i9-12900HK, and 58 s on a Raspberry Pi 3B+'s
+eight cores), 1.02 s on a Core i9-12900HK, and 58 s on a Raspberry Pi 3B+'s
 four Cortex-A53s. Every backend computes the same bits on every machine.
 
 ## What this is
@@ -111,9 +111,10 @@ Pi 3B+ (gcc 14.2), `avx2` and `avx2-vnni` on a 12900HK (gcc 15.2), and `ref`.
 | Apple M4 Pro | `neon-dp` | 8 | 0.509 (118x) | |
 | | `neon` | 12 | 1.223 (49x) | |
 | | `ref` | 12 | 22.1 (2.7x) | |
-| Intel Core i9-12900HK | `avx2-vnni` | 6 | 1.656 (36x) | |
-| | `avx2-vnni` | 1 | 5.46 (11x) | |
-| | `avx2` | 6 | 2.26 (27x) | |
+| Intel Core i9-12900HK | `avx2-vnni` | 6 | 1.019 (59x) | |
+| | `avx2-vnni` | 1 | 3.42 (18x) | |
+| | `avx2` | 6 | 1.937 (31x) | |
+| | `avx2` | 1 | 6.77 (8.9x) | |
 | Raspberry Pi 3B+, Cortex-A53 1.4 GHz | `neon` | 4 | | 58.4 (1.0x) |
 
 Against [parakeet.cpp](https://github.com/mudler/parakeet.cpp) (ggml, its
@@ -131,10 +132,15 @@ Where the time goes (`make PROFILE=1`, the M4 Pro at eight threads, the minute
 whole): the feed-forward modules' int8 products 44%, the attention's float
 products 22%, q k v and the positions 14%, the convolution module 8%, the
 decoder 3%, the features and subsampling 4%. The int8 product runs at about
-56% of the M4's SDOT peak there; the 12900HK's at about 22 MACs a cycle of
-VNNI's 64, and every stage scales 3.3x from one thread to six and no further,
-which is the package's clock under all-core load. backend/*/CLIMB.md has
-every measurement the kernels rest on.
+56% of the M4's SDOT peak there, and at 47 multiply-adds a cycle of VNNI's 64
+on a 12900HK P-core, about 92% of what its per-block float work leaves.
+
+The default thread count is one a physical core of the fastest kind. On the
+12900HK, whose 45 W limit it reaches on one core already, six threads on the
+P-cores take 1.06 s and anything from 7 to 20 1.18 to 1.22 s: a slower core
+holding a pass's last item keeps the others waiting, six hundred passes a
+recording, and takes watts from them besides. backend/*/CLIMB.md has every
+measurement the kernels rest on.
 
 ## Why int8
 
