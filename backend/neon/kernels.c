@@ -113,7 +113,33 @@ void pk_k_quantize(pk_act *a, const float *x, size_t xs) {
  * eight SDOTs by lane against the eight weight vectors. Without it, a pair
  * of groups is SMULL/SMLAL into 16 bits (two products, at most 2 * 127^2,
  * which fits) and SADALP into 32, leaving each row's sum in two lanes that
- * a pairwise add joins at the block's end. */
+ * a pairwise add joins at the block's end. The activation's four bytes are
+ * loaded replicated across all sixteen (LD1R), so the high half of a weight
+ * vector goes to SMULL2/SMLAL2 as it stands rather than being moved down
+ * first. */
+
+/* Columns a tile takes. Four with SDOT, which needs 8 int and 8 float
+ * accumulators for them; two on ARMv8.0, whose four rows of pairwise sums
+ * a column take 16 int accumulators at four columns and spill (CLIMB.md,
+ * 2026-10-20, H1). */
+#ifdef PK_NEON_DOTPROD
+#define PK_Q8_NC 4
+#else
+#ifndef PK_Q8_NC_V80
+#define PK_Q8_NC_V80 3
+#endif
+#define PK_Q8_NC PK_Q8_NC_V80
+#endif
+
+/* four activation bytes, replicated across a vector: gcc 14 makes this
+ * `ldr s` + `dup`, which the A53 runs 11% faster than one LD1R (CLIMB.md,
+ * 2026-10-20, H2) */
+static inline int8x16_t rep4(const int8_t *p) {
+    int32_t v;
+    memcpy(&v, p, 4);
+    return vreinterpretq_s8_s32(vdupq_n_s32(v));
+}
+
 static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
              const float *ws, const float *bias, const pk_act *a, uint32_t t0, int add,
@@ -160,19 +186,15 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
             int8x16_t wa = vld1q_s8(g), wb = vld1q_s8(g + 16);          /* group k/4 */
             int8x16_t wc = vld1q_s8(g + 64), wd = vld1q_s8(g + 80);     /* group k/4 + 1 */
             for (int c = 0; c < NC; c++) {
-                int32_t u0, u1;
-                memcpy(&u0, x[c] + k, 4);
-                memcpy(&u1, x[c] + k + 4, 4);
-                int8x8_t x0 = vreinterpret_s8_s32(vdup_n_s32(u0));
-                int8x8_t x1 = vreinterpret_s8_s32(vdup_n_s32(u1));
-                int16x8_t p0 = vmull_s8(vget_low_s8(wa), x0);
-                int16x8_t p1 = vmull_s8(vget_high_s8(wa), x0);
-                int16x8_t p2 = vmull_s8(vget_low_s8(wb), x0);
-                int16x8_t p3 = vmull_s8(vget_high_s8(wb), x0);
-                p0 = vmlal_s8(p0, vget_low_s8(wc), x1);
-                p1 = vmlal_s8(p1, vget_high_s8(wc), x1);
-                p2 = vmlal_s8(p2, vget_low_s8(wd), x1);
-                p3 = vmlal_s8(p3, vget_high_s8(wd), x1);
+                int8x16_t x0 = rep4(x[c] + k), x1 = rep4(x[c] + k + 4);
+                int16x8_t p0 = vmull_s8(vget_low_s8(wa), vget_low_s8(x0));
+                int16x8_t p1 = vmull_high_s8(wa, x0);
+                int16x8_t p2 = vmull_s8(vget_low_s8(wb), vget_low_s8(x0));
+                int16x8_t p3 = vmull_high_s8(wb, x0);
+                p0 = vmlal_s8(p0, vget_low_s8(wc), vget_low_s8(x1));
+                p1 = vmlal_high_s8(p1, wc, x1);
+                p2 = vmlal_s8(p2, vget_low_s8(wd), vget_low_s8(x1));
+                p3 = vmlal_high_s8(p3, wd, x1);
                 s[c][0] = vpadalq_s16(s[c][0], p0);
                 s[c][1] = vpadalq_s16(s[c][1], p1);
                 s[c][2] = vpadalq_s16(s[c][2], p2);
@@ -205,12 +227,19 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
 }
 
 /* Activation bytes a column block may hold: the columns a call takes at a
- * time, across all of its panels, so that the block stays in L2 while every
- * half panel's weights stream past it. Without the blocking, a 750-column
- * product re-read all its activations (3 MB at 4096 inputs) from L3 for
- * every half panel. */
+ * time, across all of its panels, so that the block stays in cache while
+ * every half panel's weights stream past it. Without the blocking, a
+ * 750-column product re-read all its activations (3 MB at 4096 inputs) from
+ * L3 for every half panel. On ARMv8.0 the block is a quarter of that: four
+ * A53s share 512 KB of L2, and at 48 KB (12 columns of 4096) the ff down
+ * product ran 8% faster at four threads than at 192 KB, and no slower alone
+ * (CLIMB.md, 2026-10-20, H3). */
 #ifndef PK_Q8_BLOCK_BYTES
+#ifdef PK_NEON_DOTPROD
 #define PK_Q8_BLOCK_BYTES (192 * 1024)
+#else
+#define PK_Q8_BLOCK_BYTES (48 * 1024)
+#endif
 #endif
 
 /* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
@@ -228,7 +257,8 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
             const float *b = bias ? bias + r : NULL;
             for (uint32_t h = 0; h < 4; h += 2) {
                 uint32_t t = c0;
-                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4);
+                for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC)
+                    q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, PK_Q8_NC);
                 switch (c1 - t) {
                 case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3); break;
                 case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2); break;
