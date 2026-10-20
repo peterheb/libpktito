@@ -1,9 +1,8 @@
 /* core/os.h on POSIX (Linux, macOS, the BSDs), on Windows 10 and later,
  * and the plain-C fallback.
  *
- * The cores: the physical cores of the fastest kind, from Linux's sysfs
- * topology and cpufreq, macOS's sysctl or Windows' processor records
- * (pk_os_cores says why).
+ * The cores: the physical cores of every kind, from Linux's sysfs topology,
+ * macOS's sysctl or Windows' processor records (pk_os_cores says why).
  */
 #include "os.h"
 
@@ -75,42 +74,36 @@ static long sysfs_long(long cpu, const char *what) {
 }
 #endif
 
-/* One thread a physical core of the fastest kind. A chip with two kinds of
- * core (Intel's P and E, ARM's big and LITTLE, Apple's performance and
- * efficiency) runs the encoder fastest on the fast kind alone: a slow core
- * holding a job's last item keeps the fast ones waiting at the job's end,
- * six hundred jobs a recording, and on a power-capped chip it takes their
- * watts too. An i9-12900HK: 6 threads on its P-cores 1.062 s, 14 on every
- * core 1.191 s (backend/avx2/CLIMB.md, "Threads"); an M4 Pro: 8 on its
- * performance cores 0.512 s, 12 on all 0.523 s. A second thread on a core
- * (SMT) measured nothing either, so siblings count once. On Linux the fast
- * kind is the cores whose cpufreq maximum is within 10% of the fastest's
- * (an Intel part's favoured cores turbo a bin or two higher than the rest
- * of their kind); where cpufreq says nothing, every core counts. */
+/* One thread a physical core, of every kind. A chip with two kinds of core
+ * (Intel's P and E, ARM's big and LITTLE, Apple's performance and
+ * efficiency) runs the encoder fastest on all of them: the pool deals each
+ * pass's items from a counter, so a slower core takes fewer, and on a chip
+ * whose fast kind is a minority the slow cores are most of its speed. The
+ * minute whole (`pkito bench --max-chunk 60`), 2026-10-20: an Intel Core 3
+ * 304 (1 P + 4 E) 5.02 s on its P-core, 1.39 s on all five; an i9-12900HK
+ * (6 P + 8 E) 0.960 s on its P-cores, 0.906 s on all 14, though 8, 16 and
+ * 18 threads take 1.10 to 1.15 s there; an M4 Pro (8 + 4) 0.498 s on its
+ * performance cores, 0.488 s on all 12 (backend/avx2/CLIMB.md,
+ * backend/neon-dp/CLIMB.md). The fast kind alone measured better on the
+ * tree of two days before (CLIMB.md, "Threads"). A second thread on a core
+ * (SMT) measured nothing (the 12900HK on 20: 0.91 to 0.93 s), so siblings
+ * count once. */
 int pk_os_cores(void) {
 #ifdef __APPLE__
     int phys = 0;
     size_t len = sizeof phys;
-    if (sysctlbyname("hw.perflevel0.physicalcpu", &phys, &len, NULL, 0) == 0 && phys > 0)
-        return phys;
-    len = sizeof phys;
     if (sysctlbyname("hw.physicalcpu", &phys, &len, NULL, 0) == 0 && phys > 0)
         return phys;
 #endif
 #ifdef __linux__
-    long ncpu = sysconf(_SC_NPROCESSORS_CONF), fmax = 0;
+    long ncpu = sysconf(_SC_NPROCESSORS_CONF);
     if (ncpu > 4096)
         ncpu = 4096;
-    for (long c = 0; c < ncpu; c++) {
-        long f = sysfs_long(c, "cpufreq/cpuinfo_max_freq");
-        fmax = f > fmax ? f : fmax;
-    }
-    /* one per distinct (package, core) pair among the fast cpus */
+    /* one per distinct (package, core) pair */
     int seen[1024], nseen = 0;
     for (long c = 0; c < ncpu; c++) {
         long core = sysfs_long(c, "topology/core_id"), pkg = sysfs_long(c, "topology/physical_package_id");
-        long f = sysfs_long(c, "cpufreq/cpuinfo_max_freq");
-        if (core < 0 || (fmax > 0 && f > 0 && 10 * f < 9 * fmax))
+        if (core < 0)
             continue;
         int key = (int)((pkg < 0 ? 0 : pkg) * 65536 + core), dup = 0;
         for (int i = 0; i < nseen; i++)
@@ -171,28 +164,23 @@ void pk_unmap(const unsigned char *p, size_t size) {
         UnmapViewOfFile(p);
 }
 
-/* As on Linux, the physical cores of the fastest kind: one processor record
- * a core, its EfficiencyClass higher the faster the kind (0 on a chip with
- * one kind), counted where the process may run (`start /affinity`), in
- * processor group 0, which holds every machine with up to 64 logical
- * processors. */
+/* As on POSIX, the physical cores (pk_os_cores there says why): one
+ * processor record a core, counted where the process may run (`start
+ * /affinity`), in processor group 0, which holds every machine with up to
+ * 64 logical processors. */
 int pk_os_cores(void) {
     DWORD_PTR pmask = ~(DWORD_PTR)0, smask;
     GetProcessAffinityMask(GetCurrentProcess(), &pmask, &smask);
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
-    int n = 0, best = -1;
+    int n = 0;
     if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore,
                    (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(void *)buf, &len))
         for (DWORD at = 0; at < len;) {
             const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *r = (const void *)(buf + at);
             at += r->Size;
-            if (!(r->Processor.GroupMask[0].Mask & (KAFFINITY)pmask))
-                continue;
-            int kind = r->Processor.EfficiencyClass;
-            n = kind > best ? 1 : n + (kind == best);
-            best = kind > best ? kind : best;
+            n += (r->Processor.GroupMask[0].Mask & (KAFFINITY)pmask) != 0;
         }
     free(buf);
     return n > 0 ? n : 1;

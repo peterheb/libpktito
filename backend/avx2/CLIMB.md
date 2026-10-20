@@ -311,3 +311,44 @@ Left for core/, measured but not changed here: the mel (22 ms of 1018 at six
 threads) runs on the calling thread while five wait, and could be split by
 frames; the attention's repack is one item a head, 8 items for 6 threads.
 Each would be 1-2%.
+
+## 2026-10-20 - threads again, on today's tree; and a Core 3 304 on Windows
+
+The finding above, that the P-cores alone beat every core, no longer
+holds. `./pkito bench --max-chunk 60` (the minute whole), tree d0e8da3,
+avx2-vnni, the same 12900HK, two passes over the counts in turn (each
+count's best of five):
+
+| threads | 6 | 8 | 10 | 12 | 14 | 16 | 18 | 20 |
+|---|---|---|---|---|---|---|---|---|
+| pass 1 | 0.965 | 1.147 | 0.925 | 0.958 | 0.910 | 1.119 | 1.103 | 0.926 |
+| pass 2 | 0.959 | 1.140 | 0.923 | 0.958 | 0.906 | 1.115 | 1.101 | 0.913 |
+
+(10 and 12 are from three passes on 737d3f3, whose other counts were
+within 10 ms of these.) Every core, 14, is the fastest; 8, 16 and 18 are the
+slowest by 20%, the same in every pass. A new machine makes the case
+plainer: an Intel Core 3 304 (Wildcat Lake: one Cougar Cove P-core, four
+Darkmont E-cores, gcc's -march=native is pantherlake, AVX-VNNI and
+AVX-VNNI-INT8), Windows 11, built with MSYS2's UCRT64 gcc 16.2:
+
+| threads | 1 (P) | 2 | 3 | 4 | 5 (every core) |
+|---|---|---|---|---|---|
+| best of 5 | 5.019, 5.193 | 3.159 | 2.090 | 1.801, 1.877 | 1.387, 1.409 |
+
+The rule that chose the fast kind alone gave the 304 one thread, at a
+quarter of its speed. core/os.c now takes one thread a physical core of
+every kind: the 12900HK's default 14 runs the minute in 0.909-0.921 s
+whole and 0.828-0.829 s in 30 s chunks (from 0.960 and 0.861 on 6), the
+304's default 5 in 1.392-1.405 s and 1.290-1.312 s. check-c passes on
+both, Windows included (every kernel ref's bits, both transcripts byte for
+byte).
+
+Not adopted, measured on the 304: workers pinned one a core (pinfer's
+pool, core/pool.c and core/SCHED.md there, pins worker k to the k-th
+fastest core and deals each a share of what is left by its measured
+speed). A scratch build here pinned the calling thread to the P-core (cpu
+0, EfficiencyClass 1) and worker k to cpu k, the E-cores, with
+SetThreadAffinityMask; three interleaved passes, five threads: the minute
+whole 1.408, 1.394, 1.393 s pinned against 1.419, 1.438, 1.401 unpinned;
+30 s chunks 1.289, 1.436, 1.296 against 1.299, 1.306, 1.303. About 1%,
+inside the spread, so the pool keeps its plain counter.

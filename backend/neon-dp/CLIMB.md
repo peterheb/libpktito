@@ -276,3 +276,13 @@ compile time that qb is 32, the main tiles only): before the merge, with
 q8bench, feed-forward down 40.4 -> 43.7 GMAC/s and the others 45.4 ->
 44.9; on the merged tree, with gemmbench, all four shapes 44.5 -> 43.1
 GMAC/s and the L1-resident case 45.4 -> 42.6. The tile stays as it is.
+
+## 2026-10-20 - every core of the M4 Pro
+
+The thread default is now one a physical core of every kind
+(backend/avx2/CLIMB.md has the 12900HK's and a Core 3 304's case). The
+M4 Pro, interleaved, three passes, the minute whole: 8 threads (its
+performance cores) 0.498, 0.500, 0.509 s; 10 threads 0.495, 0.497, 0.513;
+12 (every core) 0.488, 0.489, 0.495. The efficiency cores add about 2%
+now, where on 55e6d97 they took 0.523 s against 0.512. The Pi 5's four
+cores are one kind, so its default does not move.
