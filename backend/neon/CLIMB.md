@@ -306,3 +306,72 @@ and the width sweep at four threads, MAC/cycle a core, 1024 / 2048 / 3072
 -Warray-bounds read the whole product's null partial-sum pointer as an
 array of no floats and warned on the stores it never makes; the tiles of
 a whole product get a real 32-float buffer they do not touch.
+
+## The instruction order, asked of the core
+
+A probe in the manner of pinfer's tests/isabench (inline asm, sixteen-wide
+independence where it matters, L1-resident, one core, 1400 MHz; it lives
+outside the tree, as the CLIMB rows are what it was for):
+
+| loop | cycles | MAC/cycle |
+|---|---|---|
+| `smlal v.4s, v.4h, v.h[i]` x16, the int16 by-element form | 33.2 per 32 | 3.86 |
+| an int16 panel: 8 rows x 5 columns x 8 inputs, its loads included | 230.5 | 2.78 |
+| this file's int8 loop, 8 rows x 3 columns x 8 inputs, gcc 14's order | 156.0 per 2 | **2.46** |
+| the same instructions, each column's SADALPs interleaved with the next column's activation loads and DUPs | 143.9 | **2.67** |
+| SADALPs and multiplies alternating, two product sets | 147.9 | 2.60 |
+| interleaved as above with one product set (the drains read the products before the next column's multiplies overwrite them, in program order, which an in-order core makes safe) | 143.9 | **2.67** |
+
+The by-element SMLAL issues once a cycle, so an int16 form with the
+weights re-laid out [k][row] (into L1, once a half panel and chunk) would
+need no drain at all: 2.78 against 2.46 raw, but with the re-layout to pay
+and a second weight path to keep. The order alone is +8.5% on the same
+instructions.
+
+## H7 - the 3-column loop in asm, in the measured order
+
+Stated before the edit. The 8-input step of the ARMv8.0 3-column tile as
+one inline-asm block, in the interleaved one-set order above: 12
+accumulators, 4 weights, 4 products and 4 activation registers, which
+leaves the tile's 6 float accumulators their registers. Integer sums only,
+so ref's bits cannot change. Predicted: gemmbench +5 to +8% at one thread
+(the epilogue and the memory system are unchanged), the bench -4 to -6%.
+
+### H7, measured: rejected
+
+| | 1 thread | 4 threads | L1-resident |
+|---|---|---|---|
+| gcc 14's C (a01a01f) | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
+| asm, one 8-input step a statement | 2.69 | 10.40 | 2.07 |
+| asm, 32 inputs a pair of statements, immediate offsets | 2.86 | 10.99 | 2.22 |
+| the same, the block's first drains SADDLP (no zeroing) | 3.06 | 11.72 | 2.38 |
+
+At best level with gcc. The probe's "gcc order" row was this file's loop as
+read from one objdump, not its schedule in place: in place, with its
+integer work interleaved and dual-issued, gcc's loop must run near 2.55
+raw, so the probe's +8.5% was against the wrong baseline. Two things on
+the way: gcc allows an asm 30 operands and counts a "+w" twice (clang
+counted otherwise and took the first version), so the temporaries became
+named caller-saved registers; and C's 4095-character string limit splits
+32 inputs into two statements. The asm is gone; what it showed is H8.
+
+## H8 - no zeroing at a block's start, in C
+
+Stated before the edit. The asm's last row gained 7% (2.86 -> 3.06) from
+writing its accumulators with SADDLP at a block's first step instead of
+zeroing twelve of them (`mov v.16b` from a zero register, objdump) and
+accumulating. gcc's C does the same twelve moves every block (every four
+steps at qb = 32). Peeled in C: the first step of a block drains with
+vpaddlq_s16 (SADDLP), the rest with vpadalq_s16. Predicted: gemmbench +3
+to +6% at one thread.
+
+### H8, measured: kept
+
+| | 1 thread | 4 threads | L1-resident |
+|---|---|---|---|
+| a01a01f | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
+| **first step SADDLP** | **3.23 (+5.2%)** | **12.43 (+4.5%)** | 2.45 |
+
+ff down gained most alone, 2.96 -> 3.18 (its blocks are the same 32 inputs,
+its tiles more of them). MAC/cycle a core: 2.31 alone, 2.22 at four.
+`./pkito bench`: **47.319 s and 47.328 s**, from 49.17: -3.8%.

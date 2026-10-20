@@ -140,6 +140,42 @@ static inline int8x16_t rep4(const int8_t *p) {
     return vreinterpretq_s8_s32(vdupq_n_s32(v));
 }
 
+#ifndef PK_NEON_DOTPROD
+/* One step of the ARMv8.0 tile: a pair of groups, 8 inputs, for NC columns
+ * at g (group k/4 of the half panel) and x[c] + k. A block's first step
+ * writes the accumulators with SADDLP; the others add to them with SADALP.
+ * Zeroing twelve accumulators and adding was twelve moves a block, and
+ * this way the same sums cost none (CLIMB.md, 2026-10-20, H8). */
+static inline __attribute__((always_inline))
+void q8_step_v80(const int8_t *g, const int8_t *const *x, uint32_t k, int32x4_t s[4][4],
+                 const int NC, const int first) {
+    int8x16_t wa = vld1q_s8(g), wb = vld1q_s8(g + 16);          /* group k/4 */
+    int8x16_t wc = vld1q_s8(g + 64), wd = vld1q_s8(g + 80);     /* group k/4 + 1 */
+    for (int c = 0; c < NC; c++) {
+        int8x16_t x0 = rep4(x[c] + k), x1 = rep4(x[c] + k + 4);
+        int16x8_t p0 = vmull_s8(vget_low_s8(wa), vget_low_s8(x0));
+        int16x8_t p1 = vmull_high_s8(wa, x0);
+        int16x8_t p2 = vmull_s8(vget_low_s8(wb), vget_low_s8(x0));
+        int16x8_t p3 = vmull_high_s8(wb, x0);
+        p0 = vmlal_s8(p0, vget_low_s8(wc), vget_low_s8(x1));
+        p1 = vmlal_high_s8(p1, wc, x1);
+        p2 = vmlal_s8(p2, vget_low_s8(wd), vget_low_s8(x1));
+        p3 = vmlal_high_s8(p3, wd, x1);
+        if (first) {
+            s[c][0] = vpaddlq_s16(p0);
+            s[c][1] = vpaddlq_s16(p1);
+            s[c][2] = vpaddlq_s16(p2);
+            s[c][3] = vpaddlq_s16(p3);
+        } else {
+            s[c][0] = vpadalq_s16(s[c][0], p0);
+            s[c][1] = vpadalq_s16(s[c][1], p1);
+            s[c][2] = vpadalq_s16(s[c][2], p2);
+            s[c][3] = vpadalq_s16(s[c][3], p3);
+        }
+    }
+}
+#endif
+
 /* Blocks [b0, b1) of the product, for NC columns from t0. A tile that
  * takes all the blocks starts its float accumulators at zero and finishes
  * the outputs; one that takes a chunk of them (pk_k_gemm_q8 below) starts
@@ -194,27 +230,10 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
         /* rows 4h..4h+1 and 4h+2..4h+3 of vector h, and the same of h+1:
          * each row's sum in two lanes until the block ends */
         int32x4_t s[4][4];
-        for (int c = 0; c < NC; c++) s[c][0] = s[c][1] = s[c][2] = s[c][3] = vdupq_n_s32(0);
-        for (uint32_t k = b * qb; k < (b + 1) * qb; k += 8) {
-            const int8_t *g = w + (size_t)(k / 4) * 64 + 16 * h;
-            int8x16_t wa = vld1q_s8(g), wb = vld1q_s8(g + 16);          /* group k/4 */
-            int8x16_t wc = vld1q_s8(g + 64), wd = vld1q_s8(g + 80);     /* group k/4 + 1 */
-            for (int c = 0; c < NC; c++) {
-                int8x16_t x0 = rep4(x[c] + k), x1 = rep4(x[c] + k + 4);
-                int16x8_t p0 = vmull_s8(vget_low_s8(wa), vget_low_s8(x0));
-                int16x8_t p1 = vmull_high_s8(wa, x0);
-                int16x8_t p2 = vmull_s8(vget_low_s8(wb), vget_low_s8(x0));
-                int16x8_t p3 = vmull_high_s8(wb, x0);
-                p0 = vmlal_s8(p0, vget_low_s8(wc), vget_low_s8(x1));
-                p1 = vmlal_high_s8(p1, wc, x1);
-                p2 = vmlal_s8(p2, vget_low_s8(wd), vget_low_s8(x1));
-                p3 = vmlal_high_s8(p3, wd, x1);
-                s[c][0] = vpadalq_s16(s[c][0], p0);
-                s[c][1] = vpadalq_s16(s[c][1], p1);
-                s[c][2] = vpadalq_s16(s[c][2], p2);
-                s[c][3] = vpadalq_s16(s[c][3], p3);
-            }
-        }
+        uint32_t k = b * qb;
+        q8_step_v80(w + (size_t)(k / 4) * 64 + 16 * h, x, k, s, NC, 1);
+        for (k += 8; k < (b + 1) * qb; k += 8)
+            q8_step_v80(w + (size_t)(k / 4) * 64 + 16 * h, x, k, s, NC, 0);
         for (int c = 0; c < NC; c++) {
             float32x4_t d = vdupq_n_f32(a->d[(size_t)(t0 + c) * nb + b]);
             int32x4_t r0 = vpaddq_s32(s[c][0], s[c][1]), r1 = vpaddq_s32(s[c][2], s[c][3]);
