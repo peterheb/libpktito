@@ -27,6 +27,14 @@
 #define PK_MAX_PARAMS 256
 #define PK_MAX_TENSORS 4096
 #define PK_MAX_PIECES (1u << 20)
+/* The least a guard against zero may be: the layer norms' variance's, the
+ * features' standard deviation's and the log's. A layer norm of a flat row
+ * with eps 0 is 0 times infinity, and that NaN goes straight into the int8
+ * quantizer, whose conversion of it is undefined behaviour. (The features'
+ * NaN would be flushed to 0 by the subsampling's first ReLU, which is why
+ * a 1e30 sample is safe; their guards are held to the same bound anyway.)
+ * A normal float, so it cannot flush to 0. */
+#define PK_EPS_MIN 1e-30f
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "a .pkf is little-endian and pkito reads it in place"
@@ -108,15 +116,15 @@ static int validate_vocab(const unsigned char *v, uint64_t size, char *err, size
         if (types[i] < PK_PIECE_NORMAL || types[i] > PK_PIECE_UNUSED)
             return fail(err, errlen, "piece %u has type %u", (unsigned)i, types[i]);
         uint32_t a = rd32(v + 4 + 4 * (uint64_t)i), b = rd32(v + 4 + 4 * ((uint64_t)i + 1));
-        if (!utf8_ok(t0 + a, b - a))
-            return fail(err, errlen, "piece %u is not UTF-8", (unsigned)i);
+        if (!utf8_ok(t0 + a, b - a) || memchr(t0 + a, 0, b - a))
+            return fail(err, errlen, "piece %u is not UTF-8 text", (unsigned)i);
     }
     uint64_t np = rd32(t0 + text);
     if (np != size - head - text - 4)
         return fail(err, errlen, "the vocabulary's punctuation is %llu bytes where %llu are left",
                     (unsigned long long)np, (unsigned long long)(size - head - text - 4));
-    if (!utf8_ok(t0 + text + 4, np))
-        return fail(err, errlen, "the punctuation is not UTF-8");
+    if (!utf8_ok(t0 + text + 4, np) || memchr(t0 + text + 4, 0, np))
+        return fail(err, errlen, "the punctuation is not UTF-8 text");
     return 0;
 }
 
@@ -260,7 +268,8 @@ int pk_pkf_validate(const unsigned char *p, size_t n, char *err, size_t errlen) 
 typedef struct {
     const unsigned char *buf;
     pk_header h;
-    uint8_t *used;
+    uint8_t *used;                 /* a tensor bound, by descriptor */
+    uint8_t pused[PK_MAX_PARAMS];  /* a param read, by its place in the table */
     char *err;
     size_t errlen;
 } pk_file;
@@ -268,8 +277,10 @@ typedef struct {
 static const pk_param *param(pk_file *f, const char *key, pk_param *out) {
     for (uint32_t i = 0; i < f->h.n_params; i++) {
         memcpy(out, f->buf + f->h.params_off + (size_t)i * sizeof *out, sizeof *out);
-        if (!strcmp(out->key, key))
+        if (!strcmp(out->key, key)) {
+            f->pused[i] = 1;
             return out;
+        }
     }
     return NULL;
 }
@@ -409,15 +420,15 @@ static int bind_params(pk_file *f, pk_model *m) {
         || u32p(f, "hop_length", 1, 4096, &m->hop)
         || u32p(f, "n_mels", 8, 1024, &m->n_mels)
         || f32p(f, "preemph", 0, 1, &m->preemph)
-        || f32p(f, "log_guard", 0, 1, &m->log_guard)
-        || f32p(f, "norm_eps", 0, 1, &m->norm_eps)
+        || f32p(f, "log_guard", PK_EPS_MIN, 1, &m->log_guard)
+        || f32p(f, "norm_eps", PK_EPS_MIN, 1, &m->norm_eps)
         || u32p(f, "n_layers", 1, 256, &m->n_layers)
         || u32p(f, "d_model", 32, 16384, &m->d_model)
         || u32p(f, "n_heads", 1, 256, &m->n_heads)
         || u32p(f, "ff_dim", 32, 65536, &m->ff_dim)
         || u32p(f, "conv_kernel", 1, 63, &m->conv_kernel)
         || u32p(f, "sub_channels", 32, 4096, &m->sub_channels)
-        || f32p(f, "ln_eps", 0, 1, &m->ln_eps)
+        || f32p(f, "ln_eps", PK_EPS_MIN, 1, &m->ln_eps)
         || u32p(f, "vocab", 1, PK_MAX_PIECES, &m->vocab)
         || u32p(f, "pred_hidden", 32, 16384, &m->pred_hidden)
         || u32p(f, "pred_layers", 1, 16, &m->pred_layers)
@@ -551,6 +562,15 @@ static int bind(pk_file *f, pk_model *m) {
     m->meta_size = (size_t)f->h.meta_size;
     memcpy(m->name, f->h.name, sizeof m->name);
 
+    /* Anything the binder did not ask for is refused, not ignored: a param
+     * or a tensor this build does not know is a file made for something it
+     * does not implement, and would otherwise run as a different model. */
+    for (uint32_t i = 0; i < f->h.n_params; i++)
+        if (!f->pused[i]) {
+            pk_param q;
+            memcpy(&q, f->buf + f->h.params_off + (size_t)i * sizeof q, sizeof q);
+            return fail(f->err, f->errlen, "param %s is not one this model has", q.key);
+        }
     for (uint32_t i = 0; i < f->h.n_tensors; i++)
         if (!f->used[i]) {
             pk_tensor t;
@@ -561,6 +581,23 @@ static int bind(pk_file *f, pk_model *m) {
 }
 
 /* ---------------------------------------------------------------- load --- */
+
+/* Validate and bind the file at buf[0..size), which m holds (mapped, or in
+ * a buffer of its own): 0, or -1 with the reason in why. */
+static int open_buffer(pk_model *m, char *why, size_t whylen) {
+    pk_file f;
+    memset(&f, 0, sizeof f);
+    f.buf = m->map;
+    f.err = why;
+    f.errlen = whylen;
+    if (pk_pkf_validate(m->map, m->size, why, whylen))
+        return -1;
+    memcpy(&f.h, m->map, sizeof f.h);
+    f.used = calloc(f.h.n_tensors, 1);
+    int rc = f.used ? bind(&f, m) : fail(why, whylen, "out of memory");
+    free(f.used);
+    return rc;
+}
 
 pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
     char why[256];
@@ -578,16 +615,36 @@ pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
     }
     m->map = map;
     m->size = size;
-    pk_file f = { map, { 0 }, NULL, why, sizeof why };
-    int rc = pk_pkf_validate(map, size, why, sizeof why);
-    if (!rc) {
-        memcpy(&f.h, map, sizeof f.h);
-        f.used = calloc(f.h.n_tensors, 1);
-        rc = f.used ? bind(&f, m) : fail(why, sizeof why, "out of memory");
-        free(f.used);
-    }
-    if (rc) {
+    if (open_buffer(m, why, sizeof why)) {
         fail(err, errlen, "%s: %s", path, why);
+        pk_model_free(m);
+        return NULL;
+    }
+    return m;
+}
+
+pk_model *pk_model_from_bytes(const void *bytes, size_t n, char *err, size_t errlen) {
+    char why[256];
+    if ((uint64_t)n > PK_FILE_MAX) {
+        fail(err, errlen, "%zu bytes is larger than any model file", n);
+        return NULL;
+    }
+    pk_model *m = calloc(1, sizeof *m);
+    void *raw = malloc(n + PK_ALIGN);          /* the copy, at a PK_ALIGN boundary */
+    if (!m || !raw) {
+        free(m);
+        free(raw);
+        fail(err, errlen, "out of memory");
+        return NULL;
+    }
+    unsigned char *buf = (unsigned char *)(((uintptr_t)raw + PK_ALIGN - 1) & ~(uintptr_t)(PK_ALIGN - 1));
+    if (n)
+        memcpy(buf, bytes, n);
+    m->raw = raw;
+    m->map = buf;
+    m->size = n;
+    if (open_buffer(m, why, sizeof why)) {
+        fail(err, errlen, "%s", why);
         pk_model_free(m);
         return NULL;
     }
@@ -603,7 +660,10 @@ void pk_model_free(pk_model *m) {
     free(m->mel_n);
     free(m->layers);
     free(m->lstm);
-    pk_unmap(m->map, m->size);
+    if (m->raw)
+        free(m->raw);
+    else
+        pk_unmap(m->map, m->size);
     free(m);
 }
 

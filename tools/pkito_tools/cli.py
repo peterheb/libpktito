@@ -1,4 +1,4 @@
-"""pkito-tools convert | info | ref"""
+"""pkito-tools convert | tiny | info | ref"""
 import argparse
 import sys
 
@@ -43,6 +43,8 @@ def main(argv=None):
     c.add_argument("nemo")
     c.add_argument("vad")
     c.add_argument("dst")
+    t = sub.add_parser("tiny", help="a tiny .pkf with random weights, for the C checks")
+    t.add_argument("dst")
     i = sub.add_parser("info", help="a .pkf's metadata, params and tensors")
     i.add_argument("file")
     r = sub.add_parser("ref", help="transcribe a 16 kHz WAV with the float64 reference")
@@ -53,6 +55,10 @@ def main(argv=None):
     if a.cmd == "convert":
         from . import convert
         convert.convert(a.nemo, a.vad, a.dst)
+    elif a.cmd == "tiny":
+        from . import tiny
+        size = tiny.write(a.dst)
+        print("%s: %d bytes" % (a.dst, size))
     elif a.cmd == "info":
         from . import pkf
         f = pkf.File(a.file)

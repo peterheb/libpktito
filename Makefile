@@ -130,7 +130,8 @@ models/%.pkf: $(SRC)/%/%.nemo
 # ---------------------------------------------------------------- tests ----
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
-TESTS := tests/kcheck tests/mathcheck
+TINY  := tests/data/tiny.pkf
+TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck
 
 # tests/kref.o is backend/ref under other names, built with this backend's
 # flags, so that kcheck holds the backend to ref bit for bit in one binary.
@@ -138,18 +139,34 @@ tests/kcheck: tests/kcheck.c tests/kref.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/kcheck.c tests/kref.o $(LIB_OBJ) $(LDLIBS)
 tests/mathcheck: tests/mathcheck.c core/vmath.h
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/mathcheck.c $(LDLIBS)
+tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
+tests/wavcheck: tests/wavcheck.c core/wav.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o $(LDLIBS)
 
-# check-c needs a compiler and a model and nothing else, so it runs on any
-# board: the math library, every kernel against ref, and Silero's test.wav
-# through ./pkito. Its VAD probabilities must be tests/data/test.probs.txt
-# exactly - vadito's bits, which vadito holds to onnxruntime - and its
-# transcripts, every token and its time, the bytes in test.v2.json and
-# test.v3.json, which ref wrote: every backend on every machine computes the
-# same ones (backend/kernels.h), and this is where a board that does not
-# would say so. A model file that is not there is skipped, with a line.
+# check-c needs a compiler and nothing else but MODEL, so it runs on any
+# board: the math library; every kernel against ref; the model file's
+# validator on its malformed corpus and the whole engine on the tiny model
+# (tests/data/tiny.pkf, `pkito-tools tiny` writes it); the WAV reader on its
+# own; the CLI on the tiny model's 35 s recording, which it cuts into chunks;
+# and Silero's test.wav through ./pkito. Its VAD probabilities must be
+# tests/data/test.probs.txt exactly - vadito's bits, which vadito holds to
+# onnxruntime - and its transcripts, every token and its time, the bytes in
+# test.v2.json and test.v3.json, which ref wrote: every backend on every
+# machine computes the same ones (backend/kernels.h), and this is where a
+# board that does not would say so. A model file that is not there is
+# skipped, with a line.
 check-c: pkito $(TESTS)
 	./tests/mathcheck
 	./tests/kcheck $(MODEL)
+	./tests/pkfcheck $(TINY) tests/pkfcheck.wav
+	./tests/wavcheck tests/wavcheck.tmp
+	@./pkito -m $(TINY) --json tests/pkfcheck.wav > tests/pkfcheck.json \
+	  && ./pkito -m $(TINY) --srt tests/pkfcheck.wav > /dev/null \
+	  && ./pkito -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
+	  && echo "pkito: the tiny model through the CLI, chunked, three ways" \
+	  || { echo "pkito: FAIL on the tiny model"; exit 1; }
+	@rm -f tests/pkfcheck.wav tests/pkfcheck.json
 	@./pkito probs -m $(MODEL) tests/data/test.wav | cmp -s - tests/data/test.probs.txt \
 	  && echo "test.wav: VAD probabilities are vadito's, bit for bit" \
 	  || { echo "test.wav: FAIL - VAD probabilities differ from tests/data/test.probs.txt"; exit 1; }
@@ -158,6 +175,42 @@ check-c: pkito $(TESTS)
 	  ./pkito --json -m $$f tests/data/test.wav | cmp -s - tests/data/test.$$v.json \
 	    && echo "test.wav: $$v transcript is ref's, every token and time" \
 	    || { echo "test.wav: FAIL - $$v transcript differs from tests/data/test.$$v.json"; exit 1; }; done
+
+# The half that needs Python and NeMo's checkpoints to compare with: the
+# detokenizer against sentencepiece (whose package NeMo brings; PYNEMO is a
+# Python that has it), and, where tools/corpus.py's sets are, the WER over
+# them against float32's transcripts from tools/quantcheck.py. Each is
+# skipped with a line when what it needs is not here.
+PYNEMO ?= $(firstword $(wildcard .venv-nemo/bin/python) $(PYTHON))
+tests/tokcheck: tests/tokcheck.c core/model.o core/os.o core/tokens.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/tokcheck.c core/model.o core/os.o core/tokens.o $(LDLIBS)
+check-python: pkito tests/tokcheck
+	@for v in v2 v3; do n=$(SRC)/parakeet-tdt-0.6b-$$v/parakeet-tdt-0.6b-$$v.nemo; \
+	  f=models/parakeet-tdt-0.6b-$$v.pkf; \
+	  if [ -f $$n ] && [ -f $$f ]; then $(PYNEMO) tests/tokcheck.py tests/tokcheck $$n $$f || exit 1; \
+	  else echo "tokcheck: no $$n or $$f - skipped"; fi; done
+	@if [ -d models/corpus/ls200 ] && [ -f models/corpus/qc-v2-ls200.json ]; then \
+	  $(PYTHON) tests/wercheck.py ./pkito models/parakeet-tdt-0.6b-v2.pkf models/corpus/ls200 \
+	    --against models/corpus/qc-v2-ls200.json || exit 1; \
+	else echo "wercheck: no models/corpus/ls200 - skipped"; fi
+	@if [ -d models/corpus/fleurs-de_de ] && [ -f models/corpus/qc-v3-fleurs.json ]; then \
+	  $(PYTHON) tests/wercheck.py ./pkito models/parakeet-tdt-0.6b-v3.pkf models/corpus/fleurs-*_* \
+	    --against models/corpus/qc-v3-fleurs.json || exit 1; \
+	else echo "wercheck: no models/corpus/fleurs-* - skipped"; fi
+
+check: check-c check-python
+
+# The two parsers of untrusted bytes and the engine behind them, under ASan
+# and UBSan, on the same corpora, against backend/ref. Apart from check-c
+# because not every board's compiler ships the sanitizer runtimes.
+SAN := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+check-sanitize:
+	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/pkfcheck-san \
+	  tests/pkfcheck.c $(LIB_SRC) backend/ref/kernels.c $(LDLIBS)
+	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/wavcheck-san \
+	  tests/wavcheck.c core/wav.c $(LDLIBS)
+	ASAN_OPTIONS=detect_leaks=0 ./tests/pkfcheck-san $(TINY)
+	ASAN_OPTIONS=detect_leaks=0 ./tests/wavcheck-san tests/wavcheck.tmp
 
 check-math: tests/mathcheck
 	./tests/mathcheck --all
@@ -176,7 +229,9 @@ remote:
 	  --exclude '/tests/*check' ./ $(HOST):$(RDIR)/
 	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pkito bench -m $(MODEL) $(BENCH)'
 
-.PHONY: models check-c check-math remote clean
+.PHONY: models check-c check-sanitize check-math remote clean
 
 clean:
 	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS)
+	rm -f tests/*-san tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
+	rm -rf tests/*.dSYM

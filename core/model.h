@@ -66,6 +66,7 @@ typedef struct {               /* an LSTM layer: gates i f g o */
 struct pk_model {
     const unsigned char *map;  /* the file */
     size_t size;
+    void  *raw;                /* the copy pk_model_from_bytes made, or NULL: mapped */
     char   name[64];
 
     /* the features */
