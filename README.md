@@ -164,6 +164,13 @@ nothing there. On v3 over FLEURS the same choice is 4.42% against float32's
 4.41%; 4-bit weights are 4.76% there, with 127 of 360 transcripts changed,
 which is why the files are int8.
 
+The attention's own three products stay float. Making them int8 as well -
+keys, positions and values rounded a row at a time like weights, queries and
+attention probabilities in blocks of 32 like activations (`quantcheck.py
+... ;att8`) - moved nothing measurable on v2, but on v3 over FLEURS it took
+dlogp from -0.024 to -0.041 (t -5.4) and the encoder's error from 5.2% to
+5.9%, for a stage that is about an eighth of the time at 30 s chunks.
+
 The integer sums are what make every backend agree: a block's 32 products
 add up to the same int32 in any order, so SDOT, SMULL, VPMADDUBSW and
 VPDPBUSD each take them their own way, and only the one fused multiply-add a
