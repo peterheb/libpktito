@@ -94,6 +94,19 @@ size_t pk_text(const pk_model *m, const pk_tok *t, size_t n, char *out, size_t c
  * U+2581 still standing for a space: for printing a token on its own. */
 const char *pk_piece(const pk_model *m, int32_t id, size_t *len);
 
+/* The words of n tokens, as NeMo groups them for its word timestamps: a
+ * word starts at a token whose piece starts with SentencePiece's space
+ * (and at the first token), and the tokens after it that do not belong to
+ * it, punctuation included. A word spans encoder frames [start, end): its
+ * first token's frame to its last token's frame plus that token's duration.
+ * Returns how many words there are; out has room for n. */
+typedef struct {
+    int32_t tok, ntok;          /* its tokens: t[tok] .. t[tok + ntok - 1] */
+    int32_t start, end;         /* in encoder frames */
+} pk_word;
+
+size_t pk_words(const pk_model *m, const pk_tok *t, size_t n, pk_word *out);
+
 /* The backend this library was built with, e.g. "neon-dp (ARMv8.2: SDOT)". */
 const char *pk_backend(void);
 

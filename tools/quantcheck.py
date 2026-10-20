@@ -49,6 +49,9 @@ one for the classes it names:
   sub     the subsampling's two 256x256 pointwise convolutions
   dec     the prediction network's LSTMs
   joint   the joint's three matrices
+
+A rule "att8" makes the attention's own three products int8 as well
+(attention_int8 says how).
 """
 import argparse
 import json
@@ -167,12 +170,52 @@ def a8b(n):
 AQ = {"a8row": a8row, "a8b32": a8b(32), "a8b64": a8b(64), "a8b128": a8b(128)}
 
 
+def _rows8(x):
+    """int8 a row at a time (the last axis), as a q8 'weight' would be"""
+    d = np.abs(x).max(-1, keepdims=True) / 127
+    d[d == 0] = 1
+    return np.rint(x / d) * d
+
+
+def attention_int8(x, pe, w, q, a):
+    """The attention's three products in int8, as pk_k_gemm_q8 would take
+    them: keys, positions and the values (dims as rows, over the keys)
+    rounded a row at a time like weights; the queries and the attention
+    probabilities in blocks of 32 like activations."""
+    T, D = x.shape
+    H = a["n_heads"]
+    dk = D // H
+    mm = reference.mm
+    Q = mm(x, w, q + "att.q").reshape(T, H, dk)
+    K = mm(x, w, q + "att.k").reshape(T, H, dk)
+    V = mm(x, w, q + "att.v").reshape(T, H, dk)
+    P = mm(pe, w, q + "att.pos").reshape(2 * T - 1, H, dk)
+    qu = a8b(32)((Q + w[q + "att.bias_u"].reshape(H, dk)).transpose(1, 0, 2))
+    qv = a8b(32)((Q + w[q + "att.bias_v"].reshape(H, dk)).transpose(1, 0, 2))
+    ac = qu @ _rows8(K.transpose(1, 0, 2)).transpose(0, 2, 1)
+    bd = qv @ _rows8(P.transpose(1, 0, 2)).transpose(0, 2, 1)
+    i, j = np.arange(T)[:, None], np.arange(T)[None, :]
+    bd = bd[:, i, T - 1 - i + j]
+    sc = (ac + bd) / np.sqrt(dk)
+    sc = np.exp(sc - sc.max(-1, keepdims=True))
+    sc /= sc.sum(-1, keepdims=True)
+    Tp = (T + 31) // 32 * 32
+    scp = np.zeros(sc.shape[:-1] + (Tp,), np.float32)
+    scp[..., :T] = sc
+    scq = a8b(32)(scp)[..., :T]
+    Vt = _rows8(V.transpose(1, 2, 0))                 # [H][dk][T]: a dim's values over the keys
+    o = (scq @ Vt.transpose(0, 2, 1)).transpose(1, 0, 2).reshape(T, D)
+    return mm(o.astype(np.float32), w, q + "att.o")
+
+
 def parse(cfg):
     """[(weight rounding, activation rounding, classes)], in order."""
     if cfg == "f32":
         return []
     rules = []
     for rule in cfg.split(";"):
+        if rule == "att8":
+            continue
         on = {"enc"}
         if "@" in rule:
             rule, cl = rule.split("@")
@@ -248,9 +291,12 @@ def main():
     print("%s: %d recordings, %.1f minutes" % (os.path.basename(args.nemo), len(files),
           sum(len(read_wav(p)) for p, _ in files) / 16000 / 60), flush=True)
 
+    float_attention = reference.attention
+
     def run(cfg, base=None):
         wd, mm = setup(w32, cfg)
         reference.mm = mm
+        reference.attention = attention_int8 if "att8" in cfg.split(";") else float_attention
         out = []
         t0 = time.time()
         for i, (path, ref) in enumerate(files):

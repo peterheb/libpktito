@@ -115,3 +115,21 @@ const char *pk_piece(const pk_model *m, int32_t id, size_t *len) {
     *len = m->piece_off[id + 1] - m->piece_off[id];
     return m->piece_text + m->piece_off[id];
 }
+
+size_t pk_words(const pk_model *m, const pk_tok *t, size_t n, pk_word *out) {
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        size_t len;
+        const char *s = pk_piece(m, t[i].id, &len);
+        int starts = len >= 3 && !memcmp(s, SPACE, 3);
+        if (k == 0 || starts) {
+            out[k].tok = (int32_t)i;
+            out[k].ntok = 0;
+            out[k].start = t[i].frame;
+            k++;
+        }
+        out[k - 1].ntok++;
+        out[k - 1].end = t[i].frame + t[i].dur;
+    }
+    return k;
+}

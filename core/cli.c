@@ -40,12 +40,14 @@ static const char *usage =
     "  -t, --threads N       threads (default: one a core)\n"
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
     "                        a longer recording is cut at its silences\n"
-    "      --json            chunks as JSON: start, end, text and every token's time\n"
+    "      --json            chunks as JSON: start, end, text, every word's and every\n"
+    "                        token's time\n"
     "      --stream          read FILE as it arrives (a pipe, a microphone) and print\n"
     "                        each stretch of speech as its pause ends it\n"
     "      --pause MS        with --stream, the silence that ends a stretch (1000):\n"
     "                        shorter is sooner and less accurate\n"
-    "      --srt             subtitles, a cue a chunk\n"
+    "      --srt             subtitles: cues of a sentence or two lines at most, timed\n"
+    "                        by their words\n"
     "  -v, --verbose         say what was read, how, and how long it took\n";
 
 typedef struct {
@@ -246,6 +248,72 @@ static void srt_time(double s) {
     printf("%02ld:%02ld:%02ld,%03ld", ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000);
 }
 
+/* Subtitles from a chunk's words: a cue ends after a sentence, before a
+ * pause of a second, or before it would run past 7 s or two lines of 42
+ * characters - the common broadcast limits - and a cue of more than one
+ * line is broken at the space nearest its middle. */
+#define SRT_LINE 42
+#define SRT_SECONDS 7.0
+
+typedef struct { int n; } srt_state;
+
+static void srt_cue(srt_state *st, const char *text, double t0, double t1) {
+    size_t len = strlen(text);
+    printf("%d\n", ++st->n);
+    srt_time(t0);
+    printf(" --> ");
+    srt_time(t1);
+    putchar('\n');
+    if (len <= SRT_LINE) {
+        printf("%s\n\n", text);
+        return;
+    }
+    size_t best = 0;
+    for (size_t i = 1; i < len; i++)
+        if (text[i] == ' ' && (best == 0 || (i > len / 2 ? i - len / 2 : len / 2 - i)
+                                           < (best > len / 2 ? best - len / 2 : len / 2 - best)))
+            best = i;
+    if (!best)
+        printf("%s\n\n", text);
+    else
+        printf("%.*s\n%s\n\n", (int)best, text, text + best + 1);
+}
+
+static void srt_chunk(srt_state *st, const pk_model *m, const pk_tok *t, size_t nt, double start) {
+    pk_word *w = malloc((nt ? nt : 1) * sizeof *w);
+    char *cue = malloc(4096), word[1024];
+    if (!w || !cue)
+        die("out of memory");
+    const double fs = pk_model_frame_seconds(m);
+    size_t nw = pk_words(m, t, nt, w), len = 0;
+    double c0 = 0, c1 = 0;
+    for (size_t i = 0; i < nw; i++) {
+        pk_text(m, t + w[i].tok, (size_t)w[i].ntok, word, sizeof word);
+        double w0 = start + w[i].start * fs, w1 = start + w[i].end * fs;
+        size_t wl = strlen(word);
+        if (len && (w0 - c1 > 1.0 || w1 - c0 > SRT_SECONDS || len + 1 + wl > 2 * SRT_LINE)) {
+            srt_cue(st, cue, c0, c1);
+            len = 0;
+        }
+        if (!len) {
+            c0 = w0;
+            cue[0] = 0;
+        }
+        len += (size_t)snprintf(cue + len, 4096 - len, "%s%s", len ? " " : "", word);
+        if (len > 4000) len = 4000;
+        c1 = w1 > c1 || len == wl ? w1 : c1;
+        char last = wl ? word[wl - 1] : 0;
+        if (last == '.' || last == '?' || last == '!') {
+            srt_cue(st, cue, c0, c1);
+            len = 0;
+        }
+    }
+    if (len)
+        srt_cue(st, cue, c0, c1);
+    free(w);
+    free(cue);
+}
+
 /* One file through the transcriber: its chunks, printed as -o asks. With
  * several files a line each, the file's name, a tab and its chunks' text. */
 static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, int many,
@@ -261,6 +329,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     if (!text)
         die("out of memory");
     double fs = pk_model_frame_seconds(m);
+    srt_state srt = { 0 };
     if (many && !o->json)
         printf("%s\t", path);
     if (o->json && many) {
@@ -284,7 +353,21 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         if (o->json) {
             printf("%s\n {\"start\": %.3f, \"end\": %.3f, \"text\": ", i ? "," : "", start, end);
             json_str(text);
-            printf(", \"tokens\": [");
+            pk_word *wd = malloc(((size_t)nt ? (size_t)nt : 1) * sizeof *wd);
+            if (!wd)
+                die("out of memory");
+            size_t nw = pk_words(m, t, (size_t)nt, wd);
+            printf(", \"words\": [");
+            for (size_t k = 0; k < nw; k++) {
+                char word[1024];
+                pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
+                printf("%s{\"word\": ", k ? ", " : "");
+                json_str(word);
+                printf(", \"start\": %.2f, \"end\": %.2f}", start + wd[k].start * fs,
+                       start + wd[k].end * fs);
+            }
+            free(wd);
+            printf("], \"tokens\": [");
             for (long k = 0; k < nt; k++) {
                 size_t pl;
                 const char *piece = pk_piece(m, t[k].id, &pl);
@@ -297,11 +380,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
             }
             printf("]}");
         } else if (o->srt) {
-            printf("%zu\n", i + 1);
-            srt_time(start);
-            printf(" --> ");
-            srt_time(end);
-            printf("\n%s\n\n", text);
+            srt_chunk(&srt, m, t, (size_t)nt, start);
         } else if (many) {
             printf("%s%s", i && len ? " " : "", text);
         } else if (len) {
