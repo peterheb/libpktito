@@ -145,3 +145,29 @@ The decoder's qb = n path keeps its loop: 64.3. Kept. The engine:
 
 -36% at six threads. The profile at six moves the float attention to 24.1%
 of the run (257.6 ms), behind the feed-forward's 42.1% (449.3 ms).
+
+## H3, before the edit: the VPMADDUBSW path, unrolled, |w| hoisted
+
+The avx2 tile takes, per column and group, |x| (VPSIGNB x, x) and w sign(x)
+(VPSIGNB w, x), then VPMADDUBSW, VPMADDWD and VPADDD: five ALU ops for 32
+MACs, three of them a second VPSIGNB's worth of waste. Turn it around: |w|
+(VPABSB) once a weight vector, for every column, and x sign(w) (VPSIGNB x, w)
+a column - four ALU ops a column a group, one shared - and unroll the block
+of 32 as H2 did (gcc is copying the accumulators here too). Golden Cove
+issues VPSIGNB, VPMADDUBSW and VPMADDWD on ports 0 and 1 only, so a group's
+ceiling is about 1.6 cycles a column, 20 MAC/cycle, from 15. Predict q8bench
+avx2 73 -> ~90 GMAC/s, bench at six threads 2.26 -> ~1.9 s.
+
+**H3, measured.** tests/kcheck: ref's bits, avx2 and avx2-vnni. q8bench, one
+P-core, avx2: 73.3 -> 89.9 GMAC/s on 4096x1024 (90.2, 90.0 on the other two),
+the decoder's T = 1 product 47.6 -> 52.1: 18.6 MAC/cycle against the ~20
+that ports 0 and 1 allow it. As predicted. Kept. The engine:
+
+| build | threads | min | median | max | was (median) |
+|---|---|---|---|---|---|
+| avx2 | 1 | 6.544 | 6.640 | 6.711 | 7.709 |
+| avx2 | 6 | 1.994 | 1.997 | 2.002 | 2.260 |
+
+(A side effect worth writing down: with |w| as the unsigned factor a weight
+of -128 multiplies correctly, VPABSB leaving it 0x80 = 128 unsigned, where
+the old form's VPSIGNB w, x wrapped it. No converted file has one.)

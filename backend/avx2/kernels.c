@@ -10,10 +10,12 @@
  *
  * x86 has no instruction that multiplies signed bytes by signed bytes.
  * VPMADDUBSW multiplies unsigned by signed and adds pairs into 16 bits,
- * saturating; with the activation's sign moved onto the weight (VPSIGNB:
- * |x| times w * sign(x)) both factors are at most 127, a pair at most
+ * saturating; with the weight's sign moved onto the activation (VPSIGNB:
+ * |w| times x * sign(w)) both factors are at most 127, a pair at most
  * 2 * 127^2, and nothing saturates - which is why pk_k_quantize never makes
- * -128. VPDPBUSD multiplies unsigned by signed into 32 bits with no
+ * -128. (A weight of -128, which no converted file has, would still be
+ * right: VPABSB leaves it 0x80, which VPMADDUBSW reads as 128, and a pair
+ * of 128 * 127 fits.) VPDPBUSD multiplies unsigned by signed into 32 bits with no
  * saturation, so one factor can be offset into unsigned instead - the
  * weight, w + 128 - and 128 times the block's sum of the other taken back
  * off: one instruction a group where the sign trick takes four.
@@ -327,6 +329,21 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
 
 #else /* VPMADDUBSW */
 
+/* one group of four inputs into the tile: g the half panel's 32 weight
+ * bytes, k the group's first input. |w| once for every column, then each
+ * column's x sign(w), so that VPMADDUBSW multiplies |w| by it: w x, with
+ * both factors at most 127 and a pair at most 2 * 127^2 (CLIMB.md, H3). */
+#define PK_Q8_GROUP(g, k)                                                          \
+    do {                                                                           \
+        const __m256i wv = _mm256_loadu_si256((const __m256i *)(const void *)(g)); \
+        const __m256i wa = _mm256_abs_epi8(wv);                                    \
+        for (int c = 0; c < NC; c++) {                                             \
+            const __m256i xb = _mm256_set1_epi32(load32(x[c] + (k)));              \
+            const __m256i p = _mm256_maddubs_epi16(wa, _mm256_sign_epi8(xb, wv));  \
+            s[c] = _mm256_add_epi32(s[c], _mm256_madd_epi16(p, ones));             \
+        }                                                                          \
+    } while (0)
+
 /* One tile: 8 rows (half a panel, bytes 32h .. 32h+31 of each group) by NC
  * columns. Each block's integer sums go into the float accumulators by one
  * fused multiply-add, as ref's chain. */
@@ -339,16 +356,26 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
     const int8_t *x[4];
     for (int c = 0; c < NC; c++) x[c] = a->q + (size_t)(t0 + c) * n;
     const __m256i ones = _mm256_set1_epi16(1);
+    const int8_t *wh = w + 32 * h;
     for (uint32_t b = 0; b < nb; b++) {
         __m256i s[4];
         for (int c = 0; c < NC; c++) s[c] = _mm256_setzero_si256();
-        for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4) {
-            const __m256i wv = _mm256_loadu_si256((const __m256i *)(const void *)(w + (size_t)k * 16 + 32 * h));
-            for (int c = 0; c < NC; c++) {
-                __m256i xb = _mm256_set1_epi32(load32(x[c] + k));
-                __m256i p = _mm256_maddubs_epi16(_mm256_sign_epi8(xb, xb), _mm256_sign_epi8(wv, xb));
-                s[c] = _mm256_add_epi32(s[c], _mm256_madd_epi16(p, ones));
-            }
+        if (qb == 32) {
+            /* the encoder's blocks: eight groups at constant offsets, which
+             * gcc keeps the accumulators in place across (H2, H3) */
+            const int8_t *g = wh + (size_t)b * 32 * 16;
+            const uint32_t k = b * 32;
+            PK_Q8_GROUP(g, k);
+            PK_Q8_GROUP(g + 64, k + 4);
+            PK_Q8_GROUP(g + 128, k + 8);
+            PK_Q8_GROUP(g + 192, k + 12);
+            PK_Q8_GROUP(g + 256, k + 16);
+            PK_Q8_GROUP(g + 320, k + 20);
+            PK_Q8_GROUP(g + 384, k + 24);
+            PK_Q8_GROUP(g + 448, k + 28);
+        } else {
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4)
+                PK_Q8_GROUP(wh + (size_t)k * 16, k);
         }
         for (int c = 0; c < NC; c++) {
             __m256 d = _mm256_set1_ps(a->d[(size_t)(t0 + c) * nb + b]);
