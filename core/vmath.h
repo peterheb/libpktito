@@ -21,6 +21,9 @@
  *   pk_expf     at most 1 ulp on [-87, 88]; 0.67% of floats not the rounded value
  *   pk_tanhf    at most 1 ulp everywhere; 0.17% not
  *   pk_sigmoidf at most 2 ulp on [-87, inf); 5.2% not
+ *   pk_logf     at most 1 ulp on every positive float; a handful of the 2.1e9 not
+ *   pk_sincosf  0 ulp on the 25 million angles the positional encoding takes
+ *               at 30 minutes and on a sweep of [-8192, 8192]
  *
  * The polynomials are minimax fits of relative error, made by
  * tools/fit_vmath.py; it prints these constants.

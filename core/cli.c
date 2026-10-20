@@ -31,6 +31,8 @@ static const char *usage =
     "usage: pkito [options] FILE.wav...     the transcript (of several: a line each,\n"
     "                                       the file's name, a tab and its text)\n"
     "       pkito bench [options] FILE.wav  how fast this machine transcribes it\n"
+    "       pkito segments [options] FILE   Silero VAD's speech segments: start end\n"
+    "       pkito probs [options] FILE      every 32 ms frame: time and P(speech)\n"
     "       pkito info [options]            what the model file says about itself\n"
     "FILE may be - for stdin.\n"
     "  -m, --model FILE      a .pkf (default $PKITO_MODEL, then the one .pkf in models/\n"
@@ -85,7 +87,8 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--srt")) o->srt = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
-        else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")))
+        else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")
+                 || !strcmp(a, "segments") || !strcmp(a, "probs")))
             o->cmd = a;
         else o->ins[o->nin++] = a;
     }
@@ -375,6 +378,43 @@ static int bench(const opts *o, pk_model *m) {
     return 0;
 }
 
+/* Silero's per-frame probabilities over the whole file, as vadito prints
+ * them, or get_speech_timestamps' segments from them with Silero's
+ * defaults: the VAD inside the model file, on its own. */
+static int vad(const opts *o, pk_model *m) {
+    size_t n;
+    const int rate = pk_model_rate(m);
+    float *x = read_audio(o->in, rate, &n, o);
+    size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
+    float *pad = calloc(frames * PK_VAD_SAMPLES + 1, sizeof *pad);
+    float *probs = malloc((frames + 1) * sizeof *probs);
+    pk_vad *v = pk_vad_new(m);
+    if (!pad || !probs || !v)
+        die("out of memory");
+    memcpy(pad, x, n * sizeof *x);              /* the last frame padded with zeros, as Silero does */
+    pk_vad_probs(v, pad, frames, probs);
+    if (!strcmp(o->cmd, "probs")) {
+        for (size_t f = 0; f < frames; f++)
+            printf("%.3f %.9g\n", (double)f * PK_VAD_SAMPLES / rate, probs[f]);
+    } else {
+        pk_seg_params sp;
+        pk_seg_defaults(&sp);
+        size_t cap = 2 * frames + 1;
+        pk_seg *seg = malloc(cap * sizeof *seg);
+        if (!seg)
+            die("out of memory");
+        size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, cap);
+        for (size_t i = 0; i < ns; i++)
+            printf("%.3f %.3f\n", (double)seg[i].start / rate, (double)seg[i].end / rate);
+        free(seg);
+    }
+    pk_vad_free(v);
+    free(probs);
+    free(pad);
+    free(x);
+    return 0;
+}
+
 static int info(pk_model *m) {
     printf("model     %s\n", pk_model_name(m));
     printf("backend   %s\n", pk_backend());
@@ -389,6 +429,7 @@ int main(int argc, char **argv) {
     parse(argc, argv, &o);
     pk_model *m = load_model(o.model, argv[0]);
     int rc = !strcmp(o.cmd, "bench") ? bench(&o, m) : !strcmp(o.cmd, "info") ? info(m)
+           : !strcmp(o.cmd, "segments") || !strcmp(o.cmd, "probs") ? vad(&o, m)
            : transcribe(&o, m);
     pk_model_free(m);
     free(o.ins);

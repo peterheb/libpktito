@@ -139,9 +139,25 @@ tests/kcheck: tests/kcheck.c tests/kref.o $(LIB_OBJ)
 tests/mathcheck: tests/mathcheck.c core/vmath.h
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/mathcheck.c $(LDLIBS)
 
+# check-c needs a compiler and a model and nothing else, so it runs on any
+# board: the math library, every kernel against ref, and Silero's test.wav
+# through ./pkito. Its VAD probabilities must be tests/data/test.probs.txt
+# exactly - vadito's bits, which vadito holds to onnxruntime - and its
+# transcripts, every token and its time, the bytes in test.v2.json and
+# test.v3.json, which ref wrote: every backend on every machine computes the
+# same ones (backend/kernels.h), and this is where a board that does not
+# would say so. A model file that is not there is skipped, with a line.
 check-c: pkito $(TESTS)
 	./tests/mathcheck
 	./tests/kcheck $(MODEL)
+	@./pkito probs -m $(MODEL) tests/data/test.wav | cmp -s - tests/data/test.probs.txt \
+	  && echo "test.wav: VAD probabilities are vadito's, bit for bit" \
+	  || { echo "test.wav: FAIL - VAD probabilities differ from tests/data/test.probs.txt"; exit 1; }
+	@for v in v2 v3; do f=models/parakeet-tdt-0.6b-$$v.pkf; \
+	  if [ ! -f $$f ]; then echo "test.wav: no $$f - skipped"; continue; fi; \
+	  ./pkito --json -m $$f tests/data/test.wav | cmp -s - tests/data/test.$$v.json \
+	    && echo "test.wav: $$v transcript is ref's, every token and time" \
+	    || { echo "test.wav: FAIL - $$v transcript differs from tests/data/test.$$v.json"; exit 1; }; done
 
 check-math: tests/mathcheck
 	./tests/mathcheck --all
