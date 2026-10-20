@@ -290,8 +290,9 @@ type, for the checks.
 
 ```sh
 make check-c                 # a compiler and a model: any board
-make check                   # and the Python half: sentencepiece, the corpora
+make check                   # and the Python half: sentencepiece, Silero, torchaudio, the corpora
 make check-sanitize          # the model file and WAV parsers under ASan and UBSan
+make check-tsan              # the pool under ThreadSanitizer
 make check-math              # every float through exp, sigmoid, tanh and log
 make remote HOST=user@board  # rsync, build, check-c and bench there
 ```
@@ -300,7 +301,10 @@ make remote HOST=user@board  # rsync, build, check-c and bench there
 bit (tests/kcheck: 1,525 cases), the model file's validator on its
 malformed corpus and the whole engine on the tiny model, the WAV reader on
 its own, and test.wav through `./pkito` and through examples/transcribe:
-vadito's VAD bits, and both models' transcripts byte for byte.
+vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
+the detokenizer against sentencepiece, the state machines against Silero's
+Python, the resampler against torchaudio and the corpora's WER.
+tests/README.md has each check.
 
 ## The tree
 
