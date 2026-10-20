@@ -30,6 +30,21 @@
 #include "vmath.h"
 
 #include <immintrin.h>
+
+#ifdef PK_AVX_VNNI
+/* VPDPBUSD in whichever encoding the build has: AVX-VNNI's VEX form
+ * (Alder Lake and later, Zen 5), or AVX512-VNNI's EVEX form at 256 bits
+ * (Ice Lake, Tiger Lake, Sapphire Rapids, Zen 4), the same operation. The
+ * Makefile asks for the one the CPU has. Only the VEX form has run here
+ * (backend/avx2/CLIMB.md); the EVEX one is built, not yet measured. */
+#if defined(__AVXVNNI__)
+#define PK_DPBUSD(acc, u8, s8) _mm256_dpbusd_avx_epi32(acc, u8, s8)
+#elif defined(__AVX512VNNI__) && defined(__AVX512VL__)
+#define PK_DPBUSD(acc, u8, s8) _mm256_dpbusd_epi32(acc, u8, s8)
+#else
+#error "backend/avx2-vnni wants AVX-VNNI or AVX512-VNNI with AVX512-VL"
+#endif
+#endif
 #include <math.h>
 #include <string.h>
 
@@ -166,7 +181,7 @@ static void colsums(int32_t *cs, const pk_act *a) {
         for (uint32_t b = 0; b < nb; b++) {
             __m256i s = _mm256_setzero_si256();
             for (uint32_t k = b * qb; k < (b + 1) * qb; k += 32)
-                s = _mm256_dpbusd_avx_epi32(s, one, _mm256_loadu_si256((const __m256i *)(const void *)(x + k)));
+                s = PK_DPBUSD(s, one, _mm256_loadu_si256((const __m256i *)(const void *)(x + k)));
             __m128i q = _mm_add_epi32(_mm256_castsi256_si128(s), _mm256_extracti128_si256(s, 1));
             q = _mm_add_epi32(q, _mm_shuffle_epi32(q, 0x4E));
             q = _mm_add_epi32(q, _mm_shuffle_epi32(q, 0xB1));
@@ -198,11 +213,11 @@ static void colsums(int32_t *cs, const pk_act *a) {
             memcpy(&v, x[c] + (k), 4);                                              \
             const __m256i xb = _mm256_set1_epi32(v);                                \
             if (XOFF) {                                                             \
-                s0[c] = _mm256_dpbusd_avx_epi32(s0[c], xb, w0);                     \
-                s1[c] = _mm256_dpbusd_avx_epi32(s1[c], xb, w1);                     \
+                s0[c] = PK_DPBUSD(s0[c], xb, w0);                     \
+                s1[c] = PK_DPBUSD(s1[c], xb, w1);                     \
             } else {                                                                \
-                s0[c] = _mm256_dpbusd_avx_epi32(s0[c], w0, xb);                     \
-                s1[c] = _mm256_dpbusd_avx_epi32(s1[c], w1, xb);                     \
+                s0[c] = PK_DPBUSD(s0[c], w0, xb);                     \
+                s1[c] = PK_DPBUSD(s1[c], w1, xb);                     \
             }                                                                       \
         }                                                                           \
     } while (0)
@@ -316,8 +331,8 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
                 __m256i s0 = _mm256_setzero_si256(), s1 = s0;
                 for (uint32_t k = blk * a->qb; k < (blk + 1) * a->qb; k += 4) {
                     const int8_t *g = wp + (size_t)k * 16;
-                    s0 = _mm256_dpbusd_avx_epi32(s0, one, _mm256_loadu_si256((const __m256i *)(const void *)g));
-                    s1 = _mm256_dpbusd_avx_epi32(s1, one, _mm256_loadu_si256((const __m256i *)(const void *)(g + 32)));
+                    s0 = PK_DPBUSD(s0, one, _mm256_loadu_si256((const __m256i *)(const void *)g));
+                    s1 = PK_DPBUSD(s1, one, _mm256_loadu_si256((const __m256i *)(const void *)(g + 32)));
                 }
                 wsum[2 * blk] = _mm256_slli_epi32(s0, 7);
                 wsum[2 * blk + 1] = _mm256_slli_epi32(s1, 7);

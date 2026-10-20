@@ -5,7 +5,8 @@
 #   make BACKEND=neon             AArch64 NEON, ARMv8.0: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
 #   make BACKEND=neon-dp          ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
 #   make BACKEND=avx2             x86-64 AVX2 + FMA
-#   make BACKEND=avx2-vnni        x86-64 AVX2 + FMA + AVX-VNNI: Alder Lake and later, Zen 5
+#   make BACKEND=avx2-vnni        x86-64 AVX2 + FMA + VNNI: Alder Lake and later, Zen 5 (AVX-VNNI);
+#                                 Ice Lake, Tiger Lake, Zen 4 (AVX512-VNNI at 256 bits)
 #   make libpkito.a               the library alone (examples/transcribe.c uses it)
 #   make models                   models/*.pkf from the checkpoints (Python with numpy)
 #   make check                    the C half and, where it can run, the Python half
@@ -40,8 +41,14 @@ ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
   endif
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
   X86 := $(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null \
-                 | grep -cE '^\#define (__AVX2__|__FMA__|__AVXVNNI__) ')
-  ifeq ($(X86),3)
+                 | grep -cE '^\#define (__AVX2__|__FMA__) ')
+  VNNI := $(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null \
+                 | grep -cE '^\#define (__AVXVNNI__) ')
+  VNNI512 := $(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null \
+                 | grep -cE '^\#define (__AVX512VNNI__|__AVX512VL__) ')
+  ifeq ($(X86)$(VNNI),21)
+    BACKEND ?= avx2-vnni
+  else ifeq ($(X86)$(VNNI512),22)
     BACKEND ?= avx2-vnni
   else ifeq ($(X86),2)
     BACKEND ?= avx2
@@ -72,7 +79,15 @@ else ifeq ($(BACKEND),neon-dp)
 else ifeq ($(BACKEND),avx2)
   BFLAGS := -mavx2 -mfma
 else ifeq ($(BACKEND),avx2-vnni)
-  BFLAGS := -mavx2 -mfma -mavxvnni
+  # AVX-VNNI's VEX VPDPBUSD where the CPU has it, else AVX512-VNNI's EVEX
+  # one at 256 bits (Ice Lake, Zen 4): the same instruction (backend/avx2)
+  ifeq ($(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null | grep -c '^\#define __AVXVNNI__ '),1)
+    BFLAGS := -mavx2 -mfma -mavxvnni
+  else ifeq ($(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null | grep -cE '^\#define (__AVX512VNNI__|__AVX512VL__) '),2)
+    BFLAGS := -mavx2 -mfma -mavx512vnni -mavx512vl
+  else
+    BFLAGS := -mavx2 -mfma -mavxvnni
+  endif
 else
   BFLAGS :=
 endif
