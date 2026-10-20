@@ -655,8 +655,16 @@ static int vad(const opts *o, pk_model *m) {
 }
 
 static int info(pk_model *m) {
-    printf("model     %s\n", pk_model_name(m));
-    printf("backend   %s\n", pk_backend());
+    pk_model_info mi;
+    pk_model_describe(m, &mi);
+    printf("model     %s, %.1f MB\n", pk_model_name(m), mi.file_bytes / 1e6);
+    printf("encoder   %u layers of %u, %u heads, feed-forward %u; %u mel bands at %u Hz\n",
+           mi.n_layers, mi.d_model, mi.n_heads, mi.ff_dim, mi.n_mels, mi.sample_rate);
+    printf("decoder   %u-unit LSTM x %u, joint %u; %u tokens and blank; durations",
+           mi.pred_hidden, mi.pred_layers, mi.joint_hidden, mi.vocab);
+    for (uint32_t i = 0; i < mi.n_durations; i++)
+        printf(" %u", mi.durations[i]);
+    printf("\nbackend   %s, %d threads by default\n", pk_backend(), pk_os_cores());
     const char *k, *v;
     for (int i = 0; pk_model_meta_at(m, i, &k, &v) == 0; i++)
         printf("  %-16s %s\n", k, v);

@@ -53,6 +53,16 @@ const char *pk_model_meta(const pk_model *m, const char *key);
 /* The i-th metadata pair, for listing: 0, or -1 past the last. */
 int pk_model_meta_at(const pk_model *m, int i, const char **key, const char **value);
 
+/* The architecture's numbers, for printing (`pkito info`). */
+typedef struct {
+    size_t   file_bytes;
+    uint32_t sample_rate, n_mels, n_layers, d_model, n_heads, ff_dim;
+    uint32_t vocab, pred_hidden, pred_layers, joint_hidden, n_durations;
+    uint32_t durations[16];
+} pk_model_info;
+
+void pk_model_describe(const pk_model *m, pk_model_info *out);
+
 /* Samples a second the model hears (16000), and seconds an encoder frame
  * lasts (0.08: a token's frame times this is when it was heard). */
 int    pk_model_rate(const pk_model *m);

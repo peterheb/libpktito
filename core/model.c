@@ -668,6 +668,24 @@ void pk_model_free(pk_model *m) {
 }
 
 const char *pk_model_name(const pk_model *m) { return m->name; }
+
+void pk_model_describe(const pk_model *m, pk_model_info *out) {
+    memset(out, 0, sizeof *out);
+    out->file_bytes = m->size;
+    out->sample_rate = m->sample_rate;
+    out->n_mels = m->n_mels;
+    out->n_layers = m->n_layers;
+    out->d_model = m->d_model;
+    out->n_heads = m->n_heads;
+    out->ff_dim = m->ff_dim;
+    out->vocab = m->vocab;
+    out->pred_hidden = m->pred_hidden;
+    out->pred_layers = m->pred_layers;
+    out->joint_hidden = m->joint_hidden;
+    out->n_durations = m->n_dur;
+    for (uint32_t i = 0; i < m->n_dur && i < 16; i++)
+        out->durations[i] = m->dur[i];
+}
 int pk_model_rate(const pk_model *m) { return (int)m->sample_rate; }
 double pk_model_frame_seconds(const pk_model *m) { return 8.0 * m->hop / m->sample_rate; }
 
