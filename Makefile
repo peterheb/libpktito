@@ -111,6 +111,10 @@ pkito: core/cli.o $(LIB_OBJ)
 libpkito.a: $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
+# The library from the outside: examples/transcribe.c is a page of it.
+examples/transcribe: examples/transcribe.c libpkito.a
+	$(CC) $(CFLAGS) -Icore -o $@ examples/transcribe.c libpkito.a $(LDLIBS)
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -MMD -MP -c $< -o $@
 
@@ -156,7 +160,7 @@ tests/wavcheck: tests/wavcheck.c core/wav.o
 # machine computes the same ones (backend/kernels.h), and this is where a
 # board that does not would say so. A model file that is not there is
 # skipped, with a line.
-check-c: pkito $(TESTS)
+check-c: pkito $(TESTS) examples/transcribe
 	./tests/mathcheck
 	./tests/kcheck $(MODEL)
 	./tests/pkfcheck $(TINY) tests/pkfcheck.wav
@@ -175,6 +179,10 @@ check-c: pkito $(TESTS)
 	  ./pkito --json -m $$f tests/data/test.wav | cmp -s - tests/data/test.$$v.json \
 	    && echo "test.wav: $$v transcript is ref's, every token and time" \
 	    || { echo "test.wav: FAIL - $$v transcript differs from tests/data/test.$$v.json"; exit 1; }; done
+	@./examples/transcribe $(MODEL) tests/data/test.wav | cut -d' ' -f3- > tests/example.out; \
+	  ./pkito -m $(MODEL) tests/data/test.wav | cmp -s - tests/example.out \
+	  && echo "examples/transcribe: the CLI's transcript, through the library alone" \
+	  || { echo "examples/transcribe: FAIL - not the CLI's transcript"; exit 1; }; rm -f tests/example.out
 
 # The half that needs Python and NeMo's checkpoints to compare with: the
 # detokenizer against sentencepiece (whose package NeMo brings; PYNEMO is a
@@ -232,6 +240,6 @@ remote:
 .PHONY: models check-c check-sanitize check-math remote clean
 
 clean:
-	rm -f pkito libpkito.a core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) tests/tokcheck
+	rm -f pkito libpkito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) tests/tokcheck
 	rm -f tests/*-san tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM

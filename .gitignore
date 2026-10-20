@@ -21,3 +21,4 @@ __pycache__/
 *.dSYM/
 /.claude/
 /tests/tokcheck
+/tests/example.out
