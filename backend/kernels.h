@@ -1,5 +1,9 @@
 /* The backend seam: every operation on the weights, and the elementwise
- * ones whose cost is an exponential. Exactly one backend/<name>/ is linked.
+ * ones whose cost is an exponential. A build holds every backend its
+ * compiler can make for the machine's family - neon-dp and neon on
+ * AArch64; avx2-vnni, avx512-vnni and avx2 on x86-64 - and ref, and the
+ * first of them whose instructions the CPU has is the one that runs
+ * (backend/kernels.c): one binary for a family, whatever its CPU.
  *
  * backend/ref/ implements these in plain C and is the definition of
  * correct. Every other backend computes the same bits, not merely close
@@ -199,14 +203,55 @@ typedef struct {
 void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
                const pk_fft *f, float *scratch);
 
-/* The backend's name and what it was built for, for `pkito bench`. */
-const char *pk_k_name(void);
+/* ------------------------------------------------------------ backends --
+ *
+ * Every function above is a call through the table of the backend in use.
+ * A backend's file defines its kernels as its own and exports the table:
+ * pk_kernels_ref, pk_kernels_neon and _neon_dp (backend/neon, without and
+ * with PK_NEON_DOTPROD), pk_kernels_avx2, _avx2_vnni and _avx512_vnni
+ * (backend/avx2, without PK_AVX_VNNI, and with it in AVX-VNNI's encoding or
+ * AVX512-VNNI's), each compiled with its own instruction set, the rest of
+ * the tree with the family's baseline. */
+typedef struct {
+    const char *id;                 /* "avx2-vnni", as PKITO_KERNELS names it */
+    const char *name;               /* and what it is built for, for `pkito bench` */
+    const char *const *needs;       /* the CPU features its code uses, NULL-ended:
+                                       "avx2", "fma", "avxvnni", "avx512vnni",
+                                       "avx512vl", "asimddp" (ARMv8.2's dot product) */
+    void (*quantize)(pk_act *a, const float *x, size_t xs);
+    void (*gemm_q8)(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                    uint32_t rows, const pk_act *a, int add);
+    void (*gemm_f32)(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows,
+                     uint32_t n, const float *x, size_t xs, uint32_t T,
+                     const float *bias, size_t bs, int relu);
+    void (*layernorm)(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
+                      const float *w, const float *b, float eps);
+    void (*softmax)(float *x, uint32_t n, float scale);
+    void (*silu)(float *x, size_t n);
+    void (*glu)(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n);
+    void (*dwconv)(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
+                   const float *w, const float *b, uint32_t K);
+    void (*conv3x3s2)(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
+                      uint32_t C, int depthwise, const float *w, const float *b, int relu,
+                      uint32_t t0, uint32_t t1);
+    void (*lstm)(float *h, float *c, const float *g, uint32_t H);
+    void (*stft)(float *out, size_t os, const float *const *x, uint32_t count,
+                 const pk_fft *f, float *scratch);
+} pk_kernels;
 
-/* The CPU features the backend's code uses, NULL-ended: "avx2", "fma",
- * "avxvnni", "avx512vnni", "avx512vl" on x86, "asimddp" (ARMv8.2's dot
- * product) on ARM. A model does not load on a CPU without one of them
- * (core/model.c), which says so where the first kernel would have died on
- * an illegal instruction, without a word on Windows. */
-extern const char *const pk_k_needs[];
+extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_kernels_avx2,
+                        pk_kernels_avx2_vnni, pk_kernels_avx512_vnni;
+
+/* This build's backends, the fastest first and ref last, NULL-ended. */
+extern const pk_kernels *const pk_kernels_built[];
+
+/* The backend that runs: the first of pk_kernels_built whose needs this CPU
+ * meets, or the one the environment's PKITO_KERNELS names (to compare them;
+ * not a setting anyone should need). NULL, with the reason in why, when
+ * PKITO_KERNELS names one the build lacks or the CPU cannot run. */
+const pk_kernels *pk_kernels_pick(char *why, size_t whylen);
+
+/* The name of the backend in use, for `pkito bench`. */
+const char *pk_k_name(void);
 
 #endif /* PK_KERNELS_H */

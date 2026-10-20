@@ -35,8 +35,9 @@
 /* VPDPBUSD in whichever encoding the build has: AVX-VNNI's VEX form
  * (Alder Lake and later, Zen 5), or AVX512-VNNI's EVEX form at 256 bits
  * (Ice Lake, Tiger Lake, Sapphire Rapids, Zen 4), the same operation. The
- * Makefile asks for the one the CPU has. A Ryzen 9 9950X, which has both,
- * ran both: ref's bits from each, and the same speed within 2%
+ * Makefile builds both (backend/avx2-vnni, backend/avx512-vnni) and the
+ * CPU runs the one it has (backend/kernels.c). A Ryzen 9 9950X, which has
+ * both, ran both: ref's bits from each, and the same speed within 2%
  * (backend/avx2/CLIMB.md, 2026-10-20). */
 #if defined(__AVXVNNI__)
 #define PK_DPBUSD(acc, u8, s8) _mm256_dpbusd_avx_epi32(acc, u8, s8)
@@ -117,7 +118,7 @@ static inline int32_t load32(const int8_t *p) {
 
 /* ------------------------------------------------------- int8 products --- */
 
-void pk_k_quantize(pk_act *a, const float *x, size_t xs) {
+static void k_quantize(pk_act *a, const float *x, size_t xs) {
     const uint32_t nb = a->n / a->qb;
     const __m256 sign = _mm256_set1_ps(-0.0f);
     for (uint32_t t = 0; t < a->T; t++)
@@ -298,8 +299,8 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
             q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 1);     \
     } while (0)
 
-void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                  uint32_t rows, const pk_act *a, int add) {
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, nb = n / a->qb;
     if (a->T < PK_Q8_XOFF) {
         int32_t cs[PK_Q8_XOFF * PK_MAX_BLOCKS];
@@ -410,8 +411,8 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
 
 /* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
  * four columns at a time across the half. */
-void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                  uint32_t rows, const pk_act *a, int add) {
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n;
     uint32_t cb = PK_Q8_BLOCK_BYTES / n;
     cb = cb < 4 ? 4 : cb & ~3u;
@@ -468,9 +469,9 @@ void f32_tile(float *out, size_t os, const float *w, uint32_t ld, uint32_t n,
         }
 }
 
-void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
-                   const float *x, size_t xs, uint32_t T,
-                   const float *bias, size_t bs, int relu) {
+static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
+                       const float *x, size_t xs, uint32_t T,
+                       const float *bias, size_t bs, int relu) {
     if (T == 1 && rows % 64 == 0) {
         for (uint32_t r = 0; r < rows; r += 64)
             f32_tile(out + r, os, w + (size_t)r * ld, ld, n, x, xs, bias ? bias + r : NULL, bs,
@@ -494,8 +495,8 @@ void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t 
 
 /* ------------------------------------------------- reductions and rows --- */
 
-void pk_k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
-                    const float *w, const float *b, float eps) {
+static void k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
+                        const float *w, const float *b, float eps) {
     for (uint32_t t = 0; t < T; t++) {
         const float *v = x + t * xs;
         float *o = out + t * os;
@@ -523,7 +524,7 @@ void pk_k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T
     }
 }
 
-void pk_k_softmax(float *x, uint32_t n, float scale) {
+static void k_softmax(float *x, uint32_t n, float scale) {
     const __m256 sv = _mm256_set1_ps(scale);
     __m256 mv = _mm256_set1_ps(-INFINITY);
     uint32_t i = 0;
@@ -558,13 +559,13 @@ void pk_k_softmax(float *x, uint32_t n, float scale) {
     for (; i < n; i++) x[i] = x[i] * inv;
 }
 
-void pk_k_silu(float *x, size_t n) {
+static void k_silu(float *x, size_t n) {
     size_t i = 0;
     for (; i + 8 <= n; i += 8) _mm256_storeu_ps(x + i, v_silu(_mm256_loadu_ps(x + i)));
     for (; i < n; i++) x[i] = x[i] * pk_sigmoidf(x[i]);
 }
 
-void pk_k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
+static void k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
     for (uint32_t t = 0; t < T; t++) {
         const float *a = x + t * xs;
         float *o = out + t * os;
@@ -592,8 +593,8 @@ static __m256 dw_one(const float *x, size_t xs, uint32_t T, const float *wg, uin
     return acc;
 }
 
-void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
-                 const float *w, const float *b, uint32_t K) {
+static void k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
+                     const float *w, const float *b, uint32_t K) {
     const uint32_t h = K / 2, end = T > h ? T - h : 0;     /* [h, end): every tap inside */
     float wt[64 * PK_DW_KMAX];
     for (uint32_t c0 = 0; c0 < C; c0 += 64) {
@@ -726,9 +727,9 @@ static void conv_row(float *o, const conv_rows *r, const float *wt, const float 
     }
 }
 
-void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
-                    uint32_t C, int depthwise, const float *w, const float *b, int relu,
-                    uint32_t t0, uint32_t t1) {
+static void k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
+                        uint32_t C, int depthwise, const float *w, const float *b, int relu,
+                        uint32_t t0, uint32_t t1) {
     const uint32_t Fo = (Fi + 1) / 2, cin = depthwise ? C : 1;
     float wt[9 * CONV_CW];
     for (uint32_t c0 = 0; c0 < C; c0 += CONV_CW) {
@@ -750,7 +751,7 @@ void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint3
     }
 }
 
-void pk_k_lstm(float *h, float *c, const float *g, uint32_t H) {
+static void k_lstm(float *h, float *c, const float *g, uint32_t H) {
     for (uint32_t j = 0; j < H; j += 8) {
         __m256 i = v_sigmoid(_mm256_loadu_ps(g + j));
         __m256 f = v_sigmoid(_mm256_loadu_ps(g + H + j));
@@ -785,8 +786,8 @@ static inline void transpose8(__m256 r[8]) {
 
 /* backend/ref's real FFT with eight windows in eight lanes, every line
  * ref's line on vectors (vadito's, its magnitudes left squared). */
-void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
-               const pk_fft *f, float *scratch) {
+static void k_stft(float *out, size_t os, const float *const *x, uint32_t count,
+                   const pk_fft *f, float *scratch) {
     const uint32_t n = f->n, m = n / 2;
     const float *w = f->window, *fc = f->fcos, *fs = f->fsin;
     __m256 *zr = (__m256 *)(void *)scratch, *zi = zr + m;
@@ -846,13 +847,33 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
 }
 
 #ifdef PK_AVX_VNNI
-const char *pk_k_name(void) { return "avx2-vnni (x86-64 AVX2 + FMA: VPDPBUSD int8, fp32)"; }
 #if defined(__AVXVNNI__)
-const char *const pk_k_needs[] = { "avx2", "fma", "avxvnni", NULL };
+static const char *const needs[] = { "avx2", "fma", "avxvnni", NULL };
+const pk_kernels pk_kernels_avx2_vnni = {
+    .id = "avx2-vnni",
+    .name = "avx2-vnni (x86-64 AVX2 + FMA: AVX-VNNI's VPDPBUSD int8, fp32)",
 #else
-const char *const pk_k_needs[] = { "avx2", "fma", "avx512vnni", "avx512vl", NULL };
+static const char *const needs[] = { "avx2", "fma", "avx512vnni", "avx512vl", NULL };
+const pk_kernels pk_kernels_avx512_vnni = {
+    .id = "avx512-vnni",
+    .name = "avx512-vnni (x86-64 AVX2 + FMA: AVX512-VNNI's VPDPBUSD at 256 bits int8, fp32)",
 #endif
 #else
-const char *pk_k_name(void) { return "avx2 (x86-64 AVX2 + FMA: VPMADDUBSW int8, fp32)"; }
-const char *const pk_k_needs[] = { "avx2", "fma", NULL };
+static const char *const needs[] = { "avx2", "fma", NULL };
+const pk_kernels pk_kernels_avx2 = {
+    .id = "avx2",
+    .name = "avx2 (x86-64 AVX2 + FMA: VPMADDUBSW int8, fp32)",
 #endif
+    .needs = needs,
+    .quantize = k_quantize,
+    .gemm_q8 = k_gemm_q8,
+    .gemm_f32 = k_gemm_f32,
+    .layernorm = k_layernorm,
+    .softmax = k_softmax,
+    .silu = k_silu,
+    .glu = k_glu,
+    .dwconv = k_dwconv,
+    .conv3x3s2 = k_conv3x3s2,
+    .lstm = k_lstm,
+    .stft = k_stft,
+};

@@ -19,7 +19,7 @@
 
 /* ------------------------------------------------------- int8 products -- */
 
-void pk_k_quantize(pk_act *a, const float *x, size_t xs) {
+static void k_quantize(pk_act *a, const float *x, size_t xs) {
     const uint32_t nb = a->n / a->qb;
     for (uint32_t t = 0; t < a->T; t++)
         for (uint32_t b = 0; b < nb; b++) {
@@ -41,8 +41,8 @@ static inline int32_t wq(const int8_t *w, uint32_t n, uint32_t r, uint32_t k) {
              + (r % PK_QR) * PK_QG + k % PK_QG];
 }
 
-void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                  uint32_t rows, const pk_act *a, int add) {
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, qb = a->qb, nb = n / qb;
     for (uint32_t t = 0; t < a->T; t++) {
         const int8_t *q = a->q + (size_t)t * n;
@@ -65,9 +65,9 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
 
 /* ------------------------------------------------------ float products -- */
 
-void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
-                   const float *x, size_t xs, uint32_t T,
-                   const float *bias, size_t bs, int relu) {
+static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
+                       const float *x, size_t xs, uint32_t T,
+                       const float *bias, size_t bs, int relu) {
     for (uint32_t t = 0; t < T; t++)
         for (uint32_t p = 0; p < rows / 16; p++) {
             /* a panel's 16 outputs, each one chain over k */
@@ -90,8 +90,8 @@ static float lanes_sum(float *acc) {
     return acc[0];
 }
 
-void pk_k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
-                    const float *w, const float *b, float eps) {
+static void k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
+                        const float *w, const float *b, float eps) {
     for (uint32_t t = 0; t < T; t++) {
         const float *v = x + t * xs;
         float *o = out + t * os;
@@ -109,7 +109,7 @@ void pk_k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T
     }
 }
 
-void pk_k_softmax(float *x, uint32_t n, float scale) {
+static void k_softmax(float *x, uint32_t n, float scale) {
     float m = -INFINITY;
     for (uint32_t i = 0; i < n; i++) {
         x[i] = x[i] * scale;
@@ -124,18 +124,18 @@ void pk_k_softmax(float *x, uint32_t n, float scale) {
     for (uint32_t i = 0; i < n; i++) x[i] = x[i] * inv;
 }
 
-void pk_k_silu(float *x, size_t n) {
+static void k_silu(float *x, size_t n) {
     for (size_t i = 0; i < n; i++) x[i] = x[i] * pk_sigmoidf(x[i]);
 }
 
-void pk_k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
+static void k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
     for (uint32_t t = 0; t < T; t++)
         for (uint32_t i = 0; i < n; i++)
             out[t * os + i] = x[t * xs + i] * pk_sigmoidf(x[t * xs + n + i]);
 }
 
-void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
-                 const float *w, const float *b, uint32_t K) {
+static void k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
+                     const float *w, const float *b, uint32_t K) {
     for (uint32_t t = 0; t < T; t++)
         for (uint32_t c = 0; c < C; c++) {
             float acc = 0;
@@ -149,9 +149,9 @@ void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, u
         }
 }
 
-void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
-                    uint32_t C, int depthwise, const float *w, const float *b, int relu,
-                    uint32_t t0, uint32_t t1) {
+static void k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
+                        uint32_t C, int depthwise, const float *w, const float *b, int relu,
+                        uint32_t t0, uint32_t t1) {
     const uint32_t Fo = (Fi + 1) / 2, cin = depthwise ? C : 1;
     for (uint32_t t = t0; t < t1; t++)
         for (uint32_t f = 0; f < Fo; f++)
@@ -174,7 +174,7 @@ void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint3
             }
 }
 
-void pk_k_lstm(float *h, float *c, const float *g, uint32_t H) {
+static void k_lstm(float *h, float *c, const float *g, uint32_t H) {
     for (uint32_t j = 0; j < H; j++) {
         float i = pk_sigmoidf(g[j]);
         float f = pk_sigmoidf(g[H + j]);
@@ -236,11 +236,27 @@ static void stft_one(float *out, const float *x, const pk_fft *f, float *zr, flo
     }
 }
 
-void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
-               const pk_fft *f, float *scratch) {
+static void k_stft(float *out, size_t os, const float *const *x, uint32_t count,
+                   const pk_fft *f, float *scratch) {
     for (uint32_t w = 0; w < count; w++)
         stft_one(out + w * os, x[w], f, scratch, scratch + f->n / 2);
 }
 
-const char *pk_k_name(void) { return "ref (scalar C)"; }
-const char *const pk_k_needs[] = { NULL };
+static const char *const needs[] = { NULL };
+
+const pk_kernels pk_kernels_ref = {
+    .id = "ref",
+    .name = "ref (scalar C)",
+    .needs = needs,
+    .quantize = k_quantize,
+    .gemm_q8 = k_gemm_q8,
+    .gemm_f32 = k_gemm_f32,
+    .layernorm = k_layernorm,
+    .softmax = k_softmax,
+    .silu = k_silu,
+    .glu = k_glu,
+    .dwconv = k_dwconv,
+    .conv3x3s2 = k_conv3x3s2,
+    .lstm = k_lstm,
+    .stft = k_stft,
+};

@@ -1,12 +1,16 @@
 # pkito
 #
-#   make                          ./pkito for this machine (backend detected)
-#   make BACKEND=ref              scalar C, any host
-#   make BACKEND=neon             AArch64 NEON, ARMv8.0: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
-#   make BACKEND=neon-dp          ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
-#   make BACKEND=avx2             x86-64 AVX2 + FMA
-#   make BACKEND=avx2-vnni        x86-64 AVX2 + FMA + VNNI: Alder Lake and later, Zen 5 (AVX-VNNI);
-#                                 Ice Lake, Tiger Lake, Zen 4 (AVX512-VNNI at 256 bits)
+#   make                          ./pkito for this machine's family, every backend in it:
+#                                 neon-dp and neon on AArch64; avx2-vnni, avx512-vnni and avx2
+#                                 on x86-64; and ref. The CPU picks one when it runs.
+#   make BACKEND=<name>           that backend alone, with ref:
+#                                 neon     ARMv8.0 NEON: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
+#                                 neon-dp  ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
+#                                 avx2     x86-64 AVX2 + FMA
+#                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
+#                                 avx512-vnni  and AVX512-VNNI at 256 bits: Ice Lake, Zen 4
+#                                 ref      scalar C, any host
+#   PKITO_KERNELS=<name> ./pkito  runs that backend, of those built, to compare them
 #   make libpkito.a               the library alone (examples/transcribe.c uses it)
 #   make models                   models/*.pkf from the checkpoints (Python with numpy)
 #   make check                    the C half and, where it can run, the Python half
@@ -19,78 +23,44 @@
 
 CC ?= cc
 
-# Backend detection: the compiler is asked what it targets natively. AArch64
-# with the dot-product instructions gets neon-dp, without them neon; x86-64
-# with AVX-VNNI gets avx2-vnni, with AVX2 and FMA avx2; anything else ref.
-# A compiler too old to know its own core says nothing, and then Linux's
-# /proc/cpuinfo answers (pinfer's Makefile has the story).
+# The backends. A build holds every one of the machine's family that the
+# compiler can make - neon-dp and neon on AArch64; avx2-vnni, avx512-vnni
+# and avx2 on x86-64 - each compiled with its own instruction set, and ref;
+# the rest of the tree takes the family's baseline. Which runs is the CPU's
+# to say, at run time (backend/kernels.c), so one binary serves its family:
+# built on an Alder Lake it runs on a Zen 4, built on a Pi 5 on a Pi 3.
+# BACKEND=<name> builds that one alone, with ref.
 UNAME_M := $(shell uname -m)
 UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
-  DOTPROD := $(shell $(CC) -mcpu=native -dM -E - </dev/null 2>/dev/null | grep -c __ARM_FEATURE_DOTPROD)
-  ifneq ($(DOTPROD),1)
-    DOTPROD := $(shell grep -m1 -cw asimddp /proc/cpuinfo 2>/dev/null)
-  endif
-  ifeq ($(UNAME_S),Darwin)
-    DOTPROD := 1
-  endif
-  ifeq ($(DOTPROD),1)
-    BACKEND ?= neon-dp
-  else
-    BACKEND ?= neon
-  endif
+  FAMILY := neon-dp neon
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
-  X86 := $(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null \
-                 | grep -cE '^\#define (__AVX2__|__FMA__) ')
-  VNNI := $(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null \
-                 | grep -cE '^\#define (__AVXVNNI__) ')
-  VNNI512 := $(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null \
-                 | grep -cE '^\#define (__AVX512VNNI__|__AVX512VL__) ')
-  ifeq ($(X86)$(VNNI),21)
-    BACKEND ?= avx2-vnni
-  else ifeq ($(X86)$(VNNI512),22)
-    BACKEND ?= avx2-vnni
-  else ifeq ($(X86),2)
-    BACKEND ?= avx2
-  else
-    BACKEND ?= ref
-  endif
-else
-  BACKEND ?= ref
+  FAMILY := avx2-vnni avx512-vnni avx2
 endif
 
-# Per-backend code generation. Each pins its ISA, so a build is the same
-# instructions on every machine that can run it, and tunes for the core it
-# is built on where gcc can be told which (it resolves -mtune=native to
-# nothing on an A53, so the core is read from /proc/cpuinfo).
+# Each backend's instruction set, and tuning for the core the build is on
+# where gcc can be told which: it resolves -mtune=native to nothing on an
+# A53, so the core is read from /proc/cpuinfo. Tuning orders instructions;
+# it adds none a CPU might lack. backend/avx2 makes avx2-vnni or
+# avx512-vnni from what its compiler is told: AVX-VNNI's VEX VPDPBUSD, or
+# AVX512-VNNI's EVEX one at 256 bits, the same instruction.
 CPU_PART := $(shell grep -m1 'CPU part' /proc/cpuinfo 2>/dev/null | awk '{print $$NF}')
 TUNE_0xd03 := cortex-a53
 TUNE_0xd08 := cortex-a72
 TUNE_0xd0b := cortex-a76
-TUNE := $(TUNE_$(CPU_PART))
-ifeq ($(BACKEND),neon)
-  BFLAGS := -march=armv8-a $(if $(TUNE),-mtune=$(TUNE))
-else ifeq ($(BACKEND),neon-dp)
-  ifeq ($(UNAME_S),Darwin)
-    BFLAGS := -mcpu=apple-m1
-  else
-    BFLAGS := -march=armv8.2-a+dotprod $(if $(TUNE),-mtune=$(TUNE))
-  endif
-else ifeq ($(BACKEND),avx2)
-  BFLAGS := -mavx2 -mfma
-else ifeq ($(BACKEND),avx2-vnni)
-  # AVX-VNNI's VEX VPDPBUSD where the CPU has it, else AVX512-VNNI's EVEX
-  # one at 256 bits (Ice Lake, Zen 4): the same instruction (backend/avx2)
-  ifeq ($(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null | grep -c '^\#define __AVXVNNI__ '),1)
-    BFLAGS := -mavx2 -mfma -mavxvnni
-  else ifeq ($(shell $(CC) -march=native -dM -E - </dev/null 2>/dev/null | grep -cE '^\#define (__AVX512VNNI__|__AVX512VL__) '),2)
-    BFLAGS := -mavx2 -mfma -mavx512vnni -mavx512vl
-  else
-    BFLAGS := -mavx2 -mfma -mavxvnni
-  endif
+TUNE := $(if $(TUNE_$(CPU_PART)),-mtune=$(TUNE_$(CPU_PART)))
+ISA_neon := -march=armv8-a $(TUNE)
+ifeq ($(UNAME_S),Darwin)
+  ISA_neon-dp := -mcpu=apple-m1
 else
-  BFLAGS :=
+  ISA_neon-dp := -march=armv8.2-a+dotprod $(TUNE)
 endif
+ISA_avx2 := -mavx2 -mfma
+ISA_avx2-vnni := -mavx2 -mfma -mavxvnni
+ISA_avx512-vnni := -mavx2 -mfma -mavx512vnni -mavx512vl
+
+can_build = $(shell echo 'int x;' | $(CC) $(ISA_$(1)) -x c -c -o /dev/null - 2>/dev/null && echo $(1))
+BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(call can_build,$(b)))))
 
 # -ffp-contract=off is not a style choice. Every backend computes ref's bits
 # (backend/kernels.h), and that holds only if no compiler fuses a multiply
@@ -111,7 +81,7 @@ else
   PLATFLAGS := -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 endif
 OPT     ?= -O3
-CFLAGS  ?= $(OPT) $(BFLAGS) -std=c11 -ffp-contract=off -Wall -Wextra -Wpedantic
+CFLAGS  ?= $(OPT) $(TUNE) -std=c11 -ffp-contract=off -Wall -Wextra -Wpedantic
 LDLIBS  ?= -lm -lpthread $(PLATLIBS)
 
 # make PROFILE=1: `pkito bench` also prints what each stage costs. Timing a
@@ -123,8 +93,11 @@ endif
 INC := -Icore -Ibackend
 LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/decoder.c \
            core/tokens.c core/asr.c core/vad.c core/segment.c core/wav.c core/resample.c
-BACK_SRC := $(wildcard backend/$(BACKEND)/*.c)
-LIB_OBJ := $(LIB_SRC:.c=.o) $(BACK_SRC:.c=.o)
+BACK_OBJ := $(foreach b,$(BACKENDS) ref,backend/$(b)/kernels.o) backend/kernels.o
+LIB_OBJ := $(LIB_SRC:.c=.o) $(BACK_OBJ)
+HAVE := $(foreach b,$(BACKENDS),-DPK_HAVE_$(subst -,_,$(b)))
+$(foreach b,$(BACKENDS),$(eval backend/$(b)/kernels.o: CFLAGS += $(ISA_$(b))))
+backend/kernels.o: CFLAGS += $(HAVE)
 
 .DEFAULT_GOAL := pkito
 
@@ -163,10 +136,10 @@ TINY  := tests/data/tiny.pkf
 TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck
 BENCHES := tests/q8bench tests/gemmbench
 
-# tests/kref.o is backend/ref under other names, built with this backend's
-# flags, so that kcheck holds the backend to ref bit for bit in one binary.
-tests/kcheck: tests/kcheck.c tests/kref.o $(LIB_OBJ)
-	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/kcheck.c tests/kref.o $(LIB_OBJ) $(LDLIBS)
+# kcheck holds every backend of the build that this CPU can run to ref, bit
+# for bit, in one binary.
+tests/kcheck: tests/kcheck.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/kcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/mathcheck: tests/mathcheck.c core/vmath.h
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/mathcheck.c $(LDLIBS)
 tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
@@ -177,10 +150,10 @@ tests/wavcheck: tests/wavcheck.c core/wav.o
 # The int8 product alone, for the kernel climbs, and not part of any check:
 # q8bench on one thread (backend/avx2/CLIMB.md's numbers), gemmbench over
 # threads dealt as the pool deals them, with MAC/cycle (backend/neon's).
-tests/q8bench: tests/q8bench.c $(BACK_SRC:.c=.o) core/os.o
-	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/q8bench.c $(BACK_SRC:.c=.o) core/os.o $(LDLIBS)
-tests/gemmbench: tests/gemmbench.c $(BACK_SRC:.c=.o)
-	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/gemmbench.c $(BACK_SRC:.c=.o) $(LDLIBS)
+tests/q8bench: tests/q8bench.c $(BACK_OBJ) core/os.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/q8bench.c $(BACK_OBJ) core/os.o $(LDLIBS)
+tests/gemmbench: tests/gemmbench.c $(BACK_OBJ) core/os.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/gemmbench.c $(BACK_OBJ) core/os.o $(LDLIBS)
 benches: $(BENCHES)
 
 # check-c needs a compiler and nothing else but MODEL, so it runs on any
@@ -258,7 +231,7 @@ check: check-c check-python
 SAN := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 check-sanitize:
 	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/pkfcheck-san \
-	  tests/pkfcheck.c $(LIB_SRC) backend/ref/kernels.c $(LDLIBS)
+	  tests/pkfcheck.c $(LIB_SRC) backend/ref/kernels.c backend/kernels.c $(LDLIBS)
 	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/wavcheck-san \
 	  tests/wavcheck.c core/wav.c $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 ./tests/pkfcheck-san $(TINY)
@@ -266,9 +239,11 @@ check-sanitize:
 
 # The thread pool and every pass split over it, under ThreadSanitizer: a
 # transcription and a stream on six threads, which must report nothing.
+TSAN := -O1 -g -fsanitize=thread -std=c11 -ffp-contract=off $(PLATFLAGS) $(INC)
 check-tsan:
-	$(CC) -O1 -g -fsanitize=thread -std=c11 -ffp-contract=off $(BFLAGS) $(PLATFLAGS) $(INC) \
-	  -o tests/pkito-tsan core/cli.c $(LIB_SRC) $(BACK_SRC) $(LDLIBS)
+	$(foreach b,$(BACKENDS) ref,$(CC) $(TSAN) $(ISA_$(b)) -c backend/$(b)/kernels.c -o tests/tsan-$(b).o &&) true
+	$(CC) $(TSAN) $(HAVE) -o tests/pkito-tsan core/cli.c $(LIB_SRC) backend/kernels.c \
+	  $(foreach b,$(BACKENDS) ref,tests/tsan-$(b).o) $(LDLIBS)
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pkito-tsan -t 6 -m $(MODEL) tests/data/test.wav > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pkito-tsan -t 6 --stream -m $(MODEL) tests/data/test.wav > /dev/null
 	@echo "check-tsan: no race on six threads"
@@ -294,5 +269,5 @@ remote:
 
 clean:
 	rm -f pkito libpkito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
-	rm -f tests/*-san tests/pkito-tsan tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
+	rm -f tests/*-san tests/pkito-tsan tests/tsan-*.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM

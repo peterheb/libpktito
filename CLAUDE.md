@@ -24,8 +24,10 @@ allows.
 3. **Is it the most the hardware can give?** A tuned backend's kernels.c is
    the one place allowed to be dense, on measurements (see Measuring).
 4. **Does it hand the user a decision they can't make well?** Don't. The
-   backend is picked by `make`, the numerics by measurement, the thread count
-   from the cores, the chunking by the VAD. A flag exists only for what the
+   backend is picked by the CPU at run time from every one the build holds
+   for its family (one binary per family: a copy that lands on another
+   machine of it still runs, at that machine's best), the numerics by
+   measurement, the thread count from the cores, the chunking by the VAD. A flag exists only for what the
    user knows and the engine cannot: their file, their model, their
    language's model.
 5. **Does it need anything?** The C library, libm and pthreads. No network,
@@ -42,9 +44,10 @@ allows.
   where it is meant, and nowhere else. core/vmath.h's functions are the only
   transcendentals that reach a transcript; libm's `exp`, `log`, `sin` are not
   the same bits on every platform.
-- backend/neon serves neon and neon-dp, backend/avx2 serves avx2 and
-  avx2-vnni (the second of each pair includes the first with a macro). The
-  int8 product is the only kernel that differs inside a pair.
+- backend/neon serves neon and neon-dp, backend/avx2 serves avx2, avx2-vnni
+  and avx512-vnni (each variant a file that includes the first with a macro,
+  compiled with its own instruction set; backend/kernels.c picks among
+  them). The int8 product is the only kernel that differs inside a family.
 - Comments explain *why* and carry the number that justified it, and say
   where the number came from (a CLIMB.md row, a check), because a bare
   figure goes stale when the code under it changes.

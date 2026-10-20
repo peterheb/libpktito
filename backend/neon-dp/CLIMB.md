@@ -286,3 +286,13 @@ performance cores) 0.498, 0.500, 0.509 s; 10 threads 0.495, 0.497, 0.513;
 12 (every core) 0.488, 0.489, 0.495. The efficiency cores add about 2%
 now, where on 55e6d97 they took 0.523 s against 0.512. The Pi 5's four
 cores are one kind, so its default does not move.
+
+## 2026-10-20 - one binary for the family: the backend picked at run time
+
+neon-dp and neon in one build, each with its own instruction set, the
+tree around them at ARMv8.0 (with the board's -mtune); backend/kernels.c
+runs the first the CPU can. The Pi 5 picks neon-dp: 4.161-4.163 s whole,
+3.709-3.717 s in 30 s chunks (4.150 and 3.710 before). The Pi 3B+'s build,
+copied to the Pi 5 as it was, picks neon-dp too: 4.116 s, and the v3
+transcript of test.wav byte for byte; the M4 Pro's 0.484 s, and
+`PKITO_KERNELS=neon` 1.052 s (1.047 as a build of its own).

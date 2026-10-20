@@ -600,16 +600,15 @@ static int open_buffer(pk_model *m, char *why, size_t whylen) {
     return rc;
 }
 
-/* 0, or -1 and why, if this CPU cannot run the backend the library was
- * built with: a binary copied to another machine (backend/kernels.h,
- * pk_k_needs). */
+/* 0, or -1 and why, if the backend asked for cannot run: some backend of
+ * the build always can (ref if nothing else, backend/kernels.c), so only a
+ * PKITO_KERNELS naming one the build lacks or the CPU cannot run is
+ * refused, rather than taking another one quietly. */
 static int cpu_ok(char *err, size_t errlen) {
-    const char *lack = pk_os_cpu_lacks(pk_k_needs);
-    if (!lack)
+    char why[160];
+    if (pk_kernels_pick(why, sizeof why))
         return 0;
-    return fail(err, errlen, "this pkito was built for %s, which uses %s, and this CPU does not "
-                "have it: build pkito on this machine, and make picks the backend it can run",
-                pk_k_name(), lack);
+    return fail(err, errlen, "%s", why);
 }
 
 pk_model *pk_model_load(const char *path, char *err, size_t errlen) {

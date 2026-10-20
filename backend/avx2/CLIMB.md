@@ -382,3 +382,15 @@ faster than under WSL2. That toolchain's msvcrt printf did not know %zu (46
 -Wformat warnings), so the Makefile's Windows branch now defines
 __USE_MINGW_ANSI_STDIO; under MSYS2's UCRT64 the output is the same bytes
 with it (check-c on the Core 3 304).
+
+## 2026-10-20 - one binary for the family: the backend picked at run time
+
+A build now holds avx2-vnni, avx512-vnni and avx2 (and ref), each compiled
+with its own instruction set, the rest of the tree with x86-64's baseline,
+and backend/kernels.c runs the first the CPU can (CLAUDE.md, 4). The core
+lost -mavx2 -mfma and nothing measured: the 12900HK picks avx2-vnni and
+runs the minute whole in 0.909-0.912 s and in 30 s chunks in 0.829-0.830
+(0.909-0.921 and 0.828-0.829 before), and `PKITO_KERNELS=avx2` 1.676 s
+(1.682 as a build of its own); the Core 3 304, Windows, 1.393-1.402 and
+1.307-1.313 (1.392-1.405, 1.290-1.312). kcheck tests every backend the CPU
+can run and skips the rest with a line: avx512-vnni on both.

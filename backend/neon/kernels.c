@@ -80,7 +80,7 @@ static inline float lanes_sum(float32x4_t a0, float32x4_t a1, float32x4_t a2, fl
 
 /* ------------------------------------------------------- int8 products --- */
 
-void pk_k_quantize(pk_act *a, const float *x, size_t xs) {
+static void k_quantize(pk_act *a, const float *x, size_t xs) {
     const uint32_t nb = a->n / a->qb;
     for (uint32_t t = 0; t < a->T; t++)
         for (uint32_t b = 0; b < nb; b++) {
@@ -329,8 +329,8 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
 
 /* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
  * PK_Q8_NC columns at a time across the half. */
-void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                  uint32_t rows, const pk_act *a, int add) {
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, nb = n / a->qb;
 #ifdef PK_Q8_KCHUNK
     if (n > PK_Q8_KCHUNK && PK_Q8_KCHUNK % a->qb == 0 && rows <= PK_Q8_KCHUNK_ROWS && a->T > 1) {
@@ -413,9 +413,9 @@ void f32_tile(float *out, size_t os, const float *w, uint32_t ld, uint32_t n,
         }
 }
 
-void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
-                   const float *x, size_t xs, uint32_t T,
-                   const float *bias, size_t bs, int relu) {
+static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
+                       const float *x, size_t xs, uint32_t T,
+                       const float *bias, size_t bs, int relu) {
     if (T == 1 && rows % 64 == 0) {
         for (uint32_t r = 0; r < rows; r += 64)
             f32_tile(out + r, os, w + (size_t)r * ld, ld, n, x, xs, bias ? bias + r : NULL, bs,
@@ -443,8 +443,8 @@ void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t 
 
 /* ------------------------------------------------- reductions and rows --- */
 
-void pk_k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
-                    const float *w, const float *b, float eps) {
+static void k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
+                        const float *w, const float *b, float eps) {
     for (uint32_t t = 0; t < T; t++) {
         const float *v = x + t * xs;
         float *o = out + t * os;
@@ -475,7 +475,7 @@ void pk_k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T
     }
 }
 
-void pk_k_softmax(float *x, uint32_t n, float scale) {
+static void k_softmax(float *x, uint32_t n, float scale) {
     const float32x4_t sv = vdupq_n_f32(scale);
     float32x4_t mv = vdupq_n_f32(-INFINITY);
     uint32_t i = 0;
@@ -513,13 +513,13 @@ void pk_k_softmax(float *x, uint32_t n, float scale) {
     for (; i < n; i++) x[i] = x[i] * inv;
 }
 
-void pk_k_silu(float *x, size_t n) {
+static void k_silu(float *x, size_t n) {
     size_t i = 0;
     for (; i + 4 <= n; i += 4) vst1q_f32(x + i, v_silu(vld1q_f32(x + i)));
     for (; i < n; i++) x[i] = x[i] * pk_sigmoidf(x[i]);
 }
 
-void pk_k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
+static void k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
     for (uint32_t t = 0; t < T; t++) {
         const float *a = x + t * xs;
         float *o = out + t * os;
@@ -547,8 +547,8 @@ static float32x4_t dw_one(const float *x, size_t xs, uint32_t T, const float *wg
     return acc;
 }
 
-void pk_k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
-                 const float *w, const float *b, uint32_t K) {
+static void k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
+                     const float *w, const float *b, uint32_t K) {
     const uint32_t h = K / 2, end = T > h ? T - h : 0;     /* [h, end): every tap inside */
     float wt[64 * PK_DW_KMAX];
     for (uint32_t c0 = 0; c0 < C; c0 += 64) {
@@ -678,9 +678,9 @@ static void conv_row(float *o, const conv_rows *r, const float *wt, const float 
     }
 }
 
-void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
-                    uint32_t C, int depthwise, const float *w, const float *b, int relu,
-                    uint32_t t0, uint32_t t1) {
+static void k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi,
+                        uint32_t C, int depthwise, const float *w, const float *b, int relu,
+                        uint32_t t0, uint32_t t1) {
     const uint32_t Fo = (Fi + 1) / 2, cin = depthwise ? C : 1;
     float wt[9 * CONV_CW];
     for (uint32_t c0 = 0; c0 < C; c0 += CONV_CW) {
@@ -702,7 +702,7 @@ void pk_k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint3
     }
 }
 
-void pk_k_lstm(float *h, float *c, const float *g, uint32_t H) {
+static void k_lstm(float *h, float *c, const float *g, uint32_t H) {
     for (uint32_t j = 0; j < H; j += 4) {
         float32x4_t i = v_sigmoid(vld1q_f32(g + j));
         float32x4_t f = v_sigmoid(vld1q_f32(g + H + j));
@@ -730,8 +730,8 @@ static inline void transpose4(float32x4_t r[4]) {
  * ref's line on vectors, so a lane's power spectrum is ref's bits. The
  * windows come in four samples at a time, transposed so that a vector is
  * one sample of each window, and the spectra go out the same way. */
-void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
-               const pk_fft *f, float *scratch) {
+static void k_stft(float *out, size_t os, const float *const *x, uint32_t count,
+                   const pk_fft *f, float *scratch) {
     const uint32_t n = f->n, m = n / 2;
     const float *w = f->window, *fc = f->fcos, *fs = f->fsin;
     float32x4_t *zr = (float32x4_t *)(void *)scratch, *zi = zr + m;
@@ -790,9 +790,26 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
 }
 
 #ifdef PK_NEON_DOTPROD
-const char *pk_k_name(void) { return "neon-dp (ARMv8.2 NEON: SDOT int8, fp32)"; }
-const char *const pk_k_needs[] = { "asimddp", NULL };
+static const char *const needs[] = { "asimddp", NULL };
+const pk_kernels pk_kernels_neon_dp = {
+    .id = "neon-dp",
+    .name = "neon-dp (ARMv8.2 NEON: SDOT int8, fp32)",
 #else
-const char *pk_k_name(void) { return "neon (ARMv8.0 NEON: SMULL/SADALP int8, fp32)"; }
-const char *const pk_k_needs[] = { NULL };      /* NEON is part of AArch64 */
+static const char *const needs[] = { NULL };      /* NEON is part of AArch64 */
+const pk_kernels pk_kernels_neon = {
+    .id = "neon",
+    .name = "neon (ARMv8.0 NEON: SMULL/SADALP int8, fp32)",
 #endif
+    .needs = needs,
+    .quantize = k_quantize,
+    .gemm_q8 = k_gemm_q8,
+    .gemm_f32 = k_gemm_f32,
+    .layernorm = k_layernorm,
+    .softmax = k_softmax,
+    .silu = k_silu,
+    .glu = k_glu,
+    .dwconv = k_dwconv,
+    .conv3x3s2 = k_conv3x3s2,
+    .lstm = k_lstm,
+    .stft = k_stft,
+};

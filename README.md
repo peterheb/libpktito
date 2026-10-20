@@ -33,9 +33,16 @@ computes the same bits on every machine.
 ## Try it
 
 ```sh
-make                          # backend detected: neon-dp, neon, avx2-vnni, avx2 or ref
-make BACKEND=ref              # scalar C, for anything
+make                          # every backend of this machine's family, and ref
+make BACKEND=ref              # scalar C alone, for anything
 ```
+
+A build holds every backend of its family that the compiler can make
+(neon-dp and neon on AArch64; avx2-vnni, avx512-vnni and avx2 on x86-64)
+and the CPU picks the first it can run, so a binary copied to another
+machine of the family runs there at that machine's best: one built on an
+Alder Lake runs on a Zen 4, one built on a Pi 5 on a Pi 3.
+`PKITO_KERNELS=neon ./pkito ...` runs a given one of them, to compare.
 
 On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
 `pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pkito.exe is linked
@@ -326,10 +333,11 @@ make check-math              # every float through exp, sigmoid, tanh and log
 make remote HOST=user@board  # rsync, build, check-c and bench there
 ```
 
-`check-c` is the math library's bounds, every kernel against `ref` bit for
-bit (tests/kcheck: 1,525 cases), the model file's validator on its
-malformed corpus and the whole engine on the tiny model, the WAV reader on
-its own, and test.wav through `./pkito` and through examples/transcribe:
+`check-c` is the math library's bounds, every kernel of every backend the
+CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
+model file's validator on its malformed corpus and the whole engine on the
+tiny model, the WAV reader on its own, and test.wav through `./pkito` and
+through examples/transcribe:
 vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
 the detokenizer against sentencepiece, the state machines against Silero's
 Python, the resampler against torchaudio and the corpora's WER.
@@ -342,8 +350,9 @@ core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              the text (tokens.c), the transcriber (asr.c), the VAD (vad.c,
              segment.c), the WAV library (wav.c, resample.c), the math
              (vmath.h), the pool (pool.c), the CLI (cli.c)
-backend/     the seam (kernels.h) and ref/, neon/ (and neon-dp/), avx2/ (and
-             avx2-vnni/); a CLIMB.md beside each tuned backend
+backend/     the seam (kernels.h, and kernels.c, which picks the backend that
+             runs) and ref/, neon/ (and neon-dp/), avx2/ (and avx2-vnni/,
+             avx512-vnni/); a CLIMB.md beside each tuned backend
 tools/       the converter, the float64 reference, the corpora, the
              quantization experiment
 tests/       the C checks, the Python ones, and test.wav with its golden files

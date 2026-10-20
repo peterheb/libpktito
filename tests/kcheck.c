@@ -1,9 +1,10 @@
-/* Every backend kernel against backend/ref, bit for bit.
+/* Every kernel of every backend in the build that this CPU can run, against
+ * backend/ref, bit for bit.
  *
  * The backends promise ref's bits, not ref's answer to within a tolerance
- * (backend/kernels.h), so this is an equality test: tests/kref.c is ref
- * compiled again under other names, every case runs through both, and the
- * outputs are compared with memcmp. The cases cover the shapes the model
+ * (backend/kernels.h), so this is an equality test: every case runs
+ * through the backend's table and ref's, and the outputs are compared with
+ * memcmp. The cases cover the shapes the model
  * calls each kernel with and the ones a split over threads makes - a run of
  * panels, a block of channels, a window of rows, every column count a tile
  * can leave over - on values the arithmetic finds awkward: zeros of both
@@ -20,6 +21,7 @@
  */
 #include "kernels.h"
 #include "model.h"
+#include "os.h"
 #include "pkf.h"
 #include "vmath.h"
 
@@ -29,23 +31,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-void ref_quantize(pk_act *a, const float *x, size_t xs);
-void ref_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                 uint32_t rows, const pk_act *a, int add);
-void ref_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
-                  const float *x, size_t xs, uint32_t T, const float *bias, size_t bs, int relu);
-void ref_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
-                   const float *w, const float *b, float eps);
-void ref_softmax(float *x, uint32_t n, float scale);
-void ref_silu(float *x, size_t n);
-void ref_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n);
-void ref_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
-                const float *w, const float *b, uint32_t K);
-void ref_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, uint32_t Fi, uint32_t C,
-                   int depthwise, const float *w, const float *b, int relu, uint32_t t0, uint32_t t1);
-void ref_lstm(float *h, float *c, const float *g, uint32_t H);
-void ref_stft(float *out, size_t os, const float *const *x, uint32_t count, const pk_fft *f,
-              float *scratch);
+/* the kernels under test, and ref's */
+static const pk_kernels *kt, *kr;
 
 static const double PI = 3.14159265358979323846;
 static int g_bad, g_cases;
@@ -114,8 +101,8 @@ static void quant_case(uint32_t T, uint32_t n, uint32_t qb, size_t xs, float sca
         memset(x, 0, qb * sizeof *x);
     pk_act a1 = { xmalloc((size_t)T * n), xmalloc((size_t)T * n / qb * 4), n, qb, T };
     pk_act a2 = { xmalloc((size_t)T * n), xmalloc((size_t)T * n / qb * 4), n, qb, T };
-    pk_k_quantize(&a1, x, xs);
-    ref_quantize(&a2, x, xs);
+    kt->quantize(&a1, x, xs);
+    kr->quantize(&a2, x, xs);
     char what[96];
     snprintf(what, sizeof what, "quantize T %u n %u qb %u: q", T, n, qb);
     same(what, a1.q, a2.q, (size_t)T * n, 1);
@@ -154,7 +141,7 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
     }
     for (size_t i = 0; i < (size_t)T * n; i++) x[i] = xreal ? xreal[i] : awkward(2.0f);
     pk_act a = { xmalloc((size_t)T * n), xmalloc((size_t)T * n / qb * 4), n, qb, T };
-    ref_quantize(&a, x, n);
+    kr->quantize(&a, x, n);
     size_t os = rows + 16 * (rnd() % 2);
     float *o1 = xmalloc((size_t)T * os * sizeof *o1), *o2 = xmalloc((size_t)T * os * sizeof *o2);
     for (size_t i = 0; i < (size_t)T * os; i++) o1[i] = o2[i] = awkward(1.0f);
@@ -163,8 +150,8 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
     if (rows > 16 && rnd() % 2)
         r0 = 16 * (rnd() % (rows / 16));
     uint32_t nr = rows - r0;
-    pk_k_gemm_q8(o1 + r0, os, w + (size_t)r0 * n, ws + r0, bias ? b + r0 : NULL, nr, &a, add);
-    ref_gemm_q8(o2 + r0, os, w + (size_t)r0 * n, ws + r0, bias ? b + r0 : NULL, nr, &a, add);
+    kt->gemm_q8(o1 + r0, os, w + (size_t)r0 * n, ws + r0, bias ? b + r0 : NULL, nr, &a, add);
+    kr->gemm_q8(o2 + r0, os, w + (size_t)r0 * n, ws + r0, bias ? b + r0 : NULL, nr, &a, add);
     char msg[160];
     snprintf(msg, sizeof msg, "gemm_q8 %s rows %u+%u n %u T %u qb %u add %d bias %d", what, r0, nr,
              n, T, qb, add, bias);
@@ -209,8 +196,8 @@ static void gemm_f32_case(uint32_t rows, uint32_t ld, uint32_t k0, uint32_t n, u
     for (size_t i = 0; i < (size_t)T * xs + n; i++) x[i] = awkward(1.0f);
     for (size_t i = 0; i < (size_t)T * os + rows; i++) b[i] = o1[i] = o2[i] = awkward(2.0f);
     const float *bb = bias_kind ? b : NULL;
-    pk_k_gemm_f32(o1, os, w, ld, rows, n, x, xs, T, bb, bs, relu);
-    ref_gemm_f32(o2, os, w, ld, rows, n, x, xs, T, bb, bs, relu);
+    kt->gemm_f32(o1, os, w, ld, rows, n, x, xs, T, bb, bs, relu);
+    kr->gemm_f32(o2, os, w, ld, rows, n, x, xs, T, bb, bs, relu);
     char msg[128];
     snprintf(msg, sizeof msg, "gemm_f32 rows %u ld %u k0 %u n %u T %u bias %d relu %d", rows, ld, k0,
              n, T, bias_kind, relu);
@@ -249,37 +236,37 @@ static void rows_cases(void) {
         float off = rep % 4 == 0 ? 1000.0f : 0.0f;          /* a large mean: the cancellation */
         for (size_t i = 0; i < (size_t)T * xs; i++) x[i] = off + awkward(3.0f);
         for (uint32_t i = 0; i < n; i++) { w[i] = awkward(2.0f); b[i] = awkward(1.0f); }
-        pk_k_layernorm(o1, xs, x, xs, T, n, w, b, 1e-5f);
-        ref_layernorm(o2, xs, x, xs, T, n, w, b, 1e-5f);
+        kt->layernorm(o1, xs, x, xs, T, n, w, b, 1e-5f);
+        kr->layernorm(o2, xs, x, xs, T, n, w, b, 1e-5f);
         for (uint32_t t = 0; t < T; t++)
             same("layernorm", o1 + t * xs, o2 + t * xs, n, 4);
         memcpy(o1, x, (size_t)T * xs * sizeof *x);           /* in place, as the out norm runs */
         memcpy(o2, x, (size_t)T * xs * sizeof *x);
-        pk_k_layernorm(o1, xs, o1, xs, T, n, w, b, 1e-5f);
-        ref_layernorm(o2, xs, o2, xs, T, n, w, b, 1e-5f);
+        kt->layernorm(o1, xs, o1, xs, T, n, w, b, 1e-5f);
+        kr->layernorm(o2, xs, o2, xs, T, n, w, b, 1e-5f);
         for (uint32_t t = 0; t < T; t++)
             same("layernorm in place", o1 + t * xs, o2 + t * xs, n, 4);
 
         uint32_t m = 1 + rnd() % 700;                        /* any length, tails and all */
         float *s1 = xmalloc(m * sizeof *s1), *s2 = xmalloc(m * sizeof *s2);
         for (uint32_t i = 0; i < m; i++) s1[i] = s2[i] = awkward(rep % 3 ? 20.0f : 400.0f);
-        pk_k_softmax(s1, m, 0.0883883476f);
-        ref_softmax(s2, m, 0.0883883476f);
+        kt->softmax(s1, m, 0.0883883476f);
+        kr->softmax(s2, m, 0.0883883476f);
         same("softmax", s1, s2, m, 4);
 
         size_t ns = 1 + rnd() % 3000;
         float *u1 = xmalloc(ns * sizeof *u1), *u2 = xmalloc(ns * sizeof *u2);
         for (size_t i = 0; i < ns; i++) u1[i] = u2[i] = awkward(rep % 2 ? 10.0f : 120.0f);
-        pk_k_silu(u1, ns);
-        ref_silu(u2, ns);
+        kt->silu(u1, ns);
+        kr->silu(u2, ns);
         same("silu", u1, u2, ns, 4);
 
         uint32_t gn = 16 * (1 + rnd() % 40);
         float *g = xmalloc((size_t)T * 2 * gn * sizeof *g);
         float *g1 = xmalloc((size_t)T * gn * sizeof *g1), *g2 = xmalloc((size_t)T * gn * sizeof *g2);
         for (size_t i = 0; i < (size_t)T * 2 * gn; i++) g[i] = awkward(rep % 2 ? 8.0f : 100.0f);
-        pk_k_glu(g1, gn, g, 2 * gn, T, gn);
-        ref_glu(g2, gn, g, 2 * gn, T, gn);
+        kt->glu(g1, gn, g, 2 * gn, T, gn);
+        kr->glu(g2, gn, g, 2 * gn, T, gn);
         same("glu", g1, g2, (size_t)T * gn, 4);
 
         uint32_t H = 16 * (1 + rnd() % 40);
@@ -287,8 +274,8 @@ static void rows_cases(void) {
         float *c1 = xmalloc(H * 4), *c2 = xmalloc(H * 4);
         for (uint32_t i = 0; i < 4 * H; i++) gt[i] = awkward(rep % 2 ? 4.0f : 60.0f);
         for (uint32_t i = 0; i < H; i++) c1[i] = c2[i] = awkward(3.0f);
-        pk_k_lstm(h1, c1, gt, H);
-        ref_lstm(h2, c2, gt, H);
+        kt->lstm(h1, c1, gt, H);
+        kr->lstm(h2, c2, gt, H);
         same("lstm h", h1, h2, H, 4);
         same("lstm c", c1, c2, H, 4);
         xfree(x); xfree(w); xfree(b); xfree(o1); xfree(o2); xfree(s1); xfree(s2); xfree(u1); xfree(u2);
@@ -311,8 +298,8 @@ static void conv_cases(void) {
         for (size_t i = 0; i < (size_t)T * C; i++) x[i] = awkward(2.0f);
         for (size_t i = 0; i < (size_t)C * K; i++) w[i] = awkward(1.0f);
         for (uint32_t i = 0; i < C; i++) b[i] = awkward(1.0f);
-        pk_k_dwconv(o1 + c0, C, x + c0, C, T, nc, w + (size_t)c0 * K, b + c0, K);
-        ref_dwconv(o2 + c0, C, x + c0, C, T, nc, w + (size_t)c0 * K, b + c0, K);
+        kt->dwconv(o1 + c0, C, x + c0, C, T, nc, w + (size_t)c0 * K, b + c0, K);
+        kr->dwconv(o2 + c0, C, x + c0, C, T, nc, w + (size_t)c0 * K, b + c0, K);
         same("dwconv", o1, o2, (size_t)T * C, 4);
         xfree(x); xfree(w); xfree(b); xfree(o1); xfree(o2);
 
@@ -335,8 +322,8 @@ static void conv_cases(void) {
             for (uint32_t i = 0; i < Cc; i++) bc[i] = awkward(1.0f);
             int relu = rnd() % 2;
             const float *inw = in + (size_t)r0 * Fi * cin;
-            pk_k_conv3x3s2(p1, inw, r0, Ti, Fi, Cc, dw, wc, bc, relu, t0, t1);
-            ref_conv3x3s2(p2, inw, r0, Ti, Fi, Cc, dw, wc, bc, relu, t0, t1);
+            kt->conv3x3s2(p1, inw, r0, Ti, Fi, Cc, dw, wc, bc, relu, t0, t1);
+            kr->conv3x3s2(p2, inw, r0, Ti, Fi, Cc, dw, wc, bc, relu, t0, t1);
             same(dw ? "conv3x3s2 depthwise" : "conv3x3s2 one channel", p1, p2,
                  (size_t)(t1 - t0) * Fo * Cc, 4);
             xfree(in); xfree(wc); xfree(bc); xfree(p1); xfree(p2);
@@ -366,8 +353,8 @@ static void stft_cases(void) {
         for (uint32_t w = 0; w < count; w++) xs[w] = sig + (size_t)w * 160;
         float *o1 = xmalloc((size_t)count * (m + 1) * 4), *o2 = xmalloc((size_t)count * (m + 1) * 4);
         float *s1 = xmalloc(PK_K_STFT_SCRATCH(n) * 4), *s2 = xmalloc(PK_K_STFT_SCRATCH(n) * 4);
-        pk_k_stft(o1, m + 1, xs, count, &f, s1);
-        ref_stft(o2, m + 1, xs, count, &f, s2);
+        kt->stft(o1, m + 1, xs, count, &f, s1);
+        kr->stft(o2, m + 1, xs, count, &f, s2);
         same("stft", o1, o2, (size_t)count * (m + 1), 4);
         xfree(rev); xfree(win); xfree(fc); xfree(fs); xfree(sig); xfree(xs); xfree(o1); xfree(o2);
         xfree(s1); xfree(s2);
@@ -397,7 +384,7 @@ static void model_cases(const char *path) {
     pk_model_free(m);
 }
 
-int main(int argc, char **argv) {
+static void run(const char *model) {
     /* each rnd() in a statement of its own: the order a compiler evaluates
      * a call's arguments in is its own, and the cases should be the same
      * on every compiler */
@@ -433,8 +420,31 @@ int main(int argc, char **argv) {
     rows_cases();
     conv_cases();
     stft_cases();
-    if (argc > 1)
-        model_cases(argv[1]);
-    printf("kcheck: %s, %d cases: %s\n", pk_k_name(), g_cases, g_bad ? "FAIL" : "every one ref's bits");
-    return g_bad != 0;
+    if (model)
+        model_cases(model);
+}
+
+/* Each backend sees the same cases: the generator starts again for each.
+ * A build of ref alone holds ref to its float64 definitions, which every
+ * run does on the way. */
+int main(int argc, char **argv) {
+    kr = &pk_kernels_ref;
+    int bad = 0, ran = 0;
+    for (const pk_kernels *const *k = pk_kernels_built; *k; k++) {
+        if (*k == kr && ran)
+            break;
+        const char *lack = pk_os_cpu_lacks((*k)->needs);
+        if (lack) {
+            printf("kcheck: %s: this CPU has no %s - skipped\n", (*k)->name, lack);
+            continue;
+        }
+        kt = *k;
+        g_rng = 0x9E3779B97F4A7C15ull;
+        g_bad = g_cases = 0;
+        run(argc > 1 ? argv[1] : NULL);
+        printf("kcheck: %s, %d cases: %s\n", kt->name, g_cases, g_bad ? "FAIL" : "every one ref's bits");
+        bad += g_bad;
+        ran++;
+    }
+    return bad != 0;
 }

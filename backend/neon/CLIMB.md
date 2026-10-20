@@ -515,3 +515,11 @@ three chunks, 48.863 s whole, from 47.3 s on 2d27ca0; peak RSS 652 MB, and
 692 MB whole. Without it, the change that makes it neon-dp's: 44.586 and
 44.636 s in three chunks, 48.116 s whole, attention 2038 ms; check-c
 passing.
+
+## 2026-10-20 - one binary for the family: the backend picked at run time
+
+The Pi 3B+ builds neon-dp too now, and skips it at run time (no dot
+product): its own build picks neon, 44.575 s in three chunks (44.586
+before). The Pi 5's build, copied here as it was, picks neon and writes the
+v2 transcript of test.wav byte for byte; `PKITO_KERNELS=neon-dp` is refused
+with the reason.
