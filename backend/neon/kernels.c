@@ -114,14 +114,13 @@ void pk_k_quantize(pk_act *a, const float *x, size_t xs) {
  * of groups is SMULL/SMLAL into 16 bits (two products, at most 2 * 127^2,
  * which fits) and SADALP into 32, leaving each row's sum in two lanes that
  * a pairwise add joins at the block's end. The activation's four bytes are
- * loaded replicated across all sixteen (LD1R), so the high half of a weight
- * vector goes to SMULL2/SMLAL2 as it stands rather than being moved down
- * first. */
+ * replicated across all sixteen (rep4), so the high half of a weight vector
+ * goes to SMULL2/SMLAL2 as it stands rather than being moved down first. */
 
 /* Columns a tile takes. Four with SDOT, which needs 8 int and 8 float
- * accumulators for them; two on ARMv8.0, whose four rows of pairwise sums
- * a column take 16 int accumulators at four columns and spill (CLIMB.md,
- * 2026-10-20, H1). */
+ * accumulators for them; three on ARMv8.0, whose four vectors of pairwise
+ * sums a column take 12 int accumulators at three columns, where four
+ * columns' 16 spill (CLIMB.md, 2026-10-20, H1). */
 #ifdef PK_NEON_DOTPROD
 #define PK_Q8_NC 4
 #else

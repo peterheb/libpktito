@@ -375,3 +375,122 @@ to +6% at one thread.
 ff down gained most alone, 2.96 -> 3.18 (its blocks are the same 32 inputs,
 its tiles more of them). MAC/cycle a core: 2.31 alone, 2.22 at four.
 `./pkito bench`: **47.319 s and 47.328 s**, from 49.17: -3.8%.
+
+## The profile after H8, and the 3x3 convolutions
+
+`make PROFILE=1`, 47.40 s: feed-forward 25.16 s (53.0%), q k v pos 7.42
+(15.6%), conv pw1 pw2 4.52 (9.5%), attention 3.02 (6.4%), subsampling 2.73
+(5.8%), attention out 1.54 (3.3%), decoder 1.02 (2.1%), quantize 0.77,
+glu + depthwise 0.47, mel 0.44, layer norms 0.35. The int8 products run at
+12.0-12.7 GMAC/s in every stage.
+
+pk_k_conv3x3s2 alone (a probe outside the tree), one 20 s chunk's shapes,
+one thread:
+
+| | ms | GFMA/s | FMA/cycle |
+|---|---|---|---|
+| conv0, 2000x128 -> 1000x64x256, one input channel | 465.8 | 0.32 | 0.23 |
+| dw1, 1000x64x256 -> 500x32x256 | 700.7 | 0.05 | **0.04** |
+| dw2, 500x32x256 -> 250x16x256 | 165.8 | 0.06 | 0.04 |
+
+1.33 s a chunk, 4 s of the bench's one-thread equivalent. The kernel loops
+channels outermost: for each group of four it walks the whole image, its
+input at a stride of the channel count (1 KB), using 16 bytes of each
+64-byte line it fetches, through an image (dw1's: 64 MB) far past every
+cache. pk_k_dwconv (the conformer's depthwise convolution) builds each tap's
+four weights from strided scalars, for every row and channel group.
+
+## H9 - the convolutions' loops turned over
+
+Stated before the edit. pk_k_conv3x3s2: positions outer, channels inner,
+the taps' weights transposed tap-major once a call (9 x 256 floats, on the
+stack, 256 channels at a time), so that a position's input is read along
+its channels as one stream and the weights from L1; for the one-channel
+conv0, a position's nine inputs loaded once for all its channels.
+pk_k_dwconv: its block of channels' taps transposed once a call, as backend/
+avx2 already does. Each output's chain of taps is ref's chain in ref's
+order, so the bits cannot move. Predicted: the probe's three shapes from
+1.33 s to under 0.15 s a chunk, the bench -1.5 to -2.5%.
+
+### H9, measured once, then stopped
+
+The edit (positions outer, 16 channels a pass, the taps tap-major on the
+stack) held ref's bits: kcheck neon on the Pi, neon and neon-dp on the Mac.
+The probe's three shapes went from 1.33 s to 0.45 s a chunk: conv0 188 ms
+(0.56 FMA/cycle), dw1 213 ms (0.12), dw2 48 ms (0.14). That is well short of
+the predicted 0.15 s. In the probe's whole-image form each stage now waits
+on its 64 MB of output or input rather than on its multiplies. One
+`./pkito bench` gave **45.619 s**, -3.6% from 47.32, beyond the predicted
+-1.5 to -2.5%.
+
+It was stopped there, before the second run, and reverted, because main had
+rewritten both kernels since this branch's base:
+
+- 2299472: pk_k_conv3x3s2 a row of output at a time in eight FMA chains,
+  the weights tap-major, and core/encoder.c's sub_item streaming every
+  subsampling stage through 3-row windows that stay in L2.
+- 737d3f3: pk_k_dwconv 64 frames by 64 channels at a time, the taps
+  tap-major.
+
+**The convolutions are main's work.** Nothing of H9 is in this branch's
+code.
+
+## Where the climb ends
+
+| | main at 166e169 | 2d27ca0 |
+|---|---|---|
+| `./pkito bench`, 60 s in 3 chunks (`--max-chunk 30`) | 58.681 s, 58.496 s | **47.319 s, 47.328 s (-19.3%)** |
+| gemmbench, all four shapes, 1 thread | 2.68 GMAC/s, 1.91 MAC/cycle | 3.23, **2.31** |
+| gemmbench, all four shapes, 4 threads | 9.31 GMAC/s, 1.66 MAC/cycle a core | 12.43, **2.22** |
+| gemmbench, L1-resident (64 x 256, T 48) | - | 2.45 MAC/cycle |
+
+The stage split, before and after:
+
+- **Before:** main's 166e169, its commit message, 58.4 s: feed-forward 57%,
+  q k v pos 15%, conv pw1 pw2 9%, attention 5%, subsampling 5%,
+  decoder 2%.
+- **After:** above, 47.40 s, the feed-forward at 53%.
+
+Kept:
+
+- H1, a 3-column tile with SMULL2 on replicated activations: no spills.
+- H3, 48 KB column blocks.
+- H1 and H3 together: -11.6%, b4f2ca0.
+- H6, inputs in chunks of 1024 within a column block: -5.1%, a01a01f.
+- H8, SADDLP at a block's first step: -3.8%, 2d27ca0.
+
+Rejected:
+
+| Hypothesis | Result |
+|---|---|
+| H2, LD1R | -11% |
+| H4, eight activation bytes a load | -7.5%: gcc split it back into `ldr s` |
+| H5, prefetching the weight stream | -3%, even in L1 |
+| Column-block-major dealing (a gemmbench prototype) | no change, so the pool was left alone |
+| H7, the loop in asm in the measured order | at best level with gcc |
+| H9 | not rejected: stopped, see above |
+
+The tile now runs at 2.45 MAC/cycle in L1, about 93% of what its
+instruction stream is priced at. A column's 8-input step costs about 24
+cycles for 64 MACs:
+
+- 8 multiplies;
+- 4 SADALP at 2 cycles each;
+- 2 `ldr s` and 2 DUP;
+- a third of the 4 weight loads at 2 cycles each;
+- a quarter of the block end.
+
+Each change left in this form has been measured at or below gcc's code:
+LD1R, a wider activation load, prefetching, and hand-ordered asm. Going
+further needs fewer instructions per MAC. On ARMv8.0 that means the int16
+by-element SMLAL: no SADALP, 3.86 MAC/cycle issued in the probe, 2.78 on an
+int16 panel. It needs either a weight layout that kernels.h does not have
+or widening on the fly, which spends most of the gain. Int16 weights would
+not fit a 1 GB board.
+
+Not measured here: the attention stage runs at roughly 0.85 FMA a cycle a
+core. That is a count of its three products at three 20 s chunks: 14.3 G
+multiply-adds in 3.02 s on four cores. f32_tile is priced at 2.46 (20
+loads and 64 FMLA a step). Main's d6afe66, which turns gcc's first
+scheduling pass off around the float products, has not been measured on
+the A53.
