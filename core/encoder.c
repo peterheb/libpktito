@@ -242,28 +242,35 @@ typedef struct {
     uint32_t T, Tp, Pp;
 } att_job;
 
-/* Head i's K and V and P as pk_k_gemm_f32 panels, and its queries with the
- * two position biases added:
+/* A head's K and V and P as pk_k_gemm_f32 panels, and its queries with the
+ * two position biases added, for a block of 64 frames (and the block's 128
+ * rows of the position table) - H times the frames over 64 items, which a
+ * pool of any size can balance where one item a head could not:
  *
  *   kp: (d, key j)      at ((j/16) dk + d) 16 + j%16     keys padded to Tp with zeros
  *   vp: (key j, d)      at ((d/16) Tp + j) 16 + d%16
- *   pp: (d, position m) at ((m/16) dk + d) 16 + m%16     positions padded to Pp */
-static void repack_item(void *arg, int h, int th) {
+ *   pp: (d, position m) at ((m/16) dk + d) 16 + m%16     positions padded to Pp
+ *
+ * The last block writes the zeros past the end. */
+#define PK_REPACK 64
+
+static void repack_item(void *arg, int item, int th) {
     (void)th;
     att_job *j = arg;
     pk_asr *a = j->a;
     const uint32_t D = a->m->d_model, dk = D / a->m->n_heads, T = j->T, R = 2 * T - 1;
+    const uint32_t nb = (T + PK_REPACK - 1) / PK_REPACK, h = (uint32_t)item / nb, b = (uint32_t)item % nb;
     float *kp = a->kp + (size_t)h * j->Tp * dk, *vp = a->vp + (size_t)h * j->Tp * dk;
     float *pp = a->pp + (size_t)h * j->Pp * dk;
-    memset(kp, 0, (size_t)j->Tp * dk * sizeof *kp);
-    memset(vp, 0, (size_t)j->Tp * dk * sizeof *vp);
-    memset(pp, 0, (size_t)j->Pp * dk * sizeof *pp);
-    for (uint32_t t = 0; t < T; t++) {
+    const uint32_t t0 = b * PK_REPACK, t1 = b + 1 == nb ? j->Tp : min32(t0 + PK_REPACK, T);
+    for (uint32_t t = t0; t < t1; t++) {
         const float *kr = j->k + (size_t)t * D + h * dk, *vr = j->v + (size_t)t * D + h * dk;
         for (uint32_t d = 0; d < dk; d++) {
-            kp[((size_t)(t / 16) * dk + d) * 16 + t % 16] = kr[d];
-            vp[((size_t)(d / 16) * j->Tp + t) * 16 + d % 16] = vr[d];
+            kp[((size_t)(t / 16) * dk + d) * 16 + t % 16] = t < T ? kr[d] : 0.0f;
+            vp[((size_t)(d / 16) * j->Tp + t) * 16 + d % 16] = t < T ? vr[d] : 0.0f;
         }
+        if (t >= T)
+            continue;
         const float *qr = a->q + (size_t)t * D + h * dk;
         float *qu = a->qu + (size_t)t * D + h * dk, *qv = a->qv + (size_t)t * D + h * dk;
         for (uint32_t d = 0; d < dk; d++) {
@@ -271,10 +278,11 @@ static void repack_item(void *arg, int h, int th) {
             qv[d] = qr[d] + j->L->bias_v[h * dk + d];
         }
     }
-    for (uint32_t r = 0; r < R; r++) {
+    const uint32_t r0 = 2 * t0, r1 = b + 1 == nb ? j->Pp : min32(2 * t0 + 2 * PK_REPACK, R);
+    for (uint32_t r = r0; r < r1; r++) {
         const float *pr = a->p + (size_t)r * D + h * dk;
         for (uint32_t d = 0; d < dk; d++)
-            pp[((size_t)(r / 16) * dk + d) * 16 + r % 16] = pr[d];
+            pp[((size_t)(r / 16) * dk + d) * 16 + r % 16] = r < R ? pr[d] : 0.0f;
     }
 }
 
@@ -344,7 +352,7 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
                    pk_gemm(a, v, D, &L->v, NULL, &a->act, 0);
                    pk_gemm(a, a->p, D, &L->pos, NULL, &a->ape, 0));
     att_job aj = { a, L, k, v, T, up16(T), up16(2 * T - 1) + 16 };
-    PROF(PK_P_ATT, pk_par(a, repack_item, &aj, (int)H);
+    PROF(PK_P_ATT, pk_par(a, repack_item, &aj, (int)(H * ((T + PK_REPACK - 1) / PK_REPACK)));
                    pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
     PROF(PK_P_ATTO, pk_gemm(a, a->x, D, &L->o, NULL, &a->act, 1));

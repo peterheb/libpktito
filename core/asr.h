@@ -32,6 +32,7 @@ typedef struct {
     int8_t *aq;                      /* its pointwise convolutions' int8 input */
     float  *ad;
     float  *sc, *bd;                 /* attention scores, and their position half */
+    float  *mel;                     /* a block of power spectra, and the FFT's scratch */
 } pk_thread_ws;
 
 struct pk_asr {

@@ -70,6 +70,7 @@ static int reserve(pk_asr *a, size_t T0) {
             CARVE(w->ad, s2 / 32, sizeof(float));
             CARVE(w->sc, PK_ATT_BLOCK * Tp, sizeof(float));
             CARVE(w->bd, PK_ATT_BLOCK * (Tp + 32), sizeof(float));
+            CARVE(w->mel, pk_mel_thread_scratch(m), sizeof(float));
         }
         if (!pass) {
             mem = malloc((size_t)p + 64);
@@ -138,7 +139,7 @@ long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks) {
         return 0;
     if (T0 > UINT32_MAX / 4 || reserve(a, T0))
         return -1;
-    PROF(PK_P_MEL, pk_mel(a->m, x, n, a->feat, a->mel_scratch, a->win));
+    PROF(PK_P_MEL, pk_mel(a, x, n));
     uint32_t Te = pk_encode(a, (uint32_t)T0);
     long nt;
     PROF(PK_P_DEC, nt = pk_decode(a, Te));
