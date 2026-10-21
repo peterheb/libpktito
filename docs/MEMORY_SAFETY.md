@@ -25,6 +25,13 @@ tables inside the file, the vocabulary's own tables inside its blob, each
 tensor - is checked the same way, against what is left rather than against
 the end.
 
+Public file and buffer entry points reject a null path or byte pointer before
+using it. The in-memory model loader also checks that adding its alignment
+slack fits in `size_t` before it allocates and copies.
+Counts derived while resampling a WAV saturate instead of wrapping, and the
+front ends check sample-count additions and byte multiplications before they
+grow a whole-recording buffer.
+
 ## The model file
 
 `pk_pkf_validate` is the boundary: `pk_model_load`, which maps the file, and
@@ -76,8 +83,9 @@ Byte-valid is not model-valid. The binder then:
   of 32 and at most `PK_MAX_BLOCKS` blocks of them, so that a backend may keep a
   value a block on its stack;
 - checks every float it will multiply by to be finite (the int8 weights need no
-  check: every byte is a valid one), the two FFTs' twiddles to be the cosines
-  and sines they must be, and the VAD's window to be Hann;
+  check: every byte is a valid one), the position frequencies to be in (0, 1],
+  the two FFTs' twiddles to be the cosines and sines they must be, and the
+  VAD's window to be Hann;
 - holds the vocabulary's count to the vocab param.
 
 A refused file is refused at load, with a message, never on the first
@@ -94,6 +102,9 @@ copied into a fixed local before it is parsed, and a frame's size is bounded
 by refusing more than 256 channels and samples wider than 8 bytes. A data chunk
 that ends early is read to where it ends and reported by `pk_wav_status`; one
 whose size is a stream's is read to the end of the file.
+The corpus reaches the largest frame the format can describe and both 32-
+and 64-bit maximum declared lengths, so those bounds stay true when the
+reader changes.
 
 ## Samples
 
@@ -103,9 +114,13 @@ not heard as anything useful. The VAD clamps samples to +-1e6, which keeps its
 STFT finite. In the encoder's features a sample past about 1e17 overflows the
 power spectrum to infinity and its log-mel to NaN, and the subsampling's first
 ReLU (`v > 0 ? v : 0`, and its vector forms, which agree for a NaN) makes that
-0. So nothing that is not finite reaches an int8 quantizer, whose conversion
-of a NaN would be undefined behaviour. tests/pkfcheck runs 1e30 and -3e38
-samples through the engine, and `make check-sanitize` runs it under UBSan.
+0. tests/pkfcheck runs 1e30 and -3e38 samples through the engine.
+
+A model stores only finite floats, but hostile finite weights can still make
+an intermediate overflow. An int8 quantizer turns a block containing a NaN or
+infinity into zeros before any float is narrowed to an integer. tests/pkfcheck
+runs such a model through the engine, and `make check-sanitize` verifies the
+conversion under UBSan.
 
 ## Arithmetic and conversions
 
@@ -126,7 +141,8 @@ tensor and each table, each field of the header, a param, a descriptor, the
 vocabulary and the metadata wrong in each way it can be, the binding failures,
 20,000 random bit flips of everything before the tensor data, and the whole
 engine on the tiny model and on the flipped models that still load.
-tests/wavcheck.c runs every prefix of a valid WAV and each field of fmt wrong.
+tests/wavcheck.c runs every prefix of a valid WAV, each field of fmt wrong,
+the widest legal frame and maximum 32- and 64-bit declared lengths.
 `make check-sanitize` runs both under AddressSanitizer and
 UndefinedBehaviorSanitizer.
 
