@@ -87,9 +87,18 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
             const float *v = x + t * xs + (size_t)b * a->qb;
             int8_t *q = a->q + (size_t)t * a->n + (size_t)b * a->qb;
             float32x4_t m = vdupq_n_f32(0.0f);
-            for (uint32_t i = 0; i < a->qb; i += 4)
-                m = vmaxnmq_f32(m, vabsq_f32(vld1q_f32(v + i)));
+            uint32x4_t bad = vdupq_n_u32(0);
+            for (uint32_t i = 0; i < a->qb; i += 4) {
+                float32x4_t z = vld1q_f32(v + i);
+                bad = vorrq_u32(bad, vmvnq_u32(vceqq_f32(z, z)));
+                m = vmaxnmq_f32(m, vabsq_f32(z));
+            }
             float amax = vmaxnmvq_f32(m);
+            if (vmaxvq_u32(bad) || !isfinite(amax)) {
+                a->d[(size_t)t * nb + b] = 0;
+                memset(q, 0, a->qb);
+                continue;
+            }
             a->d[(size_t)t * nb + b] = amax / 127.0f;
             float32x4_t id = vdupq_n_f32(amax > 0 ? 127.0f / amax : 0.0f);
             for (uint32_t i = 0; i < a->qb; i += 16) {

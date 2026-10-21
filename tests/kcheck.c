@@ -9,7 +9,8 @@
  * panels, a block of channels, a window of rows, every column count a tile
  * can leave over - on values the arithmetic finds awkward: zeros of both
  * signs, subnormals, saturation, the exp clamp, a block of zeros (whose
- * scale is 0), values on a rounding tie.
+ * scale is 0), values on a rounding tie, and non-finite quantizer inputs from
+ * an earlier operation's overflow.
  *
  * ref is in turn held to the same products in float64 where that is a
  * statement about the definition rather than about float: the int8 product
@@ -111,6 +112,33 @@ static void quant_case(uint32_t T, uint32_t n, uint32_t qb, size_t xs, float sca
     for (size_t i = 0; i < (size_t)T * n; i++)
         if (a2.q[i] < -127) {
             if (g_bad++ < 30) printf("FAIL ref quantize: -128 at %zu\n", i);
+            break;
+        }
+    xfree(x); xfree(a1.q); xfree(a1.d); xfree(a2.q); xfree(a2.d);
+}
+
+static void quant_nonfinite_case(void) {
+    const uint32_t T = 2, n = 64, qb = 32;
+    float *x = xmalloc((size_t)T * n * sizeof *x);
+    for (size_t i = 0; i < (size_t)T * n; i++) x[i] = frand();
+    x[3] = NAN;
+    x[40] = INFINITY;
+    x[n + 5] = -INFINITY;
+    x[n + 45] = NAN;
+    pk_act a1 = { xmalloc((size_t)T * n), xmalloc((size_t)T * n / qb * sizeof(float)), n, qb, T };
+    pk_act a2 = { xmalloc((size_t)T * n), xmalloc((size_t)T * n / qb * sizeof(float)), n, qb, T };
+    kt->quantize(&a1, x, n);
+    kr->quantize(&a2, x, n);
+    same("quantize non-finite: q", a1.q, a2.q, (size_t)T * n, 1);
+    same("quantize non-finite: d", a1.d, a2.d, (size_t)T * n / qb, sizeof(float));
+    for (size_t i = 0; i < (size_t)T * n; i++)
+        if (a1.q[i] != 0) {
+            if (g_bad++ < 30) printf("FAIL non-finite quantize: q[%zu] is %d\n", i, a1.q[i]);
+            break;
+        }
+    for (size_t i = 0; i < (size_t)T * n / qb; i++)
+        if (a1.d[i] != 0) {
+            if (g_bad++ < 30) printf("FAIL non-finite quantize: d[%zu] is %a\n", i, a1.d[i]);
             break;
         }
     xfree(x); xfree(a1.q); xfree(a1.d); xfree(a2.q); xfree(a2.d);
@@ -388,6 +416,7 @@ static void run(const char *model) {
     /* each rnd() in a statement of its own: the order a compiler evaluates
      * a call's arguments in is its own, and the cases should be the same
      * on every compiler */
+    quant_nonfinite_case();
     for (int rep = 0; rep < 60; rep++) {
         uint32_t n = 32 * (1 + rnd() % 40);
         uint32_t T = 1 + rnd() % 20;

@@ -126,9 +126,18 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
             const float *v = x + t * xs + (size_t)b * a->qb;
             int8_t *q = a->q + (size_t)t * a->n + (size_t)b * a->qb;
             __m256 m = _mm256_setzero_ps();
-            for (uint32_t i = 0; i < a->qb; i += 8)
-                m = _mm256_max_ps(_mm256_andnot_ps(sign, _mm256_loadu_ps(v + i)), m);
+            __m256 bad = _mm256_setzero_ps();
+            for (uint32_t i = 0; i < a->qb; i += 8) {
+                __m256 z = _mm256_loadu_ps(v + i);
+                bad = _mm256_or_ps(bad, _mm256_cmp_ps(z, z, _CMP_UNORD_Q));
+                m = _mm256_max_ps(_mm256_andnot_ps(sign, z), m);
+            }
             float amax = hmax(m);
+            if (_mm256_movemask_ps(bad) || !isfinite(amax)) {
+                a->d[(size_t)t * nb + b] = 0;
+                memset(q, 0, a->qb);
+                continue;
+            }
             a->d[(size_t)t * nb + b] = amax / 127.0f;
             const __m256 id = _mm256_set1_ps(amax > 0 ? 127.0f / amax : 0.0f);
             for (uint32_t i = 0; i < a->qb; i += 32) {

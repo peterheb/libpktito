@@ -26,8 +26,19 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
             const float *v = x + t * xs + (size_t)b * a->qb;
             int8_t *q = a->q + (size_t)t * a->n + (size_t)b * a->qb;
             float amax = 0;
-            for (uint32_t i = 0; i < a->qb; i++)
+            int bad = 0;
+            for (uint32_t i = 0; i < a->qb; i++) {
+                if (v[i] != v[i]) {
+                    bad = 1;
+                    break;
+                }
                 amax = fmaxf(amax, fabsf(v[i]));
+            }
+            if (bad || !isfinite(amax)) {
+                a->d[(size_t)t * nb + b] = 0;
+                memset(q, 0, a->qb);
+                continue;
+            }
             a->d[(size_t)t * nb + b] = amax / 127.0f;
             float id = amax > 0 ? 127.0f / amax : 0.0f;
             for (uint32_t i = 0; i < a->qb; i++)

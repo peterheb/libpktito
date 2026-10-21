@@ -51,7 +51,9 @@ typedef struct {
  *   q    = rint(x * (127 / amax)), or 0 when amax is 0
  *
  * so q is in [-127, 127] (never -128: AVX2's sign trick, backend/avx2,
- * needs that) and x is about q * d. */
+ * needs that) and x is about q * d. If arithmetic before this overflowed,
+ * a block containing a NaN or infinity becomes q = 0, d = 0; no non-finite
+ * value is narrowed to an integer. */
 void pk_k_quantize(pk_act *a, const float *x, size_t xs);
 
 /* out[t * os + r] for r < rows and every column t of a:

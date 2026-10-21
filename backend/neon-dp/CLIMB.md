@@ -302,3 +302,18 @@ transcript of test.wav byte for byte; the M4 Pro's 0.484 s, and
 The project took its intended name, pktito (a little parakeet): the
 binary, library, header, converter and PKTITO_KERNELS. The records above
 keep the name they were written under.
+
+## 2026-10-21 - a non-finite quantizer block is zero
+
+A `.pkf` stores finite floats, but an extreme finite weight can overflow a
+product before its activation is quantized. Narrowing the resulting NaN to
+`int8_t` was undefined in ref. Every backend now notices a NaN or infinity
+while finding the block maximum and writes a zero block instead. The ordinary
+finite path keeps ref's bits; kcheck's new non-finite case matches ref on both
+ARM backends too (1,663 cases each).
+
+On the M4 Pro, v2's one-minute whole recording, 12 threads, best of five in
+interleaved old/new runs: neon-dp 0.498 and 0.512 s before, 0.505 and 0.520 s
+with the check; neon 1.073 and 1.111 s before, 1.103 and 1.122 s with it. The
+roughly 1-2% cost is kept at the boundary where a hostile model otherwise
+reaches undefined behaviour.
