@@ -9,7 +9,7 @@ of the vocabulary's punctuation marks taken away
 builds N random token sequences - every piece type, runs of punctuation,
 the space piece alone, special pieces first - plus each piece alone, and
 holds ./tests/tokcheck's text to that, character for character. It needs
-the sentencepiece package (NeMo brings it); tools/pkito_tools/spm.py is
+the sentencepiece package (NeMo brings it); tools/pktito_tools/spm.py is
 checked against it on the way.
 """
 import os
@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-from pkito_tools import convert, nemo, spm  # noqa: E402
+from pktito_tools import convert, nemo, spm  # noqa: E402
 
 
 def main():

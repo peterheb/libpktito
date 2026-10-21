@@ -296,3 +296,9 @@ runs the first the CPU can. The Pi 5 picks neon-dp: 4.161-4.163 s whole,
 copied to the Pi 5 as it was, picks neon-dp too: 4.116 s, and the v3
 transcript of test.wav byte for byte; the M4 Pro's 0.484 s, and
 `PKITO_KERNELS=neon` 1.052 s (1.047 as a build of its own).
+
+## 2026-10-20 - pkito is now pktito
+
+The project took its intended name, pktito (a little parakeet): the
+binary, library, header, converter and PKTITO_KERNELS. The records above
+keep the name they were written under.

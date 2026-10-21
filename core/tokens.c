@@ -14,7 +14,7 @@
  * writes SentencePiece's default surface, " ⁇ "; any other piece writes
  * its text with U+2581 made a space, except that the first piece to start
  * with U+2581 while nothing has been written has that one consumed.
- * tools/pkito_tools/spm.py has the same in Python, and tests/tokcheck.py
+ * tools/pktito_tools/spm.py has the same in Python, and tests/tokcheck.py
  * holds the two to each other and to sentencepiece itself.
  */
 #include "model.h"

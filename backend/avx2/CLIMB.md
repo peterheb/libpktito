@@ -420,3 +420,9 @@ Both write the v3 transcript byte for byte; built from source there,
 check-c passes with all three backends in kcheck. The two encodings stay
 level. The UCRT64 gcc 16.2 exe beats 89890df's cross-built gcc 13 one by
 about 20% natively (0.235 against 0.291 s in chunks).
+
+## 2026-10-20 - pkito is now pktito
+
+The project took its intended name, pktito (a little parakeet): the
+binary, library, header, converter and PKTITO_KERNELS. The records above
+keep the name they were written under.

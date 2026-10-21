@@ -1,13 +1,13 @@
 # Memory-safety rules
 
-Three things pkito reads come from outside it: a model file, a WAV file, and
+Three things pktito reads come from outside it: a model file, a WAV file, and
 the samples a caller hands the library. A model file can be truncated,
 corrupt, written by some other program or written to do harm; a WAV can come
 down a pipe from anywhere; a sample can be anything a float can be. The rules
 below are the review contract for the code that turns those bytes into sizes,
 pointers and arithmetic: core/model.c, core/wav.c and the front ends of
 core/mel.c and core/vad.c. vadito's rules are the model, and these are the
-same rules at pkito's size.
+same rules at pktito's size.
 
 ## Copy, then check, then point
 

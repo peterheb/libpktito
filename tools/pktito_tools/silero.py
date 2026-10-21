@@ -86,7 +86,7 @@ def tensors(path):
     k = np.arange(n // 2 + 1)[:, None]
     ang = 2 * np.pi * k * np.arange(n)[None, :] / n
     if np.abs(b - np.vstack([window * np.cos(ang), -window * np.sin(ang)])).max() > 2e-7:
-        raise ValueError("the VAD's STFT basis is not the windowed DFT pkito computes as an FFT")
+        raise ValueError("the VAD's STFT basis is not the windowed DFT pktito computes as an FFT")
     j = np.arange(n // 2)
     out = [("vad.stft.window", window), ("vad.fft.cos", np.cos(2 * np.pi * j / n)),
            ("vad.fft.sin", np.sin(2 * np.pi * j / n))]

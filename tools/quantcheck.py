@@ -1,9 +1,9 @@
 """What each way of rounding Parakeet's weights and activations costs: the
-experiment that chose pkito's numerics.
+experiment that chose pktito's numerics.
 
   quantcheck.py MODEL.nemo CORPUS_DIR... [--configs a,b,...] [--json OUT]
 
-Each configuration runs the model (tools/pkito_tools/reference.py, here in
+Each configuration runs the model (tools/pktito_tools/reference.py, here in
 float32, which is what NeMo computes in) over every recording of the corpus
 directories (tools/corpus.py's: WAVs and a refs.tsv) with some of its
 matrices, and the activations entering them, rounded one way. Against the
@@ -63,7 +63,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pkito_tools import canon, nemo, reference, spm, wavio, wer  # noqa: E402
+from pktito_tools import canon, nemo, reference, spm, wavio, wer  # noqa: E402
 
 
 def read_wav(path):

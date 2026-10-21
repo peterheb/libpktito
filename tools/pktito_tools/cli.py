@@ -1,4 +1,4 @@
-"""pkito-tools convert | tiny | info | ref"""
+"""pktito-tools convert | tiny | info | ref"""
 import argparse
 import sys
 
@@ -36,7 +36,7 @@ def pkf_weights(path):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="pkito-tools")
+    ap = argparse.ArgumentParser(prog="pktito-tools")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("convert", help="model.nemo silero_vad.onnx -> .pkf")

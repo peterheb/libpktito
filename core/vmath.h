@@ -1,11 +1,11 @@
 /* exp, sigmoid and tanh: the definition every backend computes.
  *
  * These are vadito's (core/vmath.h there), and with pk_sincos below they
- * are the whole of pkito's transcendental mathematics: SiLU and GLU's
+ * are the whole of pktito's transcendental mathematics: SiLU and GLU's
  * sigmoids, the softmax's exponentials, the LSTM cells' gates, and the
  * positional encoding's sines.
  *
- * They are pkito's own rather than libm's for two reasons. The platform
+ * They are pktito's own rather than libm's for two reasons. The platform
  * libms disagree in the last bit (glibc's expf, macOS's and MSVC's each round
  * somewhere the others do not), and an engine that wants the same bits on a
  * Pi and a desktop cannot call any of them. And every backend computes these

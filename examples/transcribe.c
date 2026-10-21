@@ -1,12 +1,12 @@
 /* The library from the outside: a WAV file to its transcript, cut at its
  * silences when it is long, in a page. Build with `make examples/transcribe`;
- * it links libpkito.a and includes pkito.h and wav.h, nothing else.
+ * it links libpktito.a and includes pktito.h and wav.h, nothing else.
  *
  *     ./examples/transcribe models/parakeet-tdt-0.6b-v2.pkf talk.wav
  *
  * prints each chunk as "start end text", the times in seconds. A 16 kHz
- * file only: resampling is core/resample.h's, which ./pkito uses. */
-#include "pkito.h"
+ * file only: resampling is core/resample.h's, which ./pktito uses. */
+#include "pktito.h"
 #include "wav.h"
 
 #include <stdio.h>
@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
     pk_vad_probs(v, padded, frames, probs);
     pk_seg_params sp;
     pk_seg_defaults(&sp);
-    sp.max_speech_s = 30 - 0.06 - 0.1;  /* a segment and Silero's 30 ms pads fit in 30 s, as ./pkito has it */
+    sp.max_speech_s = 30 - 0.06 - 0.1;  /* a segment and Silero's 30 ms pads fit in 30 s, as ./pktito has it */
     size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
     size_t nc = pk_chunks(seg, ns, (int64_t)n, 30 * (int64_t)rate, chunk);
 

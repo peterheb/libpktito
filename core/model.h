@@ -1,9 +1,9 @@
 /* What core/model.c binds out of a .pkf and the rest of core/ runs.
- * Internal: the public interface is pkito.h. */
+ * Internal: the public interface is pktito.h. */
 #ifndef PK_MODEL_H
 #define PK_MODEL_H
 
-#include "pkito.h"
+#include "pktito.h"
 #include "kernels.h"
 
 #include <stddef.h>

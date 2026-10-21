@@ -523,3 +523,9 @@ product): its own build picks neon, 44.575 s in three chunks (44.586
 before). The Pi 5's build, copied here as it was, picks neon and writes the
 v2 transcript of test.wav byte for byte; `PKITO_KERNELS=neon-dp` is refused
 with the reason.
+
+## 2026-10-20 - pkito is now pktito
+
+The project took its intended name, pktito (a little parakeet): the
+binary, library, header, converter and PKTITO_KERNELS. The records above
+keep the name they were written under.

@@ -38,7 +38,7 @@
 #define PK_EPS_MIN 1e-30f
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
-#error "a .pkf is little-endian and pkito reads it in place"
+#error "a .pkf is little-endian and pktito reads it in place"
 #endif
 
 static int fail(char *err, size_t errlen, const char *fmt, ...) {
@@ -137,7 +137,7 @@ int pk_pkf_validate(const unsigned char *p, size_t n, char *err, size_t errlen) 
         return fail(err, errlen, "%zu bytes is larger than any model file", n);
     memcpy(&h, p, sizeof h);
     if (h.magic != PK_MAGIC)
-        return fail(err, errlen, "not a pkito model file (magic %08x)", (unsigned)h.magic);
+        return fail(err, errlen, "not a pktito model file (magic %08x)", (unsigned)h.magic);
     if (h.version != PK_VERSION)
         return fail(err, errlen, "model file version %u; this build reads %u",
                     (unsigned)h.version, PK_VERSION);
@@ -448,7 +448,7 @@ static int bind_params(pk_file *f, pk_model *m) {
     if ((m->n_fft & (m->n_fft - 1)) || m->n_mels % 8 || m->d_model % 32 || m->ff_dim % 32
         || m->sub_channels % 32 || m->pred_hidden % 32 || m->joint_hidden % 32
         || m->d_model % m->n_heads || dk % 16 || m->conv_kernel % 2 == 0)
-        return fail(f->err, f->errlen, "the model's shapes are not ones pkito's kernels take");
+        return fail(f->err, f->errlen, "the model's shapes are not ones pktito's kernels take");
     m->blank = m->vocab;
     m->n_out = m->vocab + 1 + m->n_dur;
     m->n_out_pad = (m->n_out + 15) & ~15u;
@@ -602,7 +602,7 @@ static int open_buffer(pk_model *m, char *why, size_t whylen) {
 
 /* 0, or -1 and why, if the backend asked for cannot run: some backend of
  * the build always can (ref if nothing else, backend/kernels.c), so only a
- * PKITO_KERNELS naming one the build lacks or the CPU cannot run is
+ * PKTITO_KERNELS naming one the build lacks or the CPU cannot run is
  * refused, rather than taking another one quietly. */
 static int cpu_ok(char *err, size_t errlen) {
     char why[160];

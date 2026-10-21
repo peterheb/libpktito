@@ -1,7 +1,7 @@
-/* pkito's model file (.pkf): a Parakeet TDT model, its vocabulary, and the
+/* pktito's model file (.pkf): a Parakeet TDT model, its vocabulary, and the
  * Silero VAD that cuts long recordings into its input, in one file, with a
  * table saying where every number in it came from. Plain C11;
- * tools/pkito_tools/pkf.py mirrors these structs and writes the file.
+ * tools/pktito_tools/pkf.py mirrors these structs and writes the file.
  *
  *   [pk_header]                      256 bytes
  *   [pk_param * n_params]            40 bytes each: the architecture's numbers
@@ -74,7 +74,7 @@
  *   sub.dw2.w, .b, sub.pw2.w, .b    the same again
  *   sub.out.w [D][C*M/8] q8, .b [D] the projection; its inputs in the order
  *                                   frequency-major, channel-minor, which is
- *                                   NeMo's columns permuted (pkito keeps the
+ *                                   NeMo's columns permuted (pktito keeps the
  *                                   subsampling's activations channel-last)
  *   l<i>.ff1.norm.w, .b [D]         and so on for ff2, att, conv, out
  *   l<i>.ff1.up [F][D] q8, l<i>.ff1.down [D][F] q8 (holding 0.5 x NeMo's)

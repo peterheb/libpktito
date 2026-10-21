@@ -1,4 +1,4 @@
-/* pkito: NVIDIA's Parakeet TDT speech recognizers in C11, with nothing
+/* pktito: NVIDIA's Parakeet TDT speech recognizers in C11, with nothing
  * beyond the C library (and pthreads, where there are threads to use).
  *
  * Parakeet TDT 0.6B (huggingface.co/nvidia/parakeet-tdt-0.6b-v2, English,
@@ -23,13 +23,13 @@
  * thread at a time, and runs its own pool of worker threads. Nothing here
  * keeps global state or prints.
  */
-#ifndef PKITO_H
-#define PKITO_H
+#ifndef PKTITO_H
+#define PKTITO_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#define PKITO_VERSION "0.1.0"
+#define PKTITO_VERSION "0.1.0"
 
 /* ---------------------------------------------------------------- model --- */
 
@@ -37,7 +37,7 @@ typedef struct pk_model pk_model;
 
 /* A .pkf file, mapped and checked before anything in it is used. NULL on
  * failure, with the reason in err (which may be NULL): a file that cannot
- * be read or is not a sound model, or a PKITO_KERNELS in the environment
+ * be read or is not a sound model, or a PKTITO_KERNELS in the environment
  * that names a backend the build lacks or the CPU cannot run. */
 pk_model *pk_model_load(const char *path, char *err, size_t errlen);
 
@@ -55,7 +55,7 @@ const char *pk_model_meta(const pk_model *m, const char *key);
 /* The i-th metadata pair, for listing: 0, or -1 past the last. */
 int pk_model_meta_at(const pk_model *m, int i, const char **key, const char **value);
 
-/* The architecture's numbers, for printing (`pkito info`). */
+/* The architecture's numbers, for printing (`pktito info`). */
 typedef struct {
     size_t   file_bytes;
     uint32_t sample_rate, n_mels, n_layers, d_model, n_heads, ff_dim;
@@ -191,4 +191,4 @@ int  pk_iter_step(pk_iter *it, float prob, int64_t *at);
 size_t pk_chunks(const pk_seg *speech, size_t n_speech, int64_t total, int64_t max_len,
                  pk_seg *out);
 
-#endif /* PKITO_H */
+#endif /* PKTITO_H */

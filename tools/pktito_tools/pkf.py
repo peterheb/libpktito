@@ -1,4 +1,4 @@
-"""pkito's model file (.pkf): core/pkf.h's structs, written and read back.
+"""pktito's model file (.pkf): core/pkf.h's structs, written and read back.
 
 core/pkf.h is the definition; this mirrors it. A change to one is a change
 to the other in the same commit, and the struct formats below are checked

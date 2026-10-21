@@ -1,8 +1,8 @@
 """A Parakeet TDT .nemo and Silero's silero_vad.onnx to one .pkf.
 
-    pkito-tools convert parakeet-tdt-0.6b-v2.nemo silero_vad.onnx out.pkf
+    pktito-tools convert parakeet-tdt-0.6b-v2.nemo silero_vad.onnx out.pkf
 
-The numbers come from canon.py (the checkpoint's tensors under pkito's
+The numbers come from canon.py (the checkpoint's tensors under pktito's
 names, with its exact folds) and silero.py (the VAD's, in vadito's
 layout); this lays them out as core/pkf.h says and rounds the matrices:
 
@@ -16,7 +16,7 @@ layout); this lays them out as core/pkf.h says and rounds the matrices:
     (vadito's README, "Why fp32").
 
 Two layouts differ from NeMo's for the engine's sake, both permutations:
-sub.out's inputs are frequency-major (pkito keeps the subsampling's
+sub.out's inputs are frequency-major (pktito keeps the subsampling's
 activations channel-last), and joint.out has zero rows to a multiple of 16.
 
 The metadata says what the file was made from and what may be done with
@@ -168,7 +168,7 @@ def convert(src, vad_src, dst, log=print):
     if len(sp.pieces) != a["vocab"]:
         raise ValueError("the tokenizer has %d pieces and the decoder %d" % (len(sp.pieces), a["vocab"]))
     if 6 in sp.types:
-        raise ValueError("the tokenizer has byte pieces, which pkito does not decode")
+        raise ValueError("the tokenizer has byte pieces, which pktito does not decode")
     log("  read %s: %d tensors" % (os.path.basename(src), len(nm.state)))
     canonical = canon.tensors(nm.state, a)
     tensors = layout(canonical, a)
@@ -197,7 +197,7 @@ def convert(src, vad_src, dst, log=print):
     meta["credit"] = "NVIDIA"
     meta["notice"] = ("%s by NVIDIA, https://huggingface.co/nvidia/%s, licensed CC-BY-4.0 "
                       "(creativecommons.org/licenses/by/4.0). This file holds its weights "
-                      "rounded to int8 and rearranged by pkito-tools." % (name, name))
+                      "rounded to int8 and rearranged by pktito-tools." % (name, name))
     langs = card_languages(card)
     if langs:
         meta["languages"] = langs
@@ -208,9 +208,9 @@ def convert(src, vad_src, dst, log=print):
     meta["recipe"] = ("convert: matrices q8 (int8, a scale a row); activations int8 in "
                       "blocks of 32 (encoder) or a row (decoder, joint)")
     sha = git_sha()
-    meta["converter"] = "pkito-tools %s%s" % (__version__, " " + sha if sha else "")
+    meta["converter"] = "pktito-tools %s%s" % (__version__, " " + sha if sha else "")
     meta["converted"] = datetime.date.today().isoformat()
-    meta["pkito_min"] = "0.1.0"
+    meta["pktito_min"] = "0.1.0"
 
     vocab = pkf.vocab_blob(sp.pieces, sp.types, punctuation(sp.pieces))
     size = pkf.write(dst, ARCH, name, params, tensors, vocab, meta)

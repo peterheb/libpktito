@@ -39,7 +39,7 @@ const pk_kernels *const pk_kernels_built[] = {
 };
 
 const pk_kernels *pk_kernels_pick(char *why, size_t whylen) {
-    const char *want = getenv("PKITO_KERNELS");
+    const char *want = getenv("PKTITO_KERNELS");
     for (const pk_kernels *const *k = pk_kernels_built; *k; k++) {
         if (want && *want && strcmp(want, (*k)->id))
             continue;
@@ -48,21 +48,21 @@ const pk_kernels *pk_kernels_pick(char *why, size_t whylen) {
             return *k;
         if (want && *want) {
             if (why && whylen)
-                snprintf(why, whylen, "PKITO_KERNELS=%s uses %s, which this CPU does not have",
+                snprintf(why, whylen, "PKTITO_KERNELS=%s uses %s, which this CPU does not have",
                          want, lack);
             return NULL;
         }
     }
-    /* only a PKITO_KERNELS that names nothing here gets this far: ref, last,
+    /* only a PKTITO_KERNELS that names nothing here gets this far: ref, last,
      * needs nothing */
     if (why && whylen)
-        snprintf(why, whylen, "PKITO_KERNELS=%s is not among this build's backends",
+        snprintf(why, whylen, "PKTITO_KERNELS=%s is not among this build's backends",
                  want ? want : "");
     return NULL;
 }
 
 /* The choice, made on the first call and kept; two threads that make it at
- * once make the same one. A PKITO_KERNELS that cannot be had is reported by
+ * once make the same one. A PKTITO_KERNELS that cannot be had is reported by
  * pk_model_load (core/model.c); a kernel called without a model loaded
  * first takes the CPU's choice instead. */
 static _Atomic(const pk_kernels *) g_in_use;
@@ -71,7 +71,7 @@ static const pk_kernels *k(void) {
     const pk_kernels *t = atomic_load_explicit(&g_in_use, memory_order_acquire);
     if (!t) {
         t = pk_kernels_pick(NULL, 0);
-        /* a PKITO_KERNELS that cannot be had: the CPU's choice; ref, last,
+        /* a PKTITO_KERNELS that cannot be had: the CPU's choice; ref, last,
          * needs nothing, so the loop ends */
         for (const pk_kernels *const *b = pk_kernels_built; !t; b++)
             if (!pk_os_cpu_lacks((*b)->needs))

@@ -4,7 +4,7 @@
  *
  *     ./tests/tokcheck MODEL.pkf < ids.txt
  */
-#include "pkito.h"
+#include "pktito.h"
 
 #include <stdio.h>
 #include <stdlib.h>

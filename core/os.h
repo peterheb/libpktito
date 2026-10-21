@@ -1,4 +1,4 @@
-/* What pkito asks of the operating system beyond the C library.
+/* What pktito asks of the operating system beyond the C library.
  *
  * The model file mapped into memory, because at 0.6 GB it should be the
  * page cache's one copy and not a second one in the heap (a Pi 3 has 0.9 GB

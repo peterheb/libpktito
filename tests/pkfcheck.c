@@ -3,7 +3,7 @@
  *
  * Every file here is built in memory by a writer of this test's own,
  * written from core/pkf.h rather than from the converter, out of the tables
- * and tensors of tests/data/tiny.pkf (`pkito-tools tiny` writes it). The
+ * and tensors of tests/data/tiny.pkf (`pktito-tools tiny` writes it). The
  * first check is that the writer remakes the converter's bytes exactly, so
  * the format is held to its definition from both sides. Then:
  *
@@ -31,12 +31,12 @@
  *     ./tests/pkfcheck tests/data/tiny.pkf [WAV_OUT]
  *
  * WAV_OUT, if given, gets the 35 s recording the engine checks used, for
- * `make check-c` to put through ./pkito as well.
+ * `make check-c` to put through ./pktito as well.
  */
 #include "model.h"
 #include "pkf.h"
 #include "vmath.h"
-#include "pkito.h"
+#include "pktito.h"
 #include "wav.h"
 
 #include <math.h>
@@ -232,7 +232,7 @@ static void valid_cases(const char *path) {
     int pairs = 0;
     while (pk_model_meta_at(m, pairs, &k, &v) == 0) pairs++;
     g_cases++;
-    if (strcmp(pk_model_name(m), "pkito-tiny") || !pk_model_meta(m, "family")
+    if (strcmp(pk_model_name(m), "pktito-tiny") || !pk_model_meta(m, "family")
         || strcmp(pk_model_meta(m, "family"), "tiny") || pk_model_meta(m, "no such key") || pairs < 4)
         FAIL("the tiny model's name or metadata");
     pk_model_free(m);

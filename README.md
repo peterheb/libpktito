@@ -1,4 +1,4 @@
-# pkito
+# pktito
 
 NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
 speech recognizers in C11, with nothing beyond the C library and pthreads:
@@ -7,7 +7,7 @@ model file (the recognizer, its vocabulary, and Silero's VAD to cut long
 recordings at their pauses), and NeMo's transcripts.
 
 ```
-$ ./pkito talk.wav
+$ ./pktito talk.wav
 And says, how do I get to Dublin? And the answer that comes back is, well, I
 wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
@@ -15,7 +15,7 @@ wouldn't start from here, Sonny. That is to say, much of political philosophy...
 A minute of English speech takes 0.24 s on a Ryzen 9 9950X (255 times
 real time), 0.49 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
 Core 3 304, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut
-at its pauses as `./pkito` cuts it by default. Every backend computes the
+at its pauses as `./pktito` cuts it by default. Every backend computes the
 same bits on every machine.
 
 ## What this is
@@ -42,10 +42,10 @@ A build holds every backend of its family that the compiler can make
 and the CPU picks the first it can run, so a binary copied to another
 machine of the family runs there at that machine's best: one built on an
 Alder Lake runs on a Zen 4, one built on a Pi 5 on a Pi 3.
-`PKITO_KERNELS=neon ./pkito ...` runs a given one of them, to compare.
+`PKTITO_KERNELS=neon ./pktito ...` runs a given one of them, to compare.
 
 On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
-`pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pkito.exe is linked
+`pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pktito.exe is linked
 statically and runs from cmd or PowerShell as well.
 
 Then a model, converted once from NVIDIA's checkpoint and Silero's VAD. The
@@ -70,14 +70,14 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 4-bit would cost. Then:
 
 ```sh
-./pkito talk.wav                        # the transcript
-./pkito --json talk.wav                 # chunks: start, end, text, every token and its time
-./pkito --srt talk.wav > talk.srt       # subtitles, a cue a chunk
-./pkito a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
-arecord -f S16_LE -r 16000 -c 1 -t wav | ./pkito --stream -     # live, a line a pause
-./pkito segments talk.wav               # Silero VAD's speech segments, as vadito prints them
-./pkito bench talk.wav                  # this machine's speed
-./pkito info                            # the model file: its source, licence and recipe
+./pktito talk.wav                        # the transcript
+./pktito --json talk.wav                 # chunks: start, end, text, every token and its time
+./pktito --srt talk.wav > talk.srt       # subtitles, a cue a chunk
+./pktito a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
+arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito --stream -     # live, a line a pause
+./pktito segments talk.wav               # Silero VAD's speech segments, as vadito prints them
+./pktito bench talk.wav                  # this machine's speed
+./pktito info                            # the model file: its source, licence and recipe
 ```
 
 `-m` picks the model when `models/` holds both, `-t` the thread count (one
@@ -90,7 +90,7 @@ measured below.
 
 There are three layers, and each is held to the one above it.
 
-**The model.** `tools/pkito_tools/reference.py` is NeMo 3.0's arithmetic in
+**The model.** `tools/pktito_tools/reference.py` is NeMo 3.0's arithmetic in
 float64 numpy, batch size one, written from NeMo's code: the features, the
 FastConformer encoder, the prediction network and joint, and the
 label-looping TDT search `model.transcribe()` runs. On four test recordings
@@ -98,12 +98,12 @@ label-looping TDT search `model.transcribe()` runs. On four test recordings
 NeMo's token ids and timestamps exactly, for both models, with the encoder's
 output within 2e-6 of NeMo's.
 
-**The numerics.** pkito multiplies in int8. Against float32 - what NeMo
+**The numerics.** pktito multiplies in int8. Against float32 - what NeMo
 computes - over real speech (`tools/corpus.py`: 200 LibriSpeech test-clean
 recordings, every speaker; 360 FLEURS recordings in German, French, Spanish,
 Italian, Polish and Russian), whole recordings, `tests/wercheck.py`:
 
-| | recordings | WER, float32 | WER, pkito | transcripts not float32's | WER between them |
+| | recordings | WER, float32 | WER, pktito | transcripts not float32's | WER between them |
 |---|---|---|---|---|---|
 | v2, LibriSpeech | 200 (26.5 min) | 1.51% | 1.51% | 4 | 0.07% |
 | v3, FLEURS | 360 (70.2 min) | 4.41% | 4.42% | 45 | 0.35% |
@@ -127,10 +127,10 @@ runs `avx512-vnni` on a Zen 4 and all three on the 9950X, the same bytes.
 
 ## How fast
 
-`./pkito bench`: Silero's test.wav (60 s of English), best of five,
+`./pktito bench`: Silero's test.wav (60 s of English), best of five,
 2026-10-20. A machine's first row is what it picks itself, its default
 thread count and the fastest backend its CPU can run; the rows under it
-force another backend (`PKITO_KERNELS`) or one thread. Seconds, and how
+force another backend (`PKTITO_KERNELS`) or one thread. Seconds, and how
 many times real time, for the minute whole (`--max-chunk 60`, 750 encoder
 frames) and in the default 30 s chunks:
 
@@ -157,9 +157,9 @@ CPU at eight threads, both transcripts through one normalizer:
 
 | | WER | real time |
 |---|---|---|
-| pkito, v2 | 1.71% | 119x |
+| pktito, v2 | 1.71% | 119x |
 | parakeet.cpp, v2 q8_0 | 1.75% | 30x |
-| pkito, v3 | 1.88% | 119x |
+| pktito, v3 | 1.88% | 119x |
 | parakeet.cpp, v3 q8_0 | 1.96% | 30x (its Metal GPU path: 90x) |
 
 Where the time goes (`make PROFILE=1`, the minute whole). On the M4 Pro
@@ -227,7 +227,7 @@ block that scales the sum is fixed (backend/kernels.h).
 
 The encoder hears a recording whole - its attention is over every frame -
 so its work grows with the square of the length and its memory with the
-length. pkito cuts anything longer than `--max-chunk` at its silences: Silero's
+length. pktito cuts anything longer than `--max-chunk` at its silences: Silero's
 VAD finds the speech, segments longer than a chunk are split at their
 longest pause, and each cut falls half way into the silence between two
 segments (at most a second into it, so a long silence is skipped rather than
@@ -282,13 +282,13 @@ one (converter, `canon.py`, each exact or closer to exact); the position
 products are taken over the window of positions each block of queries uses
 rather than over all of them (core/encoder.c), and the prediction network
 runs once a token rather than once a step, since its input only changes with
-a token (core/decoder.c). The transcendental functions are pkito's own
+a token (core/decoder.c). The transcendental functions are pktito's own
 (core/vmath.h), not libm's, whose last bits differ between platforms.
 
 ## The library
 
 ```c
-#include "pkito.h"
+#include "pktito.h"
 
 pk_model *m = pk_model_load("models/parakeet-tdt-0.6b-v2.pkf", err, sizeof err);
 pk_asr *a = pk_asr_new(m, 0);                     /* 0: a thread a core */
@@ -306,7 +306,7 @@ size_t nc = pk_chunks(seg, ns, n_samples, 30 * 16000, chunk);
 
 A model is read-only once loaded and may be shared by transcribers on any
 number of threads; a transcriber belongs to one thread at a time and runs
-its own pool. `make libpkito.a` builds the library alone; core/pkito.h is
+its own pool. `make libpktito.a` builds the library alone; core/pktito.h is
 all of its interface, core/wav.h and core/resample.h the WAV library's.
 examples/transcribe.c is a whole program against it in a page, and `make
 check-c` holds its transcript to the CLI's.
@@ -317,12 +317,12 @@ A `.pkf` (core/pkf.h) is the recognizer, its vocabulary and Silero VAD in
 one file, mapped read-only and used in place, with a metadata table that
 says what it was made from: the HuggingFace repo, file, commit and sha256
 of the checkpoint, its licence and the attribution CC-BY-4.0 asks for, the
-VAD's source and licence, the converter's version and the recipe. `pkito
+VAD's source and licence, the converter's version and the recipe. `pktito
 info` prints it. The loader holds every extent, shape, type and value of the
 file to what the architecture and docs/MEMORY_SAFETY.md say before it forms
-a pointer, and tests/pkfcheck runs 29,058 malformed files at it.
+a pointer, and tests/pkfcheck runs 29,104 malformed files at it.
 
-`tools/pkito-tools convert` writes one; `info` lists one; `ref` runs the
+`tools/pktito-tools convert` writes one; `info` lists one; `ref` runs the
 float64 reference on a WAV from either a `.nemo` or a `.pkf`; `tiny` writes
 a 1.2 MB model with random weights that has every tensor, param and piece
 type, for the checks.
@@ -341,7 +341,7 @@ make remote HOST=user@board  # rsync, build, check-c and bench there
 `check-c` is the math library's bounds, every kernel of every backend the
 CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
 model file's validator on its malformed corpus and the whole engine on the
-tiny model, the WAV reader on its own, and test.wav through `./pkito` and
+tiny model, the WAV reader on its own, and test.wav through `./pktito` and
 through examples/transcribe:
 vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
 the detokenizer against sentencepiece, the state machines against Silero's

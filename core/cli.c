@@ -1,19 +1,19 @@
-/* pkito: speech in a WAV file to text, from the command line.
+/* pktito: speech in a WAV file to text, from the command line.
  *
- *   pkito talk.wav                   the transcript
- *   pkito --json talk.wav            chunks with their times, text and tokens
- *   pkito --srt talk.wav             subtitles: one cue a chunk
- *   pkito bench talk.wav             how fast this machine transcribes it
- *   pkito info                       the model file: where it came from
+ *   pktito talk.wav                   the transcript
+ *   pktito --json talk.wav            chunks with their times, text and tokens
+ *   pktito --srt talk.wav             subtitles: one cue a chunk
+ *   pktito bench talk.wav             how fast this machine transcribes it
+ *   pktito info                       the model file: where it came from
  *
  * What it does with a file is what NeMo's model.transcribe() does with one:
  * read it (mean of the channels; another rate is brought to 16 kHz) and
  * transcribe the whole of it at once. A recording longer than --max-chunk
  * is first cut at its silences, which Silero's VAD finds, into chunks no
  * longer than that, each transcribed as a recording of its own
- * (pk_chunks in pkito.h).
+ * (pk_chunks in pktito.h).
  */
-#include "pkito.h"
+#include "pktito.h"
 #include "asr.h"
 #include "os.h"
 #include "resample.h"
@@ -28,14 +28,14 @@
 #define READ_FRAMES 16384
 
 static const char *usage =
-    "usage: pkito [options] FILE.wav...     the transcript (of several: a line each,\n"
+    "usage: pktito [options] FILE.wav...     the transcript (of several: a line each,\n"
     "                                       the file's name, a tab and its text)\n"
-    "       pkito bench [options] FILE.wav  how fast this machine transcribes it\n"
-    "       pkito segments [options] FILE   Silero VAD's speech segments: start end\n"
-    "       pkito probs [options] FILE      every 32 ms frame: time and P(speech)\n"
-    "       pkito info [options]            what the model file says about itself\n"
+    "       pktito bench [options] FILE.wav  how fast this machine transcribes it\n"
+    "       pktito segments [options] FILE   Silero VAD's speech segments: start end\n"
+    "       pktito probs [options] FILE      every 32 ms frame: time and P(speech)\n"
+    "       pktito info [options]            what the model file says about itself\n"
     "FILE may be - for stdin.\n"
-    "  -m, --model FILE      a .pkf (default $PKITO_MODEL, then the one .pkf in models/\n"
+    "  -m, --model FILE      a .pkf (default $PKTITO_MODEL, then the one .pkf in models/\n"
     "                        here or beside the program)\n"
     "  -t, --threads N       threads (default: one a core)\n"
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
@@ -60,7 +60,7 @@ typedef struct {
 static void die(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "pkito: ");
+    fprintf(stderr, "pktito: ");
     vfprintf(stderr, fmt, ap);
     fputc('\n', stderr);
     va_end(ap);
@@ -86,7 +86,7 @@ static void parse(int argc, char **argv, opts *o) {
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "-h") || !strcmp(a, "--help")) { fputs(usage, stdout); exit(0); }
-        else if (!strcmp(a, "--version")) { puts("pkito " PKITO_VERSION); exit(0); }
+        else if (!strcmp(a, "--version")) { puts("pktito " PKTITO_VERSION); exit(0); }
         else if (!strcmp(a, "-m") || !strcmp(a, "--model")) { if (!v) die("%s wants a file", a); o->model = v; i++; }
         else if (!strcmp(a, "-t") || !strcmp(a, "--threads")) { o->threads = (int)num(a, v, 1, 256); i++; }
         else if (!strcmp(a, "--max-chunk")) { o->max_chunk = num(a, v, 1, 3600); i++; }
@@ -114,12 +114,12 @@ static void parse(int argc, char **argv, opts *o) {
     }
 }
 
-/* -m, $PKITO_MODEL, or the one .pkf in ./models/ or models/ beside argv[0] */
+/* -m, $PKTITO_MODEL, or the one .pkf in ./models/ or models/ beside argv[0] */
 static pk_model *load_model(const char *flag, const char *argv0) {
     static const char *names[] = { "parakeet-tdt-0.6b-v3.pkf", "parakeet-tdt-0.6b-v2.pkf" };
     char err[512], path[4096], found[2][4096];
     int nfound = 0;
-    const char *p = flag ? flag : getenv("PKITO_MODEL");
+    const char *p = flag ? flag : getenv("PKTITO_MODEL");
     if (!p) {
         const char *slash = strrchr(argv0, '/');
         int dir = slash ? (int)(slash - argv0) : 0;
@@ -178,9 +178,9 @@ static float *read_audio(const char *path, int rate, size_t *n, const opts *o) {
             break;
     }
     if (pk_wav_status(w, err, sizeof err))
-        fprintf(stderr, "pkito: %s: %s\n", path, err);
+        fprintf(stderr, "pktito: %s: %s\n", path, err);
     if (o->verbose)
-        fprintf(stderr, "pkito: %s: %u Hz, %u channel%s, %.1f s%s\n", path, (unsigned)info.rate,
+        fprintf(stderr, "pktito: %s: %u Hz, %u channel%s, %.1f s%s\n", path, (unsigned)info.rate,
                 (unsigned)info.channels, info.channels == 1 ? "" : "s", (double)got / rate,
                 rs ? ", resampled to 16 kHz" : "");
     pk_wav_close(w);
@@ -415,7 +415,7 @@ static int transcribe(const opts *o, pk_model *m) {
     if (o->json && many)
         printf("\n]\n");
     if (o->verbose)
-        fprintf(stderr, "pkito: %.1f s of audio: VAD %.2f s, transcription %.2f s (%.1fx real "
+        fprintf(stderr, "pktito: %.1f s of audio: VAD %.2f s, transcription %.2f s (%.1fx real "
                 "time), %s, %d threads\n", audio_s, vad_s, asr_s, audio_s / (asr_s + vad_s),
                 pk_backend(), o->threads ? o->threads : pk_os_cores());
     pk_asr_free(a);

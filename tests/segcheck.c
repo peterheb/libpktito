@@ -6,7 +6,7 @@
  *            MIN_SILENCE_MS PAD_MS MIN_SIL_AT_MAX_MS USE_MAX
  *
  * NEG < 0 and MAX_SPEECH_S "inf" are the defaults' spellings. */
-#include "pkito.h"
+#include "pktito.h"
 
 #include <math.h>
 #include <stdio.h>

@@ -1,6 +1,6 @@
 """Just enough of the protobuf wire format to read an ONNX file's tensors.
 
-vadito's reader (tools/vadito_tools/onnxpb.py), unchanged: pkito reads
+vadito's reader (tools/vadito_tools/onnxpb.py), unchanged: pktito reads
 Silero VAD's weights out of silero_vad.onnx with it, and the SentencePiece
 model with its fields().
 

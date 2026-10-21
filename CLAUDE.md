@@ -1,18 +1,18 @@
-# pkito
+# pktito
 
 NVIDIA's Parakeet TDT speech recognizers (0.6B v2 English, v3 multilingual)
 in C11, for anything with a C compiler, written to be read. The reader is
 someone putting speech-to-text on a small device - a Pi, an old laptop, a
 board with no network - or learning how a transducer runs, with the C
 library and nothing else. NeMo already exists for everyone with Python,
-PyTorch and a GPU; pkito is the version you can read end to end, that gives
+PyTorch and a GPU; pktito is the version you can read end to end, that gives
 NeMo's transcripts, and that gets as much out of the board as the silicon
 allows.
 
 ## What decides a change
 
 1. **Does NeMo agree?** The answer is NeMo's transcript. The float64
-   reference (tools/pkito_tools/reference.py) gives NeMo's token ids and
+   reference (tools/pktito_tools/reference.py) gives NeMo's token ids and
    timestamps; the engine's int8 numerics were chosen by measurement against
    float32 (README, "Why int8") and every backend computes the same bits as
    `ref` on every machine. A change that moves a transcript off that, or a
@@ -61,7 +61,7 @@ allows.
 ## Measuring
 
 - A kernel change: the hypothesis in the backend's CLIMB.md before the edit,
-  tests/kcheck passing, and kept only if `./pkito bench` moves by more than
+  tests/kcheck passing, and kept only if `./pktito bench` moves by more than
   the run-to-run spread on a quiet board (`make remote HOST=` runs both
   there). `make PROFILE=1` says which stage moved.
 - A change to arithmetic - a rounding, an accumulation order, a block size,

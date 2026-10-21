@@ -9,7 +9,7 @@
  * indexing per-thread scratch.
  *
  * An item's result must not depend on which thread ran it, and nothing in
- * pkito's does: every output element is computed whole by one item, so a
+ * pktito's does: every output element is computed whole by one item, so a
  * transcript is the same bits at one thread and at twenty.
  */
 #ifndef PK_POOL_H

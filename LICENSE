@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 the pkito authors
+Copyright (c) 2026 the pktito authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,7 @@ SOFTWARE.
 
 The model files are not covered by the license above.
 
-A .pkf file that tools/pkito-tools writes holds the weights of one of NVIDIA's
+A .pkf file that tools/pktito-tools writes holds the weights of one of NVIDIA's
 Parakeet TDT checkpoints, rounded to int8 and rearranged, and those weights
 are NVIDIA's, under the Creative Commons Attribution 4.0 International
 license (https://creativecommons.org/licenses/by/4.0/):
@@ -34,7 +34,7 @@ license (https://creativecommons.org/licenses/by/4.0/):
 
 Whoever shares a .pkf shares those weights, modified, and owes NVIDIA the
 attribution CC-BY-4.0 asks for; every .pkf carries it in its "notice"
-metadata (`pkito info` prints it). The architecture core/ implements is
+metadata (`pktito info` prints it). The architecture core/ implements is
 NeMo's (https://github.com/NVIDIA-NeMo/NeMo, Apache-2.0), reimplemented from
 its description and its code's arithmetic, without NeMo's code.
 

@@ -1,7 +1,7 @@
 """A tiny .pkf: every tensor, param and piece type a real one has, at sizes
 that make it a megabyte, with seeded random weights.
 
-    pkito-tools tiny tests/data/tiny.pkf
+    pktito-tools tiny tests/data/tiny.pkf
 
 It is not a speech recognizer; it is what the C side's checks run on when
 they want a model whose every byte they can afford to touch. tests/pkfcheck
@@ -154,6 +154,6 @@ def write(path):
     vocab = pkf.vocab_blob(pieces, [t for _, t in PIECES], convert.punctuation(pieces))
     ts = tensors(rng)
     meta = {"family": "tiny", "params": "%.0fK" % (sum(int(np.prod(d)) for _, _, d, _ in ts) / 1e3),
-            "source": "pkito-tools tiny, seed %d" % SEED, "license": "MIT",
-            "notice": "Synthetic weights for pkito's checks: seeded random, not a speech recognizer."}
-    return pkf.write(path, "parakeet-tdt", "pkito-tiny", params, ts, vocab, meta)
+            "source": "pktito-tools tiny, seed %d" % SEED, "license": "MIT",
+            "notice": "Synthetic weights for pktito's checks: seeded random, not a speech recognizer."}
+    return pkf.write(path, "parakeet-tdt", "pktito-tiny", params, ts, vocab, meta)

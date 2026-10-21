@@ -7,7 +7,7 @@
  * vadito's resampler (core/resample.c there), which tests/rscheck.py holds
  * to torchaudio's output to 1.8e-7 on thirteen rate pairs. NeMo's own loader
  * resamples with librosa's soxr instead, so for a file that is not at 16 kHz
- * pkito hears a slightly different input from NeMo's; at 16 kHz, the same.
+ * pktito hears a slightly different input from NeMo's; at 16 kHz, the same.
  *
  * It streams, so a recording of any length converts in a fixed amount of
  * memory, and the output is torchaudio's whole-signal output, the same

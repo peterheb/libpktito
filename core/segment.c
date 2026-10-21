@@ -22,7 +22,7 @@
  * emptiness and asked for its first entry with the largest duration, so it
  * is that entry and a count.
  */
-#include "pkito.h"
+#include "pktito.h"
 
 #include <math.h>
 #include <stddef.h>

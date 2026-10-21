@@ -213,8 +213,8 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
  * AVX512-VNNI's), each compiled with its own instruction set, the rest of
  * the tree with the family's baseline. */
 typedef struct {
-    const char *id;                 /* "avx2-vnni", as PKITO_KERNELS names it */
-    const char *name;               /* and what it is built for, for `pkito bench` */
+    const char *id;                 /* "avx2-vnni", as PKTITO_KERNELS names it */
+    const char *name;               /* and what it is built for, for `pktito bench` */
     const char *const *needs;       /* the CPU features its code uses, NULL-ended:
                                        "avx2", "fma", "avxvnni", "avx512vnni",
                                        "avx512vl", "asimddp" (ARMv8.2's dot product) */
@@ -246,12 +246,12 @@ extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_
 extern const pk_kernels *const pk_kernels_built[];
 
 /* The backend that runs: the first of pk_kernels_built whose needs this CPU
- * meets, or the one the environment's PKITO_KERNELS names (to compare them;
+ * meets, or the one the environment's PKTITO_KERNELS names (to compare them;
  * not a setting anyone should need). NULL, with the reason in why, when
- * PKITO_KERNELS names one the build lacks or the CPU cannot run. */
+ * PKTITO_KERNELS names one the build lacks or the CPU cannot run. */
 const pk_kernels *pk_kernels_pick(char *why, size_t whylen);
 
-/* The name of the backend in use, for `pkito bench`. */
+/* The name of the backend in use, for `pktito bench`. */
 const char *pk_k_name(void);
 
 #endif /* PK_KERNELS_H */

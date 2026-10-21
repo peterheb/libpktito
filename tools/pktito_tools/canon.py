@@ -1,4 +1,4 @@
-"""A Parakeet TDT checkpoint's tensors under pkito's names, in float64, and
+"""A Parakeet TDT checkpoint's tensors under pktito's names, in float64, and
 the architecture numbers the engine needs, read off its config.
 
 Four things are done to the numbers here, each exact or closer to exact
@@ -30,7 +30,7 @@ BN_EPS = 1e-5        # torch.nn.BatchNorm1d's default, which NeMo leaves alone
 
 def arch(cfg):
     """The numbers core/pkf.h's params carry, from a NeMo config; anything
-    pkito does not implement is refused here rather than run wrongly."""
+    pktito does not implement is refused here rather than run wrongly."""
     pre, enc, dec, joint = cfg["preprocessor"], cfg["encoder"], cfg["decoder"], cfg["joint"]
     dur = cfg["model_defaults"]["tdt_durations"]
     want = [
@@ -61,7 +61,7 @@ def arch(cfg):
     ]
     for ok, what in want:
         if not ok:
-            raise ValueError("pkito implements Parakeet TDT with %s; this checkpoint differs" % what)
+            raise ValueError("pktito implements Parakeet TDT with %s; this checkpoint differs" % what)
     sr = int(pre["sample_rate"])
     win, hop = round(pre["window_size"] * sr), round(pre["window_stride"] * sr)
     return collections.OrderedDict([
@@ -164,5 +164,5 @@ def tensors(state, a):
             ("joint.out.w", g("joint.joint_net.2.weight")), ("joint.out.b", g("joint.joint_net.2.bias"))]
     left = sorted(set(s) - used)
     if left:
-        raise ValueError("tensors pkito does not know what to do with: %s" % left[:8])
+        raise ValueError("tensors pktito does not know what to do with: %s" % left[:8])
     return out

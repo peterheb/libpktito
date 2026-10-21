@@ -1,8 +1,8 @@
-"""./pkito over corpus directories: its WER against the references, and how
+"""./pktito over corpus directories: its WER against the references, and how
 its transcripts compare with another run's, float32's from
 tools/quantcheck.py or another build's.
 
-  wercheck.py PKITO MODEL.pkf CORPUS_DIR... [--against RUN.json] [--save OUT.json]
+  wercheck.py PKTITO MODEL.pkf CORPUS_DIR... [--against RUN.json] [--save OUT.json]
 
 A corpus directory is tools/corpus.py's: WAVs and a refs.tsv. Each
 recording is transcribed whole (--max-chunk past any of them), which is
@@ -17,18 +17,18 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-from pkito_tools import wer  # noqa: E402
+from pktito_tools import wer  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("pkito")
+    ap.add_argument("pktito")
     ap.add_argument("model")
     ap.add_argument("corpus", nargs="+")
     ap.add_argument("--against")
     ap.add_argument("--save")
     ap.add_argument("--threads", type=int, default=0)
-    ap.add_argument("--max-chunk", default="3600", help="pkito's --max-chunk (default: whole recordings)")
+    ap.add_argument("--max-chunk", default="3600", help="pktito's --max-chunk (default: whole recordings)")
     a = ap.parse_args()
 
     files, refs = [], {}
@@ -40,7 +40,7 @@ def main():
                     path = os.path.join(d, name)
                     files.append(path)
                     refs[path] = text
-    cmd = [a.pkito, "-m", a.model, "--max-chunk", a.max_chunk]
+    cmd = [a.pktito, "-m", a.model, "--max-chunk", a.max_chunk]
     if a.threads:
         cmd += ["-t", str(a.threads)]
     out = {}
