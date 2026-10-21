@@ -286,6 +286,16 @@ int main(int argc, char **argv) {
     if (argc > 1)
         g_tmp = argv[1];
 
+    {
+        char err[256] = "";
+        pk_wav_info info;
+        pk_wav *w = pk_wav_open(NULL, &info, err, sizeof err);
+        g_cases++;
+        if (w || !err[0])
+            FAIL("a null WAV path: %s", w ? "opened" : "no reason");
+        pk_wav_close(w);
+    }
+
     /* ---- formats */
     static const struct { unsigned format, bytes, bits; } fmts[] = {
         { 1, 1, 8 }, { 1, 2, 16 }, { 1, 3, 24 }, { 1, 3, 20 }, { 1, 4, 32 },
@@ -306,6 +316,8 @@ int main(int argc, char **argv) {
     format_case(s, 777);
     s = s16; s.rf64 = 1; format_case(s, 777);
     s = s16; s.streamed = 1; format_case(s, 777);
+    s = s16; s.format = 3; s.bytes = 8; s.bits = 64; s.channels = 256;
+    format_case(s, 37);                                  /* the widest legal frame */
     s = s16; s.cut_data = -1; format_case(s, 777);            /* data ends mid-frame */
     s = s16; s.channels = 2; s.cut_data = -1; format_case(s, 777);
     {
@@ -324,6 +336,44 @@ int main(int argc, char **argv) {
         if (!x || n != 100 || st == 0)
             FAIL("cut short: %zu frames, status %d (want 100 and an error)", n, st);
         free(x);
+        free(b.p);
+    }
+    {
+        /* A caller may ask for every possible size_t frame; the file, not
+         * that count, bounds the fixed-buffer read and its arithmetic. */
+        unsigned char d[2] = { 0 };
+        spec one = s16;
+        one.streamed = 1;
+        buf b = make(&one, d, sizeof d);
+        save(&b);
+        char err[256];
+        pk_wav_info info;
+        pk_wav *w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        float x;
+        g_cases++;
+        if (!w || pk_wav_read(w, &x, SIZE_MAX) != 1)
+            FAIL("a SIZE_MAX read of a one-frame stream");
+        pk_wav_close(w);
+        free(b.p);
+    }
+    {
+        /* RF64 supplies the data length as a hostile 64-bit integer. */
+        unsigned char d[2] = { 0 };
+        spec huge = s16;
+        huge.rf64 = 1;
+        buf b = make(&huge, d, sizeof d);
+        memset(b.p + 28, 0xFF, 8);                       /* ds64.dataSize */
+        save(&b);
+        char err[256];
+        pk_wav_info info;
+        pk_wav *w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        float x[2];
+        size_t n = w ? pk_wav_read(w, x, 2) : 0;
+        int st = w ? pk_wav_status(w, err, sizeof err) : 0;
+        g_cases++;
+        if (!w || info.frames != UINT64_MAX / 2 || n != 1 || st == 0)
+            FAIL("RF64 UINT64_MAX data size: %zu frames read, status %d", n, st);
+        pk_wav_close(w);
         free(b.p);
     }
 
@@ -451,6 +501,13 @@ int main(int argc, char **argv) {
         u32(&big, 1000000);
         put(&big, "abc", 3);
         refuse("a chunk past the end", &big);
+        free(big.p);
+        big = (buf){ 0 };
+        put(&big, b.p, 36);
+        tag(&big, "LIST");
+        u32(&big, UINT32_MAX);                           /* plus its pad must not wrap */
+        put(&big, "abc", 3);
+        refuse("a UINT32_MAX chunk past the end", &big);
         free(big.p);
         free(b.p);
     }

@@ -186,6 +186,10 @@ static int parse(pk_wav *w, char *err, size_t errlen) {
 }
 
 pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errlen) {
+    if (!path) {
+        fail(err, errlen, "no WAV path");
+        return NULL;
+    }
     pk_wav *w = calloc(1, sizeof *w);
     unsigned char *buf = malloc(PK_WAV_BUF);
     if (!w || !buf) {
