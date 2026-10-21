@@ -426,3 +426,17 @@ about 20% natively (0.235 against 0.291 s in chunks).
 The project took its intended name, pktito (a little parakeet): the
 binary, library, header, converter and PKTITO_KERNELS. The records above
 keep the name they were written under.
+
+## 2026-10-21 - a non-finite quantizer block is zero
+
+The check neon-dp/CLIMB.md describes, in this backend's k_quantize: an
+unordered compare and an OR beside each max of the block's maximum, and a
+zero block when either finds a NaN or an infinity. kcheck's non-finite
+case and the rest, 1,663 cases, are ref's bits on avx2 and avx2-vnni (the
+12900HK).
+
+On the 12900HK, avx2-vnni, 14 threads, test.wav's minute whole, best of
+five, main and the check in five interleaved rounds: 0.829 to 0.835 s
+before, 0.831 to 0.834 s with it, inside the spread. A PROFILE=1 build
+puts the quantize stage at 43.8 to 44.0 ms a run before and 44.8 to 44.9 ms
+with the check, three rounds each: about 1 ms, 0.1% of the run.

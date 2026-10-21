@@ -529,3 +529,9 @@ with the reason.
 The project took its intended name, pktito (a little parakeet): the
 binary, library, header, converter and PKTITO_KERNELS. The records above
 keep the name they were written under.
+
+## 2026-10-21 - a non-finite quantizer block is zero
+
+The same check as neon-dp's, in this backend's k_quantize; its record, and
+the M4 Pro's numbers for both backends, are in neon-dp/CLIMB.md. kcheck's
+1,663 cases are ref's bits on the M4 Pro.
