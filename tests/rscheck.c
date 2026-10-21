@@ -19,6 +19,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "rscheck: no resampler for %s -> %s\n", argv[1], argv[2]);
         return 1;
     }
+    if (pk_resample_room(r, SIZE_MAX) != SIZE_MAX) {
+        fprintf(stderr, "rscheck: the maximum input count did not saturate its output bound\n");
+        pk_resampler_free(r);
+        return 1;
+    }
     unsigned s = (unsigned)atol(argv[3]);
     float in[70000];
     float *out = malloc(pk_resample_room(r, 70000) * sizeof *out + 1024 * 1024);

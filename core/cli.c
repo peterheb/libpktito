@@ -165,9 +165,21 @@ static float *read_audio(const char *path, int rate, size_t *n, const opts *o) {
     for (;;) {
         size_t r = pk_wav_read(w, in, READ_FRAMES);
         size_t room = rs ? pk_resample_room(rs, r) : r;
-        while (got + room > cap)
-            if (!(x = realloc(x, (cap *= 2) * sizeof *x)))
+        if (room > SIZE_MAX - got)
+            die("%s: too many samples", path);
+        size_t need = got + room;
+        while (need > cap) {
+            size_t next = cap <= SIZE_MAX / 2 ? cap * 2 : SIZE_MAX;
+            if (next < need)
+                next = need;
+            if (next > SIZE_MAX / sizeof *x)
+                die("%s: too many samples", path);
+            float *grown = realloc(x, next * sizeof *x);
+            if (!grown)
                 die("out of memory");
+            x = grown;
+            cap = next;
+        }
         if (rs)
             got += r ? pk_resample(rs, in, r, x + got) : pk_resample_flush(rs, x + got);
         else {
@@ -456,8 +468,12 @@ static int stream(const opts *o, pk_model *m) {
     float *buf = malloc(cap * sizeof *buf), *probs = malloc(pcap * sizeof *probs);
     float *in = malloc(PK_VAD_SAMPLES * sizeof *in), *rsout = NULL;
     size_t rsn = 0, rspos = 0;
-    if (rs)
-        rsout = malloc(pk_resample_room(rs, PK_VAD_SAMPLES) * sizeof *rsout);
+    if (rs) {
+        size_t room = pk_resample_room(rs, PK_VAD_SAMPLES);
+        if (room > SIZE_MAX / sizeof *rsout)
+            die("%s: resampling needs too many samples", o->in);
+        rsout = malloc(room * sizeof *rsout);
+    }
     char *text = malloc(1 << 16);
     if (!v || !a || !buf || !probs || !in || (rs && !rsout) || !text)
         die("out of memory");

@@ -124,7 +124,13 @@ pk_resampler *pk_resampler_new(uint32_t from, uint32_t to) {
 size_t pk_resample_room(const pk_resampler *r, size_t n) {
     if (r->orig == r->nw)
         return n;
-    return ((n + r->taps) / r->orig + 2) * r->nw;
+    if (n > SIZE_MAX - r->taps)
+        return SIZE_MAX;
+    size_t blocks = (n + r->taps) / r->orig;
+    if (blocks > SIZE_MAX - 2)
+        return SIZE_MAX;
+    blocks += 2;
+    return blocks > SIZE_MAX / r->nw ? SIZE_MAX : blocks * r->nw;
 }
 
 /* every block whose window is all in hist, at most `limit` outputs */

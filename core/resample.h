@@ -28,7 +28,8 @@ pk_resampler *pk_resampler_new(uint32_t from, uint32_t to);
 void          pk_resampler_free(pk_resampler *r);
 
 /* At most this many outputs come out of a call given n inputs, whatever was
- * pushed before; pk_resample_room(r, 0) bounds the flush. */
+ * pushed before; pk_resample_room(r, 0) bounds the flush. SIZE_MAX if that
+ * count cannot be represented. */
 size_t pk_resample_room(const pk_resampler *r, size_t n);
 
 /* Push n inputs; the outputs they complete go to out, and their count is

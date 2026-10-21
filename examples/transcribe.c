@@ -36,8 +36,22 @@ int main(int argc, char **argv) {
     size_t cap = 1 << 20, n = 0, k;
     float *x = malloc(cap * sizeof *x);
     while (x && (k = pk_wav_read(w, x + n, cap - n)) > 0)
-        if ((n += k) == cap)
-            x = realloc(x, (cap *= 2) * sizeof *x);
+        if ((n += k) == cap) {
+            if (cap > SIZE_MAX / 2 || 2 * cap > SIZE_MAX / sizeof *x) {
+                free(x);
+                x = NULL;
+                break;
+            }
+            size_t next = 2 * cap;
+            float *grown = realloc(x, next * sizeof *x);
+            if (!grown) {
+                free(x);
+                x = NULL;
+                break;
+            }
+            x = grown;
+            cap = next;
+        }
     pk_wav_close(w);
     if (!x)
         return 1;
