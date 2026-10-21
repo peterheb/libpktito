@@ -17,7 +17,8 @@
  *   meaning    byte-valid files that are not the model: a tensor missing,
  *              extra, of the wrong shape or type or with a value that is not
  *              finite; a param missing, unknown, of the wrong kind or out of
- *              range; a twiddle or a window wrong; the vocabulary's count off
+ *              range; a twiddle, position frequency or window wrong; a finite
+ *              extreme weight whose arithmetic overflows; the vocabulary's count off
  *   flipped    random bits of everything before the tensor data changed,
  *              20,000 times over, and the engine run on what still loads
  *   engine     the tiny model through pk_asr_run, pk_text, the VAD and
@@ -222,6 +223,23 @@ static unsigned char *fresh(size_t *n) { return build(&g_m, n); }
 
 static void valid_cases(const char *path) {
     char err[256];
+    err[0] = 0;
+    g_cases++;
+    if (pk_pkf_validate(NULL, sizeof(pk_header), err, sizeof err) == 0 || !err[0])
+        FAIL("a null validation buffer: %s", err[0] ? "accepted" : "no reason");
+    err[0] = 0;
+    g_cases++;
+    pk_model *none = pk_model_from_bytes(NULL, sizeof(pk_header), err, sizeof err);
+    if (none || !err[0])
+        FAIL("a null model buffer: %s", none ? "loaded" : "no reason");
+    pk_model_free(none);
+    err[0] = 0;
+    g_cases++;
+    none = pk_model_load(NULL, err, sizeof err);
+    if (none || !err[0])
+        FAIL("a null model path: %s", none ? "loaded" : "no reason");
+    pk_model_free(none);
+
     pk_model *m = pk_model_load(path, err, sizeof err);
     g_cases++;
     if (!m) {
@@ -612,6 +630,8 @@ static void poke(unsigned char *c, int t, size_t i, float v) {
     memcpy(c + dsc(c, t)->offset + 4 * i, &v, 4);
 }
 
+static void engine_cases(const pk_model *m, int deep);
+
 static void meaning_cases(void) {
     model e;
     static const char *drop[] = { "l1.att.k", "l0.ff1.up.scale", "mel.window", "vad.head.b",
@@ -687,6 +707,26 @@ static void meaning_cases(void) {
         char what[96];
         snprintf(what, sizeof what, "a wrong value in %s", tables[i]);
         expect(what, c, n, 0);
+        free(c);
+    }
+    CORRUPT("a finite position frequency above one",
+            poke(c, find_tensor(&g_m, "pos.freq"), 0, 0x1.fffffep+127f));
+    {
+        /* Every stored float is finite, but hostile weights may overflow
+         * intermediate arithmetic. They must not make a narrowing conversion
+         * undefined or let its result escape an activation buffer. */
+        size_t n;
+        unsigned char *c = fresh(&n);
+        poke(c, find_tensor(&g_m, "sub.conv0.w"), 0, 0x1.fffffep+127f);
+        char err[256] = "";
+        pk_model *m = pk_model_from_bytes(c, n, err, sizeof err);
+        g_cases++;
+        if (!m) {
+            FAIL("a finite extreme weight: %s", err);
+        } else {
+            engine_cases(m, 0);
+            pk_model_free(m);
+        }
         free(c);
     }
 }

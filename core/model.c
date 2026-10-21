@@ -131,6 +131,8 @@ static int validate_vocab(const unsigned char *v, uint64_t size, char *err, size
 
 int pk_pkf_validate(const unsigned char *p, size_t n, char *err, size_t errlen) {
     pk_header h;
+    if (!p)
+        return fail(err, errlen, "no model bytes");
     if (n < sizeof h)
         return fail(err, errlen, "%zu bytes is shorter than a header", n);
     if ((uint64_t)n > PK_FILE_MAX)
@@ -370,6 +372,16 @@ static int check_twiddles(pk_file *f, const char *what, const float *c, const fl
     return 0;
 }
 
+/* These multiply a signed frame position before pk_sincosf reduces the
+ * angle to an integer quadrant. NeMo's frequencies are in (0, 1], and that
+ * bound keeps the reduction in range for every recording pk_asr_run accepts. */
+static int check_pos_freq(pk_file *f, const float *x, uint32_t n) {
+    for (uint32_t i = 0; i < n; i++)
+        if (!(x[i] > 0 && x[i] <= 1))
+            return fail(f->err, f->errlen, "pos.freq: element %u is not in (0, 1]", (unsigned)i);
+    return 0;
+}
+
 static void bitrev(uint16_t *rev, uint32_t m) {
     uint32_t bits = 0;
     while ((1u << bits) < m) bits++;
@@ -487,6 +499,7 @@ static int bind(pk_file *f, pk_model *m) {
         || f32t(f, "mel.fft.cos", N / 2, 1, &fc) || f32t(f, "mel.fft.sin", N / 2, 1, &fs)
         || check_twiddles(f, "the features", fc, fs, N)
         || f32t(f, "pos.freq", D / 2, 1, &m->pos_freq)
+        || check_pos_freq(f, m->pos_freq, D / 2)
         || f32t(f, "sub.conv0.w", C, 9, &m->conv0_w) || f32t(f, "sub.conv0.b", C, 1, &m->conv0_b)
         || f32t(f, "sub.dw1.w", C, 9, &m->dw1_w) || f32t(f, "sub.dw1.b", C, 1, &m->dw1_b)
         || q8t(f, "sub.pw1.w", C, C, &m->sub_pw1) || f32t(f, "sub.pw1.b", C, 1, &m->pw1_b)
@@ -614,6 +627,10 @@ static int cpu_ok(char *err, size_t errlen) {
 pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
     char why[256];
     size_t size = 0;
+    if (!path) {
+        fail(err, errlen, "no model path");
+        return NULL;
+    }
     if (cpu_ok(err, errlen))
         return NULL;
     const unsigned char *map = pk_map_file(path, &size, why, sizeof why);
@@ -639,9 +656,13 @@ pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
 
 pk_model *pk_model_from_bytes(const void *bytes, size_t n, char *err, size_t errlen) {
     char why[256];
+    if (!bytes) {
+        fail(err, errlen, "no model bytes");
+        return NULL;
+    }
     if (cpu_ok(err, errlen))
         return NULL;
-    if ((uint64_t)n > PK_FILE_MAX) {
+    if ((uint64_t)n > PK_FILE_MAX || n > SIZE_MAX - PK_ALIGN) {
         fail(err, errlen, "%zu bytes is larger than any model file", n);
         return NULL;
     }
