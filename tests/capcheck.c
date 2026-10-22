@@ -182,6 +182,8 @@ static void fixtures(void) {
         { "wait;", "next", 1, 0, 10, 15 },    /* a major break */
         { "so,", "next", 1, 0, 20, 0 },       /* a comma */
         { "budgie", "and", 1, 0, 25, 0 },     /* before a phrase's start */
+        { "went", "to", 1, 0, 25, 0 },        /* "to" starting one */
+        { "going", "to", 1, 0, 60, 0 },       /* and ending a complex verb */
         { "budgie", "and", 0, 0, 60, 0 },     /* which only English knows */
         { "budgie", "audio", 1, 0, 60, 0 },   /* nothing */
         { "the", "audio", 1, 0, 360, 0 },     /* after a function word */
@@ -204,6 +206,46 @@ static void fixtures(void) {
     ed = cand(&t, 0, 2);
     CHECK(ed.ok && ed.end == 600 && ed.v == 640 && ed.q == 124, "Yes. No.: end %lld, V %lld, Q %lld",
           (long long)ed.end, (long long)ed.v, (long long)ed.q);
+
+    /* test.wav's cue at 51 s: "to" is the rest of "going to", and the line
+     * breaks before the object, 24 / 23, by 60 + 1 + 2 = 63 against 60 + 7
+     * for 11 / 36 before "to" */
+    pk_capword tax[] = { { "Who's", 51030, 51350 }, { "going", 51350, 51510 }, { "to", 51510, 51590 },
+                         { "implement", 51590, 52070 }, { "a", 52070, 52230 }, { "4%", 52230, 52630 },
+                         { "global", 52790, 53350 }, { "wealth", 53350, 53910 }, { "tax?", 53910, 54710 } };
+    make(&t, tax, 9, 1, 0);
+    ed = cand(&t, 0, 9);
+    CHECK(ed.ok && ed.line2 == 4 && ed.chars == 48, "Who's going to implement / a 4%% global wealth tax?: line 2 from word %d",
+          ed.line2);
+
+    /* the pause marker: cut at a pause in mid-sentence, a cue is flagged
+     * for its ellipsis, which it counts; not after punctuation, at a pause
+     * too short to cut at, or at the recording's end */
+    pk_capword soi[] = { { "So", 54710, 55030 }, { "I", 55030, 55350 }, { "when", 56550, 56800 }, { "I", 56800, 56900 },
+                         { "think.", 56900, 57400 } };
+    n = pk_captions(soi, 5, 1, 60000, c);
+    CHECK(n == 2 && c[0].n == 2 && (c[0].flags & PK_CUE_PAUSE) && c[0].chars == 5 && !(c[1].flags & PK_CUE_PAUSE),
+          "So I | when I think.: %ld cues, flags %d and %d, %d characters", n, c[0].flags, n > 1 ? c[1].flags : 0, c[0].chars);
+    soi[1].text = "I,";
+    n = pk_captions(soi, 5, 1, 60000, c);
+    CHECK(n == 2 && !(c[0].flags & PK_CUE_PAUSE), "So I, | when: no ellipsis after a comma");
+    soi[1].text = "I";
+    soi[2].start = 56300;
+    n = pk_captions(soi, 5, 1, 60000, c);
+    CHECK(!(c[0].flags & PK_CUE_PAUSE), "a pause under a second is not cut at: no ellipsis");
+    pk_capword tail[] = { { "and", 0, 300 }, { "then", 300, 700 } };
+    n = pk_captions(tail, 2, 1, 5000, c);
+    CHECK(n == 1 && !(c[0].flags & PK_CUE_PAUSE), "the recording's end: no ellipsis");
+    /* 42 graphemes before the pause fit a line, but not with the ellipsis */
+    pk_capword w42p[] = { { w42, 0, 2500 }, { "next.", 4000, 4500 } };
+    make(&t, w42p, 2, 1, 6000);
+    ed = cand(&t, 0, 1);
+    CHECK(ed.ok && ed.chars == 43 && (ed.flags & PK_CUE_FORCED) && (ed.flags & PK_CUE_PAUSE),
+          "a 42-grapheme word cut at a pause: 43 with its ellipsis, forced, flags %d", ed.flags);
+    w42p[0].text = "a";
+    make(&t, w42p, 2, 1, 6000);
+    ed = cand(&t, 0, 1);
+    CHECK(ed.ok && ed.chars == 2 && (ed.flags & PK_CUE_PAUSE), "a word cut at a pause: 2 characters, flagged");
 
     /* English: no cue ends on "the" */
     pk_capword store[] = { { "I", 0, 200 }, { "went", 200, 500 }, { "to", 500, 600 }, { "the", 600, 700 }, { "store.", 700, 1100 } };

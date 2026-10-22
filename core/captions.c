@@ -1,6 +1,6 @@
 /* Captions from words and their times: the cues of a subtitle track.
  *
- * docs/caption-spec.md (version 1.0, 2026-10-21) sets out the method, and
+ * docs/caption-spec.md (version 1.1, 2026-10-22) sets out the method, and
  * this is its kernel, sections 4 to 8. Each possible cue is a run of words,
  * an edge between two boundaries of a graph whose vertices are the
  * boundaries between words; it is laid out (one line, or two at its best
@@ -21,6 +21,8 @@
  *     no cue can hold (wider than two lines, or said over more than 7 s) is
  *     a cue of its own anyway, flagged PK_CUE_FORCED, its words whole, where
  *     the spec stops for an editor (6, 9);
+ *   - a cue cut at a pause in mid-sentence ends in an ellipsis, flagged
+ *     PK_CUE_PAUSE, which its last line makes room for (cue(), below);
  *   - graphemes as UAX #29 counts them for the scripts the models write
  *     (Latin, Greek, Cyrillic) and for emoji (graphemes(), below).
  *
@@ -142,6 +144,12 @@ static const char FUNCTION_WORDS[] =
 static const char PHRASE_STARTERS[] =
     " and but or nor yet so because although though unless while if when after before until since as"
     " where which who to in on at for from with by of into over under between through during without ";
+/* The verbs whose "to" is the rest of a complex verb, going to, have to,
+ * used to, ought to: a line broken before it splits the verb, as "Who's
+ * going / to implement a 4% global wealth tax?" did in test.wav, where
+ * "Who's going to implement / a 4% ..." is the break (the BBC's subtitle
+ * guidelines: not between the parts of a complex verb). */
+static const char SEMI_MODALS[] = " going have has had having got used ought want wants wanted need needs needed able supposed ";
 static const char ABBREVIATIONS[] = " mr. mrs. ms. dr. prof. sr. jr. st. vs. etc. e.g. i.e. a.m. p.m. u.s. u.k. ";
 
 /* the bytes of t without the closing quotes and brackets after it */
@@ -271,7 +279,15 @@ static int64_t width(const graph *g, int32_t i, int32_t j) { return g->gsum[j] -
  * at, so that if no cue can hold them, they are a forced one */
 static edge cue(const graph *g, int32_t i, int32_t j, int64_t a, int whole) {
     edge r = { 0 };
-    const int64_t c = width(g, i, j);
+    /* Cut at a pause in mid-sentence (a second or more: PAUSE_CUT), its last
+     * word without the punctuation that says the words stop there, a cue
+     * ends in an ellipsis that does, "So I…" before "when I think about
+     * normative questions," in test.wav: the pause marker of Netflix's
+     * style guides and DCMP's, and right whether the speaker trailed off,
+     * hesitated or broke off, which a dash is not. A grapheme, U+2026, in
+     * the last line. */
+    const int ellipsis = j < g->n && g->cut[j] && !punctuated(g->w[j - 1].text);
+    const int64_t c = width(g, i, j) + ellipsis;
     int64_t layout = NEVER;
     int32_t line2 = 0;
     if (c <= LINE)
@@ -340,7 +356,8 @@ static edge cue(const graph *g, int32_t i, int32_t j, int64_t a, int whole) {
     r.line2 = line2;
     r.chars = (int32_t)c;
     r.end = end;
-    r.flags = (1000 * c > CPS_MAX * d ? PK_CUE_FAST : 0) | (d < MIN_MS ? PK_CUE_SHORT : 0) | (forced ? PK_CUE_FORCED : 0);
+    r.flags = (1000 * c > CPS_MAX * d ? PK_CUE_FAST : 0) | (d < MIN_MS ? PK_CUE_SHORT : 0) | (forced ? PK_CUE_FORCED : 0) |
+              (ellipsis ? PK_CUE_PAUSE : 0);
     return r;
 }
 
@@ -361,8 +378,14 @@ static void boundaries(graph *g, int english) {
         int base = m == P_TERM ? 0 : m == P_MAJOR ? 10 : m == P_COMMA ? 20 : 60;
         if (base == 60 && english) {
             lexical(after, lex, sizeof lex);
-            if (listed(PHRASE_STARTERS, lex))
+            if (listed(PHRASE_STARTERS, lex)) {
                 base = 25;
+                if (!strcmp(lex, "to")) {
+                    lexical(before, lex, sizeof lex);
+                    if (listed(SEMI_MODALS, lex))
+                        base = 60;
+                }
+            }
         }
         int bond = 0;
         if (english && !punctuated(before)) {

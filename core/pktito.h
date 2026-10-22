@@ -216,6 +216,8 @@ enum {
     PK_CUE_FAST   = 1,  /* over 20 characters a second to read: the words come faster than that */
     PK_CUE_SHORT  = 2,  /* on for less than a second: the next words or the recording's end come first */
     PK_CUE_FORCED = 4,  /* a word, or words said over each other, too wide or too long for any cue */
+    PK_CUE_PAUSE  = 8,  /* cut at a pause in mid-sentence: shown with an ellipsis, U+2026, after its
+                           last word, which chars and its last line count */
 };
 
 /* The captions of n words in order: lines of at most 42 characters, one or

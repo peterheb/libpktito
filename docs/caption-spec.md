@@ -1,9 +1,11 @@
 # Deterministic caption segmentation from word timestamps
 
-**Status:** Implementation specification, version 1.0  
-**Date:** 2026-10-21  
+**Status:** Implementation specification, version 1.1  
+**Date:** 2026-10-22 (1.0: 2026-10-21)  
 **Default profile:** `en-web-v1` — prerecorded, adult English, verbatim, sequential pop-on captions  
 **Outputs:** A canonical cue list, diagnostics, and SRT/WebVTT exports
+
+**Changes in 1.1** (pktito): `to` after a semi-modal is no phrase starter (5.2, 5.3), and a cue cut at a required pause in mid-sentence shows an ellipsis (6.1, 10, 11.2).
 
 ## 1. Recommendation
 
@@ -158,7 +160,7 @@ When media duration is unknown, set the working upper bound to the largest word 
 
 ### 3.4 Preservation contract
 
-The core operates on immutable normalized words and stores their IDs on every cue. Every word appears exactly once, in order. A line break replaces the separator between two words; a cue boundary changes presentation grouping. Neither changes words.
+The core operates on immutable normalized words and stores their IDs on every cue. Every word appears exactly once, in order. A line break replaces the separator between two words; a cue boundary changes presentation grouping; a pause marker (6.1) follows a cue's last word on screen. None of them changes words.
 
 Check preservation through IDs and reconstructed canonical text, not by searching for repeated strings. Keep editorial changes, such as removing filler words or shortening speech, in a separately approved display-text revision with source mappings.
 
@@ -289,6 +291,9 @@ auxiliaries = am is are was were be been being have has had do does did can
 phrase_starters = and but or nor yet so because although though unless while
   if when after before until since as where which who to in on at for from
   with by of into over under between through during without
+
+semi_modals = going have has had having got used ought want wants wanted need
+  needs needed able supposed
 ```
 
 Set `function_bond[k] = 1` when the preceding token's lexical form is in any of the first five sets and the token has no recognized trailing punctuation. Here, recognized trailing punctuation means a final character in `. , ? ! ; : — …` after the closing-quote/bracket stripping described above. Otherwise use zero. This discourages leaving `the`, `to`, or `would` at the end of a caption or line. Homographs and constructions such as a sentence-final auxiliary can fool this rule; frozen parser annotations may improve a later profile.
@@ -304,7 +309,7 @@ For each internal boundary, choose the first matching base value:
 | Sentence terminal | 0 |
 | Semicolon, colon, em dash, or ellipsis | 10 |
 | Comma | 20 |
-| Next token's lexical form is a phrase starter | 25 |
+| Next token's lexical form is a phrase starter, other than `to` after a semi-modal | 25 |
 | Otherwise | 60 |
 
 Define `major_punctuation[k]` as the semicolon, colon, em-dash, or ellipsis category in this table. When a supplied sentence-end override is true, the terminal category takes precedence.
@@ -366,6 +371,10 @@ layout_key = (layout_cost, abs(L1 - L2), indicator(L1 > L2), k)
 ```
 
 Choose the lexicographically smallest `layout_key`. Thus a slightly longer second line is only a mild preference. Never insert a line break inside a word in this profile.
+
+### 6.1 Pause marker
+
+A candidate `[i,j)` whose end `j` is a required pause (4.3), and whose last word has no recognized trailing punctuation (5.2), ends in the middle of a sentence because the speaker stopped there: trailed off, hesitated, or broke off. Show that with an ellipsis, U+2026, after its last word, the pause marker of the Netflix and DCMP style guides. A dash would claim an interruption the timing cannot tell from a hesitation. Count it as one grapheme in the last line, `L` or `L2` above, so that a layout that leaves no room for it is discarded like any other too-wide one, and in the cue's character count (8.2). Do not mark a cue that ends at a boundary that is not required, which is a sentence continuing in the next caption, or the track's last cue. Flag the cue; the words stay as they are, and the exporters draw the marker (10).
 
 When no layout exists, reject that candidate. The optimizer may split the range into multiple captions. If even an indivisible word or temporal group cannot fit, return `needs_editor`; do not truncate a URL, change a name, or invent independently timed pieces of one word.
 
@@ -616,7 +625,7 @@ Likewise, a plain word transcript lacks important non-speech sounds, music descr
 
 ## 10. Serialization
 
-Export both formats from the same canonical integer-timestamp cue list. Use UTF-8, deterministic LF line endings, and exactly one blank line between blocks. Preserve chosen line breaks. Do not rewrap or retime in the exporter.
+Export both formats from the same canonical integer-timestamp cue list. Use UTF-8, deterministic LF line endings, and exactly one blank line between blocks. Preserve chosen line breaks, and end a cue flagged with a pause marker (6.1) with U+2026 right after its last word. Do not rewrap or retime in the exporter.
 
 ### 10.1 SRT
 
@@ -690,7 +699,7 @@ For the last case, the optimizer may choose another partition based on scores; a
 6. **Total length is insufficient:** word lengths `30,30,20` give flat length 82, but the two possible wraps are `30 / 51` and `61 / 20`. Reject that full candidate; several separate cues may still be feasible.
 7. **Unicode:** `cafe\u0301` counts as four graphemes; 42 repetitions of `e\u0301` fit a single line; 43 do not. A family emoji joined with ZWJs is one grapheme under the pinned rules. Add visual-width tests separately.
 8. **Punctuation:** `Dr.` and a capital initial do not mark automatic sentence completion; a decimal's interior dot does not; `Really?` does. A supplied sentence-end annotation overrides the heuristic.
-9. **No punctuation:** an unpunctuated transcript still segments from timing, width, and pauses. It must not acquire invented capitals, periods, or ellipses.
+9. **No punctuation:** an unpunctuated transcript still segments from timing, width, and pauses. It must not acquire invented capitals or periods, and an ellipsis only at a required pause in mid-sentence (6.1): `So,54710,55030`, `I,55030,55350`, `when,56550,56800` puts `So I…` in a cue of its own; with `I,` instead of `I`, no ellipsis.
 10. **Speaker overlap conflict:** A says `Wait.,0,1200`; B says `No.,900,1500`. The default speaker cut conflicts with the unsafe temporal boundary; return `needs_editor`.
 11. **Gap closing:** evaluate otherwise identical candidates leaving 249 ms and 250 ms to `boundary_end`. Close only the former, and only when the full extension fits the cap. Recalculate all metrics afterward.
 12. **Input errors:** parameterize negative/non-finite/reversed/zero timestamps, duplicate IDs, decreasing starts, words beyond media end, empty text, and collapsed durations after rounding. Expect stable error codes.

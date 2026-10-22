@@ -41,7 +41,8 @@ static const char *usage =
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
     "                        a longer recording is cut at its silences\n"
     "      --json            chunks as JSON: start, end, text, every word's and every\n"
-    "                        token's time\n"
+    "                        token's time; and meta, the model and the audio's length\n"
+    "                        (and with -v, the run's times, backend and threads)\n"
     "      --stream          read FILE as it arrives (a pipe, a microphone) and print\n"
     "                        each stretch of speech as its pause ends it\n"
     "      --pause MS        with --stream, the silence that ends a stretch (1000):\n"
@@ -260,6 +261,32 @@ static void json_str(const char *s) {
     putchar('"');
 }
 
+/* --json's "meta": the model and how long the audio is, the same on every
+ * machine and every run, so that a transcript compares byte for byte (as
+ * check-c compares test.wav's); with -v, also what the -v line on stderr
+ * says of the run. top: the whole run's, with the model and the machine,
+ * or else one file's of several. */
+static void json_meta(const opts *o, const pk_model *m, int top, double audio_s, double vad_s, double asr_s) {
+    printf("{");
+    if (top) {
+        printf("\"model\": ");
+        json_str(pk_model_name(m));
+        printf(", ");
+    }
+    printf("\"audio\": %.3f", audio_s);
+    if (o->verbose) {
+        printf(", \"vad\": %.3f, \"transcription\": %.3f", vad_s, asr_s);
+        if (top) {
+            printf(", \"speed\": %.1f, \"version\": ", asr_s + vad_s > 0 ? audio_s / (asr_s + vad_s) : 0.0);
+            json_str(PKTITO_VERSION);
+            printf(", \"backend\": ");
+            json_str(pk_backend());
+            printf(", \"threads\": %d", o->threads ? o->threads : pk_os_cores());
+        }
+    }
+    printf("}");
+}
+
 /* Subtitles: every word of the file with its time, gathered chunk by
  * chunk, then pk_captions' cues of them all at once (core/captions.c), as
  * SRT or WebVTT. The English rules apply when the model's languages are
@@ -319,7 +346,7 @@ static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
             else
                 fputs(c->w[i].text, stdout);
         }
-        printf("\n\n");
+        printf("%s\n\n", cue[k].flags & PK_CUE_PAUSE ? "\xE2\x80\xA6" : "");
     }
     free(cue);
     free(c->w);
@@ -348,8 +375,8 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         printf("{\"file\": ");
         json_str(path);
         printf(", \"chunks\": [");
-    } else if (o->json)
-        printf("[");
+    }
+    const double asr_before = *asr_total;
     for (size_t i = 0; i < nc; i++) {
         const pk_tok *t;
         double t0 = pk_os_now();
@@ -409,9 +436,11 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         }
         fflush(stdout);
     }
-    if (o->json)
-        printf(many ? "\n]}" : "\n]\n");
-    else if (many)
+    if (o->json && many) {
+        printf("\n], \"meta\": ");
+        json_meta(o, m, 0, (double)n / rate, vad_s, *asr_total - asr_before);
+        putchar('}');
+    } else if (many)
         putchar('\n');
     if (o->subs) {
         const char *langs = pk_model_meta(m, "languages");
@@ -430,15 +459,18 @@ static int transcribe(const opts *o, pk_model *m) {
         die("out of memory");
     double audio_s = 0, vad_s = 0, asr_s = 0;
     int many = o->nin > 1;
-    if (o->json && many)
-        printf("[");
+    if (o->json)
+        printf(many ? "{\"files\": [" : "{\"chunks\": [");
     for (int i = 0; i < o->nin; i++) {
         if (o->json && many)
             printf(i ? ",\n" : "\n");
         transcribe_file(o, o->ins[i], m, a, many, &audio_s, &vad_s, &asr_s);
     }
-    if (o->json && many)
-        printf("\n]\n");
+    if (o->json) {
+        printf("\n],\n \"meta\": ");
+        json_meta(o, m, 1, audio_s, vad_s, asr_s);
+        printf("}\n");
+    }
     if (o->verbose)
         fprintf(stderr, "pktito: %.1f s of audio: VAD %.2f s, transcription %.2f s (%.1fx real "
                 "time), %s, %d threads\n", audio_s, vad_s, asr_s, audio_s / (asr_s + vad_s),

@@ -71,7 +71,7 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 
 ```sh
 ./pktito talk.wav                        # the transcript
-./pktito --json talk.wav                 # chunks: start, end, text, every token and its time
+./pktito --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
 ./pktito --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
 arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito --stream -     # live, a line a pause
@@ -272,13 +272,22 @@ is the cheapest path through all of them (core/captions.c, after
 docs/caption-spec.md): a long pause is always a cut, a sentence's end or a
 comma is a good one, a cue shorter than a second or faster than 20
 characters a second costs, and in English no cue or line ends on "the" or
-"to". The same function is the library's `pk_captions`, which the desktop
-app's subtitles come from too.
+"to", or splits "going to" and the other semi-modals. A cue that a pause
+of a second cuts in mid-sentence ends in an ellipsis, "So I…", as the
+Netflix and DCMP style guides mark a pause: right whether the speaker
+trailed off, hesitated or broke off, which the times cannot tell apart.
+The same function is the library's `pk_captions`, which the desktop app's
+subtitles come from too.
 
 `make check-c` holds it to the spec's own cases (tests/capcheck.c),
 including the nine words that greedy packing cuts 8 + 1 and this cuts 4 + 5,
 and to an exhaustive search over every partition of 3000 random
-transcripts. 20000 words take 16 ms on an M4 Pro.
+transcripts. 20000 words take 17 ms on an M4 Pro.
+
+`--json`'s `meta` is the model and the audio's length, which are the same
+on every machine and run, so that transcripts compare byte for byte; with
+`-v` it adds what the `-v` line says: the VAD's and transcription's
+seconds, the speed, pktito's version, the backend and the threads.
 
 ## How it works
 
