@@ -17,6 +17,7 @@
  *                pk_segments      get_speech_timestamps' segments from them
  *   chunks       pk_chunks        a long recording cut at its silences into
  *                                 pieces the encoder takes whole
+ *   captions     pk_captions      words with times to a subtitle track's cues
  *
  * A model is read-only once loaded and may be shared by any number of
  * transcribers on any number of threads; a transcriber belongs to one
@@ -190,5 +191,43 @@ int  pk_iter_step(pk_iter *it, float prob, int64_t *at);
  * n_speech + 1. */
 size_t pk_chunks(const pk_seg *speech, size_t n_speech, int64_t total, int64_t max_len,
                  pk_seg *out);
+
+/* ------------------------------------------------------------- captions --- */
+
+/* A word to caption: its text, UTF-8 with the punctuation it carries (as
+ * pk_text writes a pk_word's tokens), and when it was said, in
+ * milliseconds. */
+typedef struct {
+    const char *text;
+    int64_t     start, end;
+} pk_capword;
+
+/* A cue of a subtitle track: words [first, first + n), shown from start to
+ * end (milliseconds), on one line, or on two with the second from word
+ * line2 on (0: one line). chars is what a reader reads, graphemes and the
+ * spaces between words; flags say where the track could not be all it
+ * should. */
+typedef struct {
+    int32_t first, n, line2, chars, flags;
+    int64_t start, end;
+} pk_cue;
+
+enum {
+    PK_CUE_FAST   = 1,  /* over 20 characters a second to read: the words come faster than that */
+    PK_CUE_SHORT  = 2,  /* on for less than a second: the next words or the recording's end come first */
+    PK_CUE_FORCED = 4,  /* a word, or words said over each other, too wide or too long for any cue */
+};
+
+/* The captions of n words in order: lines of at most 42 characters, one or
+ * two to a cue, each cue on from its first word until a little after its
+ * last, and the words cut into cues where their pauses, punctuation and
+ * timing read best - the cheapest of every possible cut by
+ * core/captions.c's costs, not the first that fits. english adds the
+ * English rules (no cue or line ends on "the" or "to"; an abbreviation's
+ * period ends no sentence); 0 leaves punctuation and pauses. media_end is
+ * when the recording ends (ms), or 0 if unknown. out has room for n.
+ * Returns the count of cues, or -1 if memory runs out (90 bytes a word,
+ * given back before it returns). */
+long pk_captions(const pk_capword *w, size_t n, int english, int64_t media_end, pk_cue *out);
 
 #endif /* PKTITO_H */

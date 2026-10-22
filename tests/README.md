@@ -12,6 +12,7 @@ needs is not there.
 | `kcheck` | check-c | every kernel of every backend in the build that the CPU can run to backend/ref's bits (the rest skipped with a line), on random and awkward data and on the model's real matrices, and ref's int8 product to its definition |
 | `pkfcheck` | check-c, check-sanitize | the model file's validator and binder on tests/data/tiny.pkf and 29,104 malformed versions of it, and the whole engine on the tiny model (docs/MEMORY_SAFETY.md) |
 | `wavcheck` | check-c, check-sanitize | the WAV reader on every prefix of a valid file and each field of fmt wrong |
+| `capcheck` | check-c | core/captions.c to docs/caption-spec.md's cases (a cue's layout and times, each boundary's costs, graphemes, the 4 + 5 it finds where greedy packing finds 8 + 1), and its dynamic program to the best of every partition of 3000 random transcripts |
 | test.wav | check-c | `./pktito probs` against tests/data/test.probs.txt (vadito's bits) and `./pktito --json` against test.v2.json and test.v3.json (ref's transcripts, every token and time), byte for byte |
 | `examples/transcribe` | check-c | the library alone gives the CLI's transcript |
 | `check-tsan` | check-tsan | the pool and every pass split over it: no race on six threads |

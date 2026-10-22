@@ -12,6 +12,7 @@
 /tests/pkfcheck.json
 /tests/wavcheck
 /tests/wavcheck-san
+/tests/capcheck
 /tests/fftcheck
 /examples/transcribe
 __pycache__/

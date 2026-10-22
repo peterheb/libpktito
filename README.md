@@ -72,7 +72,7 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 ```sh
 ./pktito talk.wav                        # the transcript
 ./pktito --json talk.wav                 # chunks: start, end, text, every token and its time
-./pktito --srt talk.wav > talk.srt       # subtitles, a cue a chunk
+./pktito --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
 arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito --stream -     # live, a line a pause
 ./pktito segments talk.wav               # Silero VAD's speech segments, as vadito prints them
@@ -261,6 +261,25 @@ much the model hears at once. On the same long-form set:
 | v2 | 3.10% | 2.21% | 2.04% | 1.86% | **1.66%** | 1.66% | 1.68% |
 | v3 | 4.02% | 3.01% | 2.72% | 2.21% | **1.89%** | 1.78% | 1.73% |
 
+## Captions
+
+`--srt` and `--vtt` write a subtitle track from the words' times: lines of
+42 characters at most, one or two to a cue, each cue shown from its first
+word until a little after its last. The cut is not the greedy one, filling
+each cue until the next word will not fit, which leaves a word or two to
+flash by at the end. Every possible cue is laid out and timed, and the track
+is the cheapest path through all of them (core/captions.c, after
+docs/caption-spec.md): a long pause is always a cut, a sentence's end or a
+comma is a good one, a cue shorter than a second or faster than 20
+characters a second costs, and in English no cue or line ends on "the" or
+"to". The same function is the library's `pk_captions`, which the desktop
+app's subtitles come from too.
+
+`make check-c` holds it to the spec's own cases (tests/capcheck.c),
+including the nine words that greedy packing cuts 8 + 1 and this cuts 4 + 5,
+and to an exhaustive search over every partition of 3000 random
+transcripts. 20000 words take 16 ms on an M4 Pro.
+
 ## How it works
 
 Parakeet TDT is, for a recording of n samples at 16 kHz:
@@ -302,6 +321,10 @@ pk_vad *v = pk_vad_new(m);                        /* Silero VAD, as vadito has i
 pk_vad_probs(v, frames, n_frames, probs);
 size_t ns = pk_segments(probs, n_frames, 16000, n_samples, &sp, seg, cap);
 size_t nc = pk_chunks(seg, ns, n_samples, 30 * 16000, chunk);
+
+pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */
+long nq = pk_captions(w, 2, 1, 0, cue);           /* 1: English; 0: the end unknown */
+/* cue[0]: words 0-1, one line, 1000-2000 ms */
 ```
 
 A model is read-only once loaded and may be shared by transcribers on any
@@ -353,8 +376,9 @@ tests/README.md has each check.
 ```
 core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              the text (tokens.c), the transcriber (asr.c), the VAD (vad.c,
-             segment.c), the WAV library (wav.c, resample.c), the math
-             (vmath.h), the pool (pool.c), the CLI (cli.c)
+             segment.c), the WAV library (wav.c, resample.c), the captions
+             (captions.c), the math (vmath.h), the pool (pool.c), the CLI
+             (cli.c)
 backend/     the seam (kernels.h, and kernels.c, which picks the backend that
              runs) and ref/, neon/ (and neon-dp/), avx2/ (and avx2-vnni/,
              avx512-vnni/); a CLIMB.md beside each tuned backend
@@ -362,7 +386,8 @@ tools/       the converter, the float64 reference, the corpora, the
              quantization experiment
 tests/       the C checks, the Python ones, and test.wav with its golden files
 examples/    the library from the outside
-docs/        MEMORY_SAFETY.md: the rules the two parsers keep
+docs/        MEMORY_SAFETY.md: the rules the two parsers keep; caption-spec.md:
+             the method core/captions.c follows
 ```
 
 ## License

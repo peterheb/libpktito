@@ -2,7 +2,7 @@
  *
  *   pktito talk.wav                   the transcript
  *   pktito --json talk.wav            chunks with their times, text and tokens
- *   pktito --srt talk.wav             subtitles: one cue a chunk
+ *   pktito --srt talk.wav             subtitles, or --vtt as WebVTT: pk_captions' cues
  *   pktito bench talk.wav             how fast this machine transcribes it
  *   pktito info                       the model file: where it came from
  *
@@ -46,14 +46,17 @@ static const char *usage =
     "                        each stretch of speech as its pause ends it\n"
     "      --pause MS        with --stream, the silence that ends a stretch (1000):\n"
     "                        shorter is sooner and less accurate\n"
-    "      --srt             subtitles: cues of a sentence or two lines at most, timed\n"
-    "                        by their words\n"
+    "      --srt, --vtt      subtitles, SRT or WebVTT: cues of one or two lines of 42\n"
+    "                        characters, cut where the words' pauses and punctuation\n"
+    "                        read best\n"
     "  -v, --verbose         say what was read, how, and how long it took\n";
+
+enum { SUBS_SRT = 1, SUBS_VTT = 2 };
 
 typedef struct {
     const char *cmd, *in, *model;
     const char **ins;                /* every input file; in is the first */
-    int nin, threads, json, srt, verbose, stream;
+    int nin, threads, json, subs, verbose, stream;   /* subs: SUBS_SRT or SUBS_VTT */
     double max_chunk, pause_ms;
 } opts;
 
@@ -92,7 +95,8 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--max-chunk")) { o->max_chunk = num(a, v, 1, 3600); i++; }
         else if (!strcmp(a, "--pause")) { o->pause_ms = num(a, v, 32, 10000); i++; }
         else if (!strcmp(a, "--json")) o->json = 1;
-        else if (!strcmp(a, "--srt")) o->srt = 1;
+        else if (!strcmp(a, "--srt")) o->subs = SUBS_SRT;
+        else if (!strcmp(a, "--vtt")) o->subs = SUBS_VTT;
         else if (!strcmp(a, "--stream")) o->stream = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
@@ -102,12 +106,13 @@ static void parse(int argc, char **argv, opts *o) {
         else o->ins[o->nin++] = a;
     }
     o->in = o->nin ? o->ins[0] : NULL;
-    if (o->json && o->srt)
-        die("--json or --srt, not both");
-    if (o->nin > 1 && (o->srt || o->stream || strcmp(o->cmd, "text")))
-        die("one input file for %s", o->srt ? "--srt" : o->stream ? "--stream" : o->cmd);
-    if (o->stream && o->srt)
-        die("--stream or --srt, not both");
+    const char *subs = o->subs == SUBS_VTT ? "--vtt" : "--srt";
+    if (o->json && o->subs)
+        die("--json or %s, not both", subs);
+    if (o->nin > 1 && (o->subs || o->stream || strcmp(o->cmd, "text")))
+        die("one input file for %s", o->subs ? subs : o->stream ? "--stream" : o->cmd);
+    if (o->stream && o->subs)
+        die("--stream or %s, not both", subs);
     if (!o->in && strcmp(o->cmd, "info")) {
         fputs(usage, stderr);
         exit(1);
@@ -255,75 +260,70 @@ static void json_str(const char *s) {
     putchar('"');
 }
 
-static void srt_time(double s) {
-    long ms = lround(s * 1000);
-    printf("%02ld:%02ld:%02ld,%03ld", ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000);
-}
+/* Subtitles: every word of the file with its time, gathered chunk by
+ * chunk, then pk_captions' cues of them all at once (core/captions.c), as
+ * SRT or WebVTT. The English rules apply when the model's languages are
+ * English alone. */
+typedef struct {
+    pk_capword *w;
+    char *text;                      /* the words' texts, each with its NUL */
+    size_t n, cap, len, tcap;
+} capwords;
 
-/* Subtitles from a chunk's words: a cue ends after a sentence, before a
- * pause of a second, or before it would run past 7 s or two lines of 42
- * characters - the common broadcast limits - and a cue of more than one
- * line is broken at the space nearest its middle. */
-#define SRT_LINE 42
-#define SRT_SECONDS 7.0
-
-typedef struct { int n; } srt_state;
-
-static void srt_cue(srt_state *st, const char *text, double t0, double t1) {
-    size_t len = strlen(text);
-    printf("%d\n", ++st->n);
-    srt_time(t0);
-    printf(" --> ");
-    srt_time(t1);
-    putchar('\n');
-    if (len <= SRT_LINE) {
-        printf("%s\n\n", text);
-        return;
-    }
-    size_t best = 0;
-    for (size_t i = 1; i < len; i++)
-        if (text[i] == ' ' && (best == 0 || (i > len / 2 ? i - len / 2 : len / 2 - i)
-                                           < (best > len / 2 ? best - len / 2 : len / 2 - best)))
-            best = i;
-    if (!best)
-        printf("%s\n\n", text);
-    else
-        printf("%.*s\n%s\n\n", (int)best, text, text + best + 1);
-}
-
-static void srt_chunk(srt_state *st, const pk_model *m, const pk_tok *t, size_t nt, double start) {
-    pk_word *w = malloc((nt ? nt : 1) * sizeof *w);
-    char *cue = malloc(4096), word[1024];
-    if (!w || !cue)
+static void cap_add(capwords *c, const char *word, int64_t start, int64_t end) {
+    size_t l = strlen(word) + 1;
+    if (c->n == c->cap && !(c->w = realloc(c->w, (c->cap = c->cap ? 2 * c->cap : 1024) * sizeof *c->w)))
         die("out of memory");
-    const double fs = pk_model_frame_seconds(m);
-    size_t nw = pk_words(m, t, nt, w), len = 0;
-    double c0 = 0, c1 = 0;
-    for (size_t i = 0; i < nw; i++) {
-        pk_text(m, t + w[i].tok, (size_t)w[i].ntok, word, sizeof word);
-        double w0 = start + w[i].start * fs, w1 = start + w[i].end * fs;
-        size_t wl = strlen(word);
-        if (len && (w0 - c1 > 1.0 || w1 - c0 > SRT_SECONDS || len + 1 + wl > 2 * SRT_LINE)) {
-            srt_cue(st, cue, c0, c1);
-            len = 0;
+    while (c->len + l > c->tcap)
+        if (!(c->text = realloc(c->text, c->tcap = c->tcap ? 2 * c->tcap : 16384)))
+            die("out of memory");
+    memcpy(c->text + c->len, word, l);
+    /* where the text is, until the buffer stops moving */
+    c->w[c->n++] = (pk_capword){ (const char *)(uintptr_t)c->len, start, end };
+    c->len += l;
+}
+
+static void sub_time(int64_t ms, char sep) {
+    printf("%02lld:%02lld:%02lld%c%03lld", (long long)(ms / 3600000), (long long)(ms / 60000 % 60),
+           (long long)(ms / 1000 % 60), sep, (long long)(ms % 1000));
+}
+
+/* WebVTT reads & < > as markup, so a word's are written as text */
+static void vtt_text(const char *t) {
+    for (; *t; t++)
+        fputs(*t == '&' ? "&amp;" : *t == '<' ? "&lt;" : *t == '>' ? "&gt;" : (char[]){ *t, 0 }, stdout);
+}
+
+static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
+    for (size_t i = 0; i < c->n; i++)
+        c->w[i].text = c->text + (uintptr_t)c->w[i].text;
+    pk_cue *cue = malloc((c->n ? c->n : 1) * sizeof *cue);
+    if (!cue)
+        die("out of memory");
+    long nc = pk_captions(c->w, c->n, english, media_end, cue);
+    if (nc < 0)
+        die("out of memory");
+    if (vtt)
+        printf("WEBVTT\n\n");
+    for (long k = 0; k < nc; k++) {
+        printf("%ld\n", k + 1);
+        sub_time(cue[k].start, vtt ? '.' : ',');
+        printf(" --> ");
+        sub_time(cue[k].end, vtt ? '.' : ',');
+        putchar('\n');
+        for (int32_t i = cue[k].first; i < cue[k].first + cue[k].n; i++) {
+            if (i > cue[k].first)
+                putchar(i == cue[k].line2 ? '\n' : ' ');
+            if (vtt)
+                vtt_text(c->w[i].text);
+            else
+                fputs(c->w[i].text, stdout);
         }
-        if (!len) {
-            c0 = w0;
-            cue[0] = 0;
-        }
-        len += (size_t)snprintf(cue + len, 4096 - len, "%s%s", len ? " " : "", word);
-        if (len > 4000) len = 4000;
-        c1 = w1 > c1 || len == wl ? w1 : c1;
-        char last = wl ? word[wl - 1] : 0;
-        if (last == '.' || last == '?' || last == '!') {
-            srt_cue(st, cue, c0, c1);
-            len = 0;
-        }
+        printf("\n\n");
     }
-    if (len)
-        srt_cue(st, cue, c0, c1);
-    free(w);
     free(cue);
+    free(c->w);
+    free(c->text);
 }
 
 /* One file through the transcriber: its chunks, printed as -o asks. With
@@ -341,7 +341,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     if (!text)
         die("out of memory");
     double fs = pk_model_frame_seconds(m);
-    srt_state srt = { 0 };
+    capwords words = { 0 };
     if (many && !o->json)
         printf("%s\t", path);
     if (o->json && many) {
@@ -391,8 +391,17 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
                        start + (t[k].frame + t[k].dur) * fs);
             }
             printf("]}");
-        } else if (o->srt) {
-            srt_chunk(&srt, m, t, (size_t)nt, start);
+        } else if (o->subs) {
+            pk_word *wd = malloc(((size_t)nt ? (size_t)nt : 1) * sizeof *wd);
+            if (!wd)
+                die("out of memory");
+            size_t nw = pk_words(m, t, (size_t)nt, wd);
+            for (size_t k = 0; k < nw; k++) {
+                char word[1024];
+                pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
+                cap_add(&words, word, llround((start + wd[k].start * fs) * 1000), llround((start + wd[k].end * fs) * 1000));
+            }
+            free(wd);
         } else if (many) {
             printf("%s%s", i && len ? " " : "", text);
         } else if (len) {
@@ -404,6 +413,10 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         printf(many ? "\n]}" : "\n]\n");
     else if (many)
         putchar('\n');
+    if (o->subs) {
+        const char *langs = pk_model_meta(m, "languages");
+        cap_print(&words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en"), (int64_t)n * 1000 / rate);
+    }
     *audio_s += (double)n / rate;
     *vad_total += vad_s;
     free(text);
