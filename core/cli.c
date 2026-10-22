@@ -636,9 +636,51 @@ static int stream(const opts *o, pk_model *m) {
 
 /* Transcribe the file five times; the best time is what a quiet machine
  * does. */
+/* A recording not at the model's rate, resampled to it as read_audio does,
+ * READ_FRAMES at a time: the best of five, from its samples in memory. 0 for
+ * one at the model's rate. */
+static double bench_resample(const char *path, int rate, uint32_t *from) {
+    char err[256];
+    pk_wav_info info;
+    pk_wav *w = pk_wav_open(path, &info, err, sizeof err);
+    if (!w)
+        die("%s", err);
+    *from = info.rate;
+    if (info.rate == (uint32_t)rate) {
+        pk_wav_close(w);
+        return 0;
+    }
+    size_t n = 0, cap = 1 << 20;
+    float *in = malloc(cap * sizeof *in), *out = NULL;
+    if (!in)
+        die("out of memory");
+    for (size_t r; (r = pk_wav_read(w, in + n, cap - n)); )
+        if ((n += r) == cap && !(in = realloc(in, (cap *= 2) * sizeof *in)))
+            die("out of memory");
+    pk_wav_close(w);
+    double best = 1e30;
+    for (int rep = 0; rep < 5; rep++) {
+        pk_resampler *rs = pk_resampler_new(info.rate, (uint32_t)rate);
+        if (!rs || !(out = realloc(out, pk_resample_room(rs, READ_FRAMES) * sizeof *out)))
+            die("out of memory");
+        double t0 = pk_os_now();
+        for (size_t at = 0; at < n; at += READ_FRAMES)
+            pk_resample(rs, in + at, n - at < READ_FRAMES ? n - at : READ_FRAMES, out);
+        pk_resample_flush(rs, out);
+        double dt = pk_os_now() - t0;
+        best = dt < best ? dt : best;
+        pk_resampler_free(rs);
+    }
+    free(in);
+    free(out);
+    return best;
+}
+
 static int bench(const opts *o, pk_model *m) {
     size_t n;
     const int rate = pk_model_rate(m);
+    uint32_t from;
+    const double rs_s = bench_resample(o->in, rate, &from);
     float *x = read_audio(o->in, rate, &n, o);
     pk_asr *a = pk_asr_new(m, o->threads);
     if (!a)
@@ -672,6 +714,8 @@ static int bench(const opts *o, pk_model *m) {
     printf("backend   %s, %d threads\n", pk_backend(), o->threads ? o->threads : pk_os_cores());
     printf("audio     %.1f s in %zu chunk%s, %ld tokens\n", audio, nc, nc == 1 ? "" : "s", ntok);
     printf("best of 5 %.3f s  %.1fx real time  (VAD %.3f s more)\n", best, audio / best, vad_s);
+    if (rs_s > 0)
+        printf("resample  %u Hz to %d, best of 5 %.1f ms\n", (unsigned)from, rate, rs_s * 1e3);
     free(c);
     free(x);
     pk_asr_free(a);
