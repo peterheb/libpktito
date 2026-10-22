@@ -77,9 +77,13 @@ double pk_model_frame_seconds(const pk_model *m);
 typedef struct pk_asr pk_asr;
 
 /* A transcriber with `threads` threads in all (0: one a core). NULL if
- * memory or a thread cannot be had. */
+ * memory or a thread cannot be had. With 0, on a chip whose cores are of
+ * two kinds, the first recording of 8 s or more times the encoder on every
+ * core and on the fast kind alone, and the transcriber keeps the faster;
+ * pk_asr_threads says how many it runs on. */
 pk_asr *pk_asr_new(const pk_model *m, int threads);
 void    pk_asr_free(pk_asr *a);
+int     pk_asr_threads(const pk_asr *a);
 
 /* One token of a transcript: a piece of the vocabulary, the encoder frame
  * it was emitted at, and the number of frames TDT says it lasts. */

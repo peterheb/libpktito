@@ -156,8 +156,8 @@ long pk_decode(pk_asr *a, uint32_t T) {
 
     memset(a->dh, 0, (size_t)m->pred_layers * P * sizeof *a->dh);
     memset(a->dc, 0, (size_t)m->pred_layers * P * sizeof *a->dc);
-    pk_pool_set_active(a->pool, PK_DEC_THREADS);
+    pk_pool_set_active(a->pool, PK_DEC_THREADS < a->wide ? PK_DEC_THREADS : a->wide);
     long n = search(a, T);
-    pk_pool_set_active(a->pool, a->nth);
+    pk_pool_set_active(a->pool, a->wide);
     return n;
 }

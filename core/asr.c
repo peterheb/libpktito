@@ -113,8 +113,13 @@ pk_asr *pk_asr_new(const pk_model *m, int threads) {
         return NULL;
     }
     a->nth = pk_pool_threads(a->pool);
+    a->wide = a->nth;
+    a->fast = threads > 0 ? a->nth : pk_os_fast_cores();
+    a->tune = a->fast > 0 && a->fast < a->nth;
     return a;
 }
+
+int pk_asr_threads(const pk_asr *a) { return a->wide; }
 
 void pk_asr_free(pk_asr *a) {
     if (!a)

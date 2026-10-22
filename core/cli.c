@@ -270,8 +270,8 @@ static void json_str(const char *s) {
  * stderr says of the run. top: the whole run's, with the model and the
  * machine, or else one file's of several; a language for a file's, or for
  * the run's of one file (lang NULL: none found). */
-static void json_meta(const opts *o, const pk_model *m, int top, double audio_s, double vad_s, double asr_s,
-                      int with_lang, const char *lang) {
+static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top, double audio_s,
+                      double vad_s, double asr_s, int with_lang, const char *lang) {
     printf("{");
     if (top) {
         printf("\"model\": ");
@@ -293,7 +293,7 @@ static void json_meta(const opts *o, const pk_model *m, int top, double audio_s,
             json_str(PKTITO_VERSION);
             printf(", \"backend\": ");
             json_str(pk_backend());
-            printf(", \"threads\": %d", o->threads ? o->threads : pk_os_cores());
+            printf(", \"threads\": %d", pk_asr_threads(a));
         }
     }
     printf("}");
@@ -472,7 +472,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         *lang = file_language(m, &words);
     if (o->json && many) {
         printf("\n], \"meta\": ");
-        json_meta(o, m, 0, (double)n / rate, vad_s, *asr_total - asr_before, 1, *lang);
+        json_meta(o, m, a, 0, (double)n / rate, vad_s, *asr_total - asr_before, 1, *lang);
         putchar('}');
     } else if (many)
         putchar('\n');
@@ -504,13 +504,13 @@ static int transcribe(const opts *o, pk_model *m) {
     }
     if (o->json) {
         printf("\n],\n \"meta\": ");
-        json_meta(o, m, 1, audio_s, vad_s, asr_s, !many, lang);
+        json_meta(o, m, a, 1, audio_s, vad_s, asr_s, !many, lang);
         printf("}\n");
     }
     if (o->verbose)
         fprintf(stderr, "pktito: %.1f s of audio: VAD %.2f s, transcription %.2f s (%.1fx real "
                 "time), %s, %d threads\n", audio_s, vad_s, asr_s, audio_s / (asr_s + vad_s),
-                pk_backend(), o->threads ? o->threads : pk_os_cores());
+                pk_backend(), pk_asr_threads(a));
     pk_asr_free(a);
     return 0;
 }
@@ -747,7 +747,7 @@ static int bench(const opts *o, pk_model *m) {
         printf("  %-16s %7.1f ms a run  %5.1f%%\n", stage[i], pk_prof[i] / 5 * 1e3, 100 * pk_prof[i] / total);
 #endif
     printf("model     %s\n", pk_model_name(m));
-    printf("backend   %s, %d threads\n", pk_backend(), o->threads ? o->threads : pk_os_cores());
+    printf("backend   %s, %d threads\n", pk_backend(), pk_asr_threads(a));
     printf("audio     %.1f s in %zu chunk%s, %ld tokens\n", audio, nc, nc == 1 ? "" : "s", ntok);
     printf("best of 5 %.3f s  %.1fx real time  (VAD %.3f s more)\n", best, audio / best, vad_s);
     if (rs_s > 0)

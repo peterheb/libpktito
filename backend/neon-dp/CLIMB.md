@@ -480,3 +480,43 @@ speed its run by 3% (above, and backend/avx2/CLIMB.md) and the Core 3
 quarter of its five cores' speed). A core's speed does not tell them
 apart: an A725 does 0.34 of an X925's work, an Alder Lake E-core 0.37 of a
 P-core's, a Darkmont E-core about 0.65 of a Cougar Cove's.
+
+## 2026-10-22 - every core, or the fast kind: measured on the encoder's layers (hypothesis)
+
+Every core or the fast kind alone is a question for each chip, and a
+core's speed does not answer it (above). The GB10 runs fastest on its ten
+X925s (0.437 s against 0.58 on all twenty, after H1); the M4 Pro on its
+eight performance cores (by 4% in 30 s chunks); a Snapdragon 7c, two A76s
+and six A55s, on its A76s (1.7-2.4x, pinfer's core/SCHED.md); the 12900HK
+on all fourteen (by 3%); the Core 3 304 on all five (4x).
+
+H3: where the threads are pktito's choice and the cores are of two kinds,
+the first recording long enough to time (100 encoder frames, 8 s) runs its
+encoder's layers on every core and on the fast kind by turns, two layers
+each, four times over: the layers are the same shapes, so their times
+compare. The transcriber keeps the fast kind if its layers took 3% less,
+and every core otherwise; the narrower setting runs through pk_pool_set_active,
+with the other workers asleep, and the decoder's four come out of it. The
+fast kind is what the OS says: arm64 Linux's cpu_capacity, else cpufreq's
+maximum, within 10% of the highest; macOS's perflevel0; Windows'
+EfficiencyClass. Threads given (-t) are kept as given. Predict: the GB10
+picks its X925s, 0.58 -> about 0.44 s; the M4 Pro its eight, a few percent;
+the 7c its two A76s; the 12900HK and the 304 every core, unmoved; the Pis,
+one kind, untouched.
+
+Result, kept. `./pktito bench`, each tree's default threads, interleaved,
+three rounds, against eab2f24 (H1):
+
+| board | before | after | the choice |
+|---|---|---|---|
+| GB10 | 0.570-0.581 s, 20 threads | 0.437-0.443 s | 10, the X925s, every run and every `-v` |
+| 12900HK | 0.836-0.840 s, 14 | 0.838-0.841 s | 14, every core, every run |
+| M4 Pro (in use) | | 0.466 s once | 8 in bench, 12 in one `-v`: 4% apart, near the 3% |
+
+The GB10's default is 1.31x faster than H1's and 1.62x the 0.711-0.719 s
+it began the day at, as fast as its X925s pinned. The 12900HK keeps every
+core and does not move. The M4 Pro's two settings are as close as its
+measurement, and it takes either. The Pis are one kind and never time.
+check-c passes on the M4 Pro, the GB10 and the 12900HK; check-tsan now
+also runs the default threads, which on the M4 Pro switch the pool between
+twelve and eight as the first recording is timed, with no race.

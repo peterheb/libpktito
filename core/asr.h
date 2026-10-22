@@ -41,6 +41,11 @@ struct pk_asr {
     const pk_model *m;
     pk_pool *pool;
     int nth;
+    /* Every core, or the fast kind alone (pk_os_fast_cores, `fast` of them)
+     * where the cores are of two kinds and the threads are pktito's choice:
+     * `tune` until a recording has timed the encoder's layers on each
+     * (encoder.c, layers), `wide` the threads the passes run on. */
+    int fast, wide, tune;
 
     size_t cap;                      /* feature frames the buffers below hold */
     void  *mem;

@@ -259,7 +259,10 @@ check-tsan:
 	  $(foreach b,$(BACKENDS) ref,tests/tsan-$(b).o) $(LDLIBS)
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 -m $(MODEL) tests/data/test.wav > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 --stream -m $(MODEL) tests/data/test.wav > /dev/null
-	@echo "check-tsan: no race on six threads"
+	@# and on the default threads, which on a chip of two kinds of core switch
+	@# between every core and the fast kind as the first recording is timed
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -m $(MODEL) tests/data/test.wav > /dev/null
+	@echo "check-tsan: no race on six threads, nor on the default"
 
 check-math: tests/mathcheck
 	./tests/mathcheck --all

@@ -118,6 +118,47 @@ int pk_os_cores(void) {
     return n < 1 ? 1 : (int)n;
 }
 
+int pk_os_fast_cores(void) {
+#ifdef __APPLE__
+    int perf = 0;
+    size_t len = sizeof perf;
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &perf, &len, NULL, 0) == 0 && perf > 0)
+        return perf;
+#endif
+#ifdef __linux__
+    /* each physical core once, as pk_os_cores counts them, with its speed */
+    long ncpu = sysconf(_SC_NPROCESSORS_CONF);
+    if (ncpu > 4096)
+        ncpu = 4096;
+    int seen[1024], nseen = 0;
+    long speed[1024], top = 0;
+    for (long c = 0; c < ncpu; c++) {
+        long core = sysfs_long(c, "topology/core_id"), pkg = sysfs_long(c, "topology/physical_package_id");
+        if (core < 0)
+            continue;
+        int key = (int)((pkg < 0 ? 0 : pkg) * 65536 + core), dup = 0;
+        for (int i = 0; i < nseen; i++)
+            dup |= seen[i] == key;
+        if (dup || nseen >= 1024)
+            continue;
+        long s = sysfs_long(c, "cpu_capacity");
+        if (s < 0)
+            s = sysfs_long(c, "cpufreq/cpuinfo_max_freq");
+        if (s < 0)
+            return pk_os_cores();               /* a core whose speed it does not say */
+        seen[nseen] = key;
+        speed[nseen++] = s;
+        top = s > top ? s : top;
+    }
+    int fast = 0;
+    for (int i = 0; i < nseen; i++)
+        fast += speed[i] * 10 >= top * 9;
+    if (fast > 0)
+        return fast;
+#endif
+    return pk_os_cores();
+}
+
 double pk_os_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -168,23 +209,36 @@ void pk_unmap(const unsigned char *p, size_t size) {
  * processor record a core, counted where the process may run (`start
  * /affinity`), in processor group 0, which holds every machine with up to
  * 64 logical processors. */
-int pk_os_cores(void) {
+/* the cores the process may run on, every one or only those of the
+ * highest EfficiencyClass (0 on a chip of one kind) */
+static int cores(int fastest) {
     DWORD_PTR pmask = ~(DWORD_PTR)0, smask;
     GetProcessAffinityMask(GetCurrentProcess(), &pmask, &smask);
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
-    int n = 0;
-    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore,
-                   (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(void *)buf, &len))
+    int n = 0, top = -1;
+    for (int pass = 0; pass < 2; pass++) {
+        if (!buf || !GetLogicalProcessorInformationEx(RelationProcessorCore,
+                          (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(void *)buf, &len))
+            break;
         for (DWORD at = 0; at < len;) {
             const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *r = (const void *)(buf + at);
             at += r->Size;
-            n += (r->Processor.GroupMask[0].Mask & (KAFFINITY)pmask) != 0;
+            if (!(r->Processor.GroupMask[0].Mask & (KAFFINITY)pmask))
+                continue;
+            if (pass == 0)
+                top = r->Processor.EfficiencyClass > top ? r->Processor.EfficiencyClass : top;
+            else
+                n += !fastest || r->Processor.EfficiencyClass == top;
         }
+    }
     free(buf);
     return n > 0 ? n : 1;
 }
+
+int pk_os_cores(void) { return cores(0); }
+int pk_os_fast_cores(void) { return cores(1); }
 
 double pk_os_now(void) {
     static LARGE_INTEGER hz;
@@ -248,6 +302,7 @@ void pk_unmap(const unsigned char *p, size_t size) {
 }
 
 int pk_os_cores(void) { return 1; }
+int pk_os_fast_cores(void) { return 1; }
 
 double pk_os_now(void) {
     struct timespec ts;

@@ -32,6 +32,7 @@
  */
 #include "asr.h"
 #include "kernels.h"
+#include "os.h"
 #include "vmath.h"
 
 #include <math.h>
@@ -460,6 +461,37 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     PROF(PK_P_NORM, norm(a, a->x, a->x, T, L->out_nw, L->out_nb));
 }
 
+/* Every core, or the fast kind alone (asr.h)? The first recording long
+ * enough to time, PK_TUNE_FRAMES, runs its first PK_TUNE_LAYERS layers on
+ * each by turns, two at a time, and the transcriber keeps the fast kind if
+ * its layers took 3% less. The layers are the same shapes, so their times
+ * compare, and the bits are the same on any threads. Neither kind wins on
+ * every chip: a GB10's ten X925s ran the encoder faster than its twenty
+ * cores, a Core 3 304's one P-core four times slower than its five
+ * (backend/neon-dp/CLIMB.md, backend/avx2/CLIMB.md). */
+#define PK_TUNE_FRAMES 100       /* 8 s */
+#define PK_TUNE_LAYERS 16
+
+static void layers(pk_asr *a, uint32_t T) {
+    const pk_model *m = a->m;
+    uint32_t i = 0;
+    if (a->tune && T >= PK_TUNE_FRAMES && m->n_layers >= PK_TUNE_LAYERS) {
+        double took[2] = { 0, 0 };    /* every core, the fast kind */
+        for (; i < PK_TUNE_LAYERS; i++) {
+            int fast = (int)(i / 2) % 2;
+            pk_pool_set_active(a->pool, fast ? a->fast : a->nth);
+            double t0 = pk_os_now();
+            layer(a, &m->layers[i], T);
+            took[fast] += pk_os_now() - t0;
+        }
+        a->wide = took[1] < 0.97 * took[0] ? a->fast : a->nth;
+        a->tune = 0;
+        pk_pool_set_active(a->pool, a->wide);
+    }
+    for (; i < m->n_layers; i++)
+        layer(a, &m->layers[i], T);
+}
+
 uint32_t pk_encode(pk_asr *a, uint32_t T0) {
     const pk_model *m = a->m;
     const uint32_t T1 = (T0 + 1) / 2, T2 = (T1 + 1) / 2, T3 = (T2 + 1) / 2;
@@ -475,7 +507,6 @@ uint32_t pk_encode(pk_asr *a, uint32_t T0) {
     PROF(PK_P_POS, pk_par(a, pos_item, &pj, (int)((2 * T3 - 1 + 15) / 16));
                    pk_quantize(a, &a->ape, a->pe, D, 2 * T3 - 1, D, QB));
 
-    for (uint32_t i = 0; i < m->n_layers; i++)
-        layer(a, &m->layers[i], T3);
+    layers(a, T3);
     return T3;
 }

@@ -22,6 +22,13 @@ void pk_unmap(const unsigned char *p, size_t size);
 /* Cores this process may use: what -t defaults from. 1 when unknown. */
 int pk_os_cores(void);
 
+/* Of those, the fastest kind's, where the cores are of two kinds (P and E,
+ * big and LITTLE, performance and efficiency) and the OS says which: on
+ * Linux the highest cpu_capacity, else cpufreq maximum, and those within
+ * 10% of it; macOS's perflevel0; Windows' highest EfficiencyClass. All of
+ * them where the cores are of one kind or the OS does not say. */
+int pk_os_fast_cores(void);
+
 /* Seconds on a monotonic clock, for timing. */
 double pk_os_now(void);
 
