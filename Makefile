@@ -266,11 +266,11 @@ check-math: tests/mathcheck
 
 # The loop a board gets: the tree to HOST:$(RDIR) (the models too, rsync
 # sends only what changed), then the build, the compiler half of the checks
-# and a bench, there. BENCH names the recording; Silero's test.wav, from a
-# vadito checkout beside the tree, is the default.
+# and a bench, there. BENCH names the recording; Silero's test.wav, which
+# the tree carries, is the default.
 HOST  ?=
 RDIR  ?= pktito
-BENCH ?= ../vadito/tests/data/test.wav
+BENCH ?= tests/data/test.wav
 remote:
 	@[ -n "$(HOST)" ] || { echo "make remote HOST=user@board"; exit 1; }
 	rsync -a --delete --exclude .venv --exclude .venv-nemo --exclude .git --exclude '*.o' \
