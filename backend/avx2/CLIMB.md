@@ -440,3 +440,31 @@ five, main and the check in five interleaved rounds: 0.829 to 0.835 s
 before, 0.831 to 0.834 s with it, inside the spread. A PROFILE=1 build
 puts the quantize stage at 43.8 to 44.0 ms a run before and 44.8 to 44.9 ms
 with the check, three rounds each: about 1 ms, 0.1% of the run.
+
+## 2026-10-22 - the resampler as a kernel, eight blocks a vector (hypothesis)
+
+core/resample.c's dot products ran in core, at x86's baseline: since
+adb9d6b each fused multiply-add of them is pk_fmaf_soft, one chain an
+output, about 34 taps a phase from 44.1 kHz and 38 from 48. `pktito bench`
+on test.wav resampled, its resample line (new, best of five), three
+rounds on the 12900HK: 76.6 to 76.7 ms at 44.1 kHz, 85.5 to 85.6 ms at 48
+(glibc's fmaf, before adb9d6b, about 36 ms at 44.1).
+
+As a kernel, pk_k_resample, a vector holds eight consecutive blocks at
+the same phase: the tap broadcast to the eight, and their inputs, orig
+floats apart, one VGATHERDPS. Each lane's FMAs are the scalar chain's,
+so the bits are ref's. The gather, about one in five cycles on Golden
+Cove, bounds a step of eight taps: 34 taps for each of 120,000 groups of
+eight outputs a minute, about 20 M cycles, 4 to 5 ms at 44.1 kHz. A
+refill's blocks that make no eight run one at a time on the FMA
+instruction, and the history buffer grows to about 32 blocks a refill so
+that they are few. Kept if kcheck's resample cases are ref's bits and
+the line falls past its spread.
+
+Result, kept: kcheck's 114 resample cases (1,777 in all) are ref's bits on
+avx2 and avx2-vnni, and check-c passes, on the 12900HK. The resample line,
+three rounds: 4.4 to 4.5 ms at 44.1 kHz (76.6 to 76.7 before), 4.1 to 4.3
+ms at 48 (85.5 to 85.6), 17 and 20 times, inside the gather's 4 to 5 ms;
+the transcription's 0.83 s as it was. On the M4, the VAD's probabilities
+and both transcripts of test.wav at 44.1 and 48 kHz are the bytes of the
+tree before, under neon-dp and under ref.

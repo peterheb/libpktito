@@ -535,3 +535,28 @@ keep the name they were written under.
 The same check as neon-dp's, in this backend's k_quantize; its record, and
 the M4 Pro's numbers for both backends, are in neon-dp/CLIMB.md. kcheck's
 1,663 cases are ref's bits on the M4 Pro.
+
+## 2026-10-22 - the resampler as a kernel, four blocks a vector (hypothesis)
+
+core/resample.c's dot products ran in core, one chain of FMADDs an
+output, about 34 taps a phase from 44.1 kHz and 38 from 48. `pktito
+bench` on the first 20 s of test.wav resampled, its resample line (new,
+best of five), two rounds on the Pi 3B+: 47.8 ms at 44.1 kHz, 53.2 ms at
+48, about 5.8 cycles a tap at 1.4 GHz, the in-order A53 waiting on each
+FMADD.
+
+As a kernel, pk_k_resample (backend/neon-dp/CLIMB.md has its shape):
+four blocks a vector, the inputs four LD1s to a lane, an FMLA a step for
+four outputs, two phases at once against the FMLA's latency. A step of
+four loads and an FMLA, perhaps 6 cycles on the A53, is 1.5 cycles a tap:
+12 to 15 ms at 44.1 kHz. Kept if kcheck's resample cases are ref's bits
+and the line falls past its spread.
+
+Result, kept, short of the hypothesis: kcheck's resample cases ref's bits
+and check-c passing on the Pi 3B+. The line: 23.1 to 23.2 ms at 44.1 kHz
+(47.8 before), 30.5 at 48 (53.2), 2.1 and 1.7 times, not 4: the A53 runs
+in order, and each LD1 to a lane waits on the vector before it. At 48 kHz
+a block is three inputs, so LD3 would load a step's four lanes and the
+next two steps' with one instruction: a next hypothesis, which would buy
+little here, a minute of 48 kHz audio resampling in 0.09 s against the
+48 s of transcribing it.

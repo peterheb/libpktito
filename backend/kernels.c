@@ -125,3 +125,8 @@ void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count, con
                float *scratch) {
     k()->stft(out, os, x, count, f, scratch);
 }
+
+void pk_k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_t nw, const float *k_,
+                   const size_t *at, const uint32_t *first, const uint32_t *len) {
+    k()->resample(y, x, nb, orig, nw, k_, at, first, len);
+}

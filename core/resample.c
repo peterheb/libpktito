@@ -20,7 +20,7 @@
  * an int is a float32 tensor before it meets the float64 one.
  */
 #include "resample.h"
-#include "vmath.h"
+#include "kernels.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -36,6 +36,7 @@ struct pk_resampler {
     size_t   *at;             /* where phase j's taps start in k */
     float    *k;
     float    *hist;           /* the padded input from the next block's start */
+    float    *part;           /* a block's outputs, for one that a limit cuts short */
     size_t    have, cap;
     uint64_t  n_in, n_out;
 };
@@ -57,6 +58,7 @@ void pk_resampler_free(pk_resampler *r) {
     free(r->at);
     free(r->k);
     free(r->hist);
+    free(r->part);
     free(r);
 }
 
@@ -92,9 +94,15 @@ pk_resampler *pk_resampler_new(uint32_t from, uint32_t to) {
     /* |t| < 6 spans 12 orig / base input samples; two more each side */
     size_t per = (size_t)ceil(2.0 * PK_LOWPASS * r->orig / base) + 4;
     r->k = malloc((size_t)r->nw * per * sizeof *r->k);
-    r->cap = 2 * (size_t)r->taps + 4096;
+    /* room past the window for about 32 blocks, so that a refill gives the
+     * kernel whole groups of them (a backend runs eight at once): 4096
+     * floats at least, 65536 at most */
+    size_t room = 32 * (size_t)r->orig;
+    room = room < 4096 ? 4096 : room > 65536 ? 65536 : room;
+    r->cap = 2 * (size_t)r->taps + room;
     r->hist = malloc(r->cap * sizeof *r->hist);
-    if (!r->first || !r->len || !r->at || !r->k || !r->hist) {
+    r->part = malloc(r->nw * sizeof *r->part);
+    if (!r->first || !r->len || !r->at || !r->k || !r->hist || !r->part) {
         pk_resampler_free(r);
         return NULL;
     }
@@ -134,18 +142,23 @@ size_t pk_resample_room(const pk_resampler *r, size_t n) {
     return blocks > SIZE_MAX / r->nw ? SIZE_MAX : blocks * r->nw;
 }
 
-/* every block whose window is all in hist, at most `limit` outputs */
+/* Every block whose window is all in hist, at most `limit` outputs: the
+ * whole ones through the kernel (backend/kernels.h, pk_k_resample), which
+ * runs several blocks at a time in a backend's lanes, and a last one that
+ * `limit` cuts short into r->part, its outputs before the cut kept. */
 static size_t blocks(pk_resampler *r, float *out, uint64_t limit) {
-    size_t made = 0, start = 0;
-    while (r->have - start >= r->taps && r->n_out < limit) {
-        const float *x = r->hist + start;
-        for (uint32_t j = 0; j < r->nw && r->n_out < limit; j++) {
-            const float *k = r->k + r->at[j], *xj = x + r->first[j];
-            float acc = 0.0f;
-            for (uint32_t m = 0; m < r->len[j]; m++) acc = pk_fmaf(k[m], xj[m], acc);
-            out[made++] = acc;
-            r->n_out++;
-        }
+    size_t nb = r->have >= r->taps ? (r->have - r->taps) / r->orig + 1 : 0;
+    if (limit != UINT64_MAX && (uint64_t)nb * r->nw > limit - r->n_out)
+        nb = (size_t)((limit - r->n_out) / r->nw);
+    pk_k_resample(out, r->hist, (uint32_t)nb, r->orig, r->nw, r->k, r->at, r->first, r->len);
+    size_t made = nb * r->nw, start = nb * r->orig;
+    r->n_out += made;
+    if (r->n_out < limit && r->have - start >= r->taps) {
+        pk_k_resample(r->part, r->hist + start, 1, r->orig, r->nw, r->k, r->at, r->first, r->len);
+        const size_t keep = (size_t)(limit - r->n_out);   /* fewer than nw */
+        memcpy(out + made, r->part, keep * sizeof *out);
+        made += keep;
+        r->n_out += keep;
         start += r->orig;
     }
     memmove(r->hist, r->hist + start, (r->have - start) * sizeof *r->hist);

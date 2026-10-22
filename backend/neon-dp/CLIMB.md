@@ -317,3 +317,30 @@ interleaved old/new runs: neon-dp 0.498 and 0.512 s before, 0.505 and 0.520 s
 with the check; neon 1.073 and 1.111 s before, 1.103 and 1.122 s with it. The
 roughly 1-2% cost is kept at the boundary where a hostile model otherwise
 reaches undefined behaviour.
+
+## 2026-10-22 - the resampler as a kernel, four blocks a vector (hypothesis)
+
+core/resample.c's dot products ran in core, a chain of fused
+multiply-adds an output (FMADD on AArch64: core has the instruction),
+about 34 taps a phase from 44.1 kHz and 38 from 48. `pktito bench` on
+test.wav resampled, its resample line (new, best of five), three rounds
+on the M4 Pro: 9.2 to 10.0 ms at 44.1 kHz, 10.6 to 10.7 ms at 48, about
+1.3 cycles a tap: the out-of-order core runs neighbouring outputs'
+chains at once.
+
+As a kernel, pk_k_resample, a vector holds four consecutive blocks at
+the same phase (backend/neon serves neon and neon-dp alike): the tap
+broadcast, and the four inputs, orig floats apart, four LD1s to a lane;
+each lane's FMLA is the scalar chain's, so the bits are ref's. Two
+phases at once keep two chains in flight. The loads bound it, four a
+step for four outputs, three a cycle: about 0.35 cycles a tap, 3 ms.
+Kept if kcheck's resample cases are ref's bits and the line falls past
+its spread.
+
+Result, kept, short of the hypothesis: kcheck's 114 resample cases (1,777
+in all) are ref's bits on neon-dp and neon, and the VAD's probabilities and
+both transcripts of test.wav at 44.1 and 48 kHz the bytes of the tree
+before, under neon-dp and ref. The line, three rounds: 4.5 to 4.6 ms at
+44.1 kHz (9.2 to 10.0 before), 4.5 at 48 (10.6 to 10.7), 2.1 and 2.4
+times, not the 3 ms hoped for: the four lane loads of a step, each waiting
+on the vector before it, are the step.

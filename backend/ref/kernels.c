@@ -255,6 +255,18 @@ static void k_stft(float *out, size_t os, const float *const *x, uint32_t count,
         stft_one(out + w * os, x[w], f, scratch, scratch + f->n / 2);
 }
 
+static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_t nw, const float *k,
+                       const size_t *at, const uint32_t *first, const uint32_t *len) {
+    for (uint32_t b = 0; b < nb; b++)
+        for (uint32_t j = 0; j < nw; j++) {
+            const float *kj = k + at[j], *xj = x + (size_t)b * orig + first[j];
+            float acc = 0.0f;
+            for (uint32_t m = 0; m < len[j]; m++)
+                acc = pk_fmaf(kj[m], xj[m], acc);
+            y[(size_t)b * nw + j] = acc;
+        }
+}
+
 static const char *const needs[] = { NULL };
 
 const pk_kernels pk_kernels_ref = {
@@ -272,4 +284,5 @@ const pk_kernels pk_kernels_ref = {
     .conv3x3s2 = k_conv3x3s2,
     .lstm = k_lstm,
     .stft = k_stft,
+    .resample = k_resample,
 };

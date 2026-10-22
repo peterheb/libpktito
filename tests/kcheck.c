@@ -390,6 +390,52 @@ static void stft_cases(void) {
     }
 }
 
+/* ---------------------------------------------------------- resampling --- */
+
+/* nb blocks of a resampler with orig inputs and nw outputs a block: random
+ * taps, up to maxlen a phase (none, sometimes), at random places in a
+ * window of orig + 2 width inputs, as core/resample.c's are */
+static void resample_case(uint32_t orig, uint32_t nw, uint32_t maxlen, uint32_t nb) {
+    const uint32_t width = 1 + maxlen / 2, win = orig + 2 * width;
+    uint32_t *first = xmalloc(nw * 4), *len = xmalloc(nw * 4);
+    size_t *at = xmalloc(nw * sizeof *at), used = 0;
+    for (uint32_t j = 0; j < nw; j++) {
+        uint32_t l = rnd() % 11 ? rnd() % (maxlen + 1) : 0;
+        if (l > win) l = win;
+        uint32_t f = rnd() % (win - l + 1);
+        first[j] = f;
+        len[j] = l;
+        at[j] = used;
+        used += l;
+    }
+    float *k = xmalloc((used + 1) * 4), *x = xmalloc(((size_t)nb * orig + win) * 4);
+    for (size_t i = 0; i < used; i++) k[i] = frand() * 0.3f;
+    for (size_t i = 0; i < (size_t)nb * orig + win; i++) x[i] = awkward(1.0f);
+    float *y1 = xmalloc(((size_t)nb * nw + 1) * 4), *y2 = xmalloc(((size_t)nb * nw + 1) * 4);
+    kt->resample(y1, x, nb, orig, nw, k, at, first, len);
+    kr->resample(y2, x, nb, orig, nw, k, at, first, len);
+    same("resample", y1, y2, (size_t)nb * nw, 4);
+    xfree(first); xfree(len); xfree(at); xfree(k); xfree(x); xfree(y1); xfree(y2);
+}
+
+static void resample_cases(void) {
+    /* the rates the engine meets, reduced by their gcd: 44.1 and 22.05 kHz
+     * (441 in, 160 or 320 out), 48 and 32 kHz (3 and 2 to 1), 8 kHz (1 to
+     * 2), 11.025 kHz (441 to 640); then any */
+    static const uint32_t pairs[][3] = { { 441, 160, 36 }, { 441, 320, 36 }, { 3, 1, 40 }, { 2, 1, 26 },
+                                         { 1, 2, 26 }, { 441, 640, 26 } };
+    for (size_t p = 0; p < sizeof pairs / sizeof pairs[0]; p++)
+        for (uint32_t nb = 0; nb <= 19; nb += 1 + p % 3)
+            resample_case(pairs[p][0], pairs[p][1], pairs[p][2], nb);
+    for (int rep = 0; rep < 40; rep++) {
+        uint32_t orig = 1 + rnd() % 60;
+        uint32_t nw = 1 + rnd() % 9;
+        uint32_t maxlen = rnd() % 48;
+        uint32_t nb = rnd() % 26;
+        resample_case(orig, nw, maxlen, nb);
+    }
+}
+
 /* ----------------------------------------------------------- the model --- */
 
 static void model_cases(const char *path) {
@@ -450,6 +496,7 @@ static void run(const char *model) {
     rows_cases();
     conv_cases();
     stft_cases();
+    resample_cases();
     if (model)
         model_cases(model);
 }

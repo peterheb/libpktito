@@ -205,6 +205,23 @@ typedef struct {
 void pk_k_stft(float *out, size_t os, const float *const *x, uint32_t count,
                const pk_fft *f, float *scratch);
 
+/* --------------------------------------------------------- resampling --
+ *
+ * torchaudio's sinc resampler (core/resample.c), with the rates reduced by
+ * their gcd to orig in and nw out: the outputs come in blocks of nw, one
+ * for each phase j, and block b's input starts b * orig samples into x.
+ * Phase j is len[j] taps at k + at[j], over the input from its first[j]th
+ * sample:
+ *
+ *   acc = 0
+ *   for m = 0 .. len[j]-1:  acc = fmaf(k[at[j] + m], x[b*orig + first[j] + m], acc)
+ *   y[b*nw + j] = acc
+ *
+ * for blocks b < nb. A backend runs a block in each lane, at the same phase
+ * across the lanes, so that each lane runs the chain exactly. */
+void pk_k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_t nw, const float *k,
+                   const size_t *at, const uint32_t *first, const uint32_t *len);
+
 /* ------------------------------------------------------------ backends --
  *
  * Every function above is a call through the table of the backend in use.
@@ -239,6 +256,8 @@ typedef struct {
     void (*lstm)(float *h, float *c, const float *g, uint32_t H);
     void (*stft)(float *out, size_t os, const float *const *x, uint32_t count,
                  const pk_fft *f, float *scratch);
+    void (*resample)(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_t nw, const float *k,
+                     const size_t *at, const uint32_t *first, const uint32_t *len);
 } pk_kernels;
 
 extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_kernels_avx2,

@@ -798,6 +798,68 @@ static void k_stft(float *out, size_t os, const float *const *x, uint32_t count,
     }
 }
 
+/* four floats o apart, a lane each */
+static inline float32x4_t rs_lanes(const float *p, size_t o) {
+    float32x4_t v = vld1q_dup_f32(p);
+    v = vld1q_lane_f32(p + o, v, 1);
+    v = vld1q_lane_f32(p + 2 * o, v, 2);
+    return vld1q_lane_f32(p + 3 * o, v, 3);
+}
+
+/* The resampler's chains, four blocks at a time at each phase: a lane a
+ * block, the tap broadcast and the four inputs, orig floats apart, loaded
+ * to their lanes, each lane ref's chain (FMLA is fmaf). Two phases at once
+ * keep two chains in flight. The blocks that make no four go one at a
+ * time. */
+static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_t nw, const float *k,
+                       const size_t *at, const uint32_t *first, const uint32_t *len) {
+    uint32_t b = 0;
+    for (; b + 4 <= nb; b += 4) {
+        const float *xb = x + (size_t)b * orig;
+        float *yb = y + (size_t)b * nw;
+        uint32_t j = 0;
+        for (; j + 2 <= nw; j += 2) {
+            const float *k0 = k + at[j], *k1 = k + at[j + 1], *x0 = xb + first[j], *x1 = xb + first[j + 1];
+            const uint32_t n0 = len[j], n1 = len[j + 1], n = n0 < n1 ? n0 : n1;
+            float32x4_t a0 = vdupq_n_f32(0), a1 = vdupq_n_f32(0);
+            uint32_t m = 0;
+            for (; m < n; m++) {
+                a0 = vfmaq_n_f32(a0, rs_lanes(x0 + m, orig), k0[m]);
+                a1 = vfmaq_n_f32(a1, rs_lanes(x1 + m, orig), k1[m]);
+            }
+            for (uint32_t r = m; r < n0; r++)
+                a0 = vfmaq_n_f32(a0, rs_lanes(x0 + r, orig), k0[r]);
+            for (uint32_t r = m; r < n1; r++)
+                a1 = vfmaq_n_f32(a1, rs_lanes(x1 + r, orig), k1[r]);
+            float t0[4], t1[4];
+            vst1q_f32(t0, a0);
+            vst1q_f32(t1, a1);
+            for (int l = 0; l < 4; l++) {
+                yb[(size_t)l * nw + j] = t0[l];
+                yb[(size_t)l * nw + j + 1] = t1[l];
+            }
+        }
+        for (; j < nw; j++) {
+            const float *kj = k + at[j], *xj = xb + first[j];
+            float32x4_t a = vdupq_n_f32(0);
+            for (uint32_t m = 0; m < len[j]; m++)
+                a = vfmaq_n_f32(a, rs_lanes(xj + m, orig), kj[m]);
+            float t[4];
+            vst1q_f32(t, a);
+            for (int l = 0; l < 4; l++)
+                yb[(size_t)l * nw + j] = t[l];
+        }
+    }
+    for (; b < nb; b++)
+        for (uint32_t j = 0; j < nw; j++) {
+            const float *kj = k + at[j], *xj = x + (size_t)b * orig + first[j];
+            float acc = 0.0f;
+            for (uint32_t m = 0; m < len[j]; m++)
+                acc = fmaf(kj[m], xj[m], acc);
+            y[(size_t)b * nw + j] = acc;
+        }
+}
+
 #ifdef PK_NEON_DOTPROD
 static const char *const needs[] = { "asimddp", NULL };
 const pk_kernels pk_kernels_neon_dp = {
@@ -821,4 +883,5 @@ const pk_kernels pk_kernels_neon = {
     .conv3x3s2 = k_conv3x3s2,
     .lstm = k_lstm,
     .stft = k_stft,
+    .resample = k_resample,
 };

@@ -855,6 +855,61 @@ static void k_stft(float *out, size_t os, const float *const *x, uint32_t count,
     }
 }
 
+/* The resampler's chains, eight blocks at a time at each phase: a lane a
+ * block, the tap broadcast and the eight inputs, orig floats apart, one
+ * VGATHERDPS, each lane ref's chain. Two phases at once keep two chains in
+ * flight against the FMA's latency. The blocks that make no eight go one
+ * at a time, on the FMA instruction (fmaf, with -mfma). */
+static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_t nw, const float *k,
+                       const size_t *at, const uint32_t *first, const uint32_t *len) {
+    const __m256i lane = _mm256_mullo_epi32(_mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7), _mm256_set1_epi32((int)orig));
+    uint32_t b = 0;
+    for (; b + 8 <= nb; b += 8) {
+        const float *xb = x + (size_t)b * orig;
+        float *yb = y + (size_t)b * nw;
+        uint32_t j = 0;
+        for (; j + 2 <= nw; j += 2) {
+            const float *k0 = k + at[j], *k1 = k + at[j + 1], *x0 = xb + first[j], *x1 = xb + first[j + 1];
+            const uint32_t n0 = len[j], n1 = len[j + 1], n = n0 < n1 ? n0 : n1;
+            __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+            uint32_t m = 0;
+            for (; m < n; m++) {
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(k0[m]), _mm256_i32gather_ps(x0 + m, lane, 4), a0);
+                a1 = _mm256_fmadd_ps(_mm256_set1_ps(k1[m]), _mm256_i32gather_ps(x1 + m, lane, 4), a1);
+            }
+            for (uint32_t r = m; r < n0; r++)
+                a0 = _mm256_fmadd_ps(_mm256_set1_ps(k0[r]), _mm256_i32gather_ps(x0 + r, lane, 4), a0);
+            for (uint32_t r = m; r < n1; r++)
+                a1 = _mm256_fmadd_ps(_mm256_set1_ps(k1[r]), _mm256_i32gather_ps(x1 + r, lane, 4), a1);
+            float t0[8], t1[8];
+            _mm256_storeu_ps(t0, a0);
+            _mm256_storeu_ps(t1, a1);
+            for (int l = 0; l < 8; l++) {
+                yb[(size_t)l * nw + j] = t0[l];
+                yb[(size_t)l * nw + j + 1] = t1[l];
+            }
+        }
+        for (; j < nw; j++) {
+            const float *kj = k + at[j], *xj = xb + first[j];
+            __m256 a = _mm256_setzero_ps();
+            for (uint32_t m = 0; m < len[j]; m++)
+                a = _mm256_fmadd_ps(_mm256_set1_ps(kj[m]), _mm256_i32gather_ps(xj + m, lane, 4), a);
+            float t[8];
+            _mm256_storeu_ps(t, a);
+            for (int l = 0; l < 8; l++)
+                yb[(size_t)l * nw + j] = t[l];
+        }
+    }
+    for (; b < nb; b++)
+        for (uint32_t j = 0; j < nw; j++) {
+            const float *kj = k + at[j], *xj = x + (size_t)b * orig + first[j];
+            float acc = 0.0f;
+            for (uint32_t m = 0; m < len[j]; m++)
+                acc = fmaf(kj[m], xj[m], acc);
+            y[(size_t)b * nw + j] = acc;
+        }
+}
+
 #ifdef PK_AVX_VNNI
 #if defined(__AVXVNNI__)
 static const char *const needs[] = { "avx2", "fma", "avxvnni", NULL };
@@ -885,4 +940,5 @@ const pk_kernels pk_kernels_avx2 = {
     .conv3x3s2 = k_conv3x3s2,
     .lstm = k_lstm,
     .stft = k_stft,
+    .resample = k_resample,
 };
