@@ -13,6 +13,7 @@
 /tests/wavcheck
 /tests/wavcheck-san
 /tests/capcheck
+/tests/langcheck
 /tests/fftcheck
 /examples/transcribe
 __pycache__/

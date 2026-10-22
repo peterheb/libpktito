@@ -15,8 +15,9 @@
  *     detector's pauses: a pause is the gap between words' times, which the
  *     spec allows (4.2), TDT's durations making them;
  *   - the English rules (5.2: function words, phrase starters,
- *     abbreviations) only when the caller says the words are English; in
- *     the other languages, punctuation and pauses alone;
+ *     abbreviations) only for English words: the caller says so, or has
+ *     pk_language find it from the words (core/language.c); in the other
+ *     languages, punctuation and pauses alone;
  *   - always a track: a word, or a run of words whose times overlap, that
  *     no cue can hold (wider than two lines, or said over more than 7 s) is
  *     a cue of its own anyway, flagged PK_CUE_FORCED, its words whole, where
@@ -465,6 +466,10 @@ long pk_captions(const pk_capword *w, size_t count, int english, int64_t media_e
         !line2 || !chars || !flags || !tp || !tq)
         goto done;
 
+    if (english < 0) {                     /* the words' own language decides (core/language.c) */
+        const char *lang = pk_language(w, count);
+        english = lang && !strcmp(lang, "en");
+    }
     prepare(&g, english, media_end);
 
     /* the shortest path, from boundary 0 to n (the spec's 8.4) */

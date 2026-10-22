@@ -276,6 +276,19 @@ characters a second costs, and in English no cue or line ends on "the" or
 of a second cuts in mid-sentence ends in an ellipsis, "So I…", as the
 Netflix and DCMP style guides mark a pause: right whether the speaker
 trailed off, hesitated or broke off, which the times cannot tell apart.
+
+v3 writes 25 languages and does not say which it heard, so for its
+transcripts the English rules follow the words: `pk_language`
+(core/language.c) scores each language by how many of its commonest
+words the transcript uses, a word weighing more the fewer languages share
+it, and answers when one leads by half again. Its table, each language's
+100 commonest words, uses data derived from FLEURS (google/fleurs, CC BY
+4.0; tools/langwords.py counts it). On FLEURS's dev and test transcripts,
+which the table never saw, English is called English by mistake in none
+of the texts of 20 words or more, and English texts are found 99.6% of the
+time at 20 words, all of them from 50; on v3's own transcripts of FLEURS
+and LibriSpeech, all of them from 20 (`tests/langcheck --eval`). `--json`'s
+`meta` says the language too.
 The same function is the library's `pk_captions`, which the desktop app's
 subtitles come from too.
 

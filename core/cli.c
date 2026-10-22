@@ -41,7 +41,8 @@ static const char *usage =
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
     "                        a longer recording is cut at its silences\n"
     "      --json            chunks as JSON: start, end, text, every word's and every\n"
-    "                        token's time; and meta, the model and the audio's length\n"
+    "                        token's time; and meta, the model, the audio's length and\n"
+    "                        its language\n"
     "                        (and with -v, the run's times, backend and threads)\n"
     "      --stream          read FILE as it arrives (a pipe, a microphone) and print\n"
     "                        each stretch of speech as its pause ends it\n"
@@ -261,12 +262,14 @@ static void json_str(const char *s) {
     putchar('"');
 }
 
-/* --json's "meta": the model and how long the audio is, the same on every
- * machine and every run, so that a transcript compares byte for byte (as
- * check-c compares test.wav's); with -v, also what the -v line on stderr
- * says of the run. top: the whole run's, with the model and the machine,
- * or else one file's of several. */
-static void json_meta(const opts *o, const pk_model *m, int top, double audio_s, double vad_s, double asr_s) {
+/* --json's "meta": the model, the audio's length and its language, the same
+ * on every machine and every run, so that a transcript compares byte for
+ * byte (as check-c compares test.wav's); with -v, also what the -v line on
+ * stderr says of the run. top: the whole run's, with the model and the
+ * machine, or else one file's of several; a language for a file's, or for
+ * the run's of one file (lang NULL: none found). */
+static void json_meta(const opts *o, const pk_model *m, int top, double audio_s, double vad_s, double asr_s,
+                      int with_lang, const char *lang) {
     printf("{");
     if (top) {
         printf("\"model\": ");
@@ -274,6 +277,13 @@ static void json_meta(const opts *o, const pk_model *m, int top, double audio_s,
         printf(", ");
     }
     printf("\"audio\": %.3f", audio_s);
+    if (with_lang) {
+        printf(", \"language\": ");
+        if (lang)
+            json_str(lang);
+        else
+            printf("null");
+    }
     if (o->verbose) {
         printf(", \"vad\": %.3f, \"transcription\": %.3f", vad_s, asr_s);
         if (top) {
@@ -321,9 +331,28 @@ static void vtt_text(const char *t) {
         fputs(*t == '&' ? "&amp;" : *t == '<' ? "&lt;" : *t == '>' ? "&gt;" : (char[]){ *t, 0 }, stdout);
 }
 
-static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
+/* the words' texts as pointers, the buffer done moving */
+static void cap_texts(capwords *c) {
     for (size_t i = 0; i < c->n; i++)
         c->w[i].text = c->text + (uintptr_t)c->w[i].text;
+}
+
+/* A file's language, for --json's meta: the English model's, or what its
+ * words say (pk_language), NULL when they say too little. The words go. */
+static const char *file_language(const pk_model *m, capwords *c) {
+    const char *langs = pk_model_meta(m, "languages"), *lang = "en";
+    if (!langs || strcmp(langs, "en")) {
+        cap_texts(c);
+        lang = pk_language(c->w, c->n);
+    }
+    free(c->w);
+    free(c->text);
+    *c = (capwords){ 0 };
+    return lang;
+}
+
+static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
+    cap_texts(c);
     pk_cue *cue = malloc((c->n ? c->n : 1) * sizeof *cue);
     if (!cue)
         die("out of memory");
@@ -356,7 +385,7 @@ static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
 /* One file through the transcriber: its chunks, printed as -o asks. With
  * several files a line each, the file's name, a tab and its chunks' text. */
 static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, int many,
-                            double *audio_s, double *vad_total, double *asr_total) {
+                            double *audio_s, double *vad_total, double *asr_total, const char **lang) {
     size_t n;
     const int rate = pk_model_rate(m);
     float *x = read_audio(path, rate, &n, o);
@@ -402,6 +431,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
                 pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
                 printf("%s{\"word\": ", k ? ", " : "");
                 json_str(word);
+                cap_add(&words, word, 0, 0);
                 printf(", \"start\": %.2f, \"end\": %.2f}", start + wd[k].start * fs,
                        start + wd[k].end * fs);
             }
@@ -436,15 +466,18 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         }
         fflush(stdout);
     }
+    if (o->json)
+        *lang = file_language(m, &words);
     if (o->json && many) {
         printf("\n], \"meta\": ");
-        json_meta(o, m, 0, (double)n / rate, vad_s, *asr_total - asr_before);
+        json_meta(o, m, 0, (double)n / rate, vad_s, *asr_total - asr_before, 1, *lang);
         putchar('}');
     } else if (many)
         putchar('\n');
     if (o->subs) {
+        /* the English model's are English; the multilingual model's say */
         const char *langs = pk_model_meta(m, "languages");
-        cap_print(&words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en"), (int64_t)n * 1000 / rate);
+        cap_print(&words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en") ? 1 : -1, (int64_t)n * 1000 / rate);
     }
     *audio_s += (double)n / rate;
     *vad_total += vad_s;
@@ -461,14 +494,15 @@ static int transcribe(const opts *o, pk_model *m) {
     int many = o->nin > 1;
     if (o->json)
         printf(many ? "{\"files\": [" : "{\"chunks\": [");
+    const char *lang = NULL;
     for (int i = 0; i < o->nin; i++) {
         if (o->json && many)
             printf(i ? ",\n" : "\n");
-        transcribe_file(o, o->ins[i], m, a, many, &audio_s, &vad_s, &asr_s);
+        transcribe_file(o, o->ins[i], m, a, many, &audio_s, &vad_s, &asr_s, &lang);
     }
     if (o->json) {
         printf("\n],\n \"meta\": ");
-        json_meta(o, m, 1, audio_s, vad_s, asr_s);
+        json_meta(o, m, 1, audio_s, vad_s, asr_s, !many, lang);
         printf("}\n");
     }
     if (o->verbose)

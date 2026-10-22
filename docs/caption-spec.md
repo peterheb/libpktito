@@ -5,7 +5,7 @@
 **Default profile:** `en-web-v1` — prerecorded, adult English, verbatim, sequential pop-on captions  
 **Outputs:** A canonical cue list, diagnostics, and SRT/WebVTT exports
 
-**Changes in 1.1** (pktito): `to` after a semi-modal is no phrase starter (5.2, 5.3), and a cue cut at a required pause in mid-sentence shows an ellipsis (6.1, 10, 11.2).
+**Changes in 1.1** (pktito): `to` after a semi-modal is no phrase starter (5.2, 5.3), a cue cut at a required pause in mid-sentence shows an ellipsis (6.1, 10, 11.2), and the English rules (5.2) apply to a multilingual model's words when they are English by their commonest words (pktito's core/language.c).
 
 ## 1. Recommendation
 

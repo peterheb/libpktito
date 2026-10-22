@@ -92,7 +92,8 @@ endif
 
 INC := -Icore -Ibackend
 LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/decoder.c \
-           core/tokens.c core/asr.c core/vad.c core/segment.c core/wav.c core/resample.c core/captions.c
+           core/tokens.c core/asr.c core/vad.c core/segment.c core/wav.c core/resample.c core/captions.c \
+           core/language.c
 BACK_OBJ := $(foreach b,$(BACKENDS) ref,backend/$(b)/kernels.o) backend/kernels.o
 LIB_OBJ := $(LIB_SRC:.c=.o) $(BACK_OBJ)
 HAVE := $(foreach b,$(BACKENDS),-DPK_HAVE_$(subst -,_,$(b)))
@@ -133,7 +134,7 @@ models/%.pkf:
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
-TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck
+TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck
 BENCHES := tests/q8bench tests/gemmbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
@@ -146,9 +147,12 @@ tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/wavcheck: tests/wavcheck.c core/wav.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o $(LDLIBS)
-# capcheck includes core/captions.c itself, for its static parts
-tests/capcheck: tests/capcheck.c core/captions.c core/pktito.h
-	$(CC) $(CFLAGS) $(INC) -o $@ tests/capcheck.c $(LDLIBS)
+# capcheck includes core/captions.c itself, for its static parts, and
+# langcheck core/language.c
+tests/capcheck: tests/capcheck.c core/captions.c core/language.c core/langwords.h core/pktito.h
+	$(CC) $(CFLAGS) $(INC) -o $@ tests/capcheck.c core/language.c $(LDLIBS)
+tests/langcheck: tests/langcheck.c core/language.c core/langwords.h core/pktito.h
+	$(CC) $(CFLAGS) $(INC) -o $@ tests/langcheck.c $(LDLIBS)
 
 # The int8 product alone, for the kernel climbs, and not part of any check:
 # q8bench on one thread (backend/avx2/CLIMB.md's numbers), gemmbench over
@@ -177,6 +181,7 @@ check-c: pktito $(TESTS) examples/transcribe
 	./tests/pkfcheck $(TINY) tests/pkfcheck.wav
 	./tests/wavcheck tests/wavcheck.tmp
 	./tests/capcheck
+	./tests/langcheck
 	@./pktito -m $(TINY) --json tests/pkfcheck.wav > tests/pkfcheck.json \
 	  && ./pktito -m $(TINY) --srt tests/pkfcheck.wav > /dev/null \
 	  && ./pktito -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \

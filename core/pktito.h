@@ -224,12 +224,20 @@ enum {
  * two to a cue, each cue on from its first word until a little after its
  * last, and the words cut into cues where their pauses, punctuation and
  * timing read best - the cheapest of every possible cut by
- * core/captions.c's costs, not the first that fits. english adds the
+ * core/captions.c's costs, not the first that fits. english 1 adds the
  * English rules (no cue or line ends on "the" or "to"; an abbreviation's
- * period ends no sentence); 0 leaves punctuation and pauses. media_end is
+ * period ends no sentence); 0 leaves punctuation and pauses; -1 adds them
+ * if pk_language finds the words English, as for the multilingual model. media_end is
  * when the recording ends (ms), or 0 if unknown. out has room for n.
  * Returns the count of cues, or -1 if memory runs out (90 bytes a word,
  * given back before it returns). */
 long pk_captions(const pk_capword *w, size_t n, int english, int64_t media_end, pk_cue *out);
+
+/* The language of n words, one of the 25 the multilingual model writes (bg
+ * cs da de el en es et fi fr hr hu it lt lv mt nl pl pt ro ru sk sl sv uk),
+ * as its two-letter code: the language their commonest words are commonest
+ * in (core/language.c). NULL for words too few, or no language ahead by
+ * enough. Only the words' text is read. */
+const char *pk_language(const pk_capword *w, size_t n);
 
 #endif /* PKTITO_H */
