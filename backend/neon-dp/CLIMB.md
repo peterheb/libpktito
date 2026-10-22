@@ -435,3 +435,48 @@ Pi 5, four threads in all, run as before. check-c passes, and check-tsan
 on six threads, after one race it found: a worker in no job read the
 pool's quit flag with nothing ordering the read before pk_pool_free's
 write, which is now atomic.
+
+## 2026-10-22 - the GB10: frame passes in items of a few frames (hypothesis)
+
+After H1, `make PROFILE=1` at 20 threads against 10: quantize 115.9 ms
+against 55.6, q k v pos 88.0 against 59.5, feed-forward 200.0 against
+186.7, glu + depthwise 27.0 against 15.7, layer norms 12.4 against 3.3,
+conv 40.6 against 33.8, attention out 17.4 against 12.0; bench 0.588 s
+against 0.438.
+
+The quantize passes, the norms and the GLU cut their T frames into items
+of 16: at T 250 (test.wav's 20 s chunks) that is 16 items, so an A725
+that takes one ends the job, three X925 items late. In X925 item-times, a
+job of N items at 20 threads takes N / 13.3 and then the slowest A725's
+remaining item, near 3 when items are large; ten X925s take N / 10. Twenty
+threads win once N passes about 100 items, or items an eighth of the
+size.
+
+H2: a pass over T frames cuts them into at least eight items for each
+active thread, and at most 16 frames an item as now: 2 frames at 20
+threads (125 items), 4 at 10, 3 on the 12900HK's 14, 8 on the Pi 3's four.
+Predict on the GB10 at 20 threads: quantize 116 -> about 55 ms, the norms
+12 -> 4, glu + depthwise 27 -> 18, bench 0.58 -> about 0.50 s; at 10
+threads, and on the Pi 3, no move past the spread. The products' items are
+H3's.
+
+Result, rejected. check-c passes (the bits cannot move: each frame is
+quantized, normed and gated alone). `./pktito bench` against eab2f24,
+interleaved, three rounds: 20 threads 0.574-0.584 s against 0.563-0.591,
+10 threads 0.437-0.443 against 0.438-0.441. `make PROFILE=1` at 20
+threads: quantize 109.9 ms (115.9 in 16 items), the norms 12.3 (12.4),
+glu + depthwise 26.9 (27.0). In 125 items a quantize pass still takes
+twice its time on the ten X925s, about 190 us against 93, so its items'
+size was never what held it: the clocks hold at 3.9 and 2.8 GHz under
+either load (scaling_cur_freq, sampled through the runs, performance
+governor), and the likelier cost is the memory system's, every pass
+reading what the one before left in every worker's cache, from cores a
+cluster away. The products do not gain from the A725s either (feed-forward
+200 ms at 20 threads against 188 at 10).
+
+So on the GB10 the A725s slow every stage, where the 12900HK's E-cores
+speed its run by 3% (above, and backend/avx2/CLIMB.md) and the Core 3
+304's carry it (backend/avx2/CLIMB.md, 2026-10-20: one P-core alone at a
+quarter of its five cores' speed). A core's speed does not tell them
+apart: an A725 does 0.34 of an X925's work, an Alder Lake E-core 0.37 of a
+P-core's, a Darkmont E-core about 0.65 of a Cougar Cove's.
