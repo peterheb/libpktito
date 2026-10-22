@@ -9,6 +9,7 @@
 #include "mel.h"
 #include "os.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -158,17 +159,63 @@ double pk_prof_now(void) { return pk_os_now(); }
 
 /* ---------------------------------------------------------------- chunks --- */
 
-/* Silence kept on the far side of a chunk's first and last segment, at
- * most: a longer silence between two segments is not transcribed. */
+/* Silence kept on the far side of a speech chunk's first and last segment,
+ * at most: what lies further from the speech is a gap's. */
 #define PK_CHUNK_PAD 16000
 
-size_t pk_chunks(const pk_seg *s, size_t n, int64_t total, int64_t max_len, pk_seg *out) {
-    if (total <= max_len) {
+/* A gap between speech chunks is transcribed too, since Silero hears voices
+ * rather than words: singing, and speech over music, are not speech to it.
+ * But not in a piece shorter than PK_GAP_MIN, where the recognizer makes
+ * words of anything: of 28 one-second pieces of instrumental music, v2
+ * heard "Yeah." or the like in 27, and from 3 s up in none (README, "Long
+ * recordings"). Nor in a silent piece, which holds nothing to hear. */
+#define PK_GAP_MIN    48000      /* 3 s */
+/* a 32 ms frame with a mean square under this is silent: 50 dB below full
+ * scale, 18 dB under the quietest of 42 pieces of that music at its loudest */
+#define PK_GAP_SILENT 1e-5
+
+/* No 32 ms frame of x[0, n) louder than PK_GAP_SILENT. A sample that is not
+ * finite is read as 0, as pk_asr_run reads it. */
+static int silent(const float *x, int64_t n) {
+    for (int64_t i = 0; i < n; i += PK_VAD_SAMPLES) {
+        int64_t len = n - i < PK_VAD_SAMPLES ? n - i : PK_VAD_SAMPLES;
+        double ss = 0;
+        for (int64_t j = 0; j < len; j++) {
+            double v = isfinite(x[i + j]) ? x[i + j] : 0;
+            ss += v * v;
+        }
+        if (ss > PK_GAP_SILENT * (double)len)
+            return 0;
+    }
+    return 1;
+}
+
+/* The gap [a, b) as chunks from out[*k] on: the fewest pieces of at most
+ * max_len, all of a length, but those shorter than PK_GAP_MIN or silent.
+ * Silero cannot say where a gap's words are, so its cuts fall where they
+ * fall. */
+static void put_gap(const float *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out, size_t *k) {
+    if (b <= a)
+        return;
+    int64_t m = (b - a + max_len - 1) / max_len;
+    for (int64_t i = 0; i < m; i++) {
+        int64_t pa = a + (b - a) * i / m, pb = a + (b - a) * (i + 1) / m;
+        if (pb - pa >= PK_GAP_MIN && !silent(x + pa, pb - pa)) {
+            out[*k].start = pa;
+            out[*k].end = pb;
+            (*k)++;
+        }
+    }
+}
+
+size_t pk_chunks(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len, pk_seg *out) {
+    if (total <= max_len && n) {
         out[0].start = 0;
         out[0].end = total;
         return 1;
     }
     size_t k = 0;
+    int64_t done = 0;                           /* the end of the last speech chunk */
     for (size_t i = 0; i < n;) {
         /* the chunk opens half way into the silence before segment i */
         int64_t gap0 = i ? s[i].start - s[i - 1].end : s[i].start;
@@ -186,10 +233,13 @@ size_t pk_chunks(const pk_seg *s, size_t n, int64_t total, int64_t max_len, pk_s
             lead = s[i].end - max_len > lead ? s[i].end - max_len : lead;
             trail = lead + max_len < trail ? lead + max_len : trail;
         }
+        put_gap(x, done, lead, max_len, out, &k);
         out[k].start = lead;
         out[k].end = trail;
         k++;
+        done = trail;
         i = j > i ? j : i + 1;
     }
+    put_gap(x, done, total, max_len, out, &k);
     return k;
 }

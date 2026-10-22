@@ -10,8 +10,8 @@
  * read it (mean of the channels; another rate is brought to 16 kHz) and
  * transcribe the whole of it at once. A recording longer than --max-chunk
  * is first cut at its silences, which Silero's VAD finds, into chunks no
- * longer than that, each transcribed as a recording of its own
- * (pk_chunks in pktito.h).
+ * longer than that, each transcribed as a recording of its own, and its
+ * silence is left out (pk_chunks in pktito.h).
  */
 #include "pktito.h"
 #include "asr.h"
@@ -209,20 +209,19 @@ static float *read_audio(const char *path, int rate, size_t *n, const opts *o) {
     return x;
 }
 
-/* The recording's chunks: the whole of it when it fits, else its speech cut
- * at its silences (pk_chunks). */
+/* The recording's chunks (pk_chunks): the whole of it when it fits and has
+ * speech, else its speech cut at its silences, and what lies between that
+ * is neither silent nor too short to hear. */
 static pk_seg *chunks_of(const pk_model *m, const float *x, size_t n, double max_chunk,
                          size_t *nchunks, double *vad_s) {
     const int rate = pk_model_rate(m);
     const int64_t max_len = (int64_t)(max_chunk * rate);
     *vad_s = 0;
-    if ((int64_t)n <= max_len) {
+    *nchunks = 0;
+    if (!n) {
         pk_seg *c = malloc(sizeof *c);
         if (!c)
             die("out of memory");
-        c->start = 0;
-        c->end = (int64_t)n;
-        *nchunks = 1;
         return c;
     }
     double t0 = pk_os_now();
@@ -240,11 +239,14 @@ static pk_seg *chunks_of(const pk_model *m, const float *x, size_t n, double max
     pk_seg_defaults(&sp);
     sp.max_speech_s = max_chunk - 2 * sp.speech_pad_ms / 1000 - 0.1;
     size_t cap = 2 * frames + 1;
-    pk_seg *seg = malloc(cap * sizeof *seg), *c = malloc((cap + 1) * sizeof *c);
-    if (!seg || !c)
+    pk_seg *seg = malloc(cap * sizeof *seg);
+    if (!seg)
         die("out of memory");
     size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, cap);
-    *nchunks = pk_chunks(seg, ns, (int64_t)n, max_len, c);
+    pk_seg *c = malloc((2 * ns + 2 + n / (size_t)max_len) * sizeof *c);
+    if (!c)
+        die("out of memory");
+    *nchunks = pk_chunks(x, seg, ns, (int64_t)n, max_len, c);
     free(seg);
     free(probs);
     *vad_s = pk_os_now() - t0;

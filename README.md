@@ -230,9 +230,9 @@ so its work grows with the square of the length and its memory with the
 length. pktito cuts anything longer than `--max-chunk` at its silences: Silero's
 VAD finds the speech, segments longer than a chunk are split at their
 longest pause, and each cut falls half way into the silence between two
-segments (at most a second into it, so a long silence is skipped rather than
-transcribed). Over 12 LibriSpeech chapters stitched into recordings of 1.5 to
-5 minutes (`tools/corpus.py longform`, 45 minutes, 7,098 words):
+segments, at most a second into it. Over 12 LibriSpeech chapters stitched
+into recordings of 1.5 to 5 minutes (`tools/corpus.py longform`, 45 minutes,
+7,098 words):
 
 | `--max-chunk` | 10 s | 20 s | 30 s | 60 s | 120 s | whole |
 |---|---|---|---|---|---|---|
@@ -249,11 +249,54 @@ stretches. At 30 s it did not happen once over every speaker of test-clean
 at 3.1 tokens a second against a median of 5.3, and WER was 1.89% (v2) and
 2.27% (v3) over its 23,874 words.
 
+### Between the speech
+
+Silero hears voices, not words, and singing or speech over music is not
+speech to it: of a 4.6-minute song sung over a synthesizer it found 30 s. So
+what lies between the speech chunks is transcribed too, in the fewest pieces
+of at most `--max-chunk`, all of a length. Of that song v2 gives 458 words
+where it gave 118 with the gaps skipped, and NeMo 3.0's transcript of the
+whole of it has 453; v3 gains 308.
+
+Two kinds of piece are left out. A silent one - no 32 ms of it within 50 dB
+of full scale - holds nothing to hear; the quietest of the 42 half-minutes
+of music below is -32 dB in its loudest 32 ms. And a piece shorter than 3 s,
+of which the recognizer makes words out of anything, digital silence
+included. Random pieces of 7 instrumental tracks by Kevin MacLeod
+(incompetech.com, CC BY 4.0: Carefree, Investigations, Local Forecast -
+Elevator, Monkeys Spinning Monkeys, Sneaky Snitch, Volatile Reaction,
+Wallpaper; 18.9 minutes), 28 of each length, each transcribed whole by
+7251093, which heard any recording that fit in a chunk whole; how many came
+out with words:
+
+| piece | 1 s | 1.5 s | 2 s | 3 s | 4 s | 6 s | 9 s | 14 s | 20 s | 30 s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| v2 | 27 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 of 42 |
+| v3 | 12 | 5 | 3 | 1 | 1 | 2 | 0 | 0 | 2 | 0 of 42 |
+
+The 1 s pieces said "Yeah.", "Mm." or "Uh". Of 12 kinds of synthetic noise
+and hum, v2 heard words in 10 one-second pieces and in none from 1.5 s up;
+v3 in none but one, a sentence of Spanish out of 9 s of white noise at -70
+dB, which is silent now. v3 makes a phrase of music now and then ("And then
+we're not going to be able to do that.", over 23 s of Investigations), as
+NeMo's own v3 transcript of the whole of Sneaky Snitch has a sentence; a
+gap's words are kept as they come.
+
+A recording that fits in a chunk is one chunk if it has speech and a gap if
+it has none, so the VAD runs on it too: 8 ms of the 0.25 s a 30 s recording
+takes on the M4 Pro. Speech is cut as it was, and recordings of it barely
+change: no recording of the LibriSpeech sets above has a gap to transcribe,
+and 4.67 hours of conversational recordings gained 13 pieces, 84 s and one word
+between their speech chunks ("Seven.", v2), not one of which changed. The
+song costs what it holds: its transcription takes 2.14 s on the M4 Pro where
+it took 0.43, hearing 276 s rather than 52.
+
 ## Streaming
 
 `--stream` reads its input as it arrives and transcribes each stretch of
 speech when a pause of `--pause` ends it (VADIterator, Silero's streaming
-state machine). The pause is a trade between how soon a line appears and how
+state machine). Only what Silero calls speech: a live input's singing is not
+transcribed. The pause is a trade between how soon a line appears and how
 much the model hears at once. On the same long-form set:
 
 | `--pause` | 100 | 300 | 500 | 700 | 1000 | 1500 | 2000 ms |
@@ -342,7 +385,7 @@ pk_text(m, t, (size_t)n, text, sizeof text);      /* NeMo's transcript */
 pk_vad *v = pk_vad_new(m);                        /* Silero VAD, as vadito has it */
 pk_vad_probs(v, frames, n_frames, probs);
 size_t ns = pk_segments(probs, n_frames, 16000, n_samples, &sp, seg, cap);
-size_t nc = pk_chunks(seg, ns, n_samples, 30 * 16000, chunk);
+size_t nc = pk_chunks(samples, seg, ns, n_samples, 30 * 16000, chunk);
 
 pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */
 long nq = pk_captions(w, 2, 1, 0, cue);           /* 1: English; 0: the end unknown */
@@ -365,7 +408,7 @@ of the checkpoint, its licence and the attribution CC-BY-4.0 asks for, the
 VAD's source and licence, the converter's version and the recipe. `pktito
 info` prints it. The loader holds every extent, shape, type and value of the
 file to what the architecture and docs/MEMORY_SAFETY.md say before it forms
-a pointer, and tests/pkfcheck runs 29,104 malformed files at it.
+a pointer, and tests/pkfcheck's 29,186 cases run malformed files at it.
 
 `tools/pktito-tools convert` writes one; `info` lists one; `ref` runs the
 float64 reference on a WAV from either a `.nemo` or a `.pkf`; `tiny` writes

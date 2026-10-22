@@ -14,6 +14,7 @@
 /tests/wavcheck-san
 /tests/capcheck
 /tests/langcheck
+/tests/chunkcheck
 /tests/fftcheck
 /examples/transcribe
 __pycache__/

@@ -134,7 +134,7 @@ models/%.pkf:
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
-TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck
+TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck
 BENCHES := tests/q8bench tests/gemmbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
@@ -145,6 +145,8 @@ tests/mathcheck: tests/mathcheck.c core/vmath.h
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/mathcheck.c $(LDLIBS)
 tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
+tests/chunkcheck: tests/chunkcheck.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/chunkcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/wavcheck: tests/wavcheck.c core/wav.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o $(LDLIBS)
 # capcheck includes core/captions.c itself, for its static parts, and
@@ -182,6 +184,7 @@ check-c: pktito $(TESTS) examples/transcribe
 	./tests/wavcheck tests/wavcheck.tmp
 	./tests/capcheck
 	./tests/langcheck
+	./tests/chunkcheck
 	@./pktito -m $(TINY) --json tests/pkfcheck.wav > tests/pkfcheck.json \
 	  && ./pktito -m $(TINY) --srt tests/pkfcheck.wav > /dev/null \
 	  && ./pktito -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \

@@ -908,9 +908,10 @@ static void engine_cases(const pk_model *m, int deep) {
         pk_seg_defaults(&sp);
         sp.max_speech_s = 2.0;
         size_t cap = 2 * frames + 1;
-        pk_seg *seg = malloc(cap * sizeof *seg), *ch = malloc((cap + 1) * sizeof *ch);
+        pk_seg *seg = malloc(cap * sizeof *seg);
         size_t ns = pk_segments(probs, frames, 16000, (int64_t)(frames * PK_VAD_SAMPLES), &sp, seg, cap);
-        size_t nc = pk_chunks(seg, ns, (int64_t)(frames * PK_VAD_SAMPLES), 3 * 16000, ch);
+        pk_seg *ch = malloc((2 * ns + 2 + frames * PK_VAD_SAMPLES / (3 * 16000)) * sizeof *ch);
+        size_t nc = pk_chunks(x, seg, ns, (int64_t)(frames * PK_VAD_SAMPLES), 3 * 16000, ch);
         for (size_t i = 0; i < nc; i++) {
             g_cases++;
             if (ch[i].start < 0 || ch[i].end > (int64_t)(frames * PK_VAD_SAMPLES) || ch[i].end <= ch[i].start

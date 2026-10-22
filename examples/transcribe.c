@@ -57,12 +57,11 @@ int main(int argc, char **argv) {
         return 1;
 
     /* Silero's speech segments, then chunks of at most 30 s cut between
-     * them; a recording that fits is one chunk */
+     * them, the silence left out; a recording that fits is one chunk */
     size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
     float *padded = calloc(frames * PK_VAD_SAMPLES, sizeof *padded);
     float *probs = malloc(frames * sizeof *probs);
     pk_seg *seg = malloc((2 * frames + 1) * sizeof *seg);
-    pk_seg *chunk = malloc((2 * frames + 2) * sizeof *chunk);
     pk_vad *v = pk_vad_new(m);
     memcpy(padded, x, n * sizeof *x);
     pk_vad_probs(v, padded, frames, probs);
@@ -70,7 +69,8 @@ int main(int argc, char **argv) {
     pk_seg_defaults(&sp);
     sp.max_speech_s = 30 - 0.06 - 0.1;  /* a segment and Silero's 30 ms pads fit in 30 s, as ./pktito has it */
     size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
-    size_t nc = pk_chunks(seg, ns, (int64_t)n, 30 * (int64_t)rate, chunk);
+    pk_seg *chunk = malloc((2 * ns + 2 + n / (30 * (size_t)rate)) * sizeof *chunk);
+    size_t nc = pk_chunks(x, seg, ns, (int64_t)n, 30 * (int64_t)rate, chunk);
 
     /* each chunk through the transcriber, as NeMo would hear it as a file */
     pk_asr *a = pk_asr_new(m, 0);

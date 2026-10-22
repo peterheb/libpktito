@@ -16,7 +16,8 @@
  *   segments     pk_vad_probs,    Silero's per-frame speech probabilities, and
  *                pk_segments      get_speech_timestamps' segments from them
  *   chunks       pk_chunks        a long recording cut at its silences into
- *                                 pieces the encoder takes whole
+ *                                 pieces the encoder takes whole, its
+ *                                 silence left out
  *   captions     pk_captions      words with times to a subtitle track's cues
  *
  * A model is read-only once loaded and may be shared by any number of
@@ -180,17 +181,24 @@ int  pk_iter_step(pk_iter *it, float prob, int64_t *at);
 
 /* --------------------------------------------------------------- chunks --- */
 
-/* A recording of `total` samples cut into chunks of at most max_len
- * samples, from its speech segments (pk_segments' output, sorted, none
- * longer than max_len: pk_seg_params.max_speech_s sees to that). A cut
- * falls in the middle of the silence between two segments, so a chunk is
- * whole speech with half of the silence on either side of it, and every
- * chunk holds at least one segment: a long silence is not transcribed. A
- * recording that fits in max_len is one chunk, the whole of it, speech or
- * not, which is how NeMo hears a file. Returns the count; out has room for
- * n_speech + 1. */
-size_t pk_chunks(const pk_seg *speech, size_t n_speech, int64_t total, int64_t max_len,
-                 pk_seg *out);
+/* A recording, x of `total` samples, cut into the chunks to transcribe, of
+ * at most max_len samples each, from its speech segments (pk_segments'
+ * output, sorted, none longer than max_len: pk_seg_params.max_speech_s sees
+ * to that). A cut between two segments falls in the middle of the silence
+ * between them, at most a second into it, so a speech chunk is whole speech
+ * with up to a second of silence on either side. A recording that fits in
+ * max_len and has any speech is one chunk, the whole of it, which is how
+ * NeMo hears a file.
+ *
+ * What lies between the speech chunks is chunks too, since Silero hears
+ * voices, not words: singing and speech over music are not speech to it. A
+ * gap is cut into the fewest pieces of at most max_len, all of a length,
+ * and a piece is left out if it is silent (no 32 ms of it within 50 dB of
+ * full scale) or shorter than 3 s, where the recognizer makes words of
+ * anything. Returns the count; out has room for 2 n_speech + 2 + total /
+ * max_len. */
+size_t pk_chunks(const float *x, const pk_seg *speech, size_t n_speech, int64_t total,
+                 int64_t max_len, pk_seg *out);
 
 /* ------------------------------------------------------------- captions --- */
 
