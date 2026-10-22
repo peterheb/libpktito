@@ -39,6 +39,7 @@ static int64_t ordered(float f) {
     return i < 0 ? (int64_t)INT32_MIN - i : i;
 }
 
+#ifdef FP_FAST_FMAF
 /* pk_fmaf_soft(a, b, c) against fmaf, which with FP_FAST_FMAF is the
  * instruction: the same bits, or both a NaN */
 static int fma_differs(float a, float b, float c) {
@@ -57,6 +58,7 @@ static uint32_t next32(void) {                 /* xorshift64*, its high half */
     rng ^= rng >> 12, rng ^= rng << 25, rng ^= rng >> 27;
     return (uint32_t)((rng * 0x2545f4914f6cdd1du) >> 32);
 }
+#endif
 
 static void check(stat *s, float x, float got, double want) {
     float w = (float)want;
@@ -116,8 +118,9 @@ int main(int argc, char **argv) {
      * twice, through double or x87's long double, it goes to the even one. */
     const float fa = 0x1.001p+0f, fc = 0x1p-80f, fwant = 0x1.002002p+0f;
     const int twice_bad = pk_fmaf_soft(fa, fa, fc) != fwant || pk_fmaf_soft(-fa, fa, -fc) != -fwant || pk_fmaf(fa, fa, fc) != fwant;
-    uint64_t fma_n = 0, fma_diff = 0;
+    uint64_t fma_diff = 0;
 #ifdef FP_FAST_FMAF
+    uint64_t fma_n = 0;
     /* Random floats meet a midpoint once in about 2^29 triples, so the
      * midpoints are made: (1 + 2^-23)(1 - 2^-23) is 1 - 2^-46, so a * b with
      * a = (1 + 2^-23) 2^ea and b = (1 - 2^-23) 2^eb is 2^m less 2^(m-46),

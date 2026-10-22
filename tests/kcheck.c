@@ -185,7 +185,8 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
              n, T, qb, add, bias);
     same(msg, o1, o2, (size_t)T * os, 4);
     /* ref against the definition: the integer sums exact (in int64), each
-     * block's product and add one fmaf */
+     * block's product and add one fused multiply-add, rounded once
+     * (pk_fmaf: a libm's fmaf need not be) */
     if (!add && T <= 4)
         for (uint32_t t = 0; t < T; t++)
             for (uint32_t r = r0; r < rows; r++) {
@@ -194,7 +195,7 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
                     int64_t s = 0;
                     for (uint32_t k = blk * qb; k < (blk + 1) * qb; k++)
                         s += (int64_t)*wq_at(w, n, r, k) * a.q[(size_t)t * n + k];
-                    acc = fmaf((float)s, a.d[(size_t)t * (n / qb) + blk], acc);
+                    acc = pk_fmaf((float)s, a.d[(size_t)t * (n / qb) + blk], acc);
                 }
                 float v = acc * ws[r];
                 if (bias) v = v + b[r];
