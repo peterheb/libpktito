@@ -28,11 +28,14 @@ void pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items) {
     for (int i = 0; i < items; i++)
         fn(arg, i, 0);
 }
+void pk_pool_set_active(pk_pool *p, int k) { (void)p; (void)k; }
+int pk_pool_active(const pk_pool *p) { return p->n; }
 
 #else
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 
 /* Polls of the generation counter before a worker parks: about 50-200 us,
  * depending on the core, which outlasts the gaps between a layer's jobs. */
@@ -46,15 +49,27 @@ static inline void relax(void) {
 #endif
 }
 
+/* A job's number and its width, the threads it runs on, travel in one word,
+ * (number << 16) | width, so that one load tells a worker both that there
+ * is a new job and whether it is in it. Read from two words, a worker slow
+ * to look could pair one job's number with the next one's width, and count
+ * itself out of a job it was in or into one it was not. */
+#define PK_WIDTH_BITS 16
+
 struct pk_pool {
     int n;
     pthread_t *th;
     pthread_mutex_t mu;
-    pthread_cond_t cv;
-    _Atomic unsigned gen;          /* a new job when this changes */
+    pthread_cond_t cv;             /* a job, for the active workers asleep */
+    pthread_cond_t idle;           /* the inactive sleep here (pk_pool_set_active) */
+    _Atomic uint64_t gen;          /* the job: (number << PK_WIDTH_BITS) | width */
     _Atomic int next;              /* the next item to take */
     _Atomic int busy;              /* workers still in the job */
-    int items, quit;
+    _Atomic int active;            /* threads a job runs on, the caller one of them */
+    /* read outside the lock by a worker that is in no job, so that nothing
+     * else orders its read before pk_pool_free's write */
+    _Atomic int quit;
+    int items;
     pk_job_fn fn;
     void *arg;
 };
@@ -75,25 +90,35 @@ static void *worker(void *v) {
     pk_pool *p = w->p;
     int id = w->id;
     free(w);
-    unsigned seen = 0;
+    uint64_t seen = 0;
     for (;;) {
-        unsigned g;
+        uint64_t g;
         int spins = 0;
-        while ((g = atomic_load_explicit(&p->gen, memory_order_acquire)) == seen && spins < PK_SPIN) {
+        /* an inactive worker sleeps at once; an active one spins first */
+        while ((g = atomic_load_explicit(&p->gen, memory_order_acquire)) == seen && spins < PK_SPIN
+               && id < atomic_load_explicit(&p->active, memory_order_relaxed)) {
             relax();
             spins++;
         }
         if (g == seen) {
             pthread_mutex_lock(&p->mu);
-            while ((g = atomic_load_explicit(&p->gen, memory_order_acquire)) == seen && !p->quit)
-                pthread_cond_wait(&p->cv, &p->mu);
+            while (!atomic_load_explicit(&p->quit, memory_order_relaxed)) {
+                if (id >= atomic_load_explicit(&p->active, memory_order_relaxed))
+                    pthread_cond_wait(&p->idle, &p->mu);
+                else if ((g = atomic_load_explicit(&p->gen, memory_order_acquire)) == seen)
+                    pthread_cond_wait(&p->cv, &p->mu);
+                else
+                    break;
+            }
             pthread_mutex_unlock(&p->mu);
         }
-        if (p->quit)
+        if (atomic_load_explicit(&p->quit, memory_order_acquire))
             return NULL;
         seen = g;
-        take(p, id);
-        atomic_fetch_sub_explicit(&p->busy, 1, memory_order_release);
+        if (id < (int)(g & ((1u << PK_WIDTH_BITS) - 1))) {
+            take(p, id);
+            atomic_fetch_sub_explicit(&p->busy, 1, memory_order_release);
+        }
     }
 }
 
@@ -101,9 +126,11 @@ pk_pool *pk_pool_new(int threads) {
     pk_pool *p = calloc(1, sizeof *p);
     if (!p)
         return NULL;
-    p->n = threads < 1 ? 1 : threads;
+    p->n = threads < 1 ? 1 : threads >= 1 << PK_WIDTH_BITS ? (1 << PK_WIDTH_BITS) - 1 : threads;
+    atomic_init(&p->active, p->n);
     pthread_mutex_init(&p->mu, NULL);
     pthread_cond_init(&p->cv, NULL);
+    pthread_cond_init(&p->idle, NULL);
     p->th = calloc((size_t)p->n, sizeof *p->th);
     if (!p->th) {
         free(p);
@@ -125,12 +152,14 @@ void pk_pool_free(pk_pool *p) {
     if (!p)
         return;
     pthread_mutex_lock(&p->mu);
-    p->quit = 1;
-    atomic_fetch_add_explicit(&p->gen, 1, memory_order_release);
+    atomic_store_explicit(&p->quit, 1, memory_order_release);
+    atomic_fetch_add_explicit(&p->gen, (uint64_t)1 << PK_WIDTH_BITS, memory_order_release);
     pthread_cond_broadcast(&p->cv);
+    pthread_cond_broadcast(&p->idle);
     pthread_mutex_unlock(&p->mu);
     for (int i = 1; i < p->n; i++)
         pthread_join(p->th[i], NULL);
+    pthread_cond_destroy(&p->idle);
     pthread_cond_destroy(&p->cv);
     pthread_mutex_destroy(&p->mu);
     free(p->th);
@@ -139,8 +168,21 @@ void pk_pool_free(pk_pool *p) {
 
 int pk_pool_threads(const pk_pool *p) { return p->n; }
 
+void pk_pool_set_active(pk_pool *p, int k) {
+    k = k < 1 ? 1 : k > p->n ? p->n : k;
+    pthread_mutex_lock(&p->mu);
+    int was = atomic_load_explicit(&p->active, memory_order_relaxed);
+    atomic_store_explicit(&p->active, k, memory_order_relaxed);
+    if (k > was)
+        pthread_cond_broadcast(&p->idle);
+    pthread_mutex_unlock(&p->mu);
+}
+
+int pk_pool_active(const pk_pool *p) { return atomic_load_explicit(&p->active, memory_order_relaxed); }
+
 void pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items) {
-    if (p->n == 1 || items <= 1) {
+    const int k = atomic_load_explicit(&p->active, memory_order_relaxed);
+    if (k == 1 || items <= 1) {
         for (int i = 0; i < items; i++)
             fn(arg, i, 0);
         return;
@@ -149,9 +191,10 @@ void pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items) {
     p->arg = arg;
     p->items = items;
     atomic_store_explicit(&p->next, 0, memory_order_relaxed);
-    atomic_store_explicit(&p->busy, p->n - 1, memory_order_relaxed);
+    atomic_store_explicit(&p->busy, k - 1, memory_order_relaxed);
     pthread_mutex_lock(&p->mu);
-    atomic_fetch_add_explicit(&p->gen, 1, memory_order_release);
+    uint64_t number = (atomic_load_explicit(&p->gen, memory_order_relaxed) >> PK_WIDTH_BITS) + 1;
+    atomic_store_explicit(&p->gen, number << PK_WIDTH_BITS | (uint64_t)k, memory_order_release);
     pthread_cond_broadcast(&p->cv);
     pthread_mutex_unlock(&p->mu);
     take(p, 0);

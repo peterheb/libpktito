@@ -41,6 +41,13 @@
  * output for an 8192-token vocabulary is 5.2M multiply-adds a step */
 #define PK_DEC_SPLIT 2048
 
+/* The threads the search's products are split over. A product is a few
+ * microseconds' work a thread, and on every thread of a GB10's twenty it
+ * waited on all of them, ten Cortex-A725s among them: the decoder took 183
+ * ms of a run at 20 threads against 17 at 10, and 29 on one thread
+ * (backend/neon-dp/CLIMB.md, 2026-10-22). */
+#define PK_DEC_THREADS 4
+
 static void gemv(pk_asr *a, float *out, const pk_q8 *w, const float *bias, const float *x,
                  int add) {
     pk_act *act = &a->dact;
@@ -107,18 +114,11 @@ static int emit(pk_asr *a, uint32_t k, uint32_t t, uint32_t d) {
     return 0;
 }
 
-long pk_decode(pk_asr *a, uint32_t T) {
+/* TDT's greedy search, from frame 0 and the blank's prediction: the loop the
+ * file's header has */
+static long search(pk_asr *a, uint32_t T) {
     const pk_model *m = a->m;
-    const uint32_t D = m->d_model, P = m->pred_hidden, blank = m->blank;
-    a->ntoks = 0;
-    if (!T)
-        return 0;
-    /* the joint's encoder half, for every frame at once */
-    pk_quantize(a, &a->act, a->x, D, T, D, D);
-    pk_gemm(a, a->fproj, m->joint_hidden, &m->jenc, m->jenc_b, &a->act, 0);
-
-    memset(a->dh, 0, (size_t)m->pred_layers * P * sizeof *a->dh);
-    memset(a->dc, 0, (size_t)m->pred_layers * P * sizeof *a->dc);
+    const uint32_t blank = m->blank;
     predict(a, blank);
     uint32_t t = 0, last = UINT32_MAX, lasts = 0;
     while (t < T) {
@@ -142,4 +142,22 @@ long pk_decode(pk_asr *a, uint32_t T) {
             t++;
     }
     return (long)a->ntoks;
+}
+
+long pk_decode(pk_asr *a, uint32_t T) {
+    const pk_model *m = a->m;
+    const uint32_t D = m->d_model, P = m->pred_hidden;
+    a->ntoks = 0;
+    if (!T)
+        return 0;
+    /* the joint's encoder half, for every frame at once */
+    pk_quantize(a, &a->act, a->x, D, T, D, D);
+    pk_gemm(a, a->fproj, m->joint_hidden, &m->jenc, m->jenc_b, &a->act, 0);
+
+    memset(a->dh, 0, (size_t)m->pred_layers * P * sizeof *a->dh);
+    memset(a->dc, 0, (size_t)m->pred_layers * P * sizeof *a->dc);
+    pk_pool_set_active(a->pool, PK_DEC_THREADS);
+    long n = search(a, T);
+    pk_pool_set_active(a->pool, a->nth);
+    return n;
 }

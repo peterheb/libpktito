@@ -24,4 +24,12 @@ void     pk_pool_free(pk_pool *p);
 int      pk_pool_threads(const pk_pool *p);
 void     pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items);
 
+/* Jobs run on the first k threads, the caller one of them, until this is
+ * called again (k is held to [1, threads]); the others sleep, neither woken
+ * by a job nor waited for. For a run of jobs too small for every thread:
+ * pk_decode's products. Called between jobs, by the thread that runs them.
+ * pk_pool_active says how many a job runs on. */
+void     pk_pool_set_active(pk_pool *p, int k);
+int      pk_pool_active(const pk_pool *p);
+
 #endif /* PK_POOL_H */

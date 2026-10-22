@@ -106,7 +106,7 @@ static void gemm_item(void *arg, int i, int th) {
  * the bits do not depend on the split. */
 void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
              const pk_act *act, int add) {
-    const uint32_t step = 64, rb = (w->rows + step - 1) / step, nth = (uint32_t)a->nth;
+    const uint32_t step = 64, rb = (w->rows + step - 1) / step, nth = (uint32_t)pk_pool_active(a->pool);
     uint32_t best = 1, best_idle = UINT32_MAX, best_all = 1;
     for (uint32_t cc = 1; cc <= 8 && (cc == 1 || act->T / cc >= 48); cc++) {
         uint32_t items = rb * cc, all = (items + nth - 1) / nth * nth;

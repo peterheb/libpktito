@@ -379,3 +379,59 @@ The M4 Pro on the same tree and bench (in use while measured): 12 threads
 0.477-0.478 s, 125.5-125.8x; 8 0.457-0.458 s, 131.0-131.3x; 10 0.471 s;
 6 0.582 s. On the minute whole, 2026-10-20 above found the 12 a little the
 faster; in 30 s chunks the 8 are, by 4%.
+
+## 2026-10-22 - the GB10: the decoder on four threads (hypothesis)
+
+`make PROFILE=1`, the bench above, tree 9050abc, the stages that move:
+
+| stage | 10 threads | 20 threads |
+|---|---|---|
+| decoder | 16.9 ms | 183.2 ms |
+| quantize | 53.2 ms | 105.8 ms |
+| q k v pos | 59.1 ms | 84.1 ms |
+| glu + depthwise | 15.4 ms | 24.1 ms |
+| layer norms | 3.1 ms | 11.4 ms |
+| attention out | 11.9 ms | 16.5 ms |
+| feed-forward | 186.6 ms | 193.6 ms |
+| bench | 0.437 s | 0.662 s |
+
+The decoder's products past PK_DEC_SPLIT (2048 rows: the LSTM's 2560-row
+gate products, four a token) go to every worker: a job of a few
+microseconds for each of twenty, half of them A725s, and woken each time,
+since the joint's per-frame work between tokens outlasts their spin. With
+every decoder product on the calling thread (PK_DEC_SPLIT past them all,
+measured): the decoder 29.6 ms at 20 threads and 28.7 ms at 10, bench
+0.564 and 0.448 s. A product wants a few threads, not one and not twenty.
+
+H1: the pool takes a count of active threads, pk_pool_set_active. A job
+runs on the first k, the caller one of them; the others sleep on a
+condition variable of their own, neither woken by the job nor waited for.
+The job's width travels in the generation word with its number, so a
+worker learns from one load that there is a job and whether it is in it,
+and cannot pair one job's number with the next one's width (pinfer's
+core/pool.c does the same). pk_decode runs on four. Predict on the GB10:
+the decoder about 15 ms at both 10 and 20 threads, bench at 20 threads
+0.662 -> about 0.50 s and at 10 about 0.43 s, the encoder's stages as they
+were. The M4 Pro's twelve and the 12900HK's fourteen gain their decoder's
+share at most (16 ms there, 3%); the Pi 3's four do not move.
+
+Result, kept. `make PROFILE=1` on the GB10: the decoder 19.9-23.2 ms a run
+at 20 threads (183.2 before) and 17.3-20.3 at 10 (16.9); on two threads
+26-28 ms at either count, on eight 24-33 at 20 and 17-20 at 10, so four.
+`./pktito bench`, the trees built as they ship, interleaved, three rounds:
+
+| board, threads | before (9050abc) | after |
+|---|---|---|
+| GB10, 20 (its default) | 0.719-0.800 s | 0.573-0.580 s |
+| GB10, 10 (the X925s) | 0.435-0.438 s | 0.441-0.447 s |
+| 12900HK, 14 (its default) | 0.835-0.840 s | 0.835-0.838 s |
+| M4 Pro, 12 (its default; in use) | 0.515-0.529 s | 0.498-0.522 s |
+
+The GB10's default is 1.25-1.39x faster, short of the 0.50 s predicted:
+the other small jobs (quantize, the norms) still wait on the A725s. Ten
+X925s lose 1.5%, their decoder 3 ms slower on four of them than on ten.
+The 12900HK does not move, and the M4 Pro gains 1-3%; the Pi 3 and the
+Pi 5, four threads in all, run as before. check-c passes, and check-tsan
+on six threads, after one race it found: a worker in no job read the
+pool's quit flag with nothing ordering the read before pk_pool_free's
+write, which is now atomic.
