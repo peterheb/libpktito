@@ -520,3 +520,12 @@ measurement, and it takes either. The Pis are one kind and never time.
 check-c passes on the M4 Pro, the GB10 and the 12900HK; check-tsan now
 also runs the default threads, which on the M4 Pro switch the pool between
 twelve and eight as the first recording is timed, with no race.
+
+The Snapdragon 7c (armlet: two Cortex-A76, six A55, Windows 11), through
+the app's Arm64 build of eb3433a, `--transcribe` on test.wav: the default
+keeps all eight, 6.17-6.56 s, its layers timed against the A76s'. With the
+process held to the A76s (affinity 0xC0) it takes 7.95-8.70 s, to the A55s
+14.4 s, so eight is the right choice; Windows names the A76s
+(EfficiencyClass 1, the A55s 0). pinfer's 1.7-2.4x on the A76s is a decode
+of matrix-vector products; the encoder's matrix products keep the A55s
+busy enough to pay. Each transcript is the x64 build's, byte for byte.
