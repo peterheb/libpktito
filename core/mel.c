@@ -62,7 +62,7 @@ static void frames_item(void *arg, int i, int th) {
             const float *pb = p + m->mel_lo[b];
             float acc = 0;
             for (uint32_t k = 0; k < m->mel_n[b]; k++)
-                acc = fmaf(fb[k], pb[k], acc);
+                acc = pk_fmaf(fb[k], pb[k], acc);
             o[b] = pk_logf(acc + m->log_guard);
         }
     }

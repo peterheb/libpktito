@@ -192,7 +192,7 @@ static void block(pk_vad *v, const float *x, uint32_t T, float *probs) {
         pk_k_lstm(v->h, v->c, g, PK_VAD_HIDDEN);
         float acc = 0;                            /* the bias last, as pk_k_gemm_f32's */
         for (uint32_t j = 0; j < PK_VAD_HIDDEN; j++)
-            acc = fmaf(b->hw[j], v->h[j] > 0 ? v->h[j] : 0, acc);
+            acc = pk_fmaf(b->hw[j], v->h[j] > 0 ? v->h[j] : 0, acc);
         probs[f] = pk_sigmoidf(acc + b->hb[0]);
     }
 }

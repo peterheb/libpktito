@@ -7,8 +7,10 @@
  * runs them: outputs innermost wherever an output is a chain, so that the
  * inner loop is what one vector of lanes does in one instruction.
  *
- * Built for x86 it has no -mfma (it is the one that runs anywhere), so each
- * fmaf is a call into libm. That is the price of being the definition.
+ * Built for x86 it has no -mfma (it is the one that runs anywhere), so its
+ * fused multiply-adds are core/vmath.h's pk_fmaf_soft, a dozen double
+ * operations each where a tuned backend has one instruction. That is the
+ * price of being the definition.
  */
 #include "kernels.h"
 #include "pkf.h"
@@ -64,7 +66,7 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
                 int32_t s = 0;
                 for (uint32_t k = b * qb; k < (b + 1) * qb; k++)
                     s += wq(w, n, r, k) * q[k];
-                acc = fmaf((float)s, d[b], acc);
+                acc = pk_fmaf((float)s, d[b], acc);
             }
             float v = acc * ws[r];
             if (bias)
@@ -85,7 +87,7 @@ static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint3
             const float *wp = w + (size_t)p * ld * 16, *xt = x + t * xs;
             float acc[16] = { 0 };
             for (uint32_t k = 0; k < n; k++)
-                for (int i = 0; i < 16; i++) acc[i] = fmaf(wp[16 * k + i], xt[k], acc[i]);
+                for (int i = 0; i < 16; i++) acc[i] = pk_fmaf(wp[16 * k + i], xt[k], acc[i]);
             for (int i = 0; i < 16; i++) {
                 float v = acc[i] + (bias ? bias[t * bs + 16 * p + i] : 0.0f);
                 out[t * os + 16 * p + i] = relu ? (v > 0 ? v : 0) : v;
@@ -153,7 +155,7 @@ static void k_dwconv(float *out, size_t os, const float *x, size_t xs, uint32_t 
             for (uint32_t j = 0; j < K; j++) {
                 int64_t s = (int64_t)t + j - K / 2;
                 if (s >= 0 && s < T)
-                    acc = fmaf(w[(size_t)c * K + j], x[(size_t)s * xs + c], acc);
+                    acc = pk_fmaf(w[(size_t)c * K + j], x[(size_t)s * xs + c], acc);
             }
             float v = acc + b[c];
             out[(size_t)t * os + c] = v * pk_sigmoidf(v);
@@ -177,7 +179,7 @@ static void k_conv3x3s2(float *out, const float *in, uint32_t r0, uint32_t Ti, u
                         if (fi < 0 || fi >= Fi)
                             continue;
                         float v = in[((size_t)(ti - r0) * Fi + (size_t)fi) * cin + (depthwise ? c : 0)];
-                        acc = fmaf(w[(size_t)c * 9 + 3 * di + dj], v, acc);
+                        acc = pk_fmaf(w[(size_t)c * 9 + 3 * di + dj], v, acc);
                     }
                 }
                 float v = acc + b[c];

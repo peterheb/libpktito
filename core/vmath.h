@@ -1,4 +1,4 @@
-/* exp, sigmoid and tanh: the definition every backend computes.
+/* fma, exp, sigmoid and tanh: the definition every backend computes.
  *
  * These are vadito's (core/vmath.h there), and with pk_sincos below they
  * are the whole of pktito's transcendental mathematics: SiLU and GLU's
@@ -34,6 +34,58 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
+
+/* a * b + c rounded once, as IEEE 754's fusedMultiplyAdd and every FMA
+ * instruction compute it.
+ *
+ * The product of two floats is exact in a double (48 significant bits of
+ * 53), so only the sum rounds, s to nearest in double and then to float.
+ * That goes wrong only where s lands on a midpoint between two floats that
+ * the exact sum was not on (tests/mathcheck has a case): the midpoints are
+ * doubles themselves and rounding keeps order, so an s that is no midpoint
+ * is on the exact sum's side of every one. Among the floats' normals a
+ * midpoint is a double whose low 29 bits are 1 and then zeros, one test;
+ * among their subnormals it is another bit, and those, rare, go the long
+ * way too. There the sum is rounded to odd, to whichever of the two doubles
+ * around the exact sum has its last bit set when the sum is not a double,
+ * and the rounding to float that follows is the exact sum's, a double having
+ * more than twice a float's precision (Boldo and Melquiond, "Emulation of
+ * FMA and correctly rounded sums: proved algorithms using rounding to odd",
+ * 2008); TwoSum gives the sum's error exactly, and a NaN or an infinity
+ * skips it, as the exact sum cannot overflow a double. The short way costs
+ * 2.55 ns in a chain on a 12900HK, glibc's own fmaf 2.38 without the FMA
+ * instruction and 0.79 with it; always the long way, 4.98. */
+static inline float pk_fmaf_soft(float a, float b, float c) {
+    double p = (double)a * b, s = p + c;
+    uint64_t u;
+    memcpy(&u, &s, sizeof u);
+    const uint64_t mag = u & 0x7fffffffffffffffu;
+    if ((u & 0x1fffffffu) != 0x10000000u && (mag >= 0x3810000000000000u || mag == 0))   /* |s| >= 2^-126 or 0 */
+        return (float)s;
+    double v = s - p, e = (p - (s - v)) + (c - v);      /* s + e is p + c, exactly */
+    if (e != 0 && !(u & 1) && (u >> 52 & 0x7ff) != 0x7ff) {
+        u += (e > 0) == (s > 0) ? 1 : UINT64_MAX;       /* toward the exact sum */
+        memcpy(&s, &u, sizeof s);
+    }
+    return (float)s;
+}
+
+/* Where the build has the instruction (every AArch64, and x86 built with
+ * -mfma, as the tuned backends are), FP_FAST_FMAF says so and fmaf is that
+ * instruction. Elsewhere fmaf is a call into libm, and not every libm rounds
+ * it once: mingw-w64 13's with msvcrt rounds twice, which took pk_expf to 2
+ * ulp and 3.96% of its results off the rounded value (0.67% with one
+ * rounding) and moved four word times in each model's transcript by a frame
+ * (tests/mathcheck and the --json transcripts of a build with it,
+ * 2026-10-22). So without the instruction it is pk_fmaf_soft, whose bits
+ * are the instruction's on any C11 compiler. */
+static inline float pk_fmaf(float a, float b, float c) {
+#ifdef FP_FAST_FMAF
+    return fmaf(a, b, c);
+#else
+    return pk_fmaf_soft(a, b, c);
+#endif
+}
 
 /* x = n ln2 + r. ln2 is split in two so that n * ln2 is exact to well past
  * float: HI is ln2 rounded to float, LO the rest. LOG2E is 1/ln2 rounded. */
@@ -79,15 +131,15 @@ static inline float pk_pow2i(int32_t n) {
 static inline float pk_expf(float x) {
     x = fminf(fmaxf(x, PK_EXP_LO), PK_EXP_HI);      /* and a NaN becomes PK_EXP_LO */
     float n = rintf(x * PK_LOG2E);
-    float r = fmaf(n, -PK_LN2_HI, x);
-    r = fmaf(n, -PK_LN2_LO, r);
+    float r = pk_fmaf(n, -PK_LN2_HI, x);
+    r = pk_fmaf(n, -PK_LN2_LO, r);
     float p = PK_EXP_C6;
-    p = fmaf(p, r, PK_EXP_C5);
-    p = fmaf(p, r, PK_EXP_C4);
-    p = fmaf(p, r, PK_EXP_C3);
-    p = fmaf(p, r, PK_EXP_C2);
-    p = fmaf(p, r, 1.0f);
-    p = fmaf(p, r, 1.0f);
+    p = pk_fmaf(p, r, PK_EXP_C5);
+    p = pk_fmaf(p, r, PK_EXP_C4);
+    p = pk_fmaf(p, r, PK_EXP_C3);
+    p = pk_fmaf(p, r, PK_EXP_C2);
+    p = pk_fmaf(p, r, 1.0f);
+    p = pk_fmaf(p, r, 1.0f);
     return p * pk_pow2i((int32_t)n);
 }
 
@@ -100,11 +152,11 @@ static inline float pk_tanhf(float x) {
     if (a < PK_TANH_X0) {
         float x2 = x * x;
         float p = PK_TANH_T4;
-        p = fmaf(p, x2, PK_TANH_T3);
-        p = fmaf(p, x2, PK_TANH_T2);
-        p = fmaf(p, x2, PK_TANH_T1);
-        p = fmaf(p, x2, PK_TANH_T0);
-        return fmaf(x * x2, p, x);
+        p = pk_fmaf(p, x2, PK_TANH_T3);
+        p = pk_fmaf(p, x2, PK_TANH_T2);
+        p = pk_fmaf(p, x2, PK_TANH_T1);
+        p = pk_fmaf(p, x2, PK_TANH_T0);
+        return pk_fmaf(x * x2, p, x);
     }
     float e = pk_expf(2.0f * a);
     return copysignf(1.0f - 2.0f / (e + 1.0f), x);

@@ -20,6 +20,7 @@
  * an int is a float32 tensor before it meets the float64 one.
  */
 #include "resample.h"
+#include "vmath.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -141,7 +142,7 @@ static size_t blocks(pk_resampler *r, float *out, uint64_t limit) {
         for (uint32_t j = 0; j < r->nw && r->n_out < limit; j++) {
             const float *k = r->k + r->at[j], *xj = x + r->first[j];
             float acc = 0.0f;
-            for (uint32_t m = 0; m < r->len[j]; m++) acc = fmaf(k[m], xj[m], acc);
+            for (uint32_t m = 0; m < r->len[j]; m++) acc = pk_fmaf(k[m], xj[m], acc);
             out[made++] = acc;
             r->n_out++;
         }
