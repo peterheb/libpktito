@@ -344,3 +344,38 @@ before, under neon-dp and ref. The line, three rounds: 4.5 to 4.6 ms at
 44.1 kHz (9.2 to 10.0 before), 4.5 at 48 (10.6 to 10.7), 2.1 and 2.4
 times, not the 3 ms hoped for: the four lane loads of a step, each waiting
 on the vector before it, are the step.
+
+## 2026-10-22 - the GB10's little cores (a measurement)
+
+NVIDIA GB10 (a DGX Spark): 10 Cortex-X925 at 3.9 GHz (CPUs 5-9 and 15-19)
+and 10 Cortex-A725 at 2.8 GHz (CPUs 0-4 and 10-14), Ubuntu 24.04, kernel
+7.0.0-1019-nvidia, GCC 13.3, the Makefile's flags. Tree 3626bc0. `./pktito
+bench` on test.wav in its default 30 s chunks (three), best of five; a vLLM
+worker resident and idle, load 0.13. check-c passes; the backend picked is
+neon-dp.
+
+| threads | on | best | real time |
+|---|---|---|---|
+| 20, the default (a core of every kind each) | any | 0.711-0.719 s | 83.4-84.3x |
+| 16 | any | 0.896 s | 67.0x |
+| 12 | any | 0.645 s | 93.0x |
+| 10 | any | 0.442 s | 135.8x |
+| 8 | any | 0.497 s | 120.7x |
+| 5 | any | 0.715 s | 84.0x |
+| 10 | the X925s (taskset) | 0.437 s | 137.4x |
+| 8 | the X925s | 0.474 s | 126.7x |
+| 5 | the X925s | 0.688 s | 87.2x |
+| 10 | the A725s | 1.267 s | 47.4x |
+
+The default gives up 1.6x. Ten threads, unpinned, land on the X925s and
+run as fast as pinned there. An A725 does a third of an X925's work here
+(47.4x against 137.4x, ten of each), where the kernel's cpu_capacity has
+718 against 997. The pool deals its items as they are taken, but pk_gemm
+cuts a product into whole rounds for equal threads, 16 to 48 items: an
+A725's last item holds the job while the X925s wait. A share in proportion
+to each core's speed would have the twenty make up to 137.4 + 47.4 = 185x.
+
+The M4 Pro on the same tree and bench (in use while measured): 12 threads
+0.477-0.478 s, 125.5-125.8x; 8 0.457-0.458 s, 131.0-131.3x; 10 0.471 s;
+6 0.582 s. On the minute whole, 2026-10-20 above found the 12 a little the
+faster; in 30 s chunks the 8 are, by 4%.

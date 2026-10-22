@@ -468,3 +468,26 @@ ms at 48 (85.5 to 85.6), 17 and 20 times, inside the gather's 4 to 5 ms;
 the transcription's 0.83 s as it was. On the M4, the VAD's probabilities
 and both transcripts of test.wav at 44.1 and 48 kHz are the bytes of the
 tree before, under neon-dp and under ref.
+
+## 2026-10-22 - the E-cores' share (a measurement)
+
+The 12900HK as above, Ubuntu 26.04, kernel 7.0.0-38, GCC 15.2. Tree
+3626bc0. `./pktito bench` on test.wav in its default 30 s chunks (three),
+best of five, load 0.00; backend avx2-vnni.
+
+| threads | on | best | real time |
+|---|---|---|---|
+| 14, the default (a core of every kind each) | any | 0.836-0.839 s | 71.5-71.8x |
+| 20 | any | 0.912 s | 65.8x |
+| 12 | any | 0.888 s | 67.5x |
+| 8 | any | 1.050 s | 57.2x |
+| 6 | any | 0.867 s | 69.2x |
+| 12 | the P-cores, CPUs 0-11 (taskset) | 0.860 s | 69.8x |
+| 6 | the P-cores | 0.864 s | 69.5x |
+| 8 | the E-cores, CPUs 12-19 | 1.772 s | 33.9x |
+
+The default is still the fastest here, but by 3% over the P-cores alone,
+where the eight E-cores alone do half their work (33.9x against 69.5x): a
+share in proportion to each core's speed would make up to 103x. The GB10
+loses far more to the same dealing (backend/neon-dp/CLIMB.md, the same
+date).
