@@ -375,7 +375,7 @@ static void random_tracks(void) {
         const int64_t media_end = rnd(3) ? 0 : at + rnd(2000);
         long nc = pk_captions(w, (size_t)n, english, media_end, c);
         make(&t, w, n, english, media_end);
-        path best;
+        path best = { 0 };
         if (!oracle(&t, n, &best)) {
             CHECK(0, "run %d: the oracle found no path", run);
             continue;
