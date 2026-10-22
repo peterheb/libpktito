@@ -74,11 +74,12 @@ static long sysfs_long(long cpu, const char *what) {
 }
 #endif
 
-/* One thread a physical core, of every kind. A chip with two kinds of core
- * (Intel's P and E, ARM's big and LITTLE, Apple's performance and
- * efficiency) runs the encoder fastest on all of them: the pool deals each
- * pass's items from a counter, so a slower core takes fewer, and on a chip
- * whose fast kind is a minority the slow cores are most of its speed. The
+/* One thread a physical core, of every kind. On a chip with two kinds of
+ * core (Intel's P and E, ARM's big and LITTLE, Apple's performance and
+ * efficiency) the slow kind can be most of its speed, and that is where the
+ * pool starts; a transcriber then times whether the fast kind alone runs
+ * the encoder faster (pk_os_fast_cores, and encoder.c's layers), as on a
+ * GB10, whose ten X925s beat its twenty cores by a third. The
  * minute whole (`pktito bench --max-chunk 60`), 2026-10-20: an Intel Core 3
  * 304 (1 P + 4 E) 5.02 s on its P-core, 1.39 s on all five; an i9-12900HK
  * (6 P + 8 E) 0.960 s on its P-cores, 0.906 s on all 14, though 8, 16 and
