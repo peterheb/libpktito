@@ -560,3 +560,17 @@ a block is three inputs, so LD3 would load a step's four lanes and the
 next two steps' with one instruction: a next hypothesis, which would buy
 little here, a minute of 48 kHz audio resampling in 0.09 s against the
 48 s of transcribing it.
+
+## 2026-10-23 - the RK3399 keeps its six cores, and should
+
+The Rock Pi 4B (RK3399: two Cortex-A72 at 1.8 GHz, four A53 at 1.4 GHz;
+Ubuntu 20.04, kernel 4.4, gcc 9.4), pktito 4f791bb, its first run there:
+check-c passes, kcheck's 1,777 neon cases ref's bits (neon-dp skipped,
+no asimddp). `pktito bench` on test.wav with v2, best of five: the default
+keeps all six, 33.6 s (1.8x real time), and -t 6 takes 31.2 s. Held to the
+A72s (taskset 4,5, -t 2) it takes 51.5 s, to the A53s (taskset 0-3, -t 4)
+57.7 s, so six is the right choice, by 1.6 times over the A72s, as on the
+Snapdragon 7c (neon-dp/CLIMB.md). The board ran hot: 75.6 °C before the
+held runs, 87.5 to 90.0 °C after them (thermal_zone0), so each figure is
+the hot board's; the A72s' would close the gap only if their clock was
+held down by more than a third.
