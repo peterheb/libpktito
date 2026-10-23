@@ -66,7 +66,11 @@ BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(
 # (backend/kernels.h), and that holds only if no compiler fuses a multiply
 # and an add that the code wrote apart: a contraction gcc makes on one target
 # and not another would round differently there. Fusion is spelt out, with
-# fmaf, where it is meant.
+# fmaf, where it is meant. -fno-math-errno makes sqrtf and sqrt the CPU's
+# square root, the same correctly rounded bits, rather than a call into
+# libm for errno's sake: glibc 2.43's sqrtf is a GLIBC_2.43 symbol, and with
+# it gone a build on Ubuntu 26.04 needs GLIBC_2.34 (check-c there, v2 and v3
+# transcripts unchanged).
 # Windows builds under MSYS2 (UCRT64) or another MinGW-w64: pthreads from
 # winpthreads, linked in, so that pktito.exe runs outside the shell it was
 # built in with nothing beside it; and MinGW's own printf, since a
@@ -81,7 +85,7 @@ else
   PLATFLAGS := -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 endif
 OPT     ?= -O3
-CFLAGS  ?= $(OPT) $(TUNE) -std=c11 -ffp-contract=off -Wall -Wextra -Wpedantic
+CFLAGS  ?= $(OPT) $(TUNE) -std=c11 -ffp-contract=off -fno-math-errno -Wall -Wextra -Wpedantic
 LDLIBS  ?= -lm -lpthread $(PLATLIBS)
 
 # make PROFILE=1: `pktito bench` also prints what each stage costs. Timing a
