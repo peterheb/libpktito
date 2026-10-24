@@ -529,3 +529,50 @@ process held to the A76s (affinity 0xC0) it takes 7.95-8.70 s, to the A55s
 (EfficiencyClass 1, the A55s 0). pinfer's 1.7-2.4x on the A76s is a decode
 of matrix-vector products; the encoder's matrix products keep the A55s
 busy enough to pay. Each transcript is the x64 build's, byte for byte.
+
+## 2026-10-24 - the int8 product on I8MM's SMMLA (hypothesis)
+
+ARMv8.6's I8MM (optional from 8.2) adds SMMLA: a 2x8 matrix of signed
+bytes by another's transpose into a 2x2 of exact int32 sums, 32 MACs an
+instruction where SDOT's lane form does 16. Neoverse V1, V2 and V3
+(Graviton 3, 4 and 5), the X2 and later X cores with the A710 and later
+(the GB10's X925 and A725), and Apple's M2 and later have it; the A76 (Pi
+5) and the M1 do not. Wherever SMMLA issues as often as SDOT, the inner
+loop's multiplies halve.
+
+The file's layout gives SMMLA's weight operand with one ZIP. A group is
+four inputs by 16 rows, each row's four bytes together; the group after it
+holds the next four inputs. ZIP1 at 32 bits of a vector of group k/4
+(rows 4j..4j+3) with the same vector of group k/4 + 1 makes rows 4j and
+4j+1, eight inputs each, and ZIP2 rows 4j+2 and 4j+3: SMMLA's B for two
+rows. The activations' A is two columns' eight bytes, x[c] + k and
+x[c+1] + k, one 64-bit load each. No repacking of the file: its pages stay
+the page cache's, shared, and every other backend reads the same bytes.
+
+The tile: a half panel's 8 rows by NC columns, as SDOT's, 8 inputs a step.
+A step loads the half panel's 4 vectors of each of the two groups and
+ZIPs them into 4 B operands, then for each pair of columns loads A and
+runs 4 SMMLAs (rows 0-1, 2-3, 4-5, 6-7). At NC = 4: 8 SMMLAs and 4 ZIPs
+for 256 MACs, against 16 SDOTs. A block's end takes each accumulator
+[c r, c r+1, c+1 r, c+1 r+1] apart into the columns' row vectors with
+ZIP1 and ZIP2 at 64 bits, 4 a column pair, and they go into the float
+chain by the same convert and fused multiply-add as the SDOT tile's.
+
+Bits: the integer sums are exact, in any order, and the chain is ref's,
+lane for lane. An odd last column and the decoder's single column take
+the SDOT tile.
+
+What it should do: if SMMLA issues as often as SDOT (not checked here
+against any core's guide; this measures it), the product's multiplies run
+2x faster, the ZIPs and the float side taking back some of it. Predict the product 1.4 to 1.8x on one core and `pktito bench` 15 to
+30% on c7g, c8g and c9g, less on the M4 Pro, whose SMMLA throughput is
+not published. If SMMLA issues at half SDOT's rate on a core, the tile is
+level or slower there, and the order must not put it first on that core.
+
+Built as a third variant of backend/neon, backend/neon-i8mm: neon-dp
+with -march=armv8.2-a+dotprod+i8mm (Apple: -mcpu=apple-m2), needing
+asimddp and i8mm. core/os.c learns i8mm: HWCAP2_I8MM on Linux,
+hw.optional.arm.FEAT_I8MM on macOS, PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE
+(66, MinGW's winnt.h) on Windows. Kept if kcheck and check-c are ref's
+bits on a Graviton and the M4 Pro, and the bench moves past its spread;
+first in the order only where it wins.
