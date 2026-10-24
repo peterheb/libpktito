@@ -266,7 +266,7 @@ included. Random pieces of 7 instrumental tracks by Kevin MacLeod
 (incompetech.com, CC BY 4.0: Carefree, Investigations, Local Forecast -
 Elevator, Monkeys Spinning Monkeys, Sneaky Snitch, Volatile Reaction,
 Wallpaper; 18.9 minutes), 28 of each length, each transcribed whole by
-7251093, which heard any recording that fit in a chunk whole; how many came
+8c735c1, which heard any recording that fit in a chunk whole; how many came
 out with words:
 
 | piece | 1 s | 1.5 s | 2 s | 3 s | 4 s | 6 s | 9 s | 14 s | 20 s | 30 s |

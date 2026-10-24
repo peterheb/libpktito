@@ -15,7 +15,7 @@ Dated records. Append; do not rewrite old rows; rejected hypotheses stay.
 | flags | avx2: `-O3 -mavx2 -mfma -std=c11 -ffp-contract=off`; avx2-vnni adds `-mavxvnni` |
 | bench | `./pkito bench -t N --max-chunk 60 test.wav` (Silero's 60 s test.wav whole: T = 750 encoder frames), best of 5 per run; the spread is over 5 runs |
 
-## Baseline (main at 166e169)
+## Baseline (main at b07c50d)
 
 `x86bench.sh`: 5 runs of `pkito bench`, each best of 5.
 
@@ -315,7 +315,7 @@ Each would be 1-2%.
 ## 2026-10-20 - threads again, on today's tree; and a Core 3 304 on Windows
 
 The finding above, that the P-cores alone beat every core, no longer
-holds. `./pkito bench --max-chunk 60` (the minute whole), tree d0e8da3,
+holds. `./pkito bench --max-chunk 60` (the minute whole), tree 78c27e1,
 avx2-vnni, the same 12900HK, two passes over the counts in turn (each
 count's best of five):
 
@@ -324,7 +324,7 @@ count's best of five):
 | pass 1 | 0.965 | 1.147 | 0.925 | 0.958 | 0.910 | 1.119 | 1.103 | 0.926 |
 | pass 2 | 0.959 | 1.140 | 0.923 | 0.958 | 0.906 | 1.115 | 1.101 | 0.913 |
 
-(10 and 12 are from three passes on 737d3f3, whose other counts were
+(10 and 12 are from three passes on b05af83, whose other counts were
 within 10 ms of these.) Every core, 14, is the fastest; 8, 16 and 18 are the
 slowest by 20%, the same in every pass. A new machine makes the case
 plainer: an Intel Core 3 304 (Wildcat Lake: one Cougar Cove P-core, four
@@ -357,7 +357,7 @@ inside the spread, so the pool keeps its plain counter.
 
 Measured by another session on Peter's Ryzen 9 9950X (Zen 5, 16 cores, 32
 threads, AVX-VNNI and AVX512-VNNI both), Linux under WSL2, gcc 15.2, tree
-89890df, with no other load (1-minute load under 2). WSL2 shows the real
+719ff08, with no other load (1-minute load under 2). WSL2 shows the real
 topology, so the default is 16 threads. check-c passed on all three builds:
 every kernel ref's bits (kcheck, 1525 cases), both transcripts of test.wav
 byte for byte. The second build is AVX512-VNNI's EVEX VPDPBUSD at 256
@@ -395,7 +395,7 @@ runs the minute whole in 0.909-0.912 s and in 30 s chunks in 0.829-0.830
 1.307-1.313 (1.392-1.405, 1.290-1.312). kcheck tests every backend the CPU
 can run and skips the rest with a line: avx512-vnni on both.
 
-## 2026-10-20 - f13e826's portable builds on a Zen 4 and a Zen 5
+## 2026-10-20 - 74b5f78's portable builds on a Zen 4 and a Zen 5
 
 Measured by another session on Peter's machines, idle, the v2 model,
 best of five; the binaries built here (sha256 checked): pkito.exe on the
@@ -406,7 +406,7 @@ A Ryzen 7 PRO 8840HS (Zen 4: AVX512-VNNI, no AVX-VNNI), Windows 11, 8
 threads, the exe with no PKITO_KERNELS: it runs avx512-vnni, the minute
 whole 0.607 s and in 30 s chunks 0.537 s, and writes test.wav's v3
 transcript byte for byte. `PKITO_KERNELS=avx2-vnni` is refused, exit 1;
-`PKITO_KERNELS=avx2` 1.196 and 1.120 s. The AVX-VNNI build of 89890df died
+`PKITO_KERNELS=avx2` 1.196 and 1.120 s. The AVX-VNNI build of 719ff08 died
 there on its first VPDPBUSD.
 
 A Ryzen 9 9950X (Zen 5, both encodings), 16 threads, whole and in chunks:
@@ -418,7 +418,7 @@ A Ryzen 9 9950X (Zen 5, both encodings), 16 threads, whole and in chunks:
 
 Both write the v3 transcript byte for byte; built from source there,
 check-c passes with all three backends in kcheck. The two encodings stay
-level. The UCRT64 gcc 16.2 exe beats 89890df's cross-built gcc 13 one by
+level. The UCRT64 gcc 16.2 exe beats 719ff08's cross-built gcc 13 one by
 about 20% natively (0.235 against 0.291 s in chunks).
 
 ## 2026-10-20 - pkito is now pktito
@@ -444,11 +444,11 @@ with the check, three rounds each: about 1 ms, 0.1% of the run.
 ## 2026-10-22 - the resampler as a kernel, eight blocks a vector (hypothesis)
 
 core/resample.c's dot products ran in core, at x86's baseline: since
-adb9d6b each fused multiply-add of them is pk_fmaf_soft, one chain an
+ec448c8 each fused multiply-add of them is pk_fmaf_soft, one chain an
 output, about 34 taps a phase from 44.1 kHz and 38 from 48. `pktito bench`
 on test.wav resampled, its resample line (new, best of five), three
 rounds on the 12900HK: 76.6 to 76.7 ms at 44.1 kHz, 85.5 to 85.6 ms at 48
-(glibc's fmaf, before adb9d6b, about 36 ms at 44.1).
+(glibc's fmaf, before ec448c8, about 36 ms at 44.1).
 
 As a kernel, pk_k_resample, a vector holds eight consecutive blocks at
 the same phase: the tap broadcast to the eight, and their inputs, orig
@@ -472,7 +472,7 @@ tree before, under neon-dp and under ref.
 ## 2026-10-22 - the E-cores' share (a measurement)
 
 The 12900HK as above, Ubuntu 26.04, kernel 7.0.0-38, GCC 15.2. Tree
-bad3a9f. `./pktito bench` on test.wav in its default 30 s chunks (three),
+57d6ccb. `./pktito bench` on test.wav in its default 30 s chunks (three),
 best of five, load 0.00; backend avx2-vnni.
 
 | threads | on | best | real time |

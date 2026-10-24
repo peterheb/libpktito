@@ -12,8 +12,8 @@ best of five.
 
 | tree | threads | best | real time |
 |---|---|---|---|
-| 3bbbf3b, first SDOT kernel (8x4 tile, no column blocking) | 12 | 0.543 s | 110.6x |
-| 55e6d97, column blocks of 192 KB | 4 | 1.008 s | 59.5x |
+| 2b035b3, first SDOT kernel (8x4 tile, no column blocking) | 12 | 0.543 s | 110.6x |
+| 2997d4f, column blocks of 192 KB | 4 | 1.008 s | 59.5x |
 | | 8 | 0.512 s | 117.3x |
 | | 12 | 0.523 s | 114.7x |
 
@@ -56,7 +56,7 @@ int8 attention worth its rounding.
 
 Raspberry Pi 5, 4 x Cortex-A76 at 2.4 GHz (performance governor, 60 C under
 load, never throttled), 4 GB, Debian, gcc 14.2, `-march=armv8.2-a+dotprod
--mtune=cortex-a76 -O3 -ffp-contract=off`. Tree 02f692f plus the profile's
+-mtune=cortex-a76 -O3 -ffp-contract=off`. Tree 9083e1c plus the profile's
 repack split. check-c passes: every kernel ref's bits, both transcripts of
 test.wav byte for byte. Four threads.
 
@@ -104,7 +104,7 @@ for each row (every transcript byte for byte, so none changes a bit).
 
 | tree | whole | 30 s chunks | repack | attention |
 |---|---|---|---|---|
-| fde7b8b, the baseline above | 4.934 s | 4.371 s | 285 ms | 891 ms |
+| 34ecaaa, the baseline above | 4.934 s | 4.371 s | 285 ms | 891 ms |
 | K's, V's and P's panels written a dimension's 16 keys at a time | 4.863 s | | 192 ms | |
 | no repack: V into panels by its product, K and P as written, each block's scores and position products transposed instead (rejected) | 5.064 s | 4.221 s | 0 | 1293 ms |
 | V into panels by its product; K and P transposed 16 keys at a time; the queries plus biases made a block at a time in att_item | 4.741 s | 4.169 s | 103 ms | 867 ms |
@@ -131,7 +131,7 @@ for each row.
 
 | tree | whole | 30 s chunks | subsampling |
 |---|---|---|---|
-| b55ce56 | 4.741 s | 4.169 s | 343 ms |
+| c00013c | 4.741 s | 4.169 s | 343 ms |
 | pk_k_conv3x3s2 a row at a time, 4 channels by 8 columns at once | 4.601 s | 4.026 s | 197 ms |
 | and the first stage made a window at a time, the 3 rows the second's next output row reads | 4.537 s | | 115 ms |
 | windows for 2, 3 and 4 output rows instead (rejected) | 4.547, 4.567, 4.585 s | | 129, 150, 165 ms |
@@ -142,7 +142,7 @@ items, summed over the threads, a run:
 
 | ms of thread time | conv0 | dw1 | pw1 | dw2 | pw2 |
 |---|---|---|---|---|---|
-| b55ce56, 4 threads | 510 | 562 | 130 | 64 | 32 |
+| c00013c, 4 threads | 510 | 562 | 130 | 64 | 32 |
 | the new kernel, 4 threads | 229 | 261 | 141 | 39 | 32 |
 | the new kernel, 1 thread | 79 | 69 | 92 | 12 | 22 |
 | first stage in windows, 4 threads | 82 | 78 | 142 | 30 | 28 |
@@ -231,7 +231,7 @@ quantize, and the array is read once and never written:
 
 | | feed-forward | quantize | minute | 30 s chunks |
 |---|---|---|---|---|
-| d6afe66 | 1978 ms | 163 ms | 4.358 s | 3.847 s |
+| b325cd9 | 1978 ms | 163 ms | 4.358 s | 3.847 s |
 | SiLU in the quantize pass | 1827 ms | 213 ms | 4.244-4.248 s | 3.791 s |
 
 (The SiLU's arithmetic moved from the feed-forward's row of the profile
@@ -248,7 +248,7 @@ quantize; the last norm, whose output is the residual stream, stays.
 
 | | layer norms | quantize | minute | 30 s chunks |
 |---|---|---|---|---|
-| dfec31c | 77 ms | 213 ms | 4.244-4.248 s | 3.791 s |
+| cfaf43a | 77 ms | 213 ms | 4.244-4.248 s | 3.791 s |
 | norms in the quantize passes | 13 ms | 219 ms | 4.186-4.189 s | 3.737 s |
 
 (The four norms' arithmetic is in quantize's row now.) The 12900HK and
@@ -264,7 +264,7 @@ compiled out. Same Pi 5, merged tree:
 
 | | minute | 30 s chunks |
 |---|---|---|
-| 9793aab | 4.186-4.189 s | 3.737 s |
+| 1aab324 | 4.186-4.189 s | 3.737 s |
 | merged | 4.155-4.162 s | 3.714-3.718 s |
 
 gemmbench, one A76 at 2.4 GHz, T 750: feed-forward up 19.2 MAC/cycle, down
@@ -284,7 +284,7 @@ The thread default is now one a physical core of every kind
 M4 Pro, interleaved, three passes, the minute whole: 8 threads (its
 performance cores) 0.498, 0.500, 0.509 s; 10 threads 0.495, 0.497, 0.513;
 12 (every core) 0.488, 0.489, 0.495. The efficiency cores add about 2%
-now, where on 55e6d97 they took 0.523 s against 0.512. The Pi 5's four
+now, where on 2997d4f they took 0.523 s against 0.512. The Pi 5's four
 cores are one kind, so its default does not move.
 
 ## 2026-10-20 - one binary for the family: the backend picked at run time
@@ -349,7 +349,7 @@ on the vector before it, are the step.
 
 NVIDIA GB10 (a DGX Spark): 10 Cortex-X925 at 3.9 GHz (CPUs 5-9 and 15-19)
 and 10 Cortex-A725 at 2.8 GHz (CPUs 0-4 and 10-14), Ubuntu 24.04, kernel
-7.0.0-1019-nvidia, GCC 13.3, the Makefile's flags. Tree bad3a9f. `./pktito
+7.0.0-1019-nvidia, GCC 13.3, the Makefile's flags. Tree 57d6ccb. `./pktito
 bench` on test.wav in its default 30 s chunks (three), best of five; a vLLM
 worker resident and idle, load 0.13. check-c passes; the backend picked is
 neon-dp.
@@ -382,7 +382,7 @@ faster; in 30 s chunks the 8 are, by 4%.
 
 ## 2026-10-22 - the GB10: the decoder on four threads (hypothesis)
 
-`make PROFILE=1`, the bench above, tree 769c8d7, the stages that move:
+`make PROFILE=1`, the bench above, tree c51b433, the stages that move:
 
 | stage | 10 threads | 20 threads |
 |---|---|---|
@@ -420,7 +420,7 @@ at 20 threads (183.2 before) and 17.3-20.3 at 10 (16.9); on two threads
 26-28 ms at either count, on eight 24-33 at 20 and 17-20 at 10, so four.
 `./pktito bench`, the trees built as they ship, interleaved, three rounds:
 
-| board, threads | before (769c8d7) | after |
+| board, threads | before (c51b433) | after |
 |---|---|---|
 | GB10, 20 (its default) | 0.719-0.800 s | 0.573-0.580 s |
 | GB10, 10 (the X925s) | 0.435-0.438 s | 0.441-0.447 s |
@@ -461,7 +461,7 @@ threads, and on the Pi 3, no move past the spread. The products' items are
 H3's.
 
 Result, rejected. check-c passes (the bits cannot move: each frame is
-quantized, normed and gated alone). `./pktito bench` against 8cbd3b2,
+quantized, normed and gated alone). `./pktito bench` against 61d7288,
 interleaved, three rounds: 20 threads 0.574-0.584 s against 0.563-0.591,
 10 threads 0.437-0.443 against 0.438-0.441. `make PROFILE=1` at 20
 threads: quantize 109.9 ms (115.9 in 16 items), the norms 12.3 (12.4),
@@ -505,7 +505,7 @@ the 7c its two A76s; the 12900HK and the 304 every core, unmoved; the Pis,
 one kind, untouched.
 
 Result, kept. `./pktito bench`, each tree's default threads, interleaved,
-three rounds, against 8cbd3b2 (H1):
+three rounds, against 61d7288 (H1):
 
 | board | before | after | the choice |
 |---|---|---|---|
@@ -522,7 +522,7 @@ also runs the default threads, which on the M4 Pro switch the pool between
 twelve and eight as the first recording is timed, with no race.
 
 The Snapdragon 7c (armlet: two Cortex-A76, six A55, Windows 11), through
-the app's Arm64 build of db40271, `--transcribe` on test.wav: the default
+the app's Arm64 build of b93bc51, `--transcribe` on test.wav: the default
 keeps all eight, 6.17-6.56 s, its layers timed against the A76s'. With the
 process held to the A76s (affinity 0xC0) it takes 7.95-8.70 s, to the A55s
 14.4 s, so eight is the right choice; Windows names the A76s

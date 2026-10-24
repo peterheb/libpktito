@@ -32,7 +32,7 @@ cycle), `ldp q, q` once every four; a load and a vector op do not dual-issue;
 post-increment addressing costs a cycle a load. Those prices are used below
 and re-measured where a decision rests on one.
 
-## The baseline (main at 166e169)
+## The baseline (main at b07c50d)
 
 The int8 product (`q8_tile`, ARMv8.0 path): a tile of 8 rows by 4 columns,
 a pair of groups (8 inputs) at a time as SMULL / SMLAL into 16 bits and
@@ -174,7 +174,7 @@ the M4 Pro in main's commit; an A76 has not been asked).
 
 | | run 1 | run 2 |
 |---|---|---|
-| baseline (166e169) | 58.681 s | 58.496 s |
+| baseline (b07c50d) | 58.681 s | 58.496 s |
 | 3-column tile + 48 KB blocks | **51.801 s** | **51.793 s** |
 
 -11.6%, against a spread of 0.3%. Kept.
@@ -341,7 +341,7 @@ so ref's bits cannot change. Predicted: gemmbench +5 to +8% at one thread
 
 | | 1 thread | 4 threads | L1-resident |
 |---|---|---|---|
-| gcc 14's C (a01a01f) | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
+| gcc 14's C (b9fd42c) | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
 | asm, one 8-input step a statement | 2.69 | 10.40 | 2.07 |
 | asm, 32 inputs a pair of statements, immediate offsets | 2.86 | 10.99 | 2.22 |
 | the same, the block's first drains SADDLP (no zeroing) | 3.06 | 11.72 | 2.38 |
@@ -369,7 +369,7 @@ to +6% at one thread.
 
 | | 1 thread | 4 threads | L1-resident |
 |---|---|---|---|
-| a01a01f | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
+| b9fd42c | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
 | **first step SADDLP** | **3.23 (+5.2%)** | **12.43 (+4.5%)** | 2.45 |
 
 ff down gained most alone, 2.96 -> 3.18 (its blocks are the same 32 inputs,
@@ -426,10 +426,10 @@ on its 64 MB of output or input rather than on its multiplies. One
 It was stopped there, before the second run, and reverted, because main had
 rewritten both kernels since this branch's base:
 
-- 2299472: pk_k_conv3x3s2 a row of output at a time in eight FMA chains,
+- d4b368b: pk_k_conv3x3s2 a row of output at a time in eight FMA chains,
   the weights tap-major, and core/encoder.c's sub_item streaming every
   subsampling stage through 3-row windows that stay in L2.
-- 737d3f3: pk_k_dwconv 64 frames by 64 channels at a time, the taps
+- b05af83: pk_k_dwconv 64 frames by 64 channels at a time, the taps
   tap-major.
 
 **The convolutions are main's work.** Nothing of H9 is in this branch's
@@ -437,7 +437,7 @@ code.
 
 ## Where the climb ends
 
-| | main at 166e169 | 2d27ca0 |
+| | main at b07c50d | e870ae1 |
 |---|---|---|
 | `./pkito bench`, 60 s in 3 chunks (`--max-chunk 30`) | 58.681 s, 58.496 s | **47.319 s, 47.328 s (-19.3%)** |
 | gemmbench, all four shapes, 1 thread | 2.68 GMAC/s, 1.91 MAC/cycle | 3.23, **2.31** |
@@ -446,7 +446,7 @@ code.
 
 The stage split, before and after:
 
-- **Before:** main's 166e169, its commit message, 58.4 s: feed-forward 57%,
+- **Before:** main's b07c50d, its commit message, 58.4 s: feed-forward 57%,
   q k v pos 15%, conv pw1 pw2 9%, attention 5%, subsampling 5%,
   decoder 2%.
 - **After:** above, 47.40 s, the feed-forward at 53%.
@@ -455,9 +455,9 @@ Kept:
 
 - H1, a 3-column tile with SMULL2 on replicated activations: no spills.
 - H3, 48 KB column blocks.
-- H1 and H3 together: -11.6%, b4f2ca0.
-- H6, inputs in chunks of 1024 within a column block: -5.1%, a01a01f.
-- H8, SADDLP at a block's first step: -3.8%, 2d27ca0.
+- H1 and H3 together: -11.6%, 7ca815b.
+- H6, inputs in chunks of 1024 within a column block: -5.1%, b9fd42c.
+- H8, SADDLP at a block's first step: -3.8%, e870ae1.
 
 Rejected:
 
@@ -491,13 +491,13 @@ not fit a 1 GB board.
 Not measured here: the attention stage runs at roughly 0.85 FMA a cycle a
 core. That is a count of its three products at three 20 s chunks: 14.3 G
 multiply-adds in 3.02 s on four cores. f32_tile is priced at 2.46 (20
-loads and 64 FMLA a step). Main's d6afe66, which turns gcc's first
+loads and 64 FMLA a step). Main's b325cd9, which turns gcc's first
 scheduling pass off around the float products, has not been measured on
 the A53.
 
 ## 2026-10-20 - on main after the merge: the float products' gcc pragma, measured here
 
-Main's d6afe66 turned gcc's first scheduling pass off around the float
+Main's b325cd9 turned gcc's first scheduling pass off around the float
 products, for the A76's spills (backend/neon-dp/CLIMB.md). On this Pi 3B+,
 the merged tree (with main's convolution rewrites and fused quantizes),
 `make PROFILE=1`, the default bench, each run after the SoC cooled below
@@ -511,7 +511,7 @@ the merged tree (with main's convolution rewrites and fused quantizes),
 The A53 runs in order, and the scheduled code with its spills is faster
 there than the unscheduled code without them. The pragma now applies to
 neon-dp only. The merged tree with the pragma: 45.001 and 44.984 s in
-three chunks, 48.863 s whole, from 47.3 s on 2d27ca0; peak RSS 652 MB, and
+three chunks, 48.863 s whole, from 47.3 s on e870ae1; peak RSS 652 MB, and
 692 MB whole. Without it, the change that makes it neon-dp's: 44.586 and
 44.636 s in three chunks, 48.116 s whole, attention 2038 ms; check-c
 passing.
@@ -564,7 +564,7 @@ little here, a minute of 48 kHz audio resampling in 0.09 s against the
 ## 2026-10-23 - the RK3399 keeps its six cores, and should
 
 The Rock Pi 4B (RK3399: two Cortex-A72 at 1.8 GHz, four A53 at 1.4 GHz;
-Ubuntu 20.04, kernel 4.4, gcc 9.4), pktito 2e6668c, its first run there:
+Ubuntu 20.04, kernel 4.4, gcc 9.4), pktito d093d1a, its first run there:
 check-c passes, kcheck's 1,777 neon cases ref's bits (neon-dp skipped,
 no asimddp). `pktito bench` on test.wav with v2, best of five: the default
 keeps all six, 33.6 s (1.8x real time), and -t 6 takes 31.2 s. Held to the
