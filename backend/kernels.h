@@ -226,11 +226,12 @@ void pk_k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_
  *
  * Every function above is a call through the table of the backend in use.
  * A backend's file defines its kernels as its own and exports the table:
- * pk_kernels_ref, pk_kernels_neon and _neon_dp (backend/neon, without and
- * with PK_NEON_DOTPROD), pk_kernels_avx2, _avx2_vnni and _avx512_vnni
- * (backend/avx2, without PK_AVX_VNNI, and with it in AVX-VNNI's encoding or
- * AVX512-VNNI's), each compiled with its own instruction set, the rest of
- * the tree with the family's baseline. */
+ * pk_kernels_ref, pk_kernels_neon, _neon_dp and _neon_i8mm (backend/neon,
+ * without PK_NEON_DOTPROD, with it, and with PK_NEON_I8MM too),
+ * pk_kernels_avx2, _avx2_vnni, _avx512_vnni and _amx_int8 (backend/avx2,
+ * without PK_AVX_VNNI, and with it in AVX-VNNI's encoding, AVX512-VNNI's or
+ * AVX512-VNNI's with AMX), each compiled with its own instruction set, the
+ * rest of the tree with the family's baseline. */
 typedef struct {
     const char *id;                 /* "avx2-vnni", as PKTITO_KERNELS names it */
     const char *name;               /* and what it is built for, for `pktito bench` */
@@ -260,7 +261,8 @@ typedef struct {
                      const size_t *at, const uint32_t *first, const uint32_t *len);
 } pk_kernels;
 
-extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_kernels_avx2,
+extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_kernels_neon_i8mm,
+                        pk_kernels_avx2,
                         pk_kernels_avx2_vnni, pk_kernels_avx512_vnni,
                         pk_kernels_amx_int8;
 

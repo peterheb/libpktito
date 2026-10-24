@@ -390,9 +390,15 @@ static int cpu_has(const char *f) {
 #define HWCAP_ASIMDDP (1 << 20)
 #endif
 
+#ifndef HWCAP2_I8MM
+#define HWCAP2_I8MM (1 << 13)
+#endif
+
 static int cpu_has(const char *f) {
     if (!strcmp(f, "asimddp"))
         return (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
+    if (!strcmp(f, "i8mm"))
+        return (getauxval(AT_HWCAP2) & HWCAP2_I8MM) != 0;
     return 0;
 }
 
@@ -400,18 +406,32 @@ static int cpu_has(const char *f) {
 #ifndef PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
 #define PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE 43
 #endif
+#ifndef PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE
+#define PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE 66                 /* MinGW's winnt.h */
+#endif
 
 static int cpu_has(const char *f) {
     if (!strcmp(f, "asimddp"))
         return IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) != 0;
+    if (!strcmp(f, "i8mm"))
+        return IsProcessorFeaturePresent(PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE) != 0;
     return 0;
 }
 
-#else /* macOS on Apple silicon, whose every core has the dot product; elsewhere
-         no feature can be asked for, and ref and neon need none */
+#else /* macOS on Apple silicon, whose every core has the dot product, and
+         the M2 and later I8MM, which the kernel answers; elsewhere no
+         feature can be asked for, and ref and neon need none */
+#if defined(__aarch64__) && defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 
 static int cpu_has(const char *f) {
 #if defined(__aarch64__) && defined(__APPLE__)
+    if (!strcmp(f, "i8mm")) {
+        int v = 0;
+        size_t len = sizeof v;
+        return sysctlbyname("hw.optional.arm.FEAT_I8MM", &v, &len, NULL, 0) == 0 && v;
+    }
     return !strcmp(f, "asimddp");
 #else
     (void)f;

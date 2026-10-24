@@ -34,7 +34,7 @@ CC ?= cc
 UNAME_M := $(shell uname -m)
 UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
-  FAMILY := neon-dp neon
+  FAMILY := neon-i8mm neon-dp neon
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
   FAMILY := amx-int8 avx512-vnni avx2-vnni avx2
 endif
@@ -53,8 +53,10 @@ TUNE := $(if $(TUNE_$(CPU_PART)),-mtune=$(TUNE_$(CPU_PART)))
 ISA_neon := -march=armv8-a $(TUNE)
 ifeq ($(UNAME_S),Darwin)
   ISA_neon-dp := -mcpu=apple-m1
+  ISA_neon-i8mm := -mcpu=apple-m2
 else
   ISA_neon-dp := -march=armv8.2-a+dotprod $(TUNE)
+  ISA_neon-i8mm := -march=armv8.2-a+dotprod+i8mm $(TUNE)
 endif
 ISA_avx2 := -mavx2 -mfma
 ISA_avx2-vnni := -mavx2 -mfma -mavxvnni

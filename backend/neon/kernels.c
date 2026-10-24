@@ -130,7 +130,12 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
  * accumulators for them; three on ARMv8.0, whose four vectors of pairwise
  * sums a column take 12 int accumulators at three columns, where four
  * columns' 16 spill (CLIMB.md, 2026-10-20, H1). */
-#ifdef PK_NEON_DOTPROD
+#if defined(PK_NEON_I8MM)
+#ifndef PK_Q8_NC_I8MM
+#define PK_Q8_NC_I8MM 4
+#endif
+#define PK_Q8_NC PK_Q8_NC_I8MM
+#elif defined(PK_NEON_DOTPROD)
 #define PK_Q8_NC 4
 #else
 #ifndef PK_Q8_NC_V80
@@ -196,7 +201,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
              const float *ws, const float *bias, const pk_act *a, uint32_t t0, int add,
              uint32_t b0, uint32_t b1, float *part, int first, int last, const int NC) {
     const uint32_t qb = a->qb, nb = n / qb;
-    float32x4_t f[4][2];
+    float32x4_t f[PK_Q8_NC > 4 ? PK_Q8_NC : 4][2];
     for (int c = 0; c < NC; c++) {
         if (first) {
             f[c][0] = f[c][1] = vdupq_n_f32(0.0f);
@@ -205,8 +210,67 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
             f[c][1] = vld1q_f32(part + 8 * c + 4);
         }
     }
-    const int8_t *x[4];
+    const int8_t *x[PK_Q8_NC > 4 ? PK_Q8_NC : 4];
     for (int c = 0; c < NC; c++) x[c] = a->q + (size_t)(t0 + c) * n;
+#ifdef PK_NEON_I8MM
+    if (NC % 2 == 0) {
+        /* SMMLA: m[p][j] is columns 2p, 2p+1 by the half panel's rows 2j,
+         * 2j+1, [c r, c r+1, c+1 r, c+1 r+1], sixteen inputs a step. ZIP1
+         * and ZIP2 at 32 bits of a vector of group k/4 with the same of
+         * group k/4 + 1 make two rows' eight inputs, SMMLA's B as the file
+         * holds them; ZIP1 and ZIP2 at 64 bits of two columns' sixteen
+         * bytes make A for the step's two halves. The float chains run in
+         * the same order (fm), each lane its column's scale, and come apart
+         * into f's columns once, at the end. */
+        float32x4_t fm[PK_Q8_NC / 2][4];
+        for (int p = 0; p < NC / 2; p++)
+            for (int j = 0; j < 4; j++) {
+                int64x2_t c0 = vreinterpretq_s64_f32(f[2 * p][j / 2]);
+                int64x2_t c1 = vreinterpretq_s64_f32(f[2 * p + 1][j / 2]);
+                fm[p][j] = vreinterpretq_f32_s64(j & 1 ? vzip2q_s64(c0, c1) : vzip1q_s64(c0, c1));
+            }
+        for (uint32_t b = b0; b < b1; b++) {
+            int32x4_t m[PK_Q8_NC / 2][4];
+            for (int p = 0; p < NC / 2; p++)
+                for (int j = 0; j < 4; j++) m[p][j] = vdupq_n_s32(0);
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 16) {
+                const int8_t *g = w + (size_t)(k / 4) * 64 + 16 * h;
+                int8x16_t r[2][4];
+                for (int u = 0; u < 2; u++) {
+                    int32x4_t g0 = vreinterpretq_s32_s8(vld1q_s8(g + 128 * u));
+                    int32x4_t g1 = vreinterpretq_s32_s8(vld1q_s8(g + 128 * u + 16));
+                    int32x4_t n0 = vreinterpretq_s32_s8(vld1q_s8(g + 128 * u + 64));
+                    int32x4_t n1 = vreinterpretq_s32_s8(vld1q_s8(g + 128 * u + 80));
+                    r[u][0] = vreinterpretq_s8_s32(vzip1q_s32(g0, n0));
+                    r[u][1] = vreinterpretq_s8_s32(vzip2q_s32(g0, n0));
+                    r[u][2] = vreinterpretq_s8_s32(vzip1q_s32(g1, n1));
+                    r[u][3] = vreinterpretq_s8_s32(vzip2q_s32(g1, n1));
+                }
+                for (int p = 0; p < NC / 2; p++) {
+                    int64x2_t xa = vreinterpretq_s64_s8(vld1q_s8(x[2 * p] + k));
+                    int64x2_t xb = vreinterpretq_s64_s8(vld1q_s8(x[2 * p + 1] + k));
+                    int8x16_t x0 = vreinterpretq_s8_s64(vzip1q_s64(xa, xb));
+                    int8x16_t x1 = vreinterpretq_s8_s64(vzip2q_s64(xa, xb));
+                    for (int j = 0; j < 4; j++) m[p][j] = vmmlaq_s32(m[p][j], x0, r[0][j]);
+                    for (int j = 0; j < 4; j++) m[p][j] = vmmlaq_s32(m[p][j], x1, r[1][j]);
+                }
+            }
+            for (int p = 0; p < NC / 2; p++) {
+                float32x2_t dd = vdup_n_f32(a->d[(size_t)(t0 + 2 * p) * nb + b]);
+                dd = vld1_lane_f32(a->d + (size_t)(t0 + 2 * p + 1) * nb + b, dd, 1);
+                const float32x4_t d = vzip1q_f32(vcombine_f32(dd, dd), vcombine_f32(dd, dd));
+                for (int j = 0; j < 4; j++) fm[p][j] = vfmaq_f32(fm[p][j], vcvtq_f32_s32(m[p][j]), d);
+            }
+        }
+        for (int p = 0; p < NC / 2; p++)
+            for (int e = 0; e < 2; e++) {
+                int64x2_t q0 = vreinterpretq_s64_f32(fm[p][2 * e]), q1 = vreinterpretq_s64_f32(fm[p][2 * e + 1]);
+                f[2 * p][e] = vreinterpretq_f32_s64(vzip1q_s64(q0, q1));
+                f[2 * p + 1][e] = vreinterpretq_f32_s64(vzip2q_s64(q0, q1));
+            }
+        b1 = b0;                                         /* the blocks are done */
+    }
+#endif
     for (uint32_t b = b0; b < b1; b++) {
 #ifdef PK_NEON_DOTPROD
         int32x4_t s[4][2];
@@ -299,7 +363,7 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
     /* a whole product's tiles neither read nor write their partial sums;
      * they get somewhere real to not touch, which keeps gcc's
      * -Warray-bounds from reasoning about a null one */
-    float none[4 * 8];
+    float none[(PK_Q8_NC > 4 ? PK_Q8_NC : 4) * 8];
     for (uint32_t r = 0; r < rows; r += 16) {
         const int8_t *wp = w + (size_t)r * n;
         float *o = out + r;
@@ -311,6 +375,9 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
 #define Q8_TILE(NC) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, b0, b1, \
                             ph ? ph + (size_t)(t - c0) * 8 : none, first, last, NC)
             for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC) Q8_TILE(PK_Q8_NC);
+#if PK_Q8_NC > 4
+            for (; t + 4 <= c1; t += 4) Q8_TILE(4);
+#endif
             switch (c1 - t) {
             case 3: Q8_TILE(3); break;
             case 2: Q8_TILE(2); break;
@@ -860,7 +927,12 @@ static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uin
         }
 }
 
-#ifdef PK_NEON_DOTPROD
+#if defined(PK_NEON_I8MM)
+static const char *const needs[] = { "asimddp", "i8mm", NULL };
+const pk_kernels pk_kernels_neon_i8mm = {
+    .id = "neon-i8mm",
+    .name = "neon-i8mm (ARMv8.6 NEON: SMMLA int8, fp32)",
+#elif defined(PK_NEON_DOTPROD)
 static const char *const needs[] = { "asimddp", NULL };
 const pk_kernels pk_kernels_neon_dp = {
     .id = "neon-dp",
