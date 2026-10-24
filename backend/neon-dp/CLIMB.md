@@ -700,3 +700,9 @@ core/encoder.c's slices of 256 rows where a product's rows / 256 is at
 least twice the threads (backend/avx2/CLIMB.md, pk_gemm's step), which at
 four threads moves only the feed-forward's up product: Pi 5, neon-dp: 14.4-14.7x against 14.4-14.8x,
 interleaved, test.wav, best of five. Level.
+
+The M4 Pro (pktito-mac's measurement, 03:51, the machine in use, load 1.6
+to 2.0): at its eight threads the up product takes the step (16 slices,
+twice eight), test.wav interleaved, 47f0093 134.9, 134.4, 133.9x against
+bec30f3 133.6, 133.9, 133.4x: -0.5%, at the edge of the spread, so level
+or a hair under; not acted on unless a quiet run repeats it.
