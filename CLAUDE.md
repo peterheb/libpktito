@@ -82,13 +82,12 @@ allows.
 ## Working
 
 - Commit at milestones, with the numbers in the message.
-- The boards: an i9-12900HK (AVX2, AVX-VNNI) at phebert@192.168.86.119, a
-  Pi 3B+ (Cortex-A53, 905 MB) at phebert@192.168.86.155, a Pi 5 (Cortex-A76,
-  4 GB) at phebert@192.168.86.79, a DGX Spark (GB10: ten Cortex-X925 and ten
-  Cortex-A725; a vLLM worker lives there too) at phebert@192.168.87.93, a
-  Snapdragon 7c laptop (Windows 11 on ARM: two Cortex-A76, six A55; 7.6 GB)
-  at Peter@192.168.86.185 (armlet), and the M4 Pro here, the one machine
-  that is also in use while measuring. One job at a time on a board when
-  measuring.
+- The boards: an i9-12900HK (AVX2, AVX-VNNI), a Pi 3B+ (Cortex-A53,
+  905 MB), a Pi 5 (Cortex-A76, 4 GB; pi5a), a DGX Spark (GB10: ten
+  Cortex-X925 and ten Cortex-A725; a vLLM worker lives there too), a
+  Snapdragon 7c laptop (Windows 11 on ARM: two Cortex-A76, six A55; 7.6 GB;
+  armlet), and the M4 Pro here, the one machine that is also in use while
+  measuring. Their logins and addresses are in CLAUDE.local.md, which is
+  not committed. One job at a time on a board when measuring.
 - When a request comes with a reason, weigh the reason. If it points
   somewhere other than the literal ask, say so.
