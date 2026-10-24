@@ -685,3 +685,44 @@ the first); medians of the second, seconds whole and in 30 s chunks:
 The first run agreed within 3%. avx2-vnni and avx2 are the same code in
 both and move within their spread (200 to 224x across rounds); the zmm
 product is the one change, ref's bits from every build and backend.
+
+## 2026-10-24 - AMX: where a block's 57 cycles go, and a pipelined loop (hypothesis)
+
+The amx-int8 result above left 25 of some 57 cycles a block unexplained.
+Measured on the c7i.large (Xeon 8488C), with standalone loops of one
+instruction kind under `perf stat` (cycles, exe.amx_busy,
+uops_dispatched.port_*), all data in L1:
+
+- TDPBSSD takes 16 cycles at K = 64, 32 or 16 alike (exe.amx_busy 16.0 an
+  instruction), and 16 back to back on one C tile: a block of 32 inputs
+  is half the unit's peak, 512 MAC a cycle, and the dependence through C
+  costs nothing. At M = 8 or 12 rows it takes 8 or 12.
+- TILELOADD of A (16 rows of 32 bytes, n apart) takes 9.5 cycles alone,
+  of B (8 rows of 64) 6.8, the two together 20 a block.
+- TILESTORED of C takes 17 cycles and 43 uops: 16 store-address, 16
+  store-data and 19 on port 5.
+- Beside a TDPBSSD, 32 zmm FMAs or converts take 32 cycles, not 16: the
+  unit leaves one 512-bit FP port. 32 ymm FMAs and 32 zmm integer adds take
+  16, as without it. In the kernel's loop every convert and FMA is
+  dispatched to port 0 (32 a block); port 5 is the tile store's.
+
+So a block's convert and FMA, 32 on port 0, set a floor near 36 cycles
+(32 and the tile instructions' 4 there), and the loop as it stands runs
+57: it stores each block's C right after its TDPBSSD, so the store waits
+out the product and the next block's tile loads wait behind the store
+(a TDPBSSD and a store of its own C, 29 cycles a pair; of the C before it,
+19). The block loop alone, data in L1, one panel: 57.5 cycles a block;
+with B from L2 (four panels in turn) 61.8; the feed-forward's down shape
+(n 4096) 70.0.
+
+The change: a software pipeline over the blocks. Step b loads block b's A
+and B into one of two tile pairs (0 and 1, 4 and 5), multiplies into one
+of two C tiles, stores block b-1's C (its product issued a step before),
+and runs block b-3's chains from a ring of four buffers. The same loop in
+the standalone test: 45.7, 48.9 and 62.0 cycles a block (chains two blocks
+behind: 49.0, 53.3, 65.5; four: 45.3, 48.8, 66.4). Predicted: q8bench in
+slices of 64 on the c7i.large from 391 to about 480 GMAC/s on the
+attention's shape and from 344 to about 380 on the feed-forward's down;
+`pktito bench`, whose int8 products are 64% of a run there (PROFILE=1,
+26.5x on one thread), 10 to 12% faster. The bits are untouched: each
+block's sums go into the chains in block order, as now.
