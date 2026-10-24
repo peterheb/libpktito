@@ -773,3 +773,19 @@ The floor is still the port: 32 converts and FMAs a block on port 0
 beside the tile store's 19 uops on port 5, near 36 cycles a block on L1
 data, where the loop now runs 46 (49 with B from L2, 62 on the down
 shape, whose 16 rows of A, 4096 bytes apart, fall in one L1 set).
+
+## 2026-10-24 - AMX: the down shape's A copied off one L1 set (hypothesis)
+
+At n = 4096 (the feed-forward's down product, a third of the encoder's
+int8 MACs) a tile's 16 rows of A are 4096 bytes apart: all in one set of
+the 12-way L1, which each TILELOADD thrashes, so every row comes from L2
+on both blocks that share its line. The pipelined loop alone, data as in
+q8bench's slices (four panels of B in turn): 61.9 cycles a block at a
+stride of 4096, 53.5 at 4160.
+
+The change: for n = 4096, each group of 16 columns' activations copied
+first into a thread's buffer 4160 bytes a row (66.5 KB), and the panels'
+tiles loaded from there. The copy is 1024 loads and stores a group, about
+4% of the four panels' work in a 64-row slice. Predicted: q8bench's down
+shape 9 to 10% faster on the c7i.large, `pktito bench` 2 to 3%. The copy
+moves bytes and nothing else; the bits are untouched.
