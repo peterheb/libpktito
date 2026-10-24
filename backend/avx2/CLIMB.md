@@ -882,3 +882,36 @@ up shape) ran 173-190 us padded against 157-169 for 16 whole ones, and
 211-222 through the zmm tile. Reconfiguring the tiles to the short
 group's rows instead would skip the copy, at about 200 cycles a
 LDTILECFG (measured) twice a call; not tried.
+
+## 2026-10-24 - the zmm product on Zen 5: where it stands, and its copy (hypothesis)
+
+The Ryzen 9 9950X here (WSL2, gcc 15.2), one thread, the core near 5.55
+GHz (a chain of dependent adds against the TSC). Inline-asm loops of the
+zmm tile's instructions:
+
+- VPDPBUSD zmm issues two a cycle; eight independent accumulators, the
+  tile's NC = 8, leave it latency-bound at 1.75 a cycle (sixteen: 2.04).
+- A block of eight groups for eight columns (64 VPDPBUSDs, the broadcasts
+  from memory) runs 1.73 a cycle; with the block's float work (eight
+  subtracts, converts and FMAs) 1.56. Beside the 64, 16 converts or 16
+  subtracts cost nothing and 16 FMAs about 5 cycles: the FMA shares the
+  VPDPBUSD pipes, the convert does not. Two sets of accumulators (even
+  and odd groups) gain nothing once the float work is in: about 41 cycles
+  a block either way, near (64 + 8) / 2 = 36 with the loads beside them.
+  The weights-offset form with embedded broadcasts (the T < 16 path) runs
+  the same block as fast; an XOR of each broadcast, to offset the
+  activations in the loop, 11% slower.
+
+q8bench on avx512-vnni: in pk_gemm's 64-row slices 433-438, 417-425 and
+439-445 GMAC/s (up, down, attention), whole 475-483, 450-453, 476-478;
+1.56 VPDPBUSDs a cycle would be some 555. A build that skips the XOR copy
+of the activations (wrong sums, the same instructions otherwise) ran
+460-469, 445-449 and 470-472 in slices: the copy, made per call over the
+whole column block before any panel, is 6-7% of the product.
+
+The change: the copy made during the first panel, a tile ahead: the next
+tile's columns XORed into the buffer, in zmm, while this tile's VPDPBUSDs
+run, so that it overlaps work on other pipes and lands in L1 just before
+it is read. Predicted: q8bench in slices most of the way to the no-copy
+build, 5 to 6%, and `pktito bench` on the 9950X 3 to 4% (16 threads).
+The bytes copied are the same; the bits are untouched.
