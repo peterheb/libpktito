@@ -363,9 +363,9 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
  * stores block b-1's C, multiplied a step before, and runs the chains of
  * block b-3, from a ring of four buffers: 57.5 cycles a block became 45.7
  * in a loop of it alone, and a c7i.large's `pktito bench` 25.8x became
- * 28.9x (CLIMB.md, 2026-10-24, AMX's pipelined loop). Columns past the last
- * whole 16, products of fewer, and blocks no multiple of 4 (none of the
- * model's) take the zmm tile. */
+ * 28.9x (CLIMB.md, 2026-10-24, AMX's pipelined loop). A last group short
+ * of 16 columns is padded to 16 (k_gemm_q8); blocks no multiple of 4 (none
+ * of the model's) take the zmm tile. */
 static void amx_config(void) {
     static _Thread_local int ready;
     if (ready)
@@ -454,33 +454,66 @@ void amx_panel(float *out, size_t os, const int8_t *x, uint32_t n, const int8_t 
 #undef AMX_CHAINS
 #undef AMX_OUT
 
+/* The last group, when it is short of 16 columns, goes through AMX as a
+ * whole one: its columns copied into buffers 16 wide, the scales past them
+ * zero (their chains stay 0, and no convert or FMA meets a denormal), and
+ * only its own columns written out. The zmm tile took the 10 columns of a
+ * 250-frame chunk near 15% of the product's time; padded, test.wav's
+ * chunks ran 30.5x against 29.8x on a c7i.large (CLIMB.md, 2026-10-24, a
+ * short group padded to 16). For n up to AMX_SHORT_N, the model's largest;
+ * past it the zmm tile takes them. */
+#define AMX_SHORT_N 4096
+
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
-    const uint32_t n = a->n, qb = a->qb, nb = n / qb, T16 = a->T & ~15u;
-    if (qb != 32 || T16 == 0 || nb % 4) {
+    const uint32_t n = a->n, qb = a->qb, nb = n / qb, T = a->T;
+    const uint32_t Tamx = n <= AMX_SHORT_N ? T : T & ~15u;      /* the columns AMX takes */
+    if (qb != 32 || nb % 4 || Tamx == 0) {
         q8_zmm(out, os, w, ws, bias, rows, a, add);
         return;
     }
     amx_config();
     _Alignas(64) int32_t cbuf[4][256];
-    for (uint32_t t = 0; t < T16; t += 16) {
+    static _Thread_local _Alignas(64) int8_t xshort[16 * AMX_SHORT_N];
+    static _Thread_local _Alignas(64) float dshort[16 * (AMX_SHORT_N / 32)];
+    _Alignas(64) float oshort[16 * 16];
+    for (uint32_t t = 0; t < Tamx; t += 16) {
+        const uint32_t nt = T - t < 16 ? T - t : 16;
         const int8_t *x = a->q + (size_t)t * n;
         const float *d = a->d + (size_t)t * nb;
+        if (nt < 16) {
+            memcpy(xshort, x, (size_t)nt * n);
+            memcpy(dshort, d, (size_t)nt * nb * sizeof *d);
+            memset(dshort + (size_t)nt * nb, 0, (size_t)(16 - nt) * nb * sizeof *d);
+            memset(oshort, 0, sizeof oshort);
+            x = xshort;
+            d = dshort;
+        }
         for (uint32_t r = 0; r < rows; r += 16) {
             float *o = out + (size_t)t * os + r;
             const int8_t *wp = w + (size_t)r * n;
             const float *b = bias ? bias + r : NULL;
+            float *po = o;
+            size_t pos = os;
+            if (nt < 16) {
+                if (add)
+                    for (uint32_t m = 0; m < nt; m++) memcpy(oshort + 16 * m, o + (size_t)m * os, 64);
+                po = oshort;
+                pos = 16;
+            }
             if (nb == 32)
-                amx_panel(o, os, x, n, wp, d, 32, ws + r, b, add, cbuf);
+                amx_panel(po, pos, x, n, wp, d, 32, ws + r, b, add, cbuf);
             else if (nb == 128)
-                amx_panel(o, os, x, n, wp, d, 128, ws + r, b, add, cbuf);
+                amx_panel(po, pos, x, n, wp, d, 128, ws + r, b, add, cbuf);
             else
-                amx_panel(o, os, x, n, wp, d, nb, ws + r, b, add, cbuf);
+                amx_panel(po, pos, x, n, wp, d, nb, ws + r, b, add, cbuf);
+            if (nt < 16)
+                for (uint32_t m = 0; m < nt; m++) memcpy(o + (size_t)m * os, oshort + 16 * m, 64);
         }
     }
-    if (T16 < a->T) {
-        const pk_act rest = { a->q + (size_t)T16 * n, a->d + (size_t)T16 * nb, n, qb, a->T - T16 };
-        q8_zmm(out + (size_t)T16 * os, os, w, ws, bias, rows, &rest, add);
+    if (Tamx < T) {
+        const pk_act rest = { a->q + (size_t)Tamx * n, a->d + (size_t)Tamx * nb, n, qb, T - Tamx };
+        q8_zmm(out + (size_t)Tamx * os, os, w, ws, bias, rows, &rest, add);
     }
 }
 #else

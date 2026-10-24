@@ -862,3 +862,23 @@ to near T 256's rate on the columns that count, 8% faster, and `pktito
 bench` on test.wav 4 to 5% on the c7i.large. The real columns' sums and
 chains are the same instructions on the same bytes: the bits are
 untouched.
+
+## 2026-10-24 - AMX: a short group of columns padded to 16 (result: kept)
+
+As the hypothesis above has it, for n up to 4096; a call of fewer than 16
+columns takes the same path. kcheck ref's bits on all four x86 backends
+and check-c, on the c7i.large (gcc 13.3); kcheck and test.wav v2 and v3
+from a gcc 15.2 build there too.
+
+Against 49acfe4 on the c7i.large, `pktito bench` on test.wav in two sets
+of interleaved rounds, one sitting: 29.9, 29.9, 30.0x against 30.3, 30.6,
+30.3x; then 29.5, 29.8, 29.6, 29.8x against 30.6, 30.3, 30.6, 30.5x. Every
+round of it above every round without; the medians 29.8x and 30.5x,
++2.3%, about half the 4 to 5% predicted. q8bench in slices is too loose
+on this box to place it more closely (T 250: +2 to 3% on the medians,
+inside a 5% spread). What the padding costs is the copy of the short
+group's activations, every call: a lone group of 10 columns (T 10, the
+up shape) ran 173-190 us padded against 157-169 for 16 whole ones, and
+211-222 through the zmm tile. Reconfiguring the tiles to the short
+group's rows instead would skip the copy, at about 200 cycles a
+LDTILECFG (measured) twice a call; not tried.
