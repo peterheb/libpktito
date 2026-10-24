@@ -1101,3 +1101,64 @@ rule asking for two rounds (rows / 256 >= 2 x threads) would be this at one
 and two threads and today's code at 16. core/encoder.c's, outside the
 int8 product: not made here. The bits do not depend on the split, every
 output being one call's.
+
+## 2026-10-24 - pk_gemm's step: 256 rows where they make two rounds (hypothesis)
+
+Peter's call on the entry above: take the step. The form taken is the
+two-round rule, 256-row slices where a product's rows / 256 is at least
+twice the threads and 64 elsewhere, which is the measured rule's code
+path at one and two threads (every product here has rows / 256 >= 4) and
+today's at 16, so the rows above carry over: +3 to 7% at one and two
+threads on the 9950X, c7i and c8i, level at 16. It is core/encoder.c's,
+so it reaches every board, and the ones it changes that nothing above
+measured are those with three to eight threads, where only the
+feed-forward's up product (4096 rows: 16 slices) moves: the 12900HK, the
+Pi 5 and the Pi 3B+ at their four. The 12900HK's slice rows above have
+64 best at six threads with 256 everywhere; its up product alone should
+cost less than that. Expected: within the spread on those three, kept
+if none falls by more than it. The bits do not depend on the split.
+
+## 2026-10-24 - pk_gemm's step: 256 rows where they make two rounds (result: kept)
+
+As the hypothesis above. On the boards it reaches that nothing above
+measured, base (47f0093) against it, interleaved rounds, `pktito-c bench`
+on test.wav, best of five:
+
+| board | backend | threads | 47f0093 | 256 where two rounds |
+|---|---|---|---|---|
+| 12900HK, gcc 15.2 | avx2-vnni | 14 (its default) | 72.5-73.0x | 72.6-73.0x |
+| | | 6 | 69.3-69.6x | 70.0-70.1x (+0.7%) |
+| Pi 5, gcc 14.2 | neon-dp | 4 | 14.4-14.7x | 14.4-14.8x |
+| Pi 3B+, gcc 14.2 | neon | 4 | 44.70 s (1.3x) | 44.72 s |
+
+(12900HK five rounds at 14, three at 6; the Pi 5 five; the Pi 3B+ two
+base and one of the change, each 2.5 minutes.) Level within the spread
+where only the up product moves, a little ahead at six threads; the one-
+and two-thread rows above stand. With the float kernels in zmm (the next
+entry) the two together, on the 9950X and EC2, are there.
+
+## 2026-10-24 - the float kernels in zmm (result: kept)
+
+The prototype of the entry above, its A/B switches taken out: in the
+AVX-512 builds the float product (two panels of 16 rows by eight
+columns), the quantizer, the layer norm and SiLU in zmm. CLAUDE.md's line
+now lets a variant replace a kernel where it measures faster, each to
+ref's bits. Both changes against 47f0093, the same binary pair, three
+interleaved rounds, test.wav, best of five; every transcript ref's, and
+check-c passing with amx-int8 on the two Xeons:
+
+| box | backend | threads | 47f0093 | both |
+|---|---|---|---|---|
+| 9950X, gcc 15.2 | avx512-vnni | 16 | 262.8-267.2x | 266.6-269.9x |
+| | | 1 | 38.5-38.7x | 43.3-43.4x (+12%) |
+| c7i.xlarge, gcc 13.3 | amx-int8 | 2 | 57.3-57.7x | 66.1-67.1x (+16%) |
+| | | 1 | 32.4-32.5x | 37.7-38.0x (+17%) |
+| | avx512-vnni | 2 | 37.9x | 41.3-41.5x (+9%) |
+| | | 1 | 19.9-20.0x | 21.9-22.0x (+10%) |
+| c8i.xlarge, gcc 13.3 | amx-int8 | 2 | 56.7-57.0x | 64.3-64.9x (+13%) |
+| | | 1 | 32.4-32.5x | 35.5-36.0x (+10%) |
+| | avx512-vnni | 2 | 35.3-35.8x | 38.5-39.0x (+9%) |
+| | | 1 | 18.8x | 20.3x (+8%) |
+
+(EC2: us-east-1, Ubuntu 24.04, fresh instances, both trees built there.)
+Not measured: Ice Lake (c6i), whose clock falls under 512-bit work.

@@ -693,3 +693,10 @@ is about what eight cores of SDOT give the product now (q8bench's
 q8 format as it is. What would change it is a longer integer sum - a
 block of 128 inputs or more, or a scale a row - which is a quantization
 choice for tools/quantcheck.py, not a kernel's.
+
+## 2026-10-24 - pk_gemm's step, 256 rows where they make two rounds (measurement)
+
+core/encoder.c's slices of 256 rows where a product's rows / 256 is at
+least twice the threads (backend/avx2/CLIMB.md, pk_gemm's step), which at
+four threads moves only the feed-forward's up product: Pi 5, neon-dp: 14.4-14.7x against 14.4-14.8x,
+interleaved, test.wav, best of five. Level.

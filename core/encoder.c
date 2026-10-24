@@ -97,7 +97,12 @@ static void gemm_item(void *arg, int i, int th) {
 
 /* Rows in slices of 64: few enough that each streams its weights through
  * once for its columns, and (pool item sizes, backend/avx2/CLIMB.md) the
- * size that measured best against 32 and 128. And the columns in chunks
+ * size that measured best against 32 and 128. Or of 256 where those still
+ * make two rounds of the pool: each call's own work, the backend's copy of
+ * its columns and its panels' sums, a quarter as often, +3 to 7% at one
+ * and two threads on the 9950X, a c7i and a c8i (CLIMB.md there, pk_gemm's
+ * step), where with fewer the last round's idle share costs more (one
+ * round of 16 at 16 threads: -1.5%). And the columns in chunks
  * when that fills the pool's last round: a 1024-row matrix is 16 slices,
  * which six threads take in three rounds with the last a third idle, and in
  * three chunks of columns 48 items, eight whole rounds (H5 there). A chunk
@@ -107,7 +112,8 @@ static void gemm_item(void *arg, int i, int th) {
  * the bits do not depend on the split. */
 void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
              const pk_act *act, int add) {
-    const uint32_t step = 64, rb = (w->rows + step - 1) / step, nth = (uint32_t)pk_pool_active(a->pool);
+    const uint32_t nth = (uint32_t)pk_pool_active(a->pool);
+    const uint32_t step = w->rows / 256 >= 2 * nth ? 256 : 64, rb = (w->rows + step - 1) / step;
     uint32_t best = 1, best_idle = UINT32_MAX, best_all = 1;
     for (uint32_t cc = 1; cc <= 8 && (cc == 1 || act->T / cc >= 48); cc++) {
         uint32_t items = rb * cc, all = (items + nth - 1) / nth * nth;

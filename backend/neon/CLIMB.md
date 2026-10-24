@@ -581,3 +581,10 @@ The command-line program the Makefile builds, `./pktito` in the rows
 above, is `./pktito-c` from here on, so that it is not taken for the
 app, pktito; the same program, the same output. The rows above keep the
 name they were measured under.
+
+## 2026-10-24 - pk_gemm's step, 256 rows where they make two rounds (measurement)
+
+core/encoder.c's slices of 256 rows where a product's rows / 256 is at
+least twice the threads (backend/avx2/CLIMB.md, pk_gemm's step), which at
+four threads moves only the feed-forward's up product: Pi 3B+, neon: 44.70 s against 44.72 s (1.3x),
+interleaved, test.wav, best of five. Level.
