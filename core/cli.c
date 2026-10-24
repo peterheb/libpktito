@@ -1,4 +1,4 @@
-/* pktito-c: speech in a WAV file to text, from the command line.
+/* pktito-c: speech in a WAV or AIFF file to text, from the command line.
  *
  *   pktito-c talk.wav                   the transcript
  *   pktito-c --json talk.wav            chunks with their times, text and tokens
@@ -82,7 +82,7 @@ static const char *usage =
     "       pktito-c segments [options] FILE   Silero VAD's speech segments: start end\n"
     "       pktito-c probs [options] FILE      every 32 ms frame: time and P(speech)\n"
     "       pktito-c info [options]            what the model file says about itself\n"
-    "FILE may be - for stdin.\n"
+    "FILE is a WAV or an AIFF, or - for stdin.\n"
     "  -m, --model FILE      a .pkf (default $PKTITO_MODEL, then the one .pkf in models/\n"
     "                        here or beside the program)\n"
     "  -t, --threads N       threads (default: one a core)\n"

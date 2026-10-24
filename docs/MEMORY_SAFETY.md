@@ -1,9 +1,9 @@
 # Memory-safety rules
 
-Three things pktito reads come from outside it: a model file, a WAV file, and
-the samples a caller hands the library. A model file can be truncated,
-corrupt, written by some other program or written to do harm; a WAV can come
-down a pipe from anywhere; a sample can be anything a float can be. The rules
+Three things pktito reads come from outside it: a model file, a WAV or AIFF
+file, and the samples a caller hands the library. A model file can be
+truncated, corrupt, written by some other program or written to do harm; a
+WAV or an AIFF can come down a pipe from anywhere; a sample can be anything a float can be. The rules
 below are the review contract for the code that turns those bytes into sizes,
 pointers and arithmetic: core/model.c, core/wav.c and the front ends of
 core/mel.c and core/vad.c. vadito's rules are the model, and these are the
@@ -94,12 +94,13 @@ A refused file is refused at load, with a message, never on the first
 recording. A format change extends `pk_pkf_validate` and tests/pkfcheck.c in
 the same change.
 
-## The WAV file
+## The WAV and AIFF files
 
 core/wav.c reads front to back and never seeks, so its input may be a pipe,
 and it never allocates from a size the file states: it keeps one fixed buffer
 and decodes whole frames out of it. Every chunk's size is checked before it is
-read past (by reading, so that a pipe can be read past), the fmt chunk is
+read past (by reading, so that a pipe can be read past, and with its pad byte
+added in 64 bits, so that a size of 2^32 - 1 cannot wrap), the fmt chunk is
 copied into a fixed local before it is parsed, and a frame's size is bounded
 by refusing more than 256 channels and samples wider than 8 bytes. A data chunk
 that ends early is read to where it ends and reported by `pk_wav_status`; one
@@ -107,6 +108,40 @@ whose size is a stream's is read to the end of the file.
 The corpus reaches the largest frame the format can describe and both 32-
 and 64-bit maximum declared lengths, so those bounds stay true when the
 reader changes.
+
+An AIFF (a header of "FORM" and "AIFF" or "AIFC") keeps the same rules, with
+the fields big-endian:
+
+- **COMM** is copied, its first 22 bytes at most, into a fixed local before it
+  is parsed, and refused shorter than 18 bytes (22 for AIFF-C, which adds the
+  compression type); a second COMM is refused. Its channels are 1 to 256, as
+  a WAV's.
+- **the sample rate**, an 80-bit extended float, is decoded with integer
+  shifts alone - no long double, whose width differs by compiler and system,
+  and no libm - and is a whole number of hertz from 1 to 2^32 - 1, the range
+  a WAV's 32-bit field holds. A sign bit, a zero, an infinity or NaN (the
+  largest exponent), a denormal or an unnormal (no integer bit), anything
+  below 1 or at 2^32 or past, and anything with a fraction are each refused
+  with their own reason; the shift that tests the fraction is then 32 to 63
+  bits, never 64.
+- **the sample**: AIFF's PCM is 1 to 32 bits in the bytes they round up to,
+  the bits the high ones; AIFF-C's type is looked up in a fixed table of the
+  uncompressed ones (NONE, twos, in24, in32, sowt, fl32, fl64, ulaw, alaw and
+  the capital spellings), which fixes the container for every type but the
+  PCM whose width sampleSize says, and anything else is refused by name. So
+  a sample is 1, 2, 3, 4 or 8 bytes and a frame at most 2048, as a WAV's.
+- **SSND** before COMM is refused, since what its bytes are is not yet
+  known and the reader cannot come back to them. Its size is at least 8
+  (offset and blockSize), and its offset no more than what is left of it
+  (`offset <= size - 8`, with no addition); the offset's bytes are read past
+  before the first sample, and a file that ends inside them is refused. The
+  frames read are the fewer of COMM's numSampleFrames and what SSND's size
+  holds in whole frames: more in COMM than SSND holds, or an SSND that the
+  file ends inside, is read to where the samples end and reported by
+  `pk_wav_status`, as a WAV's short data chunk is. An SSND of size 0, which
+  ffmpeg writes to a pipe, is a stream's and is read to the end of the file.
+- **other chunks** are read past by their size plus its pad byte, before
+  COMM, between it and SSND, in any number.
 
 ## Samples
 
@@ -144,7 +179,12 @@ vocabulary and the metadata wrong in each way it can be, the binding failures,
 20,000 random bit flips of everything before the tensor data, and the whole
 engine on the tiny model and on the flipped models that still load.
 tests/wavcheck.c runs every prefix of a valid WAV, each field of fmt wrong,
-the widest legal frame and maximum 32- and 64-bit declared lengths.
+the widest legal frame and maximum 32- and 64-bit declared lengths; and for
+AIFF, every supported type read against the WAV of the same samples, every
+prefix of an AIFF and an AIFF-C, each 80-bit rate that is not one (each
+refused for its own reason), each field of COMM and SSND wrong, chunk sizes
+past the end of the file up to 2^32 - 1, and every bit of two files' headers
+flipped. Disabling any one of the AIFF parser's checks makes a case fail.
 `make check-sanitize` runs both under AddressSanitizer and
 UndefinedBehaviorSanitizer.
 

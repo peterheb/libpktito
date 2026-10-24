@@ -1,19 +1,23 @@
-/* A small WAV reader and writer, in C11 and stdio, with core/os.c to open
- * a UTF-8 path on Windows.
+/* A small WAV and AIFF reader and WAV writer, in C11 and stdio, with
+ * core/os.c to open a UTF-8 path on Windows.
  *
  * It reads what recordings come in: PCM at 8 (unsigned), 16, 24 and 32
  * bits, IEEE float at 32 and 64, G.711 A-law and mu-law (the 8 kHz
  * telephony formats), any of those wrapped in
  * WAVE_FORMAT_EXTENSIBLE, RF64 for files past 4 GB, and the "streamed" WAV
- * ffmpeg writes to a pipe, whose sizes it could not go back and fill in. It
- * reads front to back and never seeks, so stdin works as well as a file,
- * and it keeps one block of bytes, so a file of any length reads in the
- * same memory.
+ * ffmpeg writes to a pipe, whose sizes it could not go back and fill in.
+ * And the Mac's AIFF, which Windows' Media Foundation does not read: PCM at
+ * 8 (signed) to 32 bits, big-endian, and AIFF-C's uncompressed types - big-
+ * and little-endian (sowt) PCM, float at 32 and 64, A-law and mu-law; a
+ * compressed one (ima4, MAC3, MAC6, GSM) is refused. It reads front to back
+ * and never seeks, so stdin works as well as a file, and it keeps one block
+ * of bytes, so a file of any length reads in the same memory.
  *
  * Samples come out as float in [-1, 1) by the conventions torchaudio.load
  * and soundfile use (int16 / 32768, uint8 (x - 128) / 128, ...), and with
  * more than one channel as their mean, which is what NeMo's audio loader
- * does with them. It is vadito's reader (core/wav.c there), renamed.
+ * does with them. It is vadito's reader (core/wav.c there), renamed, with
+ * AIFF added.
  *
  * The file is untrusted input and the parser keeps docs/MEMORY_SAFETY.md:
  * every chunk size is checked before it is used, and the reader allocates
@@ -32,15 +36,16 @@ enum { PK_WAV_PCM = 1, PK_WAV_FLOAT = 3, PK_WAV_ALAW = 6, PK_WAV_MULAW = 7 };
 typedef struct {
     uint32_t rate;
     uint32_t channels;
-    uint32_t format;          /* PK_WAV_*, EXTENSIBLE resolved to what it wraps */
+    uint32_t format;          /* PK_WAV_*, EXTENSIBLE and AIFF-C resolved to what they hold */
     uint32_t bytes;           /* per sample, as stored: 1, 2, 3, 4 or 8 */
-    uint64_t frames;          /* in the data chunk, or PK_WAV_UNKNOWN */
+    uint64_t frames;          /* in the data chunk (AIFF: COMM's, if SSND holds them), or PK_WAV_UNKNOWN */
 } pk_wav_info;
 
 typedef struct pk_wav pk_wav;
 
-/* Open path ("-" is stdin) and read up to the start of its samples. NULL on
- * failure, with the reason in err. A path here and in pk_wav_create is
+/* Open path ("-" is stdin), a WAV or an AIFF, told apart by its header and
+ * not its name, and read up to the start of its samples. NULL on failure,
+ * with the reason in err. A path here and in pk_wav_create is
  * UTF-8 on every system, Windows too, whatever its code page (core/os.h's
  * pk_os_fopen opens it). */
 pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errlen);

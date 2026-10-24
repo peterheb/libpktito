@@ -26,7 +26,7 @@ same bits on every machine.
 | backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `amx-int8` (AMX's tiles: Sapphire and Granite Rapids), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
 | numerics | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8") |
 | what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles |
-| audio | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; any channel count; any rate, brought to 16 kHz |
+| audio | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; AIFF and AIFF-C: PCM 8 to 32 bits either byte order, float 32/64, A-law, mu-law; any channel count; any rate, brought to 16 kHz |
 | dependencies | the C library, libm and pthreads |
 | systems | Linux, macOS, and Windows 10 and later (built with MSYS2's MinGW-w64 gcc) |
 
@@ -404,7 +404,7 @@ number of threads; a transcriber belongs to one thread at a time and runs
 its own pool. Every path it takes is UTF-8, on Windows too, whatever the
 process's code page. `make libpktito.a` builds the library alone;
 core/pktito.h is all of its interface, core/wav.h and core/resample.h the
-WAV library's.
+WAV and AIFF library's.
 examples/transcribe.c is a whole program against it in a page, and `make
 check-c` holds its transcript to the CLI's.
 
@@ -429,7 +429,7 @@ type, for the checks.
 ```sh
 make check-c                 # a compiler and a model: any board
 make check                   # and the Python half: sentencepiece, Silero, torchaudio, the corpora
-make check-sanitize          # the model file and WAV parsers under ASan and UBSan
+make check-sanitize          # the model file and WAV/AIFF parsers under ASan and UBSan
 make check-tsan              # the pool under ThreadSanitizer
 make check-math              # every float through exp, sigmoid, tanh and log
 make remote HOST=user@board  # rsync, build, check-c and bench there
@@ -438,7 +438,7 @@ make remote HOST=user@board  # rsync, build, check-c and bench there
 `check-c` is the math library's bounds, every kernel of every backend the
 CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
 model file's validator on its malformed corpus and the whole engine on the
-tiny model, the WAV reader on its own, a WAV and a model under a name
+tiny model, the WAV and AIFF reader on its own, a WAV and a model under a name
 past ASCII (on Windows, the regression test for UTF-8 paths), and
 test.wav through `./pktito-c` and
 through examples/transcribe:
@@ -452,7 +452,7 @@ tests/README.md has each check.
 ```
 core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              the text (tokens.c), the transcriber (asr.c), the VAD (vad.c,
-             segment.c), the WAV library (wav.c, resample.c), the captions
+             segment.c), the WAV and AIFF library (wav.c, resample.c), the captions
              (captions.c), the math (vmath.h), the pool (pool.c), the CLI
              (cli.c)
 backend/     the seam (kernels.h, and kernels.c, which picks the backend that

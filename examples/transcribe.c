@@ -1,4 +1,4 @@
-/* The library from the outside: a WAV file to its transcript, cut at its
+/* The library from the outside: a WAV or AIFF file to its transcript, cut at its
  * silences when it is long, in a page. Build with `make examples/transcribe`;
  * it links libpktito.a and includes pktito.h and wav.h, nothing else.
  *
