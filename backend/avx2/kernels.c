@@ -352,11 +352,20 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
  * 16 rows), A is 16 columns' 32 bytes of the block, n apart, and C the 16
  * columns by the panel's 16 rows. Signed by signed, so no offset. Each
  * block's C goes to L1 and comes back a column at a time into that
- * column's float chain, as the zmm tile's sums do, while the next block's
- * TDPBSSD runs in the other C tile. Four C tiles in turn, to wait out
- * more of TDPBSSD's latency, ran 1.5% slower on a c7i, and panels outer
- * no faster (CLIMB.md, 2026-10-24). Columns past the last whole 16, and
- * products of fewer, take the zmm tile. */
+ * column's float chain, as the zmm tile's sums do.
+ *
+ * The blocks are a software pipeline. A TDPBSSD takes 16 cycles at K = 32
+ * as at 64, a TILESTORED 17 and 19 uops on port 5, and beside them every
+ * zmm convert and FMA goes to port 0: a block's 32 of them are its floor.
+ * A store issued right after its own product waits that product out, and
+ * the next block's tile loads wait behind the store; so step b loads and
+ * multiplies block b (tiles 0 1 into 2 for b even, 4 5 into 3 for b odd),
+ * stores block b-1's C, multiplied a step before, and runs the chains of
+ * block b-3, from a ring of four buffers: 57.5 cycles a block became 45.7
+ * in a loop of it alone, and a c7i.large's `pktito bench` 25.8x became
+ * 28.9x (CLIMB.md, 2026-10-24, AMX's pipelined loop). A last group short
+ * of 16 columns is padded to 16 (k_gemm_q8); blocks no multiple of 4 (none
+ * of the model's) take the zmm tile. */
 static void amx_config(void) {
     static _Thread_local int ready;
     if (ready)
@@ -368,70 +377,143 @@ static void amx_config(void) {
     } cfg;
     memset(&cfg, 0, sizeof cfg);
     cfg.palette = 1;
-    cfg.colsb[0] = 32, cfg.rows[0] = 16;                         /* A */
-    cfg.colsb[1] = 64, cfg.rows[1] = 8;                          /* B */
+    cfg.colsb[0] = 32, cfg.rows[0] = 16;                         /* A, even blocks */
+    cfg.colsb[1] = 64, cfg.rows[1] = 8;                          /* B, even blocks */
     cfg.colsb[2] = 64, cfg.rows[2] = 16;                         /* C, even blocks */
     cfg.colsb[3] = 64, cfg.rows[3] = 16;                         /* C, odd blocks */
+    cfg.colsb[4] = 32, cfg.rows[4] = 16;                         /* A, odd blocks */
+    cfg.colsb[5] = 64, cfg.rows[5] = 8;                          /* B, odd blocks */
     _tile_loadconfig(&cfg);
     ready = 1;
 }
 
-/* one block's 16 columns' sums, in c, into their float chains */
+/* One panel by 16 columns, the blocks in the pipeline above: block b's
+ * tiles go to 0 1 and 2 for b even, 4 5 and 3 for b odd, and its sums to
+ * buffer b % 4, from which step b + 3 takes them. The steady state is four
+ * steps a turn so that every tile and buffer is a constant; nb is a
+ * multiple of 4, and a constant where the caller can make it one (the
+ * encoder's 32 and 128), so that the scales' offsets m nb are too: with nb
+ * a variable the 16 offsets take as many registers, and the c7i.large ran
+ * 26.8x against 28.6x (CLIMB.md, as above). */
+#define AMX_TILES(A, B, C, bl)                                                                 \
+    do {                                                                                       \
+        _tile_loadd(A, x + (size_t)(bl) * 32, n);                                              \
+        _tile_loadd(B, wp + (size_t)(bl) * 512, 64);                                           \
+        _tile_zero(C);                                                                         \
+        _tile_dpbssd(C, A, B);                                                                 \
+    } while (0)
+/* the chains are 16 named variables, not an array: gcc 15 kept an array of
+ * them on the stack, a load and a store more a column a block, 15 to 20%
+ * slower on a c7i than gcc 13's registers (q8bench in slices) */
+#define AMX_CHAIN(m)                                                                           \
+    f##m = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_load_si512((const void *)(c + 16 * (m)))), \
+                           _mm512_set1_ps(db[(size_t)(m) * nb]), f##m)
+/* block bl's sums, in buffer k, into the 16 columns' chains */
+#define AMX_CHAINS(k, bl)                                                                      \
+    do {                                                                                       \
+        const int32_t *c = cbuf[k];                                                            \
+        const float *db = d + (bl);                                                            \
+        AMX_CHAIN(0); AMX_CHAIN(1); AMX_CHAIN(2); AMX_CHAIN(3);                                \
+        AMX_CHAIN(4); AMX_CHAIN(5); AMX_CHAIN(6); AMX_CHAIN(7);                                \
+        AMX_CHAIN(8); AMX_CHAIN(9); AMX_CHAIN(10); AMX_CHAIN(11);                              \
+        AMX_CHAIN(12); AMX_CHAIN(13); AMX_CHAIN(14); AMX_CHAIN(15);                            \
+    } while (0)
+#define AMX_OUT(m)                                                                             \
+    do {                                                                                       \
+        float *o = out + (size_t)(m) * os;                                                     \
+        __m512 v = _mm512_mul_ps(f##m, sc);                                                    \
+        if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias));                                 \
+        if (add) v = _mm512_add_ps(_mm512_loadu_ps(o), v);                                     \
+        _mm512_storeu_ps(o, v);                                                                \
+    } while (0)
+
 static inline __attribute__((always_inline))
-void amx_chains(__m512 f[16], const int32_t *c, const float *d, uint32_t nb) {
-    for (int m = 0; m < 16; m++)
-        f[m] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_load_si512((const void *)(c + 16 * m))),
-                               _mm512_set1_ps(d[(size_t)m * nb]), f[m]);
+void amx_panel(float *out, size_t os, const int8_t *x, uint32_t n, const int8_t *wp, const float *d,
+               uint32_t nb, const float *ws, const float *bias, int add, int32_t cbuf[4][256]) {
+    __m512 f0 = _mm512_setzero_ps(), f1 = f0, f2 = f0, f3 = f0, f4 = f0, f5 = f0, f6 = f0, f7 = f0;
+    __m512 f8 = f0, f9 = f0, f10 = f0, f11 = f0, f12 = f0, f13 = f0, f14 = f0, f15 = f0;
+    AMX_TILES(0, 1, 2, 0);
+    AMX_TILES(4, 5, 3, 1); _tile_stored(2, cbuf[0], 64);
+    AMX_TILES(0, 1, 2, 2); _tile_stored(3, cbuf[1], 64);
+    AMX_TILES(4, 5, 3, 3); _tile_stored(2, cbuf[2], 64); AMX_CHAINS(0, 0);
+    for (uint32_t b = 4; b < nb; b += 4) {
+        AMX_TILES(0, 1, 2, b);     _tile_stored(3, cbuf[3], 64); AMX_CHAINS(1, b - 3);
+        AMX_TILES(4, 5, 3, b + 1); _tile_stored(2, cbuf[0], 64); AMX_CHAINS(2, b - 2);
+        AMX_TILES(0, 1, 2, b + 2); _tile_stored(3, cbuf[1], 64); AMX_CHAINS(3, b - 1);
+        AMX_TILES(4, 5, 3, b + 3); _tile_stored(2, cbuf[2], 64); AMX_CHAINS(0, b);
+    }
+    _tile_stored(3, cbuf[3], 64); AMX_CHAINS(1, nb - 3);
+    AMX_CHAINS(2, nb - 2);
+    AMX_CHAINS(3, nb - 1);
+    const __m512 sc = _mm512_loadu_ps(ws);
+    AMX_OUT(0); AMX_OUT(1); AMX_OUT(2); AMX_OUT(3); AMX_OUT(4); AMX_OUT(5); AMX_OUT(6); AMX_OUT(7);
+    AMX_OUT(8); AMX_OUT(9); AMX_OUT(10); AMX_OUT(11); AMX_OUT(12); AMX_OUT(13); AMX_OUT(14); AMX_OUT(15);
 }
+#undef AMX_TILES
+#undef AMX_CHAIN
+#undef AMX_CHAINS
+#undef AMX_OUT
+
+/* The last group, when it is short of 16 columns, goes through AMX as a
+ * whole one: its columns copied into buffers 16 wide, the scales past them
+ * zero (their chains stay 0, and no convert or FMA meets a denormal), and
+ * only its own columns written out. The zmm tile took the 10 columns of a
+ * 250-frame chunk near 15% of the product's time; padded, test.wav's
+ * chunks ran 30.5x against 29.8x on a c7i.large (CLIMB.md, 2026-10-24, a
+ * short group padded to 16). For n up to AMX_SHORT_N, the model's largest;
+ * past it the zmm tile takes them. */
+#define AMX_SHORT_N 4096
 
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
-    const uint32_t n = a->n, qb = a->qb, nb = n / qb, T16 = a->T & ~15u;
-    if (qb != 32 || T16 == 0) {
+    const uint32_t n = a->n, qb = a->qb, nb = n / qb, T = a->T;
+    const uint32_t Tamx = n <= AMX_SHORT_N ? T : T & ~15u;      /* the columns AMX takes */
+    if (qb != 32 || nb % 4 || Tamx == 0) {
         q8_zmm(out, os, w, ws, bias, rows, a, add);
         return;
     }
     amx_config();
-    _Alignas(64) int32_t cbuf[2][256];
-    for (uint32_t t = 0; t < T16; t += 16) {
+    _Alignas(64) int32_t cbuf[4][256];
+    static _Thread_local _Alignas(64) int8_t xshort[16 * AMX_SHORT_N];
+    static _Thread_local _Alignas(64) float dshort[16 * (AMX_SHORT_N / 32)];
+    _Alignas(64) float oshort[16 * 16];
+    for (uint32_t t = 0; t < Tamx; t += 16) {
+        const uint32_t nt = T - t < 16 ? T - t : 16;
         const int8_t *x = a->q + (size_t)t * n;
         const float *d = a->d + (size_t)t * nb;
+        if (nt < 16) {
+            memcpy(xshort, x, (size_t)nt * n);
+            memcpy(dshort, d, (size_t)nt * nb * sizeof *d);
+            memset(dshort + (size_t)nt * nb, 0, (size_t)(16 - nt) * nb * sizeof *d);
+            memset(oshort, 0, sizeof oshort);
+            x = xshort;
+            d = dshort;
+        }
         for (uint32_t r = 0; r < rows; r += 16) {
+            float *o = out + (size_t)t * os + r;
             const int8_t *wp = w + (size_t)r * n;
-            __m512 f[16];
-            for (int m = 0; m < 16; m++) f[m] = _mm512_setzero_ps();
-            /* block b's product runs in tile 2 or 3 while block b-1's sums
-             * go into the chains */
-            for (uint32_t b = 0; b < nb; b++) {
-                _tile_loadd(0, x + (size_t)b * 32, n);
-                _tile_loadd(1, wp + (size_t)b * 512, 64);
-                if (b & 1) {
-                    _tile_zero(3);
-                    _tile_dpbssd(3, 0, 1);
-                    amx_chains(f, cbuf[0], d + b - 1, nb);
-                    _tile_stored(3, cbuf[1], 64);
-                } else {
-                    _tile_zero(2);
-                    _tile_dpbssd(2, 0, 1);
-                    if (b)
-                        amx_chains(f, cbuf[1], d + b - 1, nb);
-                    _tile_stored(2, cbuf[0], 64);
-                }
+            const float *b = bias ? bias + r : NULL;
+            float *po = o;
+            size_t pos = os;
+            if (nt < 16) {
+                if (add)
+                    for (uint32_t m = 0; m < nt; m++) memcpy(oshort + 16 * m, o + (size_t)m * os, 64);
+                po = oshort;
+                pos = 16;
             }
-            amx_chains(f, cbuf[(nb - 1) & 1], d + nb - 1, nb);
-            const __m512 sc = _mm512_loadu_ps(ws + r);
-            for (int m = 0; m < 16; m++) {
-                float *o = out + (size_t)(t + m) * os + r;
-                __m512 v = _mm512_mul_ps(f[m], sc);
-                if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias + r));
-                if (add) v = _mm512_add_ps(_mm512_loadu_ps(o), v);
-                _mm512_storeu_ps(o, v);
-            }
+            if (nb == 32)
+                amx_panel(po, pos, x, n, wp, d, 32, ws + r, b, add, cbuf);
+            else if (nb == 128)
+                amx_panel(po, pos, x, n, wp, d, 128, ws + r, b, add, cbuf);
+            else
+                amx_panel(po, pos, x, n, wp, d, nb, ws + r, b, add, cbuf);
+            if (nt < 16)
+                for (uint32_t m = 0; m < nt; m++) memcpy(o + (size_t)m * os, oshort + 16 * m, 64);
         }
     }
-    if (T16 < a->T) {
-        const pk_act rest = { a->q + (size_t)T16 * n, a->d + (size_t)T16 * nb, n, qb, a->T - T16 };
-        q8_zmm(out + (size_t)T16 * os, os, w, ws, bias, rows, &rest, add);
+    if (Tamx < T) {
+        const pk_act rest = { a->q + (size_t)Tamx * n, a->d + (size_t)Tamx * nb, n, qb, T - Tamx };
+        q8_zmm(out + (size_t)Tamx * os, os, w, ws, bias, rows, &rest, add);
     }
 }
 #else

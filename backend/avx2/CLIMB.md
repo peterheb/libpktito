@@ -713,3 +713,391 @@ The command-line program the Makefile builds, `./pktito` in the rows
 above, is `./pktito-c` from here on, so that it is not taken for the
 app, pktito; the same program, the same output. The rows above keep the
 name they were measured under.
+
+## 2026-10-24 - AMX: where a block's 57 cycles go, and a pipelined loop (hypothesis)
+
+The amx-int8 result above left 25 of some 57 cycles a block unexplained.
+Measured on the c7i.large (Xeon 8488C), with standalone loops of one
+instruction kind under `perf stat` (cycles, exe.amx_busy,
+uops_dispatched.port_*), all data in L1:
+
+- TDPBSSD takes 16 cycles at K = 64, 32 or 16 alike (exe.amx_busy 16.0 an
+  instruction), and 16 back to back on one C tile: a block of 32 inputs
+  is half the unit's peak, 512 MAC a cycle, and the dependence through C
+  costs nothing. At M = 8 or 12 rows it takes 8 or 12.
+- TILELOADD of A (16 rows of 32 bytes, n apart) takes 9.5 cycles alone,
+  of B (8 rows of 64) 6.8, the two together 20 a block.
+- TILESTORED of C takes 17 cycles and 43 uops: 16 store-address, 16
+  store-data and 19 on port 5.
+- Beside a TDPBSSD, 32 zmm FMAs or converts take 32 cycles, not 16: the
+  unit leaves one 512-bit FP port. 32 ymm FMAs and 32 zmm integer adds take
+  16, as without it. In the kernel's loop every convert and FMA is
+  dispatched to port 0 (32 a block); port 5 is the tile store's.
+
+So a block's convert and FMA, 32 on port 0, set a floor near 36 cycles
+(32 and the tile instructions' 4 there), and the loop as it stands runs
+57: it stores each block's C right after its TDPBSSD, so the store waits
+out the product and the next block's tile loads wait behind the store
+(a TDPBSSD and a store of its own C, 29 cycles a pair; of the C before it,
+19). The block loop alone, data in L1, one panel: 57.5 cycles a block;
+with B from L2 (four panels in turn) 61.8; the feed-forward's down shape
+(n 4096) 70.0.
+
+The change: a software pipeline over the blocks. Step b loads block b's A
+and B into one of two tile pairs (0 and 1, 4 and 5), multiplies into one
+of two C tiles, stores block b-1's C (its product issued a step before),
+and runs block b-3's chains from a ring of four buffers. The same loop in
+the standalone test: 45.7, 48.9 and 62.0 cycles a block (chains two blocks
+behind: 49.0, 53.3, 65.5; four: 45.3, 48.8, 66.4). Predicted: q8bench in
+slices of 64 on the c7i.large from 391 to about 480 GMAC/s on the
+attention's shape and from 344 to about 380 on the feed-forward's down;
+`pktito bench`, whose int8 products are 64% of a run there (PROFILE=1,
+26.5x on one thread), 10 to 12% faster. The bits are untouched: each
+block's sums go into the chains in block order, as now.
+
+## 2026-10-24 - AMX's pipelined loop (result: kept)
+
+The pipeline as the hypothesis above has it, chains three blocks behind,
+with two things the first build showed. gcc 15 keeps an array of the 16
+chains on the stack, a load and a store more a column a block; it did so
+with main's loop too, which gcc 13 keeps in registers: so the chains are
+16 named variables. And with nb a variable the 16 scales' offsets m nb
+take as many registers, some of them moved through xmm; so the steady
+state is four steps a turn (every tile and buffer a constant), and nb a
+constant for the encoder's 32 and 128, a variable for other multiples of
+4. Blocks that are no multiple of 4 (none of the model's) take the zmm
+tile.
+
+kcheck, 1777 cases, ref's bits on amx-int8, avx512-vnni, avx2-vnni and
+avx2 and check-c passes, on the c7i.large (gcc 13.3) and, without AMX, on
+the 9950X (gcc 15.2); test.wav's v2 and v3 through amx-int8 are ref's
+bytes from both compilers' builds.
+
+On the c7i.large, one sitting, main (ae34ec1) and this tree each built
+there with gcc 13.3 and here with gcc 15.2, three interleaved rounds of
+q8bench in slices of 64 (GMAC/s: feed-forward up, down, attention) and
+then of `pktito bench` on test.wav (one thread, best of five):
+
+| | q8bench, medians | bench |
+|---|---|---|
+| main, gcc 13 | 363, 348, 381 | 24.8, 26.0, 25.8x |
+| this, gcc 13 | 443, 420, 459 (+22, +21, +20%) | 28.9, 28.9, 28.5x (+12%) |
+| main, gcc 15 | 306, 297, 299 | 22.8, 22.9, 22.7x |
+| this, gcc 15 | 471, 429, 458 (+54, +44, +53%) | 28.3, 28.5, 28.6x (+25%) |
+
+The rounds' ranges: main gcc 13 q8bench 359-384, 347-353, 369-387; this
+gcc 13 429-449, 405-430, 421-478; the bench ranges as listed. Past the
+spread everywhere. The prediction was the attention's shape to about 480
+and the down to about 380, and the run 10 to 12%: the attention's shape
+fell short (459), the down did better (420), and the run moved 12%. The
+EC2 rows of the entry before were gcc 15 builds, the spilling loop.
+
+nb a variable for every shape against the constants, the same sitting,
+gcc 13: q8bench 375-414, 376-388, 386-416 against 445-470, 417-424,
+448-464; bench 26.7 to 26.9x against 28.5 to 28.8x. Kept, the constants
+with it.
+
+The floor is still the port: 32 converts and FMAs a block on port 0
+beside the tile store's 19 uops on port 5, near 36 cycles a block on L1
+data, where the loop now runs 46 (49 with B from L2, 62 on the down
+shape, whose 16 rows of A, 4096 bytes apart, fall in one L1 set).
+
+## 2026-10-24 - AMX: the down shape's A copied off one L1 set (hypothesis)
+
+At n = 4096 (the feed-forward's down product, a third of the encoder's
+int8 MACs) a tile's 16 rows of A are 4096 bytes apart: all in one set of
+the 12-way L1, which each TILELOADD thrashes, so every row comes from L2
+on both blocks that share its line. The pipelined loop alone, data as in
+q8bench's slices (four panels of B in turn): 61.9 cycles a block at a
+stride of 4096, 53.5 at 4160.
+
+The change: for n = 4096, each group of 16 columns' activations copied
+first into a thread's buffer 4160 bytes a row (66.5 KB), and the panels'
+tiles loaded from there. The copy is 1024 loads and stores a group, about
+4% of the four panels' work in a 64-row slice. Predicted: q8bench's down
+shape 9 to 10% faster on the c7i.large, `pktito bench` 2 to 3%. The copy
+moves bytes and nothing else; the bits are untouched.
+
+## 2026-10-24 - AMX: the down shape's A copied off one L1 set (result: rejected)
+
+As the hypothesis above has it, the 16 columns' activations copied to a
+4160-byte stride before each group's panels, for n = 4096 alone. kcheck
+ref's bits on amx-int8 and test.wav v2 and v3 ref's bytes, on the
+c7i.large (gcc 13.3). Against the pipelined loop (49acfe4), one sitting,
+three interleaved rounds: q8bench in slices, the down shape, 375 to 378
+GMAC/s against 439 to 448 (the other two shapes level); `pktito bench`
+29.0 to 29.1x against 29.9 to 30.0x. Slower, not 9 to 10% faster.
+
+The standalone loop's A was in L2; in a slice of the real product it is
+not. The activations of a minute at n = 4096 are 3 MB, past the 2 MB L2,
+so every 64-row slice reads each group's 64 KB from L3 again, and the
+copy does that as a phase of its own (about 5,300 cycles a group, 5 a
+line), where the tile loads of the uncopied loop take it while the TMUL
+and the chains run. Rejected; a copy would have to be pipelined with the
+group before it to pay, for at most the 7 to 10% between the down shape
+and the up.
+
+## 2026-10-24 - AMX: the next group's A prefetched in the last panel (hypothesis)
+
+q8bench on the c7i.large with the pipelined loop, in slices of 64, 128
+and 256 rows and whole: 468-487, 492-514 and 542-585 GMAC/s on the
+feed-forward's up shape (the attention's 484-491, 518-525, 555-588). A
+64-row slice is four panels a group of 16 columns, and the group's first
+panel takes its A from L2, 16 lines a TILELOADD; fitting a + X/128 and
+a + X/512 cycles a block to the two ends gives about 43 a block and some
+1,600 more a group, the first panel's blocks near twice the others'.
+pk_gemm's step at 256 instead of 64 moved `pktito bench` there from 29.5-
+29.9x to 30.7-31.6x (amx-int8) and 19.1x to 19.9-20.0x (avx512-vnni), one
+thread: a seam change, for Peter, not made here.
+
+Inside the kernel: while a slice's last panel of one group runs, its
+steps prefetch the next group's A into L1, the 16 rows' lines of each
+pair of blocks (eight lines a block, 16 KB at n = 1024, beside the
+panel's 16 KB of B). Predicted: q8bench in slices of 64 most of the way
+to the 256-row figure on the n = 1024 shapes, 10 to 15%, and `pktito
+bench` 3 to 4%. At n = 4096 a group's A, 64 KB, is past L1; the same
+prefetch there should do little.
+
+## 2026-10-24 - AMX: the next group's A prefetched in the last panel (result: rejected)
+
+As the hypothesis above has it: 16 PREFETCHT0s every other block of a
+group's last panel, the next group's A at constant offsets. kcheck ref's
+bits on amx-int8, test.wav v2 and v3 ref's bytes (c7i.large, gcc 13.3).
+Against 49acfe4, one sitting, three interleaved rounds: q8bench in slices
+of 64, 452-476, 409-430 and 478-527 GMAC/s against 476-493, 431-445 and
+465-479; `pktito bench` 28.8 to 29.1x against 29.5 to 29.8x. Slower.
+Rejected. The slice's effect is not the zmm tail's either: at T 736, no
+tail, the up shape ran 499-504 GMAC/s in slices of 64 and 554-585 in
+slices of 256. What the 256-row slice buys stays open; the step is
+pk_gemm's.
+
+## 2026-10-24 - AMX: a short group of columns padded to 16 (hypothesis)
+
+Columns past the last whole 16 take the zmm tile, which at a few columns
+is slow: q8bench in slices of 64 on the c7i.large ran 493-522 GMAC/s at T
+240, 455-469 at T 250 and 499-532 at T 256 (the up, down and attention
+shapes alike). A minute of test.wav is three chunks of about 250 frames:
+a tail of 10 columns, 4% of them, near 15% of the product's time; at T 750
+the 14 cost 8% (T 736: 499-504, T 750: 462-466 on the up shape).
+
+The change: the last, short group's activations and scales copied into
+16-column buffers of the thread (the scales' extra columns zero, so that
+their chains stay 0 and the converts and FMAs on them see no denormal),
+the group run as any other into a 16-column scratch, and only its real
+columns written out. For n up to 4096 (the model's largest; a buffer of
+64 KB); past that the zmm tile, as now. Predicted: q8bench at T 250 up
+to near T 256's rate on the columns that count, 8% faster, and `pktito
+bench` on test.wav 4 to 5% on the c7i.large. The real columns' sums and
+chains are the same instructions on the same bytes: the bits are
+untouched.
+
+## 2026-10-24 - AMX: a short group of columns padded to 16 (result: kept)
+
+As the hypothesis above has it, for n up to 4096; a call of fewer than 16
+columns takes the same path. kcheck ref's bits on all four x86 backends
+and check-c, on the c7i.large (gcc 13.3); kcheck and test.wav v2 and v3
+from a gcc 15.2 build there too.
+
+Against 49acfe4 on the c7i.large, `pktito bench` on test.wav in two sets
+of interleaved rounds, one sitting: 29.9, 29.9, 30.0x against 30.3, 30.6,
+30.3x; then 29.5, 29.8, 29.6, 29.8x against 30.6, 30.3, 30.6, 30.5x. Every
+round of it above every round without; the medians 29.8x and 30.5x,
++2.3%, about half the 4 to 5% predicted. q8bench in slices is too loose
+on this box to place it more closely (T 250: +2 to 3% on the medians,
+inside a 5% spread). What the padding costs is the copy of the short
+group's activations, every call: a lone group of 10 columns (T 10, the
+up shape) ran 173-190 us padded against 157-169 for 16 whole ones, and
+211-222 through the zmm tile. Reconfiguring the tiles to the short
+group's rows instead would skip the copy, at about 200 cycles a
+LDTILECFG (measured) twice a call; not tried.
+
+## 2026-10-24 - the zmm product on Zen 5: where it stands, and its copy (hypothesis)
+
+The Ryzen 9 9950X here (WSL2, gcc 15.2), one thread, the core near 5.55
+GHz (a chain of dependent adds against the TSC). Inline-asm loops of the
+zmm tile's instructions:
+
+- VPDPBUSD zmm issues two a cycle; eight independent accumulators, the
+  tile's NC = 8, leave it latency-bound at 1.75 a cycle (sixteen: 2.04).
+- A block of eight groups for eight columns (64 VPDPBUSDs, the broadcasts
+  from memory) runs 1.73 a cycle; with the block's float work (eight
+  subtracts, converts and FMAs) 1.56. Beside the 64, 16 converts or 16
+  subtracts cost nothing and 16 FMAs about 5 cycles: the FMA shares the
+  VPDPBUSD pipes, the convert does not. Two sets of accumulators (even
+  and odd groups) gain nothing once the float work is in: about 41 cycles
+  a block either way, near (64 + 8) / 2 = 36 with the loads beside them.
+  The weights-offset form with embedded broadcasts (the T < 16 path) runs
+  the same block as fast; an XOR of each broadcast, to offset the
+  activations in the loop, 11% slower.
+
+q8bench on avx512-vnni: in pk_gemm's 64-row slices 433-438, 417-425 and
+439-445 GMAC/s (up, down, attention), whole 475-483, 450-453, 476-478;
+1.56 VPDPBUSDs a cycle would be some 555. A build that skips the XOR copy
+of the activations (wrong sums, the same instructions otherwise) ran
+460-469, 445-449 and 470-472 in slices: the copy, made per call over the
+whole column block before any panel, is 6-7% of the product.
+
+The change: the copy made during the first panel, a tile ahead: the next
+tile's columns XORed into the buffer, in zmm, while this tile's VPDPBUSDs
+run, so that it overlaps work on other pipes and lands in L1 just before
+it is read. Predicted: q8bench in slices most of the way to the no-copy
+build, 5 to 6%, and `pktito bench` on the 9950X 3 to 4% (16 threads).
+The bytes copied are the same; the bits are untouched.
+
+## 2026-10-24 - amx-int8's pipelined loop and padded group on EC2 (measurement)
+
+main (ae34ec1) against d1bda18 (the pipelined loop and the padded short
+group), each one binary built here with gcc 15.2 holding both backends,
+on fresh us-east-1 instances (Ubuntu 24.04), one sitting each: three
+interleaved rounds of `pktito bench` on test.wav (best of five, the
+default two threads), then q8bench once on one thread in pk_gemm's
+64-row slices. Every transcript, from either binary through either
+backend, is ref's bytes (test.v2.json).
+
+| instance | backend | main | d1bda18 | |
+|---|---|---|---|---|
+| c7i.xlarge, Xeon 8488C | amx-int8 | 38.4, 38.6, 38.3x | 47.5, 48.1, 48.3x | +25% |
+| | avx512-vnni | 33.9, 34.0, 33.9x | 33.7, 34.0, 33.9x | level |
+| c8i.xlarge, Xeon 6975P-C | amx-int8 | 43.2, 43.0, 42.8x | 56.3, 56.1, 56.4x | +31% |
+| | avx512-vnni | 34.8, 35.0, 34.7x | 34.8, 34.9, 34.7x | level |
+
+q8bench on amx-int8, GMAC/s (up, down, attention):
+
+| instance | T | main | d1bda18 |
+|---|---|---|---|
+| c7i.xlarge | 750 | 258, 276, 277 | 412, 426, 426 |
+| | 250 | 250, 286, 293 | 399, 440, 422 |
+| c8i.xlarge | 750 | 288, 285, 293 | 463, 438, 479 |
+| | 250 | 282, 288, 302 | 474, 455, 499 |
+
+The product 1.44 to 1.68 times main's; avx512-vnni's, whose code the two
+share, within 4% of it on every shape (single runs). Both builds are gcc
+15's, under which main's loop spills its chains (the pipelined loop's
+entry: 22.8x against gcc 13's 25.8x on the c7i.large); against a gcc 13
+build of main the gain would be nearer that entry's +12% and the padded
+group's +2.3%. Across sittings the instances differ: this c7i.xlarge ran
+main's amx-int8 at 38.4x and avx512-vnni at 33.9x, against 46.8x and 37.7x
+for the same loop in the first AMX entry's sitting; the c8i.xlarge agrees
+with its row there within 2%. Only the rows of one sitting compare.
+
+## 2026-10-24 - the zmm product's offset copy made a tile ahead (result: rejected)
+
+As the hypothesis above has it: the first panel of a column block XORs
+the next tile's columns into the buffer, in zmm, before running its own
+tile, where the copy was a pass of its own before any panel. kcheck ref's
+bits on all four x86 backends, on the 9950X (gcc 15.2, AMX skipped) and
+the c7i.large (gcc 13.3); test.wav v2 and v3 ref's bytes through
+avx512-vnni, avx2-vnni and avx2 here and amx-int8 and avx512-vnni there.
+
+On the 9950X, avx512-vnni, one sitting (06:36 to 06:38 UTC), five
+interleaved rounds against d1bda18's code: q8bench in slices of 64 on one
+pinned core, GMAC/s (up, down, attention), at T 750 425-437, 418-423 and
+443-448 against 434-438, 421-424 and 439-442; at T 250 447-453, 422-428
+and 450-459 against 443-452, 421-423 and 451-458. `pktito bench` on
+test.wav, 16 threads, 252.5 to 260.4x against 250.0 to 263.1x (medians
+255.9x and 255.6x); one pinned thread 38.2 to 38.4x against 38.2 to
+38.5x. On the c7i.large, avx512-vnni, three rounds: q8bench at T 750
+225-228, 207-211 and 234-238 against 225-232, 206-210 and 229-231;
+`pktito bench`, one thread, 19.2x against 19.1 to 19.2x.
+
+Level everywhere, where 5 to 6% was predicted on the product: made beside
+the VPDPBUSDs, the copy's loads and stores cost what they cost as a pass
+of their own. What would take the 6-7% out is making the copy less
+often: the quantizer writing the offset bytes, or pk_gemm's slices of 256
+rows, the copy a quarter as often (on the c7i.large, avx512-vnni, one
+thread: 19.1x to 19.9-20.0x, the AMX entries above); both outside the int8
+product. Rejected; the code is as before.
+
+## 2026-10-24 - the float kernels in zmm (measured, a case for Peter)
+
+CLAUDE.md makes the int8 product the only kernel that differs inside a
+family, so this is a measurement for that rule's owner, not a change. A
+prototype outside the tree, on d1bda18's code, gave the two AVX-512
+builds (avx512-vnni, amx-int8) zmm forms of four kernels, each lane doing
+what a ymm lane does in the same order:
+
+- the float product: two panels of 16 rows by eight columns, 16 chains,
+  where the ymm tile is one panel by four columns, 8 chains (T = 1 keeps
+  the ymm tile);
+- the quantizer: a block's 32 floats as two zmm, its bytes by VPMOVSDB;
+- the layer norm: its 16 lanes in one zmm where ymm has two;
+- SiLU.
+
+kcheck, 1777 cases, ref's bits on all four x86 backends, on the 9950X
+(gcc 15.2) and the c7i.large (gcc 13.3); test.wav v2 and v3 ref's bytes
+through avx512-vnni and amx-int8, and v2 on the two EC2 instances. One
+binary each, the forms picked by an environment variable read once (the
+prototype's, for the A/B alone), interleaved rounds, one sitting a box;
+`pktito bench` on test.wav, best of five:
+
+| box | backend | threads | ymm | the zmm product | all four in zmm |
+|---|---|---|---|---|---|
+| 9950X | avx512-vnni | 1 | 38.3-38.5x | 41.3-41.5x (+8%) | 41.8-42.0x (+9%) |
+| | | 16 | 252.0-260.1x | 259.6-266.0x (+2%) | 259.6-266.0x (+2%) |
+| c7i.large | amx-int8 | 1 | 31.7-31.9x | 34.2-34.9x (+9%) | 33.6-35.7x (+11%) |
+| | avx512-vnni | 1 | 19.2-19.3x | 19.8-19.9x (+4%) | 19.7-20.3x (+5%) |
+| c7i.xlarge | amx-int8 | 2 | 55.3-56.0x | | 60.2-60.8x (+8%) |
+| | | 1 | 31.1-31.6x | | 34.1-34.6x (+10%) |
+| | avx512-vnni | 2 | 36.8-37.3x | | 38.1-38.6x (+3%) |
+| | | 1 | 19.4-19.6x | | 20.4x (+5%) |
+| c8i.xlarge | amx-int8 | 2 | 56.9-57.3x | | 61.4-61.5x (+7%) |
+| | | 1 | 32.8-33.2x | | 35.8x (+8%) |
+| | avx512-vnni | 2 | 35.4-35.9x | | 36.7-37.1x (+4%) |
+| | | 1 | 19.1x | | 19.7-19.9x (+4%) |
+
+(9950X and c7i.large: five and three rounds, the ymm column the
+prototype's own ymm form, the percentages on the medians. The EC2 rows:
+us-east-1, Ubuntu 24.04, gcc 13.3 builds from the c7i.large, three
+rounds, the ymm column d1bda18's own binary; the prototype's ymm form ran
+0.3 to 1.4% below it there.) A second sitting on the 9950X, three rounds:
+one thread 38.3-38.6x against 41.7-41.9x, 16 threads 262.1-269.5x against
+267.4-271.0x, zmm ahead in every pair.
+
+PROFILE=1, one thread: the attention stage, which holds a query block's
+three float products, 233 to 125 ms on the 9950X and 386-391 to 236-240
+ms on the c7i.large (amx-int8); the quantize stage, which holds the layer
+norms and SiLU, 78 to 62 ms and 165 to 134 ms. The product's tile on the
+c7i.large (amx-int8, the attention stage): two panels by eight columns
+237-259 ms, two by four and one by eight (8 chains, as many as the ymm
+tile's) 280-284 ms; not tuned past that.
+
+Not measured: Ice Lake, whose clock falls under 512-bit work (the zmm
+product's entry: 2 to 6% at two threads); the softmax, GLU and the
+depthwise convolution, stages of 1 to 2%. On these CPUs at one and two
+threads it is the largest step left outside the int8 product, larger than
+the AMX padded group and the zmm copy would have been together.
+
+## 2026-10-24 - pk_gemm's step, 64 rows or 256 (measured, for Peter)
+
+The AMX entries above have 256-row slices faster on the c7i.large at one
+thread (amx-int8 29.5-29.9x to 30.7-31.6x, avx512-vnni 19.1x to
+19.9-20.0x): each call's own work, the zmm product's offset copy, the
+panels' weight sums, AMX's first panel of a group with its A from L2,
+made a quarter as often. The slice-size rows above (the 12900HK, six
+threads) have 64 best, 256 rows 1.166-1.169 s against 1.057-1.059: too few
+items for the threads.
+
+On the 9950X, avx512-vnni, d1bda18's code, gcc 15.2, interleaved rounds:
+256 everywhere, one pinned thread, 39.7-39.9x against 38.3-38.6x (+3%);
+16 threads 242.3-249.9x against 252.4-258.8x (-3 to -4%), two sittings.
+256 only where a product's 256-row slices are at least the threads
+(rows / 256 >= threads), 64 elsewhere: one thread 39.9x (the same code
+path), 16 threads 248.7-255.8x against 255.7-257.7x (-1.5%: at 16
+threads the feed-forward's up product is then one round of 16 slices,
+where 64 rows make four). On EC2 the same rule, gcc 13.3, three rounds,
+against d1bda18 (the float kernels' table above, the same sitting):
+
+| instance | backend | 2 threads | 1 thread |
+|---|---|---|---|
+| c7i.xlarge | amx-int8 | 59.5-60.6x (+7%) | 32.5-33.4x (+7%) |
+| | avx512-vnni | 38.6-38.7x (+4%) | 20.2-20.4x (+4%) |
+| c8i.xlarge | amx-int8 | 60.1-61.1x (+6%) | 33.8-34.2x (+3%) |
+| | avx512-vnni | 37.3-37.6x (+5%) | 19.8x (+4%) |
+
+and on the c7i.large, amx-int8, one thread, with the float kernels in zmm
+as well: 37.4-37.5x, against 31.9-32.3x for d1bda18, 33.1-34.2x for the
+step alone and 34.1-35.3x for the float kernels alone; the two add. A
+rule asking for two rounds (rows / 256 >= 2 x threads) would be this at one
+and two threads and today's code at 16. core/encoder.c's, outside the
+int8 product: not made here. The bits do not depend on the split, every
+output being one call's.
