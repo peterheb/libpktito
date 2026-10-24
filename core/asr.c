@@ -157,6 +157,20 @@ long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks) {
 
 const char *pk_backend(void) { return pk_k_name(); }
 
+/* The compiler's own words for itself; Apple's clang names a version of its
+ * own, unlike the LLVM one it comes from. */
+const char *pk_compiler(void) {
+#if defined(__apple_build_version__)
+    return "Apple clang " __clang_version__;
+#elif defined(__clang__)
+    return "clang " __clang_version__;
+#elif defined(__GNUC__)
+    return "gcc " __VERSION__;
+#else
+    return "an unknown compiler";
+#endif
+}
+
 #ifdef PK_PROFILE
 double pk_prof[PK_NPROF];
 double pk_prof_now(void) { return pk_os_now(); }

@@ -132,6 +132,10 @@ size_t pk_words(const pk_model *m, const pk_tok *t, size_t n, pk_word *out);
 /* The backend this library was built with, e.g. "neon-dp (ARMv8.2: SDOT)". */
 const char *pk_backend(void);
 
+/* The compiler that built it, e.g. "gcc 15.2.0" or "Apple clang 21.0.0":
+ * a transcript is the same from any, its speed not (README, "How fast"). */
+const char *pk_compiler(void);
+
 /* ------------------------------------------------------------------ VAD --- */
 
 /* Silero VAD, as vadito runs it: one stream's state. A new or reset

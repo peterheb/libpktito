@@ -74,6 +74,10 @@ allows.
   transcripts that change, and WER, against float32 on the same recordings.
 - A finding is true of the board, compiler and code it was measured on.
   Before relying on one after any of those changed, measure again.
+- A tuned kernel's change is benched under two compilers where the board
+  has them (two gcc majors, or gcc and clang), and one that wins under one
+  and loses under the other is not finished: gcc 15 spilled a loop gcc 13
+  kept in registers (backend/avx2/CLIMB.md, amx-int8's pipelined loop).
 
 ## Checking
 

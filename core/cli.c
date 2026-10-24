@@ -359,6 +359,8 @@ static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top
             json_str(PKTITO_VERSION);
             printf(", \"backend\": ");
             json_str(pk_backend());
+            printf(", \"compiler\": ");
+            json_str(pk_compiler());
             printf(", \"threads\": %d", pk_asr_threads(a));
         }
     }
@@ -814,6 +816,7 @@ static int bench(const opts *o, pk_model *m) {
 #endif
     printf("model     %s\n", pk_model_name(m));
     printf("backend   %s, %d threads\n", pk_backend(), pk_asr_threads(a));
+    printf("compiler  %s\n", pk_compiler());
     printf("audio     %.1f s in %zu chunk%s, %ld tokens\n", audio, nc, nc == 1 ? "" : "s", ntok);
     printf("best of 5 %.3f s  %.1fx real time  (VAD %.3f s more)\n", best, audio / best, vad_s);
     if (rs_s > 0)
@@ -872,6 +875,7 @@ static int info(pk_model *m) {
     for (uint32_t i = 0; i < mi.n_durations; i++)
         printf(" %u", mi.durations[i]);
     printf("\nbackend   %s, %d threads by default\n", pk_backend(), pk_os_cores());
+    printf("compiler  %s\n", pk_compiler());
     const char *k, *v;
     for (int i = 0; pk_model_meta_at(m, i, &k, &v) == 0; i++)
         printf("  %-16s %s\n", k, v);

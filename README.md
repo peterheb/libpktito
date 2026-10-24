@@ -145,22 +145,32 @@ force another backend (`PKTITO_KERNELS`) or one thread. Seconds, and how
 many times real time, for the minute whole (`--max-chunk 60`, 750 encoder
 frames) and in the default 30 s chunks:
 
-| | backend | threads | whole | in 30 s chunks |
-|---|---|---|---|---|
-| Apple M4 Pro | `neon-dp` | 12 | 0.487 (123x) | 0.490 (122x) |
-| | `neon` | 12 | 1.047 (57x) | 1.040 (58x) |
-| | `ref` | 12 | 20.6 (2.9x) | 21.6 (2.8x) |
-| Intel Core i9-12900HK | `avx2-vnni` | 14 | 0.909 (66x) | 0.828 (72x) |
-| | `avx2-vnni` | 1 | 3.28 (18.3x) | 2.84 (21x) |
-| | `avx2` | 14 | 1.682 (36x) | 1.597 (38x) |
-| | `avx2` | 1 | 6.80 (8.8x) | 6.12 (9.8x) |
-| Intel Core 3 304, Windows 11 | `avx2-vnni` | 5 | 1.392 (43x) | 1.290 (47x) |
-| AMD Ryzen 9 9950X, Windows 11 | `avx512-vnni` | 16 | 0.228 (263x) | 0.217 (277x) |
-| | `avx2-vnni` | 16 | 0.292 (205x) | 0.274 (219x) |
-| | `avx2` | 16 | 0.534 (112x) | 0.529 (113x) |
-| AMD Ryzen 7 PRO 8840HS, Windows 11 | `avx512-vnni` | 8 | 0.607 (99x) | 0.537 (112x) |
-| Raspberry Pi 5, Cortex-A76 2.4 GHz | `neon-dp` | 4 | 4.150 (14.5x) | 3.710 (16.2x) |
-| Raspberry Pi 3B+, Cortex-A53 1.4 GHz | `neon` | 4 | 48.1 (1.2x) | 44.6 (1.3x) |
+| | compiler | backend | threads | whole | in 30 s chunks |
+|---|---|---|---|---|---|
+| Apple M4 Pro | Apple clang 21.0 | `neon-dp` | 12 | 0.487 (123x) | 0.490 (122x) |
+| | | `neon` | 12 | 1.047 (57x) | 1.040 (58x) |
+| | | `ref` | 12 | 20.6 (2.9x) | 21.6 (2.8x) |
+| Intel Core i9-12900HK | gcc 15.2 | `avx2-vnni` | 14 | 0.909 (66x) | 0.828 (72x) |
+| | | `avx2-vnni` | 1 | 3.28 (18.3x) | 2.84 (21x) |
+| | | `avx2` | 14 | 1.682 (36x) | 1.597 (38x) |
+| | | `avx2` | 1 | 6.80 (8.8x) | 6.12 (9.8x) |
+| Intel Core 3 304, Windows 11 | MSYS2 gcc 16.2 | `avx2-vnni` | 5 | 1.392 (43x) | 1.290 (47x) |
+| AMD Ryzen 9 9950X, Windows 11 | MSYS2 gcc 16.2 | `avx512-vnni` | 16 | 0.228 (263x) | 0.217 (277x) |
+| | | `avx2-vnni` | 16 | 0.292 (205x) | 0.274 (219x) |
+| | | `avx2` | 16 | 0.534 (112x) | 0.529 (113x) |
+| AMD Ryzen 7 PRO 8840HS, Windows 11 | the 304's build | `avx512-vnni` | 8 | 0.607 (99x) | 0.537 (112x) |
+| Raspberry Pi 5, Cortex-A76 2.4 GHz | gcc 14.2 | `neon-dp` | 4 | 4.150 (14.5x) | 3.710 (16.2x) |
+| Raspberry Pi 3B+, Cortex-A53 1.4 GHz | gcc 14.2 | `neon` | 4 | 48.1 (1.2x) | 44.6 (1.3x) |
+
+The compiler moves the speed and never the transcript: every backend
+computes `ref`'s bits whatever builds it. It can be a tenth: on a
+Sapphire Rapids Xeon, `amx-int8`'s first loop ran 22.8x built by gcc 15.2
+against 24.8 to 26.0x by gcc 13.3, where gcc 15 spilled it to memory, and
+its rewrite runs 28.3 to 28.6x against 28.5 to 28.9x (backend/avx2/CLIMB.md,
+the pipelined loop) - a tuned kernel is held to more than one compiler for
+that reason. Compare a machine's rows compiler to compiler. `bench` and `info` print the compiler of the build;
+where gcc and clang are both installed, `make clean && make CC=clang` and
+bench each.
 
 Against [parakeet.cpp](https://github.com/mudler/parakeet.cpp) (ggml, its
 q8_0 files) on the same 100 LibriSpeech test-clean recordings, the M4 Pro's
