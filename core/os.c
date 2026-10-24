@@ -3,6 +3,8 @@
  *
  * The cores: the physical cores of every kind, from Linux's sysfs topology,
  * macOS's sysctl or Windows' processor records (pk_os_cores says why).
+ * The paths: UTF-8, and on Windows widened to UTF-16 in one place
+ * (widen) for every file the library opens.
  */
 #include "os.h"
 
@@ -13,12 +15,16 @@
 #include <string.h>
 #include <time.h>
 
-#if !defined(PK_NO_MMAP) && defined(_WIN32)
-#define PK_WINDOWS 1
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
 #include <fcntl.h>
 #include <io.h>
+#include <wchar.h>
+#endif
+#if !defined(PK_NO_MMAP) && defined(_WIN32)
+#define PK_WINDOWS 1
 #elif !defined(PK_NO_MMAP) && (defined(__unix__) || defined(__APPLE__))
 #define PK_POSIX 1
 #include <fcntl.h>
@@ -29,6 +35,101 @@
 #include <sys/sysctl.h>
 #endif
 #endif
+
+/* --------------------------------------------------------------- paths --- */
+
+#ifdef _WIN32
+
+/* Windows' longest path in UTF-16 units with its NUL: 32767 behind "\\?\",
+ * the W functions' own limit. */
+#define PK_OS_PATH_MAX 32768
+
+/* UTF-8 to the UTF-16 that Windows' W functions take, in *out for the
+ * caller to free: 0, or EILSEQ for bytes that are not UTF-8 (never the
+ * code page's guess at them), ENAMETOOLONG or ENOMEM. The buffer is the
+ * input's length at most, and never past PK_OS_PATH_MAX. */
+static int widen(const char *s, wchar_t **out) {
+    *out = NULL;
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, NULL, 0);
+    if (n <= 0)
+        return GetLastError() == ERROR_NO_UNICODE_TRANSLATION ? EILSEQ : EINVAL;
+    if (n > PK_OS_PATH_MAX)
+        return ENAMETOOLONG;
+    wchar_t *w = malloc((size_t)n * sizeof *w);
+    if (!w)
+        return ENOMEM;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, w, n) != n) {
+        free(w);
+        return EILSEQ;
+    }
+    *out = w;
+    return 0;
+}
+
+FILE *pk_os_fopen(const char *path, const char *mode) {
+    wchar_t *wpath, *wmode;
+    int e = widen(path, &wpath);
+    if (!e && (e = widen(mode, &wmode)) != 0)
+        free(wpath);
+    if (e) {
+        errno = e;
+        return NULL;
+    }
+    FILE *f = _wfopen(wpath, wmode);
+    e = errno;
+    free(wpath);
+    free(wmode);
+    errno = e;
+    return f;
+}
+
+/* The C runtime's argv is the command line in the ANSI code page, where a
+ * name outside it is already lost; Windows keeps the line itself in
+ * UTF-16. One allocation, the pointers and then the strings, sized from
+ * the line and kept for the life of the process. */
+char **pk_os_args(int *argc, char **argv) {
+    (void)argv;
+    int n;
+    wchar_t **w = CommandLineToArgvW(GetCommandLineW(), &n);
+    if (!w)
+        return NULL;
+    size_t bytes = 0;
+    for (int i = 0; i < n; i++) {
+        int k = WideCharToMultiByte(CP_UTF8, 0, w[i], -1, NULL, 0, NULL, NULL);
+        if (k <= 0) {
+            LocalFree((HLOCAL)w);
+            return NULL;
+        }
+        bytes += (size_t)k;
+    }
+    char **out = malloc((size_t)(n + 1) * sizeof *out + bytes);
+    if (!out) {
+        LocalFree((HLOCAL)w);
+        return NULL;
+    }
+    char *s = (char *)(out + n + 1), *end = s + bytes;
+    for (int i = 0; i < n; i++) {
+        out[i] = s;
+        s += WideCharToMultiByte(CP_UTF8, 0, w[i], -1, s, (int)(end - s), NULL, NULL);
+    }
+    out[n] = NULL;
+    LocalFree((HLOCAL)w);
+    *argc = n;
+    return out;
+}
+
+#else /* a path is the bytes the system takes, and those are the UTF-8 */
+
+FILE *pk_os_fopen(const char *path, const char *mode) { return fopen(path, mode); }
+
+char **pk_os_args(int *argc, char **argv) {
+    (void)argc;
+    return argv;
+}
+
+#endif
+
+/* ------------------------------------------------------ files and cores --- */
 
 #ifdef PK_POSIX
 
@@ -172,8 +273,16 @@ void pk_os_stdio(void) {}
 
 /* A view keeps its file open by itself, so both handles close here. */
 const unsigned char *pk_map_file(const char *path, size_t *size, char *why, size_t whylen) {
-    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+    wchar_t *wpath;
+    int bad = widen(path, &wpath);
+    if (bad) {
+        snprintf(why, whylen, "%s", bad == EILSEQ ? "not a UTF-8 path"
+                                    : bad == ENAMETOOLONG ? "path too long" : "out of memory");
+        return NULL;
+    }
+    HANDLE f = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL, NULL);
+    free(wpath);
     if (f == INVALID_HANDLE_VALUE) {
         DWORD e = GetLastError();
         snprintf(why, whylen, "%s", e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND
@@ -186,7 +295,7 @@ const unsigned char *pk_map_file(const char *path, size_t *size, char *why, size
         snprintf(why, whylen, "%s", "empty file or cannot tell its size");
         return NULL;
     }
-    HANDLE m = CreateFileMappingA(f, NULL, PAGE_READONLY, 0, 0, NULL);
+    HANDLE m = CreateFileMappingW(f, NULL, PAGE_READONLY, 0, 0, NULL);
     void *p = m ? MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : NULL;
     DWORD e = GetLastError();
     if (m)
@@ -263,7 +372,7 @@ void pk_os_stdio(void) {
 #else /* the plain-C fallback: read the file, one core, the C11 clock */
 
 const unsigned char *pk_map_file(const char *path, size_t *size, char *why, size_t whylen) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = pk_os_fopen(path, "rb");
     if (!f) {
         snprintf(why, whylen, "%s", strerror(errno));
         return NULL;

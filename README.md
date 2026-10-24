@@ -46,7 +46,11 @@ built on an Alder Lake runs on a Zen 4, one built on a Pi 5 on a Pi 3.
 
 On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
 `pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pktito.exe is linked
-statically and runs from cmd or PowerShell as well.
+statically and runs from cmd or PowerShell as well. It reads its
+arguments from Windows in UTF-16 and opens files by those names, so a
+model or recording named past the code page (`C:\Users\José\ñ.wav`)
+opens, and a transcript's accents and Cyrillic reach the console as
+UTF-8.
 
 Then a model, converted once from NVIDIA's checkpoint and Silero's VAD. The
 converter is Python with numpy and nothing else: it reads the `.nemo`
@@ -395,8 +399,10 @@ long nq = pk_captions(w, 2, 1, 0, cue);           /* 1: English; 0: the end unkn
 
 A model is read-only once loaded and may be shared by transcribers on any
 number of threads; a transcriber belongs to one thread at a time and runs
-its own pool. `make libpktito.a` builds the library alone; core/pktito.h is
-all of its interface, core/wav.h and core/resample.h the WAV library's.
+its own pool. Every path it takes is UTF-8, on Windows too, whatever the
+process's code page. `make libpktito.a` builds the library alone;
+core/pktito.h is all of its interface, core/wav.h and core/resample.h the
+WAV library's.
 examples/transcribe.c is a whole program against it in a page, and `make
 check-c` holds its transcript to the CLI's.
 
@@ -430,7 +436,9 @@ make remote HOST=user@board  # rsync, build, check-c and bench there
 `check-c` is the math library's bounds, every kernel of every backend the
 CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
 model file's validator on its malformed corpus and the whole engine on the
-tiny model, the WAV reader on its own, and test.wav through `./pktito` and
+tiny model, the WAV reader on its own, a WAV and a model under a name
+past ASCII (on Windows, the regression test for UTF-8 paths), and
+test.wav through `./pktito` and
 through examples/transcribe:
 vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
 the detokenizer against sentencepiece, the state machines against Silero's

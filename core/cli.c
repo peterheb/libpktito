@@ -136,7 +136,7 @@ static pk_model *load_model(const char *flag, const char *argv0) {
                     snprintf(path, sizeof path, "models/%s", names[i]);
                 else
                     snprintf(path, sizeof path, "%.*s%smodels/%s", dir, argv0, slash ? "/" : "", names[i]);
-                FILE *f = fopen(path, "rb");
+                FILE *f = pk_os_fopen(path, "rb");
                 if (f) {
                     fclose(f);
                     snprintf(found[nfound++], sizeof found[0], "%s", path);
@@ -815,6 +815,9 @@ static int info(pk_model *m) {
 int main(int argc, char **argv) {
     opts o;
     pk_os_stdio();
+    /* every path the library takes is UTF-8, and on Windows argv is not */
+    if (!(argv = pk_os_args(&argc, argv)))
+        die("cannot read the command line");
     parse(argc, argv, &o);
     pk_model *m = load_model(o.model, argv[0]);
     int rc = !strcmp(o.cmd, "bench") ? bench(&o, m) : !strcmp(o.cmd, "info") ? info(m)

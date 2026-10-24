@@ -5,7 +5,13 @@
  *     ./examples/transcribe models/parakeet-tdt-0.6b-v2.pkf talk.wav
  *
  * prints each chunk as "start end text", the times in seconds. A 16 kHz
- * file only: resampling is core/resample.h's, which ./pktito uses. */
+ * file only: resampling is core/resample.h's, which ./pktito uses.
+ *
+ * The library takes paths in UTF-8 on every system. argv is UTF-8 on
+ * Linux and macOS; on Windows it is the ANSI code page's, so a name past
+ * it does not arrive here whole. ./pktito asks Windows for the command
+ * line in UTF-16 instead (core/os.c's pk_os_args); a program can do the
+ * same, or set its code page to UTF-8 in its manifest. */
 #include "pktito.h"
 #include "wav.h"
 

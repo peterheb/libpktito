@@ -26,7 +26,9 @@ tensor - is checked the same way, against what is left rather than against
 the end.
 
 Public file and buffer entry points reject a null path or byte pointer before
-using it. The in-memory model loader also checks that adding its alignment
+using it. A path is UTF-8; on Windows core/os.c widens it to UTF-16 in a
+buffer sized from the path itself and never past 32,768 units, Windows'
+longest, and refuses bytes that are not UTF-8. The in-memory model loader also checks that adding its alignment
 slack fits in `size_t` before it allocates and copies.
 Counts derived while resampling a WAV saturate instead of wrapping, and the
 front ends check sample-count additions and byte multiplications before they

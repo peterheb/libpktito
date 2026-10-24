@@ -1,4 +1,5 @@
-/* A small WAV reader and writer, in C11 and stdio.
+/* A small WAV reader and writer, in C11 and stdio, with core/os.c to open
+ * a UTF-8 path on Windows.
  *
  * It reads what recordings come in: PCM at 8 (unsigned), 16, 24 and 32
  * bits, IEEE float at 32 and 64, G.711 A-law and mu-law (the 8 kHz
@@ -39,7 +40,9 @@ typedef struct {
 typedef struct pk_wav pk_wav;
 
 /* Open path ("-" is stdin) and read up to the start of its samples. NULL on
- * failure, with the reason in err. */
+ * failure, with the reason in err. A path here and in pk_wav_create is
+ * UTF-8 on every system, Windows too, whatever its code page (core/os.h's
+ * pk_os_fopen opens it). */
 pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errlen);
 
 /* Up to n more frames, each mixed to mono, into out[n]. Returns how many;

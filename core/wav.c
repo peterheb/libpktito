@@ -12,6 +12,7 @@
  * read with fseek, so a pipe reads like a file.
  */
 #include "wav.h"
+#include "os.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -205,10 +206,10 @@ pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errle
         _setmode(_fileno(stdin), _O_BINARY);
 #endif
     } else {
-        w->f = fopen(path, "rb");
+        w->f = pk_os_fopen(path, "rb");
         w->own = 1;
         if (!w->f) {
-            fail(err, errlen, "%s: %s", path, strerror(errno));
+            fail(err, errlen, "%s: %s", path, errno == EILSEQ ? "not a UTF-8 path" : strerror(errno));
             free(buf);
             free(w);
             return NULL;
@@ -388,10 +389,10 @@ pk_wav_out *pk_wav_create(const char *path, uint32_t rate, int float32, char *er
         _setmode(_fileno(stdout), _O_BINARY);
 #endif
     } else {
-        o->f = fopen(path, "wb");
+        o->f = pk_os_fopen(path, "wb");
         o->own = 1;
         if (!o->f) {
-            fail(err, errlen, "%s: %s", path, strerror(errno));
+            fail(err, errlen, "%s: %s", path, errno == EILSEQ ? "not a UTF-8 path" : strerror(errno));
             free(o);
             return NULL;
         }

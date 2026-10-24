@@ -79,11 +79,14 @@ BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(
 # built in with nothing beside it; and MinGW's own printf, since a
 # toolchain on the old msvcrt runtime has none that knows %zu (UCRT's does,
 # and its output is the same bytes either way: check-c on the Core 3 304).
+# shell32 is a system DLL, for CommandLineToArgvW: the CLI's arguments as
+# UTF-8 (core/os.c, pk_os_args). gcc and clang for MinGW link it by
+# default; it is named so that no toolchain has to.
 ifeq ($(UNAME_S),Darwin)
   PLATFLAGS := -D_DARWIN_C_SOURCE
 else ifneq ($(filter MINGW% MSYS% UCRT% CLANG%,$(UNAME_S)),)
   PLATFLAGS := -D_WIN32_WINNT=0x0A00 -D__USE_MINGW_ANSI_STDIO=1
-  PLATLIBS := -static
+  PLATLIBS := -static -lshell32
 else
   PLATFLAGS := -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 endif
@@ -157,8 +160,8 @@ tests/chunkcheck: tests/chunkcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/chunkcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/pathcheck: tests/pathcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pathcheck.c $(LIB_OBJ) $(LDLIBS)
-tests/wavcheck: tests/wavcheck.c core/wav.o
-	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o $(LDLIBS)
+tests/wavcheck: tests/wavcheck.c core/wav.o core/os.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o core/os.o $(LDLIBS)
 # capcheck includes core/captions.c itself, for its static parts, and
 # langcheck core/language.c
 tests/capcheck: tests/capcheck.c core/captions.c core/language.c core/langwords.h core/pktito.h
@@ -263,7 +266,7 @@ check-sanitize:
 	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/pkfcheck-san \
 	  tests/pkfcheck.c $(LIB_SRC) backend/ref/kernels.c backend/kernels.c $(LDLIBS)
 	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/wavcheck-san \
-	  tests/wavcheck.c core/wav.c $(LDLIBS)
+	  tests/wavcheck.c core/wav.c core/os.c $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 ./tests/pkfcheck-san $(TINY)
 	ASAN_OPTIONS=detect_leaks=0 ./tests/wavcheck-san tests/wavcheck.tmp
 
