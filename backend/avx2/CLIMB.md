@@ -491,3 +491,48 @@ where the eight E-cores alone do half their work (33.9x against 69.5x): a
 share in proportion to each core's speed would make up to 103x. The GB10
 loses far more to the same dealing (backend/neon-dp/CLIMB.md, the same
 date).
+
+## 2026-10-24 - avx512-vnni's int8 product in zmm (hypothesis)
+
+The avx512-vnni build is avx2-vnni with VPDPBUSD in its EVEX encoding at
+256 bits: the tile is AVX2's, 16 rows in two ymm by up to three columns,
+sized for 16 registers (15 in use). AVX-512 has twice the width and twice
+the registers, and nothing uses either.
+
+A panel of 16 rows is exactly one zmm of int32 sums, and a group of four
+inputs for those rows exactly the 64 weight bytes one zmm load takes. So
+in zmm a group is one load and, for each column, one VPDPBUSD with the
+column's four activation bytes as an embedded {1to16} broadcast, where
+the ymm tile takes two loads and two VPDPBUSDs a column. With 32
+registers the tile can hold NC columns at two zmm each (the block's
+integer sums and the float chain) beside the weight vector: NC up to 8,
+so the weights a load brings are used by up to eight columns, not three.
+
+What it should do, by core:
+- Zen 5 (the 9950X here; c8a's EPYC 9R45) executes 512-bit VPDPBUSD at
+  full width. The ymm tile ran 257-265 GMAC/s on one 9950X core (above,
+  2026-10-20), about 46 MAC a cycle against 64 for two ymm VPDPBUSD a
+  cycle; zmm doubles the ceiling. The int8 product is about three
+  quarters of a run (the 12900HK profile above: feed-forward, q k v pos,
+  conv pw, attention out), so q8bench up to 1.7x and `pktito bench` 20
+  to 35% faster.
+- Zen 4 (c7a's EPYC 9R14, the 8840HS) splits a zmm operation into two
+  256-bit halves: the same MACs a cycle, fewer instructions and loads.
+  Level, or a few percent.
+- Sapphire and Granite Rapids (c7i, c8i): 512-bit integer multiplies on
+  two ports where they have the second FMA unit, with a lower clock under
+  heavy 512-bit work. Unknown; measured, not guessed.
+- Ice Lake (c6i): the largest 512-bit clock penalty of these. Unknown.
+
+Bits: every lane's int32 sums are exact integers over the same blocks,
+and each block goes into its lane's float chain by the same fused
+multiply-add, scale, bias and add as ref's: kcheck must be ref's bits.
+The avx512-vnni backend's needs gain avx512f (CPUID 7.0 EBX bit 16 with
+the ZMM state; core/os.c answers 1 for a name it doesn't know, so it has
+to learn this one).
+
+Kept if kcheck and check-c pass and q8bench and `pktito bench` move past
+their spread on the 9950X. If they do, it is measured on c8a, c7a, c8i,
+c7i and c6i (AliceBench, the c8a.xlarge-class sizes), and avx512-vnni goes
+ahead of avx2-vnni in backend/kernels.c's order only if no CPU with both
+runs slower on it.
