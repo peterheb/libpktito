@@ -35,7 +35,7 @@ UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
   FAMILY := neon-dp neon
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
-  FAMILY := avx512-vnni avx2-vnni avx2
+  FAMILY := amx-int8 avx512-vnni avx2-vnni avx2
 endif
 
 # Each backend's instruction set, and tuning for the core the build is on
@@ -58,6 +58,7 @@ endif
 ISA_avx2 := -mavx2 -mfma
 ISA_avx2-vnni := -mavx2 -mfma -mavxvnni
 ISA_avx512-vnni := -mavx2 -mfma -mavx512f -mavx512vnni -mavx512vl
+ISA_amx-int8 := $(ISA_avx512-vnni) -mamx-tile -mamx-int8
 
 can_build = $(shell echo 'int x;' | $(CC) $(ISA_$(1)) -x c -c -o /dev/null - 2>/dev/null && echo $(1))
 BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(call can_build,$(b)))))

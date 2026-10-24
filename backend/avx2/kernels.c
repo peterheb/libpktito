@@ -301,8 +301,8 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
         }                                                                                \
     } while (0)
 
-static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                      uint32_t rows, const pk_act *a, int add) {
+static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                   uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, nb = n / a->qb;
     if (a->T < PK_Q8_XOFF) {
         int32_t cs[PK_Q8_XOFF * PK_MAX_BLOCKS];
@@ -343,6 +343,103 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
     }
 }
 
+
+#ifdef __AMX_INT8__
+/* AMX (the amx-int8 build). TDPBSSD multiplies tile A, signed bytes, by
+ * tile B, signed bytes, into tile C's exact int32 sums: C[m][r] += sum over
+ * i of A[m][i] B[i/4][4r + i%4]. A block of one panel is a B tile as the
+ * file holds it (8 rows of a group's 64 bytes: four inputs for each of the
+ * 16 rows), A is 16 columns' 32 bytes of the block, n apart, and C the 16
+ * columns by the panel's 16 rows. Signed by signed, so no offset. Each
+ * block's C goes to L1 and comes back a column at a time into that
+ * column's float chain, as the zmm tile's sums do, while the next block's
+ * TDPBSSD runs in the other C tile. Four C tiles in turn, to wait out
+ * more of TDPBSSD's latency, ran 1.5% slower on a c7i, and panels outer
+ * no faster (CLIMB.md, 2026-10-24). Columns past the last whole 16, and
+ * products of fewer, take the zmm tile. */
+static void amx_config(void) {
+    static _Thread_local int ready;
+    if (ready)
+        return;
+    _Alignas(64) struct {
+        uint8_t palette, start, reserved[14];
+        uint16_t colsb[16];
+        uint8_t rows[16];
+    } cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.palette = 1;
+    cfg.colsb[0] = 32, cfg.rows[0] = 16;                         /* A */
+    cfg.colsb[1] = 64, cfg.rows[1] = 8;                          /* B */
+    cfg.colsb[2] = 64, cfg.rows[2] = 16;                         /* C, even blocks */
+    cfg.colsb[3] = 64, cfg.rows[3] = 16;                         /* C, odd blocks */
+    _tile_loadconfig(&cfg);
+    ready = 1;
+}
+
+/* one block's 16 columns' sums, in c, into their float chains */
+static inline __attribute__((always_inline))
+void amx_chains(__m512 f[16], const int32_t *c, const float *d, uint32_t nb) {
+    for (int m = 0; m < 16; m++)
+        f[m] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_load_si512((const void *)(c + 16 * m))),
+                               _mm512_set1_ps(d[(size_t)m * nb]), f[m]);
+}
+
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
+    const uint32_t n = a->n, qb = a->qb, nb = n / qb, T16 = a->T & ~15u;
+    if (qb != 32 || T16 == 0) {
+        q8_zmm(out, os, w, ws, bias, rows, a, add);
+        return;
+    }
+    amx_config();
+    _Alignas(64) int32_t cbuf[2][256];
+    for (uint32_t t = 0; t < T16; t += 16) {
+        const int8_t *x = a->q + (size_t)t * n;
+        const float *d = a->d + (size_t)t * nb;
+        for (uint32_t r = 0; r < rows; r += 16) {
+            const int8_t *wp = w + (size_t)r * n;
+            __m512 f[16];
+            for (int m = 0; m < 16; m++) f[m] = _mm512_setzero_ps();
+            /* block b's product runs in tile 2 or 3 while block b-1's sums
+             * go into the chains */
+            for (uint32_t b = 0; b < nb; b++) {
+                _tile_loadd(0, x + (size_t)b * 32, n);
+                _tile_loadd(1, wp + (size_t)b * 512, 64);
+                if (b & 1) {
+                    _tile_zero(3);
+                    _tile_dpbssd(3, 0, 1);
+                    amx_chains(f, cbuf[0], d + b - 1, nb);
+                    _tile_stored(3, cbuf[1], 64);
+                } else {
+                    _tile_zero(2);
+                    _tile_dpbssd(2, 0, 1);
+                    if (b)
+                        amx_chains(f, cbuf[1], d + b - 1, nb);
+                    _tile_stored(2, cbuf[0], 64);
+                }
+            }
+            amx_chains(f, cbuf[(nb - 1) & 1], d + nb - 1, nb);
+            const __m512 sc = _mm512_loadu_ps(ws + r);
+            for (int m = 0; m < 16; m++) {
+                float *o = out + (size_t)(t + m) * os + r;
+                __m512 v = _mm512_mul_ps(f[m], sc);
+                if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias + r));
+                if (add) v = _mm512_add_ps(_mm512_loadu_ps(o), v);
+                _mm512_storeu_ps(o, v);
+            }
+        }
+    }
+    if (T16 < a->T) {
+        const pk_act rest = { a->q + (size_t)T16 * n, a->d + (size_t)T16 * nb, n, qb, a->T - T16 };
+        q8_zmm(out + (size_t)T16 * os, os, w, ws, bias, rows, &rest, add);
+    }
+}
+#else
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
+    q8_zmm(out, os, w, ws, bias, rows, a, add);
+}
+#endif /* __AMX_INT8__ */
 
 #else
 /* One tile: a whole panel, 16 rows in two vectors, by NC columns (up to
@@ -1062,6 +1159,12 @@ static const char *const needs[] = { "avx2", "fma", "avxvnni", NULL };
 const pk_kernels pk_kernels_avx2_vnni = {
     .id = "avx2-vnni",
     .name = "avx2-vnni (x86-64 AVX2 + FMA: AVX-VNNI's VPDPBUSD int8, fp32)",
+#elif defined(__AMX_INT8__)
+static const char *const needs[] = { "avx2", "fma", "avx512f", "avx512vnni", "avx512vl", "amx_tile",
+                                     "amx_int8", NULL };
+const pk_kernels pk_kernels_amx_int8 = {
+    .id = "amx-int8",
+    .name = "amx-int8 (x86-64 AVX-512 + FMA: AMX's TDPBSSD int8, fp32)",
 #else
 static const char *const needs[] = { "avx2", "fma", "avx512f", "avx512vnni", "avx512vl", NULL };
 const pk_kernels pk_kernels_avx512_vnni = {

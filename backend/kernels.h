@@ -261,7 +261,8 @@ typedef struct {
 } pk_kernels;
 
 extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_kernels_avx2,
-                        pk_kernels_avx2_vnni, pk_kernels_avx512_vnni;
+                        pk_kernels_avx2_vnni, pk_kernels_avx512_vnni,
+                        pk_kernels_amx_int8;
 
 /* This build's backends, the fastest first and ref last, NULL-ended. */
 extern const pk_kernels *const pk_kernels_built[];

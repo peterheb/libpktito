@@ -25,9 +25,13 @@ const pk_kernels *const pk_kernels_built[] = {
 #ifdef PK_HAVE_neon
     &pk_kernels_neon,
 #endif
-/* avx512-vnni before avx2-vnni: every CPU that has both (Zen 5, Sapphire
+/* amx-int8 first, 24-25% over avx512-vnni on Sapphire and Granite Rapids;
+ * avx512-vnni before avx2-vnni: every CPU that has both (Zen 5, Sapphire
  * Rapids, Granite Rapids) runs its zmm product faster (backend/avx2/CLIMB.md,
  * 2026-10-24) */
+#ifdef PK_HAVE_amx_int8
+    &pk_kernels_amx_int8,
+#endif
 #ifdef PK_HAVE_avx512_vnni
     &pk_kernels_avx512_vnni,
 #endif

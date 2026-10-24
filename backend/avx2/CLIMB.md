@@ -624,3 +624,47 @@ to 27.8), which is its clock under 512-bit work slowing the rest of the
 run. No narrower tile removes it; a ymm product chosen for Ice Lake by
 model would be the model list CLAUDE.md, 4, rules out. Kept, with Ice
 Lake's 2 to 6% as its cost; Ice Lake has no other VNNI to fall back to.
+
+## 2026-10-24 - the int8 product on AMX (result: kept, first in the order)
+
+As the hypothesis above has it, two C tiles in turn: block b's TDPBSSD
+runs while block b-1's sums go to L1 and into the float chains, 16 columns
+at a time with every panel of pk_gemm's slice under them. kcheck, 1777
+cases, ref's bits on amx-int8, and check-c passes, on a c7i (Xeon 8488C,
+gcc 13.3 on Ubuntu 24.04); every transcript below is ref's bytes, through
+either backend.
+
+The loop's shape, on a c7i.large (one core, two threads), `pktito bench`
+on test.wav: avx512-vnni's zmm 19.1 to 19.7x; two C tiles 27.6 to 27.7x;
+four C tiles in turn, to wait out more of TDPBSSD's latency, 27.1 to
+27.3x, the two interleaved in one sitting (an earlier sitting had four
+tiles at 30.4 to 30.9x and two at 28.3x, which the interleaved rounds did
+not reproduce; the box was slower by about 3% across the board by then);
+panels outer, 26.6 to 27.5x; the columns cut into blocks of 64, 28.0 to
+28.9x. Two tiles, columns outer: the simplest, and level or ahead.
+
+Measured on EC2, us-east-1, each instance fresh, Ubuntu 24.04, one binary
+built here holding both backends: three interleaved rounds of `pktito
+bench` on test.wav (best of five each, the default threads), then
+q8bench on one thread, the 1024 x 1024 attention product at T 750, whole
+and in pk_gemm's 64-row slices:
+
+| instance | CPU | threads | avx512-vnni | amx-int8 | | q8bench, whole | in slices |
+|---|---|---|---|---|---|---|---|
+| c7i.xlarge | Xeon 8488C, Sapphire Rapids | 2 | 37.7x | 46.8x | +24% | 250 to 429 | 236 to 343 |
+| c8i.xlarge | Xeon 6975P-C, Granite Rapids | 2 | 35.2x | 44.0x | +25% | 223 to 351 | 207 to 296 |
+| c8i.4xlarge | Xeon 6975P-C, Granite Rapids | 8 | 135.6x | 168.9x | +25% | 253 to 448 | 226 to 370 |
+
+(medians; every round within 1% of its median; q8bench in GMAC/s.)
+
+Short of the hypothesis: the product 1.5 to 1.7x, not 3 to 4x, and the
+run 25%, not 50 to 100%. 429 GMAC/s at about 3 GHz is some 57 cycles a
+block of 8,192 MACs, where the hypothesis counted 16 for TDPBSSD and 16
+for the float side overlapping it. Where the other 25 go - A's 16 rows
+loaded n bytes apart, C's kilobyte stored and read back, the chain's
+dependence through f - is the next climb's question, not answered here.
+Kept: 24 to 25% on both Xeons with AMX, past a spread under 1%, and the
+order puts amx-int8 first. Not measured on Windows, which builds it
+(MSYS2's gcc has -mamx-int8) and has no such CPU here: amx_permitted
+asks only Linux, and on Windows the tiles' XCR0 bits are the whole check,
+which a Windows Xeon should confirm before the order is trusted there.
