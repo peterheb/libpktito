@@ -1162,3 +1162,81 @@ check-c passing with amx-int8 on the two Xeons:
 
 (EC2: us-east-1, Ubuntu 24.04, fresh instances, both trees built there.)
 Not measured: Ice Lake (c6i), whose clock falls under 512-bit work.
+
+## 2026-10-24 - the x86 backends under two compilers (hypothesis)
+
+CLAUDE.md now asks a tuned kernel to be benched under two compilers where
+the board has them. Applied to the x86 kernels as they stand (ee893c3):
+on the 9950X, gcc 15.2 against clang 21.1 (Ubuntu's, both), and gcc 14.3
+beside them; avx512-vnni and avx2-vnni through PKTITO_KERNELS, `pktito-c
+bench` on test.wav at one thread and 16, and q8bench at T 750 on one
+thread; three interleaved rounds, one sitting. Expected: within the spread
+everywhere, the int8 products being intrinsics with their schedules
+written out, except where a loop holds more live vectors than registers
+(the zmm product's PK_Q8_NC columns, the zmm float tile's 16 chains),
+where one compiler's spill would show first. A backend that differs by
+more than the spread is a climb of its own: why, then C both agree on.
+amx-int8 needs a Xeon: gcc 13.3 against gcc 15 on one instance, one
+sitting, separately.
+
+## 2026-10-24 - the x86 backends under two compilers (result: a climb)
+
+The hypothesis above, on the 9950X, ee893c3, one sitting, three
+interleaved rounds (test.wav best of five; q8bench T 750, 64-row slices,
+GMAC/s up/down/attention/decoder):
+
+| backend | measure | gcc 15.2 | gcc 14.3 | clang 21.1 |
+|---|---|---|---|---|
+| avx512-vnni | bench, 1 thread | 43.3-43.7x | 43.5-43.7x | 45.6-45.7x |
+| | bench, 16 | 269.3-274.5x | 270.6-271.7x | 269.6-273.0x |
+| | q8bench | 424-427/415-416/431-440/94-95 | 435-441/416-422/441-446/95-96 | 458-460/431-437/463-466/103-106 |
+| avx2-vnni | bench, 1 thread | 26.8-26.9x | 27.0x | 27.2x |
+| | bench, 16 | 200.3-211.4x | 199.0-201.6x | 206.3-210.8x |
+| | q8bench | 253-256/250-254/259-261/93-94 | 261-262/254-255/263-267/94 | 259-262/252-257/263-267/100-102 |
+
+avx512-vnni's product is 7 to 8% behind under gcc, a whole run 5%; the
+decoder's one-column product (T 1) 7 to 10% under gcc on both. A climb,
+by the rule.
+
+## 2026-10-24 - the zmm product's scales block-major for gcc (hypothesis)
+
+objdump of q8_zmm's eight-column block loop (qb 32): clang 147
+instructions where the activations are read in place (the broadcast
+folded into VPDPBUSD as {1to16}) and 192 from the offset copy (the
+broadcast first: the unsigned operand cannot be the folded one), 12
+stack references; gcc 15.2 262 to 277 with 15 to 29, its eight scale
+pointers a->d + (t0 + c) * nb in xmm27-31 and on the stack (vmovq rax,
+xmmN before each FMA), and the block count and two offsets kept in
+memory (add DWORD PTR [rsp+...]). Hypothesis: with the copy's tile's
+scales laid out block-major beside the copied activations, a block's
+eight at one pointer and constant offsets, gcc has the registers clang
+uses, its loop comes to clang's length, and its product to clang's
+GMAC/s (+5 to 8%), clang's level; the bits are the same, each scale the
+same float broadcast. The decoder's T 1 path, which reads in place, is
+a separate question.
+
+## 2026-10-24 - the zmm product's scales block-major for gcc (result: half the gap, not kept as is)
+
+As the hypothesis above: each tile's scales copied block-major beside the
+offset copy (~/ec2-bench/x86climb/dsc-blockmajor.patch), kcheck ref's
+bits under both compilers. gcc's loop lost its eight scale pointers (its
+FMAs now DWORD BCST [rcx-0x20] to [rcx-0x4]) and went from 262-277
+instructions and 22 to 29 stack references to 254 and 15; it still keeps
+two running offsets in memory. Three interleaved rounds, avx512-vnni,
+q8bench T 750 in 64-row slices (up/down/attention) and test.wav at one
+thread:
+
+| build | q8bench | bench, 1 thread |
+|---|---|---|
+| gcc 15.2, ee893c3 | 430-440 / 422-424 / 442 | 43.6-43.7x |
+| gcc 15.2, scales block-major | 441-447 / 420-423 / 447-450 | 44.5-44.8x (+2.3%) |
+| clang 21.1, ee893c3 | 458-463 / 431-436 / 466-467 | 45.5-45.7x |
+| clang 21.1, scales block-major | 452-455 / 428-434 / 460-464 (-1.5%) | 45.7-45.9x |
+
+Half of gcc's 5% closed, clang's product 1.5% down (the scales' copy, a
+call's T x nb floats) with its run level. By the two-compiler rule not
+finished: kept out. Next, the copy's activations interleaved by tile too
+(a group's NC columns' four bytes adjacent), so that a block reads from
+one activation pointer and one weight pointer at constant offsets under
+either compiler; its cost is a transposing copy a call, which 64-row
+slices at 16 threads (four panels a call) would feel most.
