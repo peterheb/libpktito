@@ -665,3 +665,31 @@ The command-line program the Makefile builds, `./pktito` in the rows
 above, is `./pktito-c` from here on, so that it is not taken for the
 app, pktito; the same program, the same output. The rows above keep the
 name they were measured under.
+
+## 2026-10-24 - the int8 product on SME2's SMOPA (a measurement: not taken up)
+
+The M4 Pro reports FEAT_SME2 with a 512-bit streaming vector, an SME unit
+to each of its two performance clusters. Before any kernel, how much of
+the unit the q8 format leaves: microbenchmarks only, Apple clang 21,
+-mcpu=apple-m4, the operands in registers (no loads), one thread unless
+said, the M4 in use (load average 1.7 to 8). Their sources are kept with
+the session's notes, not in the tree.
+
+| loop | int8 multiply-adds a second |
+|---|---|
+| SDOT, 16 chains, 1 / 2 / 4 / 8 threads | 240-259 G / 497-504 G / 908-910 G / 1713-1804 G |
+| SMOPA (16 x 16 int32, 1024 a SMOPA), 4 tiles, 1 / 2 / 4 / 8 threads | 1984 G / 1957 G / 2254-2364 G / 3812-3829 G |
+| SMOPA, 8 a 32-input block, each tile then drained: rows to Z four at a time, SCVTF, FMLA, zeroed | 498 G |
+| the same with SME2's multi-vector forms (vgx4 array reads, SCVTF x4, FMLA vgx4 into a float tile), one scale vector or one a row | 620-633 G |
+| one tile filled while the other is drained (double-buffered), vgx4 | 728-729 G |
+
+One thread fills a unit (2.0 T); the second cluster's makes 3.8 T with
+threads on both, about 2.2 times eight cores of SDOT. But the format's
+scale on every 32 inputs ends each tile's int32 sum after 8 SMOPAs, and
+the drain to float costs about two thirds of the unit however it is
+written here: the best, double-buffered, 0.73 T a unit, 1.46 T for two,
+is about what eight cores of SDOT give the product now (q8bench's
+182-186 G a core), before a single load. So SME2 is not taken up for the
+q8 format as it is. What would change it is a longer integer sum - a
+block of 128 inputs or more, or a scale a row - which is a quantization
+choice for tools/quantcheck.py, not a kernel's.
