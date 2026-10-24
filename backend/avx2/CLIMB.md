@@ -829,3 +829,36 @@ panel's 16 KB of B). Predicted: q8bench in slices of 64 most of the way
 to the 256-row figure on the n = 1024 shapes, 10 to 15%, and `pktito
 bench` 3 to 4%. At n = 4096 a group's A, 64 KB, is past L1; the same
 prefetch there should do little.
+
+## 2026-10-24 - AMX: the next group's A prefetched in the last panel (result: rejected)
+
+As the hypothesis above has it: 16 PREFETCHT0s every other block of a
+group's last panel, the next group's A at constant offsets. kcheck ref's
+bits on amx-int8, test.wav v2 and v3 ref's bytes (c7i.large, gcc 13.3).
+Against 49acfe4, one sitting, three interleaved rounds: q8bench in slices
+of 64, 452-476, 409-430 and 478-527 GMAC/s against 476-493, 431-445 and
+465-479; `pktito bench` 28.8 to 29.1x against 29.5 to 29.8x. Slower.
+Rejected. The slice's effect is not the zmm tail's either: at T 736, no
+tail, the up shape ran 499-504 GMAC/s in slices of 64 and 554-585 in
+slices of 256. What the 256-row slice buys stays open; the step is
+pk_gemm's.
+
+## 2026-10-24 - AMX: a short group of columns padded to 16 (hypothesis)
+
+Columns past the last whole 16 take the zmm tile, which at a few columns
+is slow: q8bench in slices of 64 on the c7i.large ran 493-522 GMAC/s at T
+240, 455-469 at T 250 and 499-532 at T 256 (the up, down and attention
+shapes alike). A minute of test.wav is three chunks of about 250 frames:
+a tail of 10 columns, 4% of them, near 15% of the product's time; at T 750
+the 14 cost 8% (T 736: 499-504, T 750: 462-466 on the up shape).
+
+The change: the last, short group's activations and scales copied into
+16-column buffers of the thread (the scales' extra columns zero, so that
+their chains stay 0 and the converts and FMAs on them see no denormal),
+the group run as any other into a 16-column scratch, and only its real
+columns written out. For n up to 4096 (the model's largest; a buffer of
+64 KB); past that the zmm tile, as now. Predicted: q8bench at T 250 up
+to near T 256's rate on the columns that count, 8% faster, and `pktito
+bench` on test.wav 4 to 5% on the c7i.large. The real columns' sums and
+chains are the same instructions on the same bytes: the bits are
+untouched.
