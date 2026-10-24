@@ -726,3 +726,50 @@ attention's shape and from 344 to about 380 on the feed-forward's down;
 `pktito bench`, whose int8 products are 64% of a run there (PROFILE=1,
 26.5x on one thread), 10 to 12% faster. The bits are untouched: each
 block's sums go into the chains in block order, as now.
+
+## 2026-10-24 - AMX's pipelined loop (result: kept)
+
+The pipeline as the hypothesis above has it, chains three blocks behind,
+with two things the first build showed. gcc 15 keeps an array of the 16
+chains on the stack, a load and a store more a column a block; it did so
+with main's loop too, which gcc 13 keeps in registers: so the chains are
+16 named variables. And with nb a variable the 16 scales' offsets m nb
+take as many registers, some of them moved through xmm; so the steady
+state is four steps a turn (every tile and buffer a constant), and nb a
+constant for the encoder's 32 and 128, a variable for other multiples of
+4. Blocks that are no multiple of 4 (none of the model's) take the zmm
+tile.
+
+kcheck, 1777 cases, ref's bits on amx-int8, avx512-vnni, avx2-vnni and
+avx2 and check-c passes, on the c7i.large (gcc 13.3) and, without AMX, on
+the 9950X (gcc 15.2); test.wav's v2 and v3 through amx-int8 are ref's
+bytes from both compilers' builds.
+
+On the c7i.large, one sitting, main (ae34ec1) and this tree each built
+there with gcc 13.3 and here with gcc 15.2, three interleaved rounds of
+q8bench in slices of 64 (GMAC/s: feed-forward up, down, attention) and
+then of `pktito bench` on test.wav (one thread, best of five):
+
+| | q8bench, medians | bench |
+|---|---|---|
+| main, gcc 13 | 363, 348, 381 | 24.8, 26.0, 25.8x |
+| this, gcc 13 | 443, 420, 459 (+22, +21, +20%) | 28.9, 28.9, 28.5x (+12%) |
+| main, gcc 15 | 306, 297, 299 | 22.8, 22.9, 22.7x |
+| this, gcc 15 | 471, 429, 458 (+54, +44, +53%) | 28.3, 28.5, 28.6x (+25%) |
+
+The rounds' ranges: main gcc 13 q8bench 359-384, 347-353, 369-387; this
+gcc 13 429-449, 405-430, 421-478; the bench ranges as listed. Past the
+spread everywhere. The prediction was the attention's shape to about 480
+and the down to about 380, and the run 10 to 12%: the attention's shape
+fell short (459), the down did better (420), and the run moved 12%. The
+EC2 rows of the entry before were gcc 15 builds, the spilling loop.
+
+nb a variable for every shape against the constants, the same sitting,
+gcc 13: q8bench 375-414, 376-388, 386-416 against 445-470, 417-424,
+448-464; bench 26.7 to 26.9x against 28.5 to 28.8x. Kept, the constants
+with it.
+
+The floor is still the port: 32 converts and FMAs a block on port 0
+beside the tile store's 19 uops on port 5, near 36 cycles a block on L1
+data, where the loop now runs 46 (49 with B from L2, 62 on the down
+shape, whose 16 rows of A, 4096 bytes apart, fall in one L1 set).
