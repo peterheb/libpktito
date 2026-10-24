@@ -50,7 +50,9 @@ statically and runs from cmd or PowerShell as well. It reads its
 arguments from Windows in UTF-16 and opens files by those names, so a
 model or recording named past the code page (`C:\Users\José\ñ.wav`)
 opens, and a transcript's accents and Cyrillic reach the console as
-UTF-8.
+UTF-8. Neither cmd nor PowerShell expands `*.wav` for a program, and
+pktito.exe doesn't either: in PowerShell, `.\pktito (Get-ChildItem
+*.wav).FullName`; MSYS2's bash expands it as any Unix shell does.
 
 Then a model, converted once from NVIDIA's checkpoint and Silero's VAD. The
 converter is Python with numpy and nothing else: it reads the `.nemo`
