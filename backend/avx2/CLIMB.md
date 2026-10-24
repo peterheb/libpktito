@@ -915,3 +915,39 @@ run, so that it overlaps work on other pipes and lands in L1 just before
 it is read. Predicted: q8bench in slices most of the way to the no-copy
 build, 5 to 6%, and `pktito bench` on the 9950X 3 to 4% (16 threads).
 The bytes copied are the same; the bits are untouched.
+
+## 2026-10-24 - amx-int8's pipelined loop and padded group on EC2 (measurement)
+
+main (ae34ec1) against d1bda18 (the pipelined loop and the padded short
+group), each one binary built here with gcc 15.2 holding both backends,
+on fresh us-east-1 instances (Ubuntu 24.04), one sitting each: three
+interleaved rounds of `pktito bench` on test.wav (best of five, the
+default two threads), then q8bench once on one thread in pk_gemm's
+64-row slices. Every transcript, from either binary through either
+backend, is ref's bytes (test.v2.json).
+
+| instance | backend | main | d1bda18 | |
+|---|---|---|---|---|
+| c7i.xlarge, Xeon 8488C | amx-int8 | 38.4, 38.6, 38.3x | 47.5, 48.1, 48.3x | +25% |
+| | avx512-vnni | 33.9, 34.0, 33.9x | 33.7, 34.0, 33.9x | level |
+| c8i.xlarge, Xeon 6975P-C | amx-int8 | 43.2, 43.0, 42.8x | 56.3, 56.1, 56.4x | +31% |
+| | avx512-vnni | 34.8, 35.0, 34.7x | 34.8, 34.9, 34.7x | level |
+
+q8bench on amx-int8, GMAC/s (up, down, attention):
+
+| instance | T | main | d1bda18 |
+|---|---|---|---|
+| c7i.xlarge | 750 | 258, 276, 277 | 412, 426, 426 |
+| | 250 | 250, 286, 293 | 399, 440, 422 |
+| c8i.xlarge | 750 | 288, 285, 293 | 463, 438, 479 |
+| | 250 | 282, 288, 302 | 474, 455, 499 |
+
+The product 1.44 to 1.68 times main's; avx512-vnni's, whose code the two
+share, within 4% of it on every shape (single runs). Both builds are gcc
+15's, under which main's loop spills its chains (the pipelined loop's
+entry: 22.8x against gcc 13's 25.8x on the c7i.large); against a gcc 13
+build of main the gain would be nearer that entry's +12% and the padded
+group's +2.3%. Across sittings the instances differ: this c7i.xlarge ran
+main's amx-int8 at 38.4x and avx512-vnni at 33.9x, against 46.8x and 37.7x
+for the same loop in the first AMX entry's sitting; the c8i.xlarge agrees
+with its row there within 2%. Only the rows of one sitting compare.
