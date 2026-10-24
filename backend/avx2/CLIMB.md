@@ -668,3 +668,20 @@ order puts amx-int8 first. Not measured on Windows, which builds it
 (MSYS2's gcc has -mamx-int8) and has no such CPU here: amx_permitted
 asks only Linux, and on Windows the tiles' XCR0 bits are the whole check,
 which a Windows Xeon should confirm before the order is trusted there.
+
+## 2026-10-24 - the zmm product on the 9950X (a measurement)
+
+The Ryzen 9 9950X under Windows 11, MSYS2's gcc 16.2, main (a331da1)
+against f0232d2, three interleaved rounds of `pktito bench` on test.wav,
+16 threads, run twice (the second after another job's build had shared
+the first); medians of the second, seconds whole and in 30 s chunks:
+
+| | main | f0232d2 |
+|---|---|---|
+| avx512-vnni | 0.288, 0.274 | 0.228, 0.217 (+26%) |
+| avx2-vnni | 0.287, 0.283 | 0.292, 0.274 |
+| avx2 | 0.546, 0.541 | 0.534, 0.529 |
+
+The first run agreed within 3%. avx2-vnni and avx2 are the same code in
+both and move within their spread (200 to 224x across rounds); the zmm
+product is the one change, ref's bits from every build and backend.
