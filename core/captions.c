@@ -473,8 +473,10 @@ long pk_captions(const pk_capword *w, size_t count, int english, int64_t media_e
     prepare(&g, english, media_end);
 
     /* the shortest path, from boundary 0 to n (the spec's 8.4) */
-    for (int32_t j = 0; j <= n; j++)
+    for (int32_t j = 0; j <= n; j++) {
         parent[j] = -1;
+        cues[j] = 0;    /* every one is set before it is read, which gcc 16 cannot see */
+    }
     v[0] = q[0] = 0;
     cues[0] = 0;
     parent[0] = 0;

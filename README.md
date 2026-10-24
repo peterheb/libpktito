@@ -53,6 +53,10 @@ opens, and a transcript's accents and Cyrillic reach the console as
 UTF-8. Neither cmd nor PowerShell expands `*.wav` for a program, and
 pktito-c.exe doesn't either: in PowerShell, `.\pktito-c (Get-ChildItem
 *.wav).FullName`; MSYS2's bash expands it as any Unix shell does.
+Windows PowerShell 5.1's `>` decodes a program's output in the console's
+code page before it writes the file, so to keep a transcript's accents
+there, first `[Console]::OutputEncoding = [Text.Encoding]::UTF8` (cmd's
+`>` writes pktito-c's UTF-8 as it is).
 
 Then a model, converted once from NVIDIA's checkpoint and Silero's VAD. The
 converter is Python with numpy and nothing else: it reads the `.nemo`

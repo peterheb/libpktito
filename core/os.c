@@ -235,8 +235,7 @@ const unsigned char *pk_map_file(const char *path, size_t *size, char *why, size
     wchar_t *wpath;
     int bad = widen(path, &wpath);
     if (bad) {
-        snprintf(why, whylen, "%s", bad == EILSEQ ? "not a UTF-8 path"
-                                    : bad == ENAMETOOLONG ? "path too long" : "out of memory");
+        snprintf(why, whylen, "%s", bad == EILSEQ ? "not a UTF-8 path" : strerror(bad));
         return NULL;
     }
     HANDLE f = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
@@ -321,11 +320,19 @@ double pk_os_now(void) {
 /* The bytes as written: no \r added before each \n on a pipe or a file,
  * where the C runtime's text mode would add one and a transcript compared
  * with tests/data's would differ; and UTF-8 to the console, which shows
- * v3's accents and Cyrillic in place of the code page's guesses. */
+ * v3's accents and Cyrillic in place of the code page's guesses. The
+ * console keeps its code page past the process, so the one it had comes
+ * back at exit, for the programs run in it next. */
+static UINT console_cp;
+
+static void console_restore(void) { SetConsoleOutputCP(console_cp); }
+
 void pk_os_stdio(void) {
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stdin), _O_BINARY);
-    SetConsoleOutputCP(CP_UTF8);
+    console_cp = GetConsoleOutputCP();          /* 0 with no console */
+    if (console_cp && console_cp != CP_UTF8 && SetConsoleOutputCP(CP_UTF8))
+        atexit(console_restore);
 }
 
 #else /* the plain-C fallback: read the file, one core, the C11 clock */

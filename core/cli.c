@@ -120,6 +120,20 @@ static void die(const char *fmt, ...) {
     exit(1);
 }
 
+/* pk_wav_open's reason; on Windows, for a name with a wildcard in it, also
+ * why: cmd and PowerShell leave *.wav to the program, and this one takes
+ * names (README) */
+static void cannot_open(const char *path, const char *err) {
+#ifdef _WIN32
+    if (strpbrk(path, "*?"))
+        die("%s (Windows leaves a wildcard to the program, and pktito-c takes names: "
+            "README, \"Try it\")", err);
+#else
+    (void)path;
+#endif
+    die("%s", err);
+}
+
 static double num(const char *flag, const char *s, double lo, double hi) {
     char *end;
     double v = s ? strtod(s, &end) : 0;
@@ -177,6 +191,11 @@ static pk_model *load_model(const char *flag, const char *argv0) {
     const char *p = flag ? flag : getenv("PKTITO_MODEL");
     if (!p) {
         const char *slash = strrchr(argv0, '/');
+#ifdef _WIN32
+        const char *back = strrchr(argv0, '\\');    /* Windows' own separator */
+        if (back && (!slash || back > slash))
+            slash = back;
+#endif
         int dir = slash ? (int)(slash - argv0) : 0;
         for (int d = 0; d < 2 && !nfound; d++)
             for (int i = 0; i < 2; i++) {
@@ -208,7 +227,7 @@ static float *read_audio(const char *path, int rate, size_t *n, const opts *o) {
     pk_wav_info info;
     pk_wav *w = pk_wav_open(path, &info, err, sizeof err);
     if (!w)
-        die("%s", err);
+        cannot_open(path, err);
     pk_resampler *rs = NULL;
     if (info.rate != (uint32_t)rate && !(rs = pk_resampler_new(info.rate, (uint32_t)rate)))
         die("%s: cannot resample from %u Hz", path, (unsigned)info.rate);
@@ -579,7 +598,7 @@ static int stream(const opts *o, pk_model *m) {
     pk_wav_info info;
     pk_wav *w = pk_wav_open(o->in, &info, err, sizeof err);
     if (!w)
-        die("%s", err);
+        cannot_open(o->in, err);
     pk_resampler *rs = NULL;
     if (info.rate != (uint32_t)rate && !(rs = pk_resampler_new(info.rate, (uint32_t)rate)))
         die("%s: cannot resample from %u Hz", o->in, (unsigned)info.rate);
@@ -728,7 +747,7 @@ static double bench_resample(const char *path, int rate, uint32_t *from) {
     pk_wav_info info;
     pk_wav *w = pk_wav_open(path, &info, err, sizeof err);
     if (!w)
-        die("%s", err);
+        cannot_open(path, err);
     *from = info.rate;
     if (info.rate == (uint32_t)rate) {
         pk_wav_close(w);
