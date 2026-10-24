@@ -1,4 +1,4 @@
-# pktito
+# libpktito
 
 NVIDIA's [Parakeet TDT](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
 speech recognizers in C11, with nothing beyond the C library and pthreads:
