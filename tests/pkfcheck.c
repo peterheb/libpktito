@@ -32,7 +32,7 @@
  *     ./tests/pkfcheck tests/data/tiny.pkf [WAV_OUT]
  *
  * WAV_OUT, if given, gets the 35 s recording the engine checks used, for
- * `make check-c` to put through ./pktito as well.
+ * `make check-c` to put through ./pktito-c as well.
  */
 #include "model.h"
 #include "pkf.h"

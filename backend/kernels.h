@@ -234,7 +234,7 @@ void pk_k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_
  * baseline. */
 typedef struct {
     const char *id;                 /* "avx2-vnni", as PKTITO_KERNELS names it */
-    const char *name;               /* and what it is built for, for `pktito bench` */
+    const char *name;               /* and what it is built for, for `pktito-c bench` */
     const char *const *needs;       /* the CPU features its code uses, NULL-ended:
                                        "avx2", "fma", "avxvnni", "avx512vnni",
                                        "avx512vl", "asimddp" (ARMv8.2's dot product) */
@@ -274,7 +274,7 @@ extern const pk_kernels *const pk_kernels_built[];
  * PKTITO_KERNELS names one the build lacks or the CPU cannot run. */
 const pk_kernels *pk_kernels_pick(char *why, size_t whylen);
 
-/* The name of the backend in use, for `pktito bench`. */
+/* The name of the backend in use, for `pktito-c bench`. */
 const char *pk_k_name(void);
 
 #endif /* PK_KERNELS_H */

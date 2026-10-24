@@ -61,7 +61,7 @@ allows.
 ## Measuring
 
 - A kernel change: the hypothesis in the backend's CLIMB.md before the edit,
-  tests/kcheck passing, and kept only if `./pktito bench` moves by more than
+  tests/kcheck passing, and kept only if `./pktito-c bench` moves by more than
   the run-to-run spread on a quiet board (`make remote HOST=` runs both
   there). `make PROFILE=1` says which stage moved.
 - A change to arithmetic - a rounding, an accumulation order, a block size,

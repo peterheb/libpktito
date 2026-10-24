@@ -34,7 +34,7 @@ license (https://creativecommons.org/licenses/by/4.0/):
 
 Whoever shares a .pkf shares those weights, modified, and owes NVIDIA the
 attribution CC-BY-4.0 asks for; every .pkf carries it in its "notice"
-metadata (`pktito info` prints it). The architecture core/ implements is
+metadata (`pktito-c info` prints it). The architecture core/ implements is
 NeMo's (https://github.com/NVIDIA-NeMo/NeMo, Apache-2.0), reimplemented from
 its description and its code's arithmetic, without NeMo's code.
 

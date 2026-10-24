@@ -658,3 +658,10 @@ the ten every time; on the M4 Pro neon-i8mm went between 8 and 12, and
 neon-dp held at 8. A kernel that moves the balance between the two kinds
 of core can move that choice, and the 3% margin gave way here: worth a
 look when one does.
+
+## 2026-10-24 - the program is pktito-c (a note)
+
+The command-line program the Makefile builds, `./pktito` in the rows
+above, is `./pktito-c` from here on, so that it is not taken for the
+app, pktito; the same program, the same output. The rows above keep the
+name they were measured under.

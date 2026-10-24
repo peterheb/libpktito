@@ -706,3 +706,10 @@ slices, Server 2022: feed-forward up 212 to 275 GMAC/s, down 191 to 265,
 attention q 214 to 268. On Server 2025 the same run put ff up at 159 to
 273 and the other two level (155 to 162, 181 to 176); not repeated, and
 its bench, the longer measure, moved as 2022's did.
+
+## 2026-10-24 - the program is pktito-c (a note)
+
+The command-line program the Makefile builds, `./pktito` in the rows
+above, is `./pktito-c` from here on, so that it is not taken for the
+app, pktito; the same program, the same output. The rows above keep the
+name they were measured under.

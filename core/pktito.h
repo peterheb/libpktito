@@ -61,7 +61,7 @@ const char *pk_model_meta(const pk_model *m, const char *key);
 /* The i-th metadata pair, for listing: 0, or -1 past the last. */
 int pk_model_meta_at(const pk_model *m, int i, const char **key, const char **value);
 
-/* The architecture's numbers, for printing (`pktito info`). */
+/* The architecture's numbers, for printing (`pktito-c info`). */
 typedef struct {
     size_t   file_bytes;
     uint32_t sample_rate, n_mels, n_layers, d_model, n_heads, ff_dim;

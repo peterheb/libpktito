@@ -1,6 +1,6 @@
 # pktito
 #
-#   make                          ./pktito for this machine's family, every backend in it:
+#   make                          ./pktito-c for this machine's family, every backend in it:
 #                                 neon-dp and neon on AArch64; amx-int8, avx512-vnni, avx2-vnni
 #                                 and avx2 on x86-64; and ref. The CPU picks one when it runs.
 #   make BACKEND=<name>           that backend alone, with ref:
@@ -11,7 +11,7 @@
 #                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
 #                                 amx-int8     and AMX's int8 tiles: Sapphire and Granite Rapids
 #                                 ref      scalar C, any host
-#   PKTITO_KERNELS=<name> ./pktito  runs that backend, of those built, to compare them
+#   PKTITO_KERNELS=<name> ./pktito-c  runs that backend, of those built, to compare them
 #   make libpktito.a               the library alone (examples/transcribe.c uses it)
 #   make models                   models/*.pkf from the checkpoints (Python with numpy)
 #   make check                    the C half and, where it can run, the Python half
@@ -75,7 +75,7 @@ BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(
 # it gone a build on Ubuntu 26.04 needs GLIBC_2.34 (check-c there, v2 and v3
 # transcripts unchanged).
 # Windows builds under MSYS2 (UCRT64) or another MinGW-w64: pthreads from
-# winpthreads, linked in, so that pktito.exe runs outside the shell it was
+# winpthreads, linked in, so that pktito-c.exe runs outside the shell it was
 # built in with nothing beside it; and MinGW's own printf, since a
 # toolchain on the old msvcrt runtime has none that knows %zu (UCRT's does,
 # and its output is the same bytes either way: check-c on the Core 3 304).
@@ -94,7 +94,7 @@ OPT     ?= -O3
 CFLAGS  ?= $(OPT) $(TUNE) -std=c11 -ffp-contract=off -fno-math-errno -Wall -Wextra -Wpedantic
 LDLIBS  ?= -lm -lpthread $(PLATLIBS)
 
-# make PROFILE=1: `pktito bench` also prints what each stage costs. Timing a
+# make PROFILE=1: `pktito-c bench` also prints what each stage costs. Timing a
 # stage at a time costs a little; quote bench without it.
 ifeq ($(PROFILE),1)
   CFLAGS += -DPK_PROFILE
@@ -110,9 +110,9 @@ HAVE := $(foreach b,$(BACKENDS),-DPK_HAVE_$(subst -,_,$(b)))
 $(foreach b,$(BACKENDS),$(eval backend/$(b)/kernels.o: CFLAGS += $(ISA_$(b))))
 backend/kernels.o: CFLAGS += $(HAVE)
 
-.DEFAULT_GOAL := pktito
+.DEFAULT_GOAL := pktito-c
 
-pktito: core/cli.o $(LIB_OBJ)
+pktito-c: core/cli.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 libpktito.a: $(LIB_OBJ)
@@ -185,14 +185,14 @@ benches: $(BENCHES)
 # own; a WAV and a model under a name past ASCII, through the library and
 # through the CLI's arguments (a path is UTF-8 everywhere); the CLI on the tiny
 # model's 35 s recording, which it cuts into chunks; and Silero's test.wav
-# through ./pktito. Its VAD probabilities must be
+# through ./pktito-c. Its VAD probabilities must be
 # tests/data/test.probs.txt exactly - vadito's bits, which vadito holds to
 # onnxruntime - and its transcripts, every token and its time, the bytes in
 # test.v2.json and test.v3.json, which ref wrote: every backend on every
 # machine computes the same ones (backend/kernels.h), and this is where a
 # board that does not would say so. A model file that is not there is
 # skipped, with a line.
-check-c: pktito $(TESTS) examples/transcribe
+check-c: pktito-c $(TESTS) examples/transcribe
 	./tests/mathcheck
 	./tests/kcheck $(MODEL)
 	./tests/pkfcheck $(TINY) tests/pkfcheck.wav
@@ -201,26 +201,26 @@ check-c: pktito $(TESTS) examples/transcribe
 	./tests/capcheck
 	./tests/langcheck
 	./tests/chunkcheck
-	@./pktito -m $(TINY) --json tests/pkfcheck.wav > tests/pkfcheck.json \
-	  && ./pktito -m $(TINY) --srt tests/pkfcheck.wav > /dev/null \
-	  && ./pktito -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
-	  && echo "pktito: the tiny model through the CLI, chunked, three ways" \
-	  || { echo "pktito: FAIL on the tiny model"; exit 1; }
+	@./pktito-c -m $(TINY) --json tests/pkfcheck.wav > tests/pkfcheck.json \
+	  && ./pktito-c -m $(TINY) --srt tests/pkfcheck.wav > /dev/null \
+	  && ./pktito-c -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
+	  && echo "pktito-c: the tiny model through the CLI, chunked, three ways" \
+	  || { echo "pktito-c: FAIL on the tiny model"; exit 1; }
 	@d="tests/pathcheck-tést-ñ-я"; mkdir -p "$$d" && cp $(TINY) "$$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$$d/ñ.wav" \
-	  && ./pktito -m "$$d/tiny-é.pkf" --json "$$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$$?; rm -rf "$$d"; \
-	  [ $$r = 0 ] && echo "pktito: a model and a WAV named past ASCII, from its command line" \
-	  || { echo "pktito: FAIL on a model and a WAV named past ASCII"; exit 1; }
+	  && ./pktito-c -m "$$d/tiny-é.pkf" --json "$$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$$?; rm -rf "$$d"; \
+	  [ $$r = 0 ] && echo "pktito-c: a model and a WAV named past ASCII, from its command line" \
+	  || { echo "pktito-c: FAIL on a model and a WAV named past ASCII"; exit 1; }
 	@rm -f tests/pkfcheck.wav tests/pkfcheck.json
-	@./pktito probs -m $(MODEL) tests/data/test.wav | cmp -s - tests/data/test.probs.txt \
+	@./pktito-c probs -m $(MODEL) tests/data/test.wav | cmp -s - tests/data/test.probs.txt \
 	  && echo "test.wav: VAD probabilities are vadito's, bit for bit" \
 	  || { echo "test.wav: FAIL - VAD probabilities differ from tests/data/test.probs.txt"; exit 1; }
 	@for v in v2 v3; do f=models/parakeet-tdt-0.6b-$$v.pkf; \
 	  if [ ! -f $$f ]; then echo "test.wav: no $$f - skipped"; continue; fi; \
-	  ./pktito --json -m $$f tests/data/test.wav | cmp -s - tests/data/test.$$v.json \
+	  ./pktito-c --json -m $$f tests/data/test.wav | cmp -s - tests/data/test.$$v.json \
 	    && echo "test.wav: $$v transcript is ref's, every token and time" \
 	    || { echo "test.wav: FAIL - $$v transcript differs from tests/data/test.$$v.json"; exit 1; }; done
 	@./examples/transcribe $(MODEL) tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/example.out; \
-	  ./pktito -m $(MODEL) tests/data/test.wav | cmp -s - tests/example.out \
+	  ./pktito-c -m $(MODEL) tests/data/test.wav | cmp -s - tests/example.out \
 	  && echo "examples/transcribe: the CLI's transcript, through the library alone" \
 	  || { echo "examples/transcribe: FAIL - not the CLI's transcript"; exit 1; }; rm -f tests/example.out
 
@@ -239,7 +239,7 @@ tests/segcheck: tests/segcheck.c core/segment.o
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/segcheck.c core/segment.o $(LDLIBS)
 tests/rscheck: tests/rscheck.c core/resample.o
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/rscheck.c core/resample.o $(LDLIBS)
-check-python: pktito $(PYTESTS)
+check-python: pktito-c $(PYTESTS)
 	@if [ -n "$(SILERO)" ]; then SILERO=$(SILERO) $(PYNEMO) -W ignore tests/segcheck.py tests/segcheck || exit 1; \
 	else echo "segcheck: no silero-vad checkout in $(SRC) - skipped"; fi
 	@$(PYNEMO) -W ignore tests/rscheck.py tests/rscheck || exit 1
@@ -248,11 +248,11 @@ check-python: pktito $(PYTESTS)
 	  if [ -f $$n ] && [ -f $$f ]; then $(PYNEMO) tests/tokcheck.py tests/tokcheck $$n $$f || exit 1; \
 	  else echo "tokcheck: no $$n or $$f - skipped"; fi; done
 	@if [ -d models/corpus/ls200 ] && [ -f models/corpus/qc-v2-ls200.json ]; then \
-	  $(PYTHON) tests/wercheck.py ./pktito models/parakeet-tdt-0.6b-v2.pkf models/corpus/ls200 \
+	  $(PYTHON) tests/wercheck.py ./pktito-c models/parakeet-tdt-0.6b-v2.pkf models/corpus/ls200 \
 	    --against models/corpus/qc-v2-ls200.json || exit 1; \
 	else echo "wercheck: no models/corpus/ls200 - skipped"; fi
 	@if [ -d models/corpus/fleurs-de_de ] && [ -f models/corpus/qc-v3-fleurs.json ]; then \
-	  $(PYTHON) tests/wercheck.py ./pktito models/parakeet-tdt-0.6b-v3.pkf models/corpus/fleurs-*_* \
+	  $(PYTHON) tests/wercheck.py ./pktito-c models/parakeet-tdt-0.6b-v3.pkf models/corpus/fleurs-*_* \
 	    --against models/corpus/qc-v3-fleurs.json || exit 1; \
 	else echo "wercheck: no models/corpus/fleurs-* - skipped"; fi
 
@@ -297,13 +297,13 @@ BENCH ?= tests/data/test.wav
 remote:
 	@[ -n "$(HOST)" ] || { echo "make remote HOST=user@board"; exit 1; }
 	rsync -a --delete --exclude .venv --exclude .venv-nemo --exclude .git --exclude '*.o' \
-	  --exclude '*.d' --exclude /pktito --exclude 'models/src' --exclude 'models/corpus' \
+	  --exclude '*.d' --exclude /pktito-c --exclude /pktito --exclude 'models/src' --exclude 'models/corpus' \
 	  --exclude '/tests/*check' ./ $(HOST):$(RDIR)/
-	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pktito bench -m $(MODEL) $(BENCH)'
+	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pktito-c bench -m $(MODEL) $(BENCH)'
 
 .PHONY: models check-c check-sanitize check-math remote clean benches
 
 clean:
-	rm -f pktito libpktito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
+	rm -f pktito-c pktito libpktito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
 	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM tests/pathcheck-*

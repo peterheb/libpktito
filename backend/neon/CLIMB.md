@@ -574,3 +574,10 @@ Snapdragon 7c (neon-dp/CLIMB.md). The board ran hot: 75.6 °C before the
 held runs, 87.5 to 90.0 °C after them (thermal_zone0), so each figure is
 the hot board's; the A72s' would close the gap only if their clock was
 held down by more than a third.
+
+## 2026-10-24 - the program is pktito-c (a note)
+
+The command-line program the Makefile builds, `./pktito` in the rows
+above, is `./pktito-c` from here on, so that it is not taken for the
+app, pktito; the same program, the same output. The rows above keep the
+name they were measured under.

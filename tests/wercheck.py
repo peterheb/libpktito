@@ -1,4 +1,4 @@
-"""./pktito over corpus directories: its WER against the references, and how
+"""./pktito-c over corpus directories: its WER against the references, and how
 its transcripts compare with another run's, float32's from
 tools/quantcheck.py or another build's.
 

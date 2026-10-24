@@ -5,11 +5,11 @@
  *     ./examples/transcribe models/parakeet-tdt-0.6b-v2.pkf talk.wav
  *
  * prints each chunk as "start end text", the times in seconds. A 16 kHz
- * file only: resampling is core/resample.h's, which ./pktito uses.
+ * file only: resampling is core/resample.h's, which ./pktito-c uses.
  *
  * The library takes paths in UTF-8 on every system. argv is UTF-8 on
  * Linux and macOS; on Windows it is the ANSI code page's, so a name past
- * it does not arrive here whole. ./pktito asks Windows for the command
+ * it does not arrive here whole. ./pktito-c asks Windows for the command
  * line in UTF-16 instead (core/cli.c's utf8_args); a program can do the
  * same, or set its code page to UTF-8 in its manifest. */
 #include "pktito.h"
@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
     pk_vad_probs(v, padded, frames, probs);
     pk_seg_params sp;
     pk_seg_defaults(&sp);
-    sp.max_speech_s = 30 - 0.06 - 0.1;  /* a segment and Silero's 30 ms pads fit in 30 s, as ./pktito has it */
+    sp.max_speech_s = 30 - 0.06 - 0.1;  /* a segment and Silero's 30 ms pads fit in 30 s, as ./pktito-c has it */
     size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
     pk_seg *chunk = malloc((2 * ns + 2 + n / (30 * (size_t)rate)) * sizeof *chunk);
     size_t nc = pk_chunks(x, seg, ns, (int64_t)n, 30 * (int64_t)rate, chunk);

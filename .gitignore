@@ -1,6 +1,7 @@
 *.o
 *.d
 /pktito
+/pktito-c
 /build/
 /models/
 /tests/kcheck

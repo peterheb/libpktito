@@ -7,7 +7,7 @@ model file (the recognizer, its vocabulary, and Silero's VAD to cut long
 recordings at their pauses), and NeMo's transcripts.
 
 ```
-$ ./pktito talk.wav
+$ ./pktito-c talk.wav
 And says, how do I get to Dublin? And the answer that comes back is, well, I
 wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
@@ -15,7 +15,7 @@ wouldn't start from here, Sonny. That is to say, much of political philosophy...
 A minute of English speech takes 0.22 s on a Ryzen 9 9950X (277 times
 real time), 0.49 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
 Core 3 304, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut
-at its pauses as `./pktito` cuts it by default. Every backend computes the
+at its pauses as `./pktito-c` cuts it by default. Every backend computes the
 same bits on every machine.
 
 ## What this is
@@ -42,16 +42,16 @@ A build holds every backend of its family that the compiler can make
 on x86-64) and the CPU picks the first it can run, so a binary copied to
 another machine of the family runs there at that machine's best: one
 built on an Alder Lake runs on a Zen 4, one built on a Pi 5 on a Pi 3.
-`PKTITO_KERNELS=neon ./pktito ...` runs a given one of them, to compare.
+`PKTITO_KERNELS=neon ./pktito-c ...` runs a given one of them, to compare.
 
 On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
-`pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pktito.exe is linked
+`pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pktito-c.exe is linked
 statically and runs from cmd or PowerShell as well. It reads its
 arguments from Windows in UTF-16 and opens files by those names, so a
 model or recording named past the code page (`C:\Users\José\ñ.wav`)
 opens, and a transcript's accents and Cyrillic reach the console as
 UTF-8. Neither cmd nor PowerShell expands `*.wav` for a program, and
-pktito.exe doesn't either: in PowerShell, `.\pktito (Get-ChildItem
+pktito-c.exe doesn't either: in PowerShell, `.\pktito-c (Get-ChildItem
 *.wav).FullName`; MSYS2's bash expands it as any Unix shell does.
 
 Then a model, converted once from NVIDIA's checkpoint and Silero's VAD. The
@@ -76,14 +76,14 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 4-bit would cost. Then:
 
 ```sh
-./pktito talk.wav                        # the transcript
-./pktito --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
-./pktito --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
-./pktito a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
-arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito --stream -     # live, a line a pause
-./pktito segments talk.wav               # Silero VAD's speech segments, as vadito prints them
-./pktito bench talk.wav                  # this machine's speed
-./pktito info                            # the model file: its source, licence and recipe
+./pktito-c talk.wav                        # the transcript
+./pktito-c --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
+./pktito-c --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
+./pktito-c a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
+arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a line a pause
+./pktito-c segments talk.wav               # Silero VAD's speech segments, as vadito prints them
+./pktito-c bench talk.wav                  # this machine's speed
+./pktito-c info                            # the model file: its source, licence and recipe
 ```
 
 `-m` picks the model when `models/` holds both, `-t` the thread count (one
@@ -134,7 +134,7 @@ a Zen 4 and all three on the 9950X, the same bytes.
 
 ## How fast
 
-`./pktito bench`: Silero's test.wav (60 s of English), best of five,
+`./pktito-c bench`: Silero's test.wav (60 s of English), best of five,
 2026-10-20 (the 9950X's 2026-10-24). A machine's first row is what it picks itself, its default
 thread count and the fastest backend its CPU can run; the rows under it
 force another backend (`PKTITO_KERNELS`) or one thread. Seconds, and how
@@ -440,7 +440,7 @@ CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
 model file's validator on its malformed corpus and the whole engine on the
 tiny model, the WAV reader on its own, a WAV and a model under a name
 past ASCII (on Windows, the regression test for UTF-8 paths), and
-test.wav through `./pktito` and
+test.wav through `./pktito-c` and
 through examples/transcribe:
 vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
 the detokenizer against sentencepiece, the state machines against Silero's
