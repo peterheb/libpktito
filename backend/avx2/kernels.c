@@ -93,6 +93,40 @@ static inline __m256 v_tanh(__m256 x) {
 
 static inline __m256 v_silu(__m256 x) { return _mm256_mul_ps(x, v_sigmoid(x)); }
 
+#ifdef __AVX512F__
+/* The AVX-512 builds (avx512-vnni, amx-int8) take the float kernels - the
+ * float product, the quantizer, the layer norm, SiLU - in zmm too, a zmm
+ * doing what two ymm do lane for lane in the same order, so ref's bits
+ * (tests/kcheck): +7 to 11% at one and two threads on a c7i and a c8i, +9%
+ * at one on the 9950X, +2% at 16 (backend/avx2/CLIMB.md, the float kernels
+ * in zmm). */
+static inline __m256 z_lo(__m512 a) { return _mm512_castps512_ps256(a); }
+static inline __m256 z_hi(__m512 a) { return _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(a), 1)); }
+
+static inline __m512 z_exp(__m512 x) {
+    x = _mm512_min_ps(_mm512_max_ps(x, _mm512_set1_ps(PK_EXP_LO)), _mm512_set1_ps(PK_EXP_HI));
+    __m512 n = _mm512_roundscale_ps(_mm512_mul_ps(x, _mm512_set1_ps(PK_LOG2E)),
+                                    _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+    __m512 r = _mm512_fmadd_ps(n, _mm512_set1_ps(-PK_LN2_HI), x);
+    r = _mm512_fmadd_ps(n, _mm512_set1_ps(-PK_LN2_LO), r);
+    __m512 p = _mm512_set1_ps(PK_EXP_C6);
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(PK_EXP_C5));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(PK_EXP_C4));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(PK_EXP_C3));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(PK_EXP_C2));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(1.0f));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(1.0f));
+    __m512i e = _mm512_slli_epi32(_mm512_add_epi32(_mm512_cvtps_epi32(n), _mm512_set1_epi32(127)), 23);
+    return _mm512_mul_ps(p, _mm512_castsi512_ps(e));
+}
+
+static inline __m512 z_silu(__m512 x) {
+    const __m512 one = _mm512_set1_ps(1.0f);
+    __m512 nx = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(x), _mm512_set1_epi32((int)0x80000000)));
+    return _mm512_mul_ps(x, _mm512_div_ps(one, _mm512_add_ps(one, z_exp(nx))));
+}
+#endif
+
 /* PK_LANES' reduction: sixteen lanes in two vectors, combined as ref's
  * acc[i] += acc[i + h] for h = 8, 4, 2, 1 */
 static inline float lanes_sum(__m256 a0, __m256 a1) {
@@ -120,6 +154,37 @@ static inline int32_t load32(const int8_t *p) {
 
 static void k_quantize(pk_act *a, const float *x, size_t xs) {
     const uint32_t nb = a->n / a->qb;
+#ifdef __AVX512F__
+    {   /* a block's 32 floats as two zmm, its bytes by VPMOVSDB */
+        const __m512i absm = _mm512_set1_epi32(0x7fffffff);
+        for (uint32_t t = 0; t < a->T; t++)
+            for (uint32_t b = 0; b < nb; b++) {
+                const float *v = x + t * xs + (size_t)b * a->qb;
+                int8_t *q = a->q + (size_t)t * a->n + (size_t)b * a->qb;
+                __m512 m = _mm512_setzero_ps();
+                __mmask16 bad = 0;
+                for (uint32_t i = 0; i < a->qb; i += 16) {
+                    __m512 z = _mm512_loadu_ps(v + i);
+                    bad |= _mm512_cmp_ps_mask(z, z, _CMP_UNORD_Q);
+                    m = _mm512_max_ps(_mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(z), absm)), m);
+                }
+                float amax = hmax(_mm256_max_ps(z_lo(m), z_hi(m)));
+                if (bad || !isfinite(amax)) {
+                    a->d[(size_t)t * nb + b] = 0;
+                    memset(q, 0, a->qb);
+                    continue;
+                }
+                a->d[(size_t)t * nb + b] = amax / 127.0f;
+                const __m512 id = _mm512_set1_ps(amax > 0 ? 127.0f / amax : 0.0f);
+                for (uint32_t i = 0; i < a->qb; i += 16) {
+                    __m512i qi = _mm512_cvt_roundps_epi32(_mm512_mul_ps(_mm512_loadu_ps(v + i), id),
+                                                          _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+                    _mm_storeu_si128((__m128i *)(void *)(q + i), _mm512_cvtsepi32_epi8(qi));
+                }
+            }
+        return;
+    }
+#endif
     const __m256 sign = _mm256_set1_ps(-0.0f);
     for (uint32_t t = 0; t < a->T; t++)
         for (uint32_t b = 0; b < nb; b++) {
@@ -803,6 +868,52 @@ void f32_tile(float *out, size_t os, const float *w, uint32_t ld, uint32_t n,
         }
 }
 
+#ifdef __AVX512F__
+/* MP panels of 16 rows, one zmm a panel a k, by NC columns: two by eight,
+ * 16 chains in the 32 registers, where the ymm tile below is one by four.
+ * Two by four and one by eight, 8 chains as the ymm tile has, ran the
+ * c7i.large's attention stage in 280-284 ms against 237-259 (CLIMB.md). */
+static inline __attribute__((always_inline))
+void f32_tile_z(float *out, size_t os, const float *w, uint32_t ld, uint32_t n,
+                const float *x, size_t xs, const float *bias, size_t bs, int relu,
+                const int MP, const int NC) {
+    __m512 acc[2][8];
+    for (int c = 0; c < NC; c++)
+        for (int m = 0; m < MP; m++) acc[m][c] = _mm512_setzero_ps();
+    for (uint32_t k = 0; k < n; k++) {
+        __m512 wv[2];
+        for (int m = 0; m < MP; m++)
+            wv[m] = _mm512_loadu_ps(w + (size_t)m * ld * 16 + 16 * (size_t)k);
+        for (int c = 0; c < NC; c++) {
+            __m512 xv = _mm512_set1_ps(x[c * xs + k]);
+            for (int m = 0; m < MP; m++) acc[m][c] = _mm512_fmadd_ps(wv[m], xv, acc[m][c]);
+        }
+    }
+    const __m512 zero = _mm512_setzero_ps();
+    for (int c = 0; c < NC; c++)
+        for (int m = 0; m < MP; m++) {
+            __m512 v = _mm512_add_ps(acc[m][c], bias ? _mm512_loadu_ps(bias + c * bs + 16 * m) : zero);
+            _mm512_storeu_ps(out + c * os + 16 * m, relu ? _mm512_max_ps(v, zero) : v);
+        }
+}
+
+#define F32Z_COLS(MP)                                                                         \
+    for (uint32_t t = 0; t < T; t += 8) {                                              \
+        float *o = out + t * os + r;                                                           \
+        const float *xt = x + t * xs, *bt = bias ? bias + t * bs + r : NULL;                   \
+        switch (T - t < 8 ? T - t : 8) {                                       \
+        case 8: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 8); break;              \
+        case 7: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 7); break;              \
+        case 6: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 6); break;              \
+        case 5: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 5); break;              \
+        case 4: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 4); break;              \
+        case 3: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 3); break;              \
+        case 2: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 2); break;              \
+        default: f32_tile_z(o, os, wp, ld, n, xt, xs, bt, bs, relu, MP, 1); break;             \
+        }                                                                                      \
+    }
+#endif
+
 static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
                        const float *x, size_t xs, uint32_t T,
                        const float *bias, size_t bs, int relu) {
@@ -812,6 +923,20 @@ static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint3
                      relu, 8, 1);
         return;
     }
+#ifdef __AVX512F__
+    {
+        uint32_t r = 0;
+        for (; r + 32 <= rows; r += 32) {
+            const float *wp = w + (size_t)r * ld;
+            F32Z_COLS(2)
+        }
+        for (; r < rows; r += 16) {
+            const float *wp = w + (size_t)r * ld;
+            F32Z_COLS(1)
+        }
+        return;
+    }
+#endif
     for (uint32_t r = 0; r < rows; r += 16) {
         const float *wp = w + (size_t)r * ld;
         for (uint32_t t = 0; t < T; t += 4) {
@@ -831,6 +956,31 @@ static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint3
 
 static void k_layernorm(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n,
                         const float *w, const float *b, float eps) {
+#ifdef __AVX512F__
+    if (n % 16 == 0) {
+        for (uint32_t t = 0; t < T; t++) {
+            const float *v = x + t * xs;
+            float *o = out + t * os;
+            __m512 a = _mm512_setzero_ps();
+            for (uint32_t i = 0; i < n; i += 16) a = _mm512_add_ps(a, _mm512_loadu_ps(v + i));
+            float mean = lanes_sum(z_lo(a), z_hi(a)) / (float)n;
+            __m512 mv = _mm512_set1_ps(mean);
+            a = _mm512_setzero_ps();
+            for (uint32_t i = 0; i < n; i += 16) {
+                __m512 c = _mm512_sub_ps(_mm512_loadu_ps(v + i), mv);
+                a = _mm512_add_ps(a, _mm512_mul_ps(c, c));
+            }
+            float var = lanes_sum(z_lo(a), z_hi(a)) / (float)n;
+            __m512 rv = _mm512_set1_ps(1.0f / sqrtf(var + eps));
+            for (uint32_t i = 0; i < n; i += 16) {
+                __m512 y = _mm512_mul_ps(_mm512_mul_ps(_mm512_sub_ps(_mm512_loadu_ps(v + i), mv), rv),
+                                         _mm512_loadu_ps(w + i));
+                _mm512_storeu_ps(o + i, _mm512_add_ps(y, _mm512_loadu_ps(b + i)));
+            }
+        }
+        return;
+    }
+#endif
     for (uint32_t t = 0; t < T; t++) {
         const float *v = x + t * xs;
         float *o = out + t * os;
@@ -895,6 +1045,9 @@ static void k_softmax(float *x, uint32_t n, float scale) {
 
 static void k_silu(float *x, size_t n) {
     size_t i = 0;
+#ifdef __AVX512F__
+    for (; i + 16 <= n; i += 16) _mm512_storeu_ps(x + i, z_silu(_mm512_loadu_ps(x + i)));
+#endif
     for (; i + 8 <= n; i += 8) _mm256_storeu_ps(x + i, v_silu(_mm256_loadu_ps(x + i)));
     for (; i < n; i++) x[i] = x[i] * pk_sigmoidf(x[i]);
 }

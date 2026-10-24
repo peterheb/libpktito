@@ -47,7 +47,9 @@ allows.
 - backend/neon serves neon and neon-dp, backend/avx2 serves avx2, avx2-vnni
   and avx512-vnni (each variant a file that includes the first with a macro,
   compiled with its own instruction set; backend/kernels.c picks among
-  them). The int8 product is the only kernel that differs inside a family.
+  them). Inside a family a variant replaces a kernel only where it measures
+  faster: the int8 product in each, and in the AVX-512 builds the float
+  kernels in zmm - each to ref's bits, like every kernel.
 - Comments explain *why* and carry the number that justified it, and say
   where the number came from (a CLIMB.md row, a check), because a bare
   figure goes stale when the code under it changes.
