@@ -706,3 +706,45 @@ to 2.0): at its eight threads the up product takes the step (16 slices,
 twice eight), test.wav interleaved, 47f0093 134.9, 134.4, 133.9x against
 bec30f3 133.6, 133.9, 133.4x: -0.5%, at the edge of the spread, so level
 or a hair under; not acted on unless a quiet run repeats it.
+
+## 2026-10-24 - Graviton5 against Zen 5, stage by stage (a measurement)
+
+Why a Graviton costs two to three times what a c8a does per hour of
+audio (AliceBench on EC2): is one stage behind, or the core? EC2,
+us-east-1, each instance fresh, Ubuntu 24.04, gcc 13.3, the tree at
+ab737a1 built on the instance, plain and `make PROFILE=1`; `pktito-c
+bench` on test.wav, best of five. A c9g.xlarge (Neoverse V3, 3.3 GHz,
+4 cores) on neon-dp: 44.4, 44.5, 44.5x at four threads, 12.4x at one. A
+c8a.xlarge (Zen 5, 4 cores) on avx512-vnni: 133.6, 133.2, 133.0x, 36.8x
+at one.
+
+The PROFILE build at one thread, ms a run:
+
+| stage | c9g (neon-dp) | c8a (avx512-vnni) | c9g / c8a |
+|---|---|---|---|
+| feed-forward | 2508.2 | 825.6 | 3.04 |
+| q k v pos | 761.7 | 260.6 | 2.92 |
+| conv pw1 pw2 | 460.8 | 150.9 | 3.05 |
+| attention (float) | 437.4 | 150.6 | 2.90 |
+| quantize | 259.0 | 62.9 | 4.12 |
+| attention out | 157.8 | 50.2 | 3.14 |
+| subsampling | 126.3 | 46.3 | 2.73 |
+| glu + depthwise | 54.3 | 23.0 | 2.36 |
+| decoder | 39.0 | 25.5 | 1.53 |
+| mel | 17.5 | 18.4 | 0.95 |
+| the run | 4854 | 1631 | 2.98 |
+
+q8bench, one thread, the 1024 x 1024 attention product at T 750: 126.7
+GMAC/s on the V3, 407.0 on Zen 5 (the feed-forward's up 125.1 and
+405.3). Four threads over one: 3.6 times on both.
+
+The int8 products and the float attention are three times behind alike,
+and each stage's share of the run is the same on both to a point or two
+(the feed-forward 51.6% and 50.2%): no kernel lags, the core is
+narrower. If the V3 issues four SDOTs a cycle as the V2 does (mmrate2.c,
+above; not measured on the V3), its ceiling at 3.3 GHz is about 211
+GMAC/s, and the product is at about 60% of it, where it is on the V2.
+The quantizer is the one stage out of line, 4.1 times to the run's 3.0:
+brought into line it would give about 70 ms of the 4854, 1.5%. What
+would move the Arm products more is the longer integer sum the SMMLA and
+SMOPA entries above name, a quantization choice.
