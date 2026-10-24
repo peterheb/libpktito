@@ -32,3 +32,5 @@ __pycache__/
 /tests/q8bench
 /tests/gemmbench
 CLAUDE.local.md
+/tests/pathcheck
+/tests/pathcheck-*/

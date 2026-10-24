@@ -141,7 +141,8 @@ models/%.pkf:
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
-TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck
+TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck \
+         tests/pathcheck
 BENCHES := tests/q8bench tests/gemmbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
@@ -154,6 +155,8 @@ tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/chunkcheck: tests/chunkcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/chunkcheck.c $(LIB_OBJ) $(LDLIBS)
+tests/pathcheck: tests/pathcheck.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pathcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/wavcheck: tests/wavcheck.c core/wav.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o $(LDLIBS)
 # capcheck includes core/captions.c itself, for its static parts, and
@@ -176,8 +179,10 @@ benches: $(BENCHES)
 # board: the math library; every kernel against ref; the model file's
 # validator on its malformed corpus and the whole engine on the tiny model
 # (tests/data/tiny.pkf, `pktito-tools tiny` writes it); the WAV reader on its
-# own; the CLI on the tiny model's 35 s recording, which it cuts into chunks;
-# and Silero's test.wav through ./pktito. Its VAD probabilities must be
+# own; a WAV and a model under a name past ASCII, through the library and
+# through the CLI's arguments (a path is UTF-8 everywhere); the CLI on the tiny
+# model's 35 s recording, which it cuts into chunks; and Silero's test.wav
+# through ./pktito. Its VAD probabilities must be
 # tests/data/test.probs.txt exactly - vadito's bits, which vadito holds to
 # onnxruntime - and its transcripts, every token and its time, the bytes in
 # test.v2.json and test.v3.json, which ref wrote: every backend on every
@@ -189,6 +194,7 @@ check-c: pktito $(TESTS) examples/transcribe
 	./tests/kcheck $(MODEL)
 	./tests/pkfcheck $(TINY) tests/pkfcheck.wav
 	./tests/wavcheck tests/wavcheck.tmp
+	./tests/pathcheck $(TINY)
 	./tests/capcheck
 	./tests/langcheck
 	./tests/chunkcheck
@@ -197,6 +203,10 @@ check-c: pktito $(TESTS) examples/transcribe
 	  && ./pktito -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
 	  && echo "pktito: the tiny model through the CLI, chunked, three ways" \
 	  || { echo "pktito: FAIL on the tiny model"; exit 1; }
+	@d="tests/pathcheck-tést-ñ-я"; mkdir -p "$$d" && cp $(TINY) "$$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$$d/ñ.wav" \
+	  && ./pktito -m "$$d/tiny-é.pkf" --json "$$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$$?; rm -rf "$$d"; \
+	  [ $$r = 0 ] && echo "pktito: a model and a WAV named past ASCII, from its command line" \
+	  || { echo "pktito: FAIL on a model and a WAV named past ASCII"; exit 1; }
 	@rm -f tests/pkfcheck.wav tests/pkfcheck.json
 	@./pktito probs -m $(MODEL) tests/data/test.wav | cmp -s - tests/data/test.probs.txt \
 	  && echo "test.wav: VAD probabilities are vadito's, bit for bit" \
@@ -293,4 +303,4 @@ remote:
 clean:
 	rm -f pktito libpktito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
 	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
-	rm -rf tests/*.dSYM
+	rm -rf tests/*.dSYM tests/pathcheck-*
