@@ -536,3 +536,43 @@ their spread on the 9950X. If they do, it is measured on c8a, c7a, c8i,
 c7i and c6i (AliceBench, the c8a.xlarge-class sizes), and avx512-vnni goes
 ahead of avx2-vnni in backend/kernels.c's order only if no CPU with both
 runs slower on it.
+
+## 2026-10-24 - the int8 product on AMX (hypothesis)
+
+Sapphire Rapids and Granite Rapids (c7i, c8i) have AMX: eight tile
+registers of up to 16 rows of 64 bytes, and TDPBSSD, which multiplies a
+tile of signed bytes by another into a tile of exact int32 sums. The
+AliceBench sweep (2026-10-23) put these Xeons at about 14x a core against
+Zen 5's 19x, on VPDPBUSD at about 60 MAC a cycle a core.
+
+The file's layout is already AMX's. TDPBSSD's B operand is K/4 rows of 64
+bytes, each four inputs for 16 outputs: a panel's group. So a block of 32
+inputs of one panel, 512 contiguous bytes, is a B tile of 8 rows as it
+lies in the file. A is 16 columns' 32 bytes of the block, rows n apart in
+the activations, and C is 16 columns by the panel's 16 rows. Signed by
+signed, so no +128 offset and no correction.
+
+Bits: each block's C is its exact integer sums. Stored to L1 and read back
+a column at a time, each goes into that column's float chain by the same
+convert and fused multiply-add as the zmm tile's: ref's chain, lane for
+lane. Columns past the last whole 16, and products of fewer than 16
+columns (the decoder), take the zmm tile.
+
+What it should do: a block of one panel by 16 columns is 8,192 MACs. If
+TDPBSSD at K = 32 takes 16 cycles (a row of A a cycle), that is 512 MAC a
+cycle against the zmm tile's 60. The float side is then the limit: 16
+loads, 16 converts and 16 FMAs a block, about 16 cycles on two ports,
+level with the tile. So the product 3 to 4x on one core, and `pktito
+bench` 50 to 100% faster on c7i and c8i, if the store, reload and
+convert overlap the next block's TDPBSSD (two C tiles, alternating).
+
+Built as a fourth variant of this file, backend/amx-int8: the avx512-vnni
+build with -mamx-tile -mamx-int8, needing avx512f, avx512vnni, avx512vl,
+amx_tile and amx_int8. core/os.c learns the last two (CPUID 7.0 EDX bits
+24 and 25, XCR0 bits 17 and 18) and, on Linux, asks once a process for
+the tile data (ARCH_REQ_XCOMP_PERM): refused, the answer is no and
+avx512-vnni runs. Each thread loads the tile configuration once.
+
+Kept if kcheck and check-c are ref's bits on a c7i and the bench moves past
+its spread there and on a c8i; it goes first in the order only where it
+wins.
