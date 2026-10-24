@@ -564,7 +564,7 @@ little here, a minute of 48 kHz audio resampling in 0.09 s against the
 ## 2026-10-23 - the RK3399 keeps its six cores, and should
 
 The Rock Pi 4B (RK3399: two Cortex-A72 at 1.8 GHz, four A53 at 1.4 GHz;
-Ubuntu 20.04, kernel 4.4, gcc 9.4), pktito 4f791bb, its first run there:
+Ubuntu 20.04, kernel 4.4, gcc 9.4), pktito 2e6668c, its first run there:
 check-c passes, kcheck's 1,777 neon cases ref's bits (neon-dp skipped,
 no asimddp). `pktito bench` on test.wav with v2, best of five: the default
 keeps all six, 33.6 s (1.8x real time), and -t 6 takes 31.2 s. Held to the

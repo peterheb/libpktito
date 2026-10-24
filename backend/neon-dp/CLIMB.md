@@ -349,7 +349,7 @@ on the vector before it, are the step.
 
 NVIDIA GB10 (a DGX Spark): 10 Cortex-X925 at 3.9 GHz (CPUs 5-9 and 15-19)
 and 10 Cortex-A725 at 2.8 GHz (CPUs 0-4 and 10-14), Ubuntu 24.04, kernel
-7.0.0-1019-nvidia, GCC 13.3, the Makefile's flags. Tree 3626bc0. `./pktito
+7.0.0-1019-nvidia, GCC 13.3, the Makefile's flags. Tree bad3a9f. `./pktito
 bench` on test.wav in its default 30 s chunks (three), best of five; a vLLM
 worker resident and idle, load 0.13. check-c passes; the backend picked is
 neon-dp.
@@ -382,7 +382,7 @@ faster; in 30 s chunks the 8 are, by 4%.
 
 ## 2026-10-22 - the GB10: the decoder on four threads (hypothesis)
 
-`make PROFILE=1`, the bench above, tree 9050abc, the stages that move:
+`make PROFILE=1`, the bench above, tree 769c8d7, the stages that move:
 
 | stage | 10 threads | 20 threads |
 |---|---|---|
@@ -420,7 +420,7 @@ at 20 threads (183.2 before) and 17.3-20.3 at 10 (16.9); on two threads
 26-28 ms at either count, on eight 24-33 at 20 and 17-20 at 10, so four.
 `./pktito bench`, the trees built as they ship, interleaved, three rounds:
 
-| board, threads | before (9050abc) | after |
+| board, threads | before (769c8d7) | after |
 |---|---|---|
 | GB10, 20 (its default) | 0.719-0.800 s | 0.573-0.580 s |
 | GB10, 10 (the X925s) | 0.435-0.438 s | 0.441-0.447 s |
@@ -461,7 +461,7 @@ threads, and on the Pi 3, no move past the spread. The products' items are
 H3's.
 
 Result, rejected. check-c passes (the bits cannot move: each frame is
-quantized, normed and gated alone). `./pktito bench` against eab2f24,
+quantized, normed and gated alone). `./pktito bench` against 8cbd3b2,
 interleaved, three rounds: 20 threads 0.574-0.584 s against 0.563-0.591,
 10 threads 0.437-0.443 against 0.438-0.441. `make PROFILE=1` at 20
 threads: quantize 109.9 ms (115.9 in 16 items), the norms 12.3 (12.4),
@@ -505,7 +505,7 @@ the 7c its two A76s; the 12900HK and the 304 every core, unmoved; the Pis,
 one kind, untouched.
 
 Result, kept. `./pktito bench`, each tree's default threads, interleaved,
-three rounds, against eab2f24 (H1):
+three rounds, against 8cbd3b2 (H1):
 
 | board | before | after | the choice |
 |---|---|---|---|
@@ -522,7 +522,7 @@ also runs the default threads, which on the M4 Pro switch the pool between
 twelve and eight as the first recording is timed, with no race.
 
 The Snapdragon 7c (armlet: two Cortex-A76, six A55, Windows 11), through
-the app's Arm64 build of eb3433a, `--transcribe` on test.wav: the default
+the app's Arm64 build of db40271, `--transcribe` on test.wav: the default
 keeps all eight, 6.17-6.56 s, its layers timed against the A76s'. With the
 process held to the A76s (affinity 0xC0) it takes 7.95-8.70 s, to the A55s
 14.4 s, so eight is the right choice; Windows names the A76s

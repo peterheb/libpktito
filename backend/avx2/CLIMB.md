@@ -472,7 +472,7 @@ tree before, under neon-dp and under ref.
 ## 2026-10-22 - the E-cores' share (a measurement)
 
 The 12900HK as above, Ubuntu 26.04, kernel 7.0.0-38, GCC 15.2. Tree
-3626bc0. `./pktito bench` on test.wav in its default 30 s chunks (three),
+bad3a9f. `./pktito bench` on test.wav in its default 30 s chunks (three),
 best of five, load 0.00; backend avx2-vnni.
 
 | threads | on | best | real time |
