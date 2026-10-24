@@ -33,12 +33,12 @@
 
 #ifdef PK_AVX_VNNI
 /* VPDPBUSD in whichever encoding the build has: AVX-VNNI's VEX form
- * (Alder Lake and later, Zen 5), or AVX512-VNNI's EVEX form at 256 bits
- * (Ice Lake, Tiger Lake, Sapphire Rapids, Zen 4), the same operation. The
- * Makefile builds both (backend/avx2-vnni, backend/avx512-vnni) and the
- * CPU runs the one it has (backend/kernels.c). A Ryzen 9 9950X, which has
- * both, ran both: ref's bits from each, and the same speed within 2%
- * (backend/avx2/CLIMB.md, 2026-10-20). */
+ * (Alder Lake and later, Zen 5), or AVX512-VNNI's EVEX form (Ice Lake,
+ * Tiger Lake, Sapphire Rapids, Zen 4 and 5), the same operation. At 256
+ * bits the two ran level on a 9950X (CLIMB.md, 2026-10-20); the EVEX build
+ * multiplies in zmm (below), where both CPUs that have the two run it
+ * faster (CLIMB.md, 2026-10-24). The Makefile builds both, and the CPU runs
+ * the first it can (backend/kernels.c). */
 #if defined(__AVXVNNI__)
 #define PK_DPBUSD(acc, u8, s8) _mm256_dpbusd_avx_epi32(acc, u8, s8)
 #elif defined(__AVX512VNNI__) && defined(__AVX512VL__)
@@ -201,6 +201,150 @@ static void colsums(int32_t *cs, const pk_act *a) {
     }
 }
 
+#ifdef __AVX512F__
+/* AVX-512 (the avx512-vnni build): a panel of 16 rows is one zmm of int32
+ * sums, and a group of four inputs for them the 64 weight bytes one zmm
+ * load takes, so a group is one load and one VPDPBUSD a column where the
+ * ymm tile below takes two of each. The 32 registers hold PK_Q8_NC columns,
+ * two zmm each (the block's integer sums and the float chain), beside the
+ * weight vector and a broadcast (CLIMB.md, 2026-10-24). Every lane does
+ * what the ymm tile's does, so the bits are the same. */
+#ifndef PK_Q8_NC
+#define PK_Q8_NC 8
+#endif
+#if PK_Q8_NC < 1 || PK_Q8_NC > 12
+#error "PK_Q8_NC is 1 to 12: the tiles below are written for at most 12 columns"
+#endif
+
+#define PK_Q8_GROUP(g, k)                                                \
+    do {                                                                 \
+        __m512i wv = _mm512_loadu_si512((const void *)(g));              \
+        if (!XOFF)                                                       \
+            wv = _mm512_xor_si512(wv, off);                              \
+        for (int c = 0; c < NC; c++) {                                   \
+            int32_t v;                                                   \
+            memcpy(&v, x[c] + (k), 4);                                   \
+            const __m512i xb = _mm512_set1_epi32(v);                     \
+            s[c] = XOFF ? _mm512_dpbusd_epi32(s[c], xb, wv)              \
+                        : _mm512_dpbusd_epi32(s[c], wv, xb);             \
+        }                                                                \
+    } while (0)
+
+static inline __attribute__((always_inline))
+void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws,
+             const float *bias, const pk_act *a, uint32_t t0, int add,
+             const uint8_t *xo, const __m512i *wsum, const int32_t *cs, const int XOFF,
+             const int NC) {
+    const uint32_t qb = a->qb, nb = n / qb;
+    const __m512i off = _mm512_set1_epi8((char)0x80);
+    __m512 f[12];
+    const uint8_t *x[12];
+    for (int c = 0; c < NC; c++) {
+        f[c] = _mm512_setzero_ps();
+        x[c] = XOFF ? xo + (size_t)c * n : (const uint8_t *)(a->q + (size_t)(t0 + c) * n);
+    }
+    for (uint32_t b = 0; b < nb; b++) {
+        __m512i s[12];
+        for (int c = 0; c < NC; c++) s[c] = _mm512_setzero_si512();
+        if (qb == 32) {
+            const int8_t *g = w + (size_t)b * 32 * 16;
+            const uint32_t k = b * 32;
+            PK_Q8_GROUP(g, k);
+            PK_Q8_GROUP(g + 64, k + 4);
+            PK_Q8_GROUP(g + 128, k + 8);
+            PK_Q8_GROUP(g + 192, k + 12);
+            PK_Q8_GROUP(g + 256, k + 16);
+            PK_Q8_GROUP(g + 320, k + 20);
+            PK_Q8_GROUP(g + 384, k + 24);
+            PK_Q8_GROUP(g + 448, k + 28);
+        } else {
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4)
+                PK_Q8_GROUP(w + (size_t)k * 16, k);
+        }
+        for (int c = 0; c < NC; c++) {
+            const __m512i cv = XOFF ? wsum[b] : _mm512_set1_epi32(cs[(size_t)c * nb + b]);
+            const __m512 d = _mm512_set1_ps(a->d[(size_t)(t0 + c) * nb + b]);
+            f[c] = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(s[c], cv)), d, f[c]);
+        }
+    }
+    const __m512 sc = _mm512_loadu_ps(ws);
+    for (int c = 0; c < NC; c++) {
+        float *o = out + (size_t)(t0 + c) * os;
+        __m512 v = _mm512_mul_ps(f[c], sc);
+        if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias));
+        if (add) v = _mm512_add_ps(_mm512_loadu_ps(o), v);
+        _mm512_storeu_ps(o, v);
+    }
+}
+
+/* the tiles of one panel over columns [c0, c1), PK_Q8_NC at a time */
+#define PK_Q8_TILE_N(N, XOFF, XO, WSUM, CS)                                              \
+    q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, N)
+#define PK_Q8_TILES(XOFF, XO, WSUM, CS)                                                  \
+    do {                                                                                 \
+        uint32_t t = c0;                                                                 \
+        for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC)                                        \
+            PK_Q8_TILE_N(PK_Q8_NC, XOFF, XO, WSUM, CS);                                                      \
+        switch (c1 - t) {                                                                \
+        case 11: PK_Q8_TILE_N(11, XOFF, XO, WSUM, CS); break;                                                \
+        case 10: PK_Q8_TILE_N(10, XOFF, XO, WSUM, CS); break;                                                \
+        case 9: PK_Q8_TILE_N(9, XOFF, XO, WSUM, CS); break;                                                  \
+        case 8: PK_Q8_TILE_N(8, XOFF, XO, WSUM, CS); break;                                                  \
+        case 7: PK_Q8_TILE_N(7, XOFF, XO, WSUM, CS); break;                                                  \
+        case 6: PK_Q8_TILE_N(6, XOFF, XO, WSUM, CS); break;                                                  \
+        case 5: PK_Q8_TILE_N(5, XOFF, XO, WSUM, CS); break;                                                  \
+        case 4: PK_Q8_TILE_N(4, XOFF, XO, WSUM, CS); break;                                                  \
+        case 3: PK_Q8_TILE_N(3, XOFF, XO, WSUM, CS); break;                                                  \
+        case 2: PK_Q8_TILE_N(2, XOFF, XO, WSUM, CS); break;                                                  \
+        case 1: PK_Q8_TILE_N(1, XOFF, XO, WSUM, CS); break;                                                  \
+        default: break;                                                                  \
+        }                                                                                \
+    } while (0)
+
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
+    const uint32_t n = a->n, nb = n / a->qb;
+    if (a->T < PK_Q8_XOFF) {
+        int32_t cs[PK_Q8_XOFF * PK_MAX_BLOCKS];
+        colsums(cs, a);
+        const uint32_t c0 = 0, c1 = a->T;
+        for (uint32_t r = 0; r < rows; r += 16) {
+            const int8_t *wp = w + (size_t)r * n;
+            float *o = out + r;
+            const float *b = bias ? bias + r : NULL;
+            PK_Q8_TILES(0, NULL, NULL, cs + (size_t)(t - c0) * nb);
+        }
+        return;
+    }
+    static _Thread_local _Alignas(64) uint8_t xoff[PK_Q8_BLOCK_BYTES + PK_Q8_NC * 32 * PK_MAX_BLOCKS];
+    __m512i wsum[PK_MAX_BLOCKS];
+    const __m512i one = _mm512_set1_epi8(1), off = _mm512_set1_epi8((char)0x80);
+    uint32_t cb = PK_Q8_BLOCK_BYTES / n;
+    cb = cb < PK_Q8_NC ? PK_Q8_NC : cb - cb % PK_Q8_NC;
+    for (uint32_t c0 = 0; c0 < a->T; c0 += cb) {
+        const uint32_t c1 = a->T - c0 < cb ? a->T : c0 + cb;
+        const int8_t *src = a->q + (size_t)c0 * n;
+        for (size_t i = 0; i < (size_t)(c1 - c0) * n; i += 32)
+            _mm256_store_si256((__m256i *)(void *)(xoff + i),
+                               _mm256_xor_si256(_mm256_loadu_si256((const __m256i *)(const void *)(src + i)),
+                                                _mm512_castsi512_si256(off)));
+        for (uint32_t r = 0; r < rows; r += 16) {
+            const int8_t *wp = w + (size_t)r * n;
+            float *o = out + r;
+            const float *b = bias ? bias + r : NULL;
+            for (uint32_t blk = 0; blk < nb; blk++) {
+                __m512i s = _mm512_setzero_si512();
+                for (uint32_t k = blk * a->qb; k < (blk + 1) * a->qb; k += 4)
+                    s = _mm512_dpbusd_epi32(s, one, _mm512_loadu_si512((const void *)(wp + (size_t)k * 16)));
+                wsum[blk] = _mm512_slli_epi32(s, 7);
+            }
+            PK_Q8_TILES(1, xoff + (size_t)(t - c0) * n, wsum, NULL);
+        }
+    }
+}
+
+
+#else
 /* One tile: a whole panel, 16 rows in two vectors, by NC columns (up to
  * three: 6 integer and 6 float accumulators, the two weight vectors and a
  * broadcast in 15 of the 16 ymm registers). Each block's exact integer sums
@@ -352,6 +496,8 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
         }
     }
 }
+
+#endif /* __AVX512F__ */
 
 #else /* VPMADDUBSW */
 
@@ -917,10 +1063,10 @@ const pk_kernels pk_kernels_avx2_vnni = {
     .id = "avx2-vnni",
     .name = "avx2-vnni (x86-64 AVX2 + FMA: AVX-VNNI's VPDPBUSD int8, fp32)",
 #else
-static const char *const needs[] = { "avx2", "fma", "avx512vnni", "avx512vl", NULL };
+static const char *const needs[] = { "avx2", "fma", "avx512f", "avx512vnni", "avx512vl", NULL };
 const pk_kernels pk_kernels_avx512_vnni = {
     .id = "avx512-vnni",
-    .name = "avx512-vnni (x86-64 AVX2 + FMA: AVX512-VNNI's VPDPBUSD at 256 bits int8, fp32)",
+    .name = "avx512-vnni (x86-64 AVX2 + FMA: AVX512-VNNI's VPDPBUSD at 512 bits int8, fp32)",
 #endif
 #else
 static const char *const needs[] = { "avx2", "fma", NULL };

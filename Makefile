@@ -8,7 +8,7 @@
 #                                 neon-dp  ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
-#                                 avx512-vnni  and AVX512-VNNI at 256 bits: Ice Lake, Zen 4
+#                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5, Sapphire Rapids
 #                                 ref      scalar C, any host
 #   PKTITO_KERNELS=<name> ./pktito  runs that backend, of those built, to compare them
 #   make libpktito.a               the library alone (examples/transcribe.c uses it)
@@ -42,8 +42,8 @@ endif
 # where gcc can be told which: it resolves -mtune=native to nothing on an
 # A53, so the core is read from /proc/cpuinfo. Tuning orders instructions;
 # it adds none a CPU might lack. backend/avx2 makes avx2-vnni or
-# avx512-vnni from what its compiler is told: AVX-VNNI's VEX VPDPBUSD, or
-# AVX512-VNNI's EVEX one at 256 bits, the same instruction.
+# avx512-vnni from what its compiler is told: AVX-VNNI's VEX VPDPBUSD in
+# ymm, or AVX512-VNNI's in zmm.
 CPU_PART := $(shell grep -m1 'CPU part' /proc/cpuinfo 2>/dev/null | awk '{print $$NF}')
 TUNE_0xd03 := cortex-a53
 TUNE_0xd08 := cortex-a72
@@ -57,7 +57,7 @@ else
 endif
 ISA_avx2 := -mavx2 -mfma
 ISA_avx2-vnni := -mavx2 -mfma -mavxvnni
-ISA_avx512-vnni := -mavx2 -mfma -mavx512vnni -mavx512vl
+ISA_avx512-vnni := -mavx2 -mfma -mavx512f -mavx512vnni -mavx512vl
 
 can_build = $(shell echo 'int x;' | $(CC) $(ISA_$(1)) -x c -c -o /dev/null - 2>/dev/null && echo $(1))
 BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(call can_build,$(b)))))

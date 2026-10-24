@@ -350,6 +350,8 @@ static int cpu_has(const char *f) {
         return ((b7 >> 5) & 1) && ymm;
     if (!strcmp(f, "avxvnni"))
         return ((a71 >> 4) & 1) && ymm;
+    if (!strcmp(f, "avx512f"))
+        return ((b7 >> 16) & 1) && zmm;
     if (!strcmp(f, "avx512vnni"))
         return ((c7 >> 11) & 1) && zmm;
     if (!strcmp(f, "avx512vl"))

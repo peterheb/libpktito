@@ -576,3 +576,51 @@ avx512-vnni runs. Each thread loads the tile configuration once.
 Kept if kcheck and check-c are ref's bits on a c7i and the bench moves past
 its spread there and on a c8i; it goes first in the order only where it
 wins.
+
+## 2026-10-24 - avx512-vnni's int8 product in zmm (result: kept)
+
+The zmm tile as the hypothesis above has it: a panel one register, a
+group one load and one VPDPBUSD a column, up to PK_Q8_NC columns (8) a
+tile. kcheck, 1777 cases, ref's bits on avx2, avx2-vnni and avx512-vnni,
+and check-c passes, on the 9950X (gcc 15.2); test.wav's v2 and v3 through
+avx512-vnni are ref's, there and natively on Windows (MSYS2 gcc 16.2).
+
+Measured on EC2, us-east-1, each instance fresh, Ubuntu 24.04, binaries
+built here: main (a331da1) against this tree, interleaved, three rounds
+of `pktito bench` on test.wav (best of five each, the default threads),
+then q8bench on one thread. Every transcript of every build and backend,
+38 files, ref's bytes. avx512-vnni's medians:
+
+| instance | CPU | threads | main | zmm | | zmm over avx2-vnni |
+|---|---|---|---|---|---|---|
+| c8a.xlarge | EPYC 9R45, Zen 5 | 4 | 82.5x | 119.1x | +44% | +47% |
+| c8a.4xlarge | EPYC 9R45, Zen 5 | 16 | 226.1x | 287.8x | +27% | +29% |
+| c7i.xlarge | Xeon 8488C, Sapphire Rapids | 2 | 25.7x | 32.8x | +28% | +28% |
+| c8i.xlarge | Xeon 6975P-C, Granite Rapids | 2 | 29.6x | 35.4x | +20% | +20% |
+| c8i.4xlarge | Xeon 6975P-C, Granite Rapids | 8 | 108.6x | 126.2x | +16% | +18% |
+| c7a.xlarge | EPYC 9R14, Zen 4 | 4 | 63.6x | 67.6x | +6% | (none) |
+| c6i.xlarge | Xeon 8375C, Ice Lake | 2 | 24.1x | 23.6x | -2% | (none) |
+
+q8bench, feed-forward up, one thread, GMAC/s, main and zmm: Zen 5 224 and
+394, Sapphire Rapids 152 and 212, Granite Rapids 167 and 227, Zen 4 178
+and 195, Ice Lake 137 and 131. The ranges: within 1% but on the 16-thread
+c8a (main 221-232, zmm 278-290) and c8i.4xlarge (zmm 121-131).
+
+The tile's width, swept on four of them (the same method; PK_Q8_NC 4, 6, 8
+and 12, medians):
+
+| | main | 4 | 6 | 8 | 12 |
+|---|---|---|---|---|---|
+| c8a.xlarge | 82.1 | 116.1 | 116.8 | 118.4 | 108.5 |
+| c7a.xlarge | 63.6 | 67.3 | 67.0 | 67.9 | 55.3 |
+| c8i.xlarge | 29.7 | 34.3 | 35.1 | 35.2 | 33.6 |
+| c6i.xlarge | 23.4 | 21.5 | 22.0 | 22.2 | 19.7 |
+
+Eight is best or level everywhere; twelve spills. Ice Lake is the one
+loss, and not the tile's: its product is faster in zmm at eight columns
+on one thread (164 GMAC/s against main's 137), and the whole run on two
+threads slower by 2 to 6% (this sweep's spread there is the widest, 22.1
+to 27.8), which is its clock under 512-bit work slowing the rest of the
+run. No narrower tile removes it; a ymm product chosen for Ice Lake by
+model would be the model list CLAUDE.md, 4, rules out. Kept, with Ice
+Lake's 2 to 6% as its cost; Ice Lake has no other VNNI to fall back to.
