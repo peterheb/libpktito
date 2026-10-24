@@ -46,6 +46,10 @@ pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errle
  * fewer than n only at the end of the data, or on a read error. */
 size_t pk_wav_read(pk_wav *w, float *out, size_t n);
 
+/* The same, with each frame's channels as they are, interleaved, into
+ * out[n * channels]: for a caller that mixes them itself. */
+size_t pk_wav_read_frames(pk_wav *w, float *out, size_t n);
+
 /* 0 if the data ended where the header said it would (or a streamed file
  * reached its end), else -1 with what happened instead in err: cut short,
  * or a read error. Asked after the last pk_wav_read. */

@@ -215,10 +215,12 @@ static void format_case(spec s, uint32_t frames) {
     size_t len = (size_t)frames * ch * bytes;
     unsigned char *data = malloc(len + 16);
     float *want = malloc((size_t)frames * sizeof *want);
+    float *want_ch = malloc((size_t)frames * ch * sizeof *want_ch);
     for (uint32_t f = 0; f < frames; f++) {
         float acc = 0.0f, v = 0.0f;
         for (uint32_t c = 0; c < ch; c++) {
             sample(&s, f * ch + c, data + ((size_t)f * ch + c) * bytes, &v);
+            want_ch[(size_t)f * ch + c] = v;
             acc += v;
         }
         want[f] = ch == 1 ? v : acc / (float)ch;          /* one channel is the sample itself */
@@ -263,9 +265,40 @@ static void format_case(spec s, uint32_t frames) {
                  (unsigned long long)info.frames);
         free(x);
     }
+    /* pk_wav_read_frames: every channel as it is, interleaved, the same
+     * samples the mono read averages */
+    static const size_t frame_pieces[] = { 0, 7 };
+    for (size_t pi = 0; pi < 2; pi++) {
+        pk_wav_info info;
+        char err[256];
+        pk_wav *w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        g_cases++;
+        if (!w) {
+            FAIL("%s: did not open for frames", what);
+            break;
+        }
+        float *x = malloc(((size_t)frames + 4096) * ch * sizeof *x);
+        size_t n = 0;
+        for (;;) {
+            size_t want_n = frame_pieces[pi] ? frame_pieces[pi] : 4096, k;
+            if (n + want_n > (size_t)frames + 4096)
+                want_n = (size_t)frames + 4096 - n;
+            n += k = pk_wav_read_frames(w, x + n * ch, want_n);
+            if (k < want_n || want_n == 0)
+                break;
+        }
+        int st = pk_wav_status(w, err, sizeof err);
+        pk_wav_close(w);
+        if (n != frames || st)
+            FAIL("%s, frames in reads of %zu: %zu of %u, status %d", what, frame_pieces[pi], n, frames, st);
+        else if (memcmp(x, want_ch, (size_t)frames * ch * sizeof *x))
+            FAIL("%s, frames in reads of %zu: a sample differs", what, frame_pieces[pi]);
+        free(x);
+    }
     free(b.p);
     free(data);
     free(want);
+    free(want_ch);
 }
 
 static void refuse(const char *what, const buf *b) {

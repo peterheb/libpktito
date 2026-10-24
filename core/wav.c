@@ -256,7 +256,9 @@ static float sample(const pk_wav *w, const unsigned char *p) {
     }
 }
 
-size_t pk_wav_read(pk_wav *w, float *out, size_t n) {
+/* Up to n frames into out: each mixed to mono (n floats), or each channel
+ * as it is (n * channels floats, interleaved). */
+static size_t read_frames(pk_wav *w, float *out, size_t n, int mono) {
     size_t done = 0;
     const uint32_t ch = w->info.channels, bytes = w->info.bytes;
     while (done < n) {
@@ -291,6 +293,8 @@ size_t pk_wav_read(pk_wav *w, float *out, size_t n) {
         const unsigned char *p = w->buf + w->pos;
         if (ch == 1) {
             out[done] = sample(w, p);
+        } else if (!mono) {
+            for (uint32_t c = 0; c < ch; c++) out[done * ch + c] = sample(w, p + c * bytes);
         } else {
             float acc = 0.0f;
             for (uint32_t c = 0; c < ch; c++) acc += sample(w, p + c * bytes);
@@ -300,6 +304,14 @@ size_t pk_wav_read(pk_wav *w, float *out, size_t n) {
         done++;
     }
     return done;
+}
+
+size_t pk_wav_read(pk_wav *w, float *out, size_t n) {
+    return read_frames(w, out, n, 1);
+}
+
+size_t pk_wav_read_frames(pk_wav *w, float *out, size_t n) {
+    return read_frames(w, out, n, 0);
 }
 
 int pk_wav_status(const pk_wav *w, char *err, size_t errlen) {
