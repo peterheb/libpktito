@@ -685,3 +685,24 @@ the first); medians of the second, seconds whole and in 30 s chunks:
 The first run agreed within 3%. avx2-vnni and avx2 are the same code in
 both and move within their spread (200 to 224x across rounds); the zmm
 product is the one change, ref's bits from every build and backend.
+
+## 2026-10-24 - amx-int8 on Windows (a measurement)
+
+The AMX result above left Windows unmeasured: amx_permitted asks only
+Linux, and elsewhere XCR0's tile bits decide. EC2 c7i.large (Xeon 8488C,
+one core, two threads), fresh, Windows Server 2025 (10.0.26100) and 2022
+(10.0.20348), the engine at ae34ec1 built on the 9950X with MSYS2's gcc
+16.2 (UCRT and KERNEL32 only), run from user data: kcheck, 1770 cases,
+ref's bits on amx-int8, avx512-vnni, avx2-vnni and avx2, on both; pktito
+picks amx-int8 itself, and test.wav's v2 through it, forced to amx-int8
+and forced to avx512-vnni, is ref's bytes. Windows hands a thread the
+tile data on its first use without being asked, as XCR0 says it will.
+
+`pktito bench` on test.wav, one thread (Windows counts the one core), two
+interleaved rounds: Server 2025, amx-int8 21.1x and 21.1x against
+avx512-vnni's 17.7x and 17.8x; Server 2022, 21.2x and 21.2x against
+17.5x and 17.6x: 19 to 21% on both. q8bench, three repetitions in 64-row
+slices, Server 2022: feed-forward up 212 to 275 GMAC/s, down 191 to 265,
+attention q 214 to 268. On Server 2025 the same run put ff up at 159 to
+273 and the other two level (155 to 162, 181 to 176); not repeated, and
+its bench, the longer measure, moved as 2022's did.

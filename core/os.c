@@ -335,6 +335,9 @@ static int amx_permitted(void) {
     return answer;
 }
 #else
+/* elsewhere XCR0's tile bits are the answer: Windows Server 2022 and 2025
+ * hand a thread the tile data on its first use, unasked, and ran amx-int8
+ * to ref's bits on a Sapphire Rapids (backend/avx2/CLIMB.md, 2026-10-24) */
 static int amx_permitted(void) { return 1; }
 #endif
 
