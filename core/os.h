@@ -29,12 +29,6 @@ void pk_unmap(const unsigned char *p, size_t size);
  * for a path that is not UTF-8. */
 FILE *pk_os_fopen(const char *path, const char *mode);
 
-/* main's arguments as UTF-8: argv itself on POSIX; on Windows, whose C
- * runtime hands main the ANSI code page's, the command line again from
- * its UTF-16, with *argc to match. NULL if it cannot be had (out of
- * memory). */
-char **pk_os_args(int *argc, char **argv);
-
 /* Cores this process may use: what -t defaults from. 1 when unknown. */
 int pk_os_cores(void);
 

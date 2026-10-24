@@ -80,7 +80,7 @@ BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(
 # toolchain on the old msvcrt runtime has none that knows %zu (UCRT's does,
 # and its output is the same bytes either way: check-c on the Core 3 304).
 # shell32 is a system DLL, for CommandLineToArgvW: the CLI's arguments as
-# UTF-8 (core/os.c, pk_os_args). gcc and clang for MinGW link it by
+# UTF-8 (core/cli.c, utf8_args). gcc and clang for MinGW link it by
 # default; it is named so that no toolchain has to.
 ifeq ($(UNAME_S),Darwin)
   PLATFLAGS := -D_DARWIN_C_SOURCE

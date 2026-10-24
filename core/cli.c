@@ -25,6 +25,54 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+
+/* The library takes paths in UTF-8, and Windows' C runtime hands main the
+ * command line in the ANSI code page, where a name outside it is already
+ * lost; Windows keeps the line itself in UTF-16. One allocation, the
+ * pointers and then the strings, sized from the line and kept for the life
+ * of the process. Here and not in the library, whose users would all link
+ * shell32 for it. NULL if it cannot be had. */
+static char **utf8_args(int *argc, char **argv) {
+    (void)argv;
+    int n;
+    wchar_t **w = CommandLineToArgvW(GetCommandLineW(), &n);
+    if (!w)
+        return NULL;
+    size_t bytes = 0;
+    for (int i = 0; i < n; i++) {
+        int k = WideCharToMultiByte(CP_UTF8, 0, w[i], -1, NULL, 0, NULL, NULL);
+        if (k <= 0) {
+            LocalFree((HLOCAL)w);
+            return NULL;
+        }
+        bytes += (size_t)k;
+    }
+    char **out = malloc((size_t)(n + 1) * sizeof *out + bytes);
+    if (!out) {
+        LocalFree((HLOCAL)w);
+        return NULL;
+    }
+    char *s = (char *)(out + n + 1), *end = s + bytes;
+    for (int i = 0; i < n; i++) {
+        out[i] = s;
+        s += WideCharToMultiByte(CP_UTF8, 0, w[i], -1, s, (int)(end - s), NULL, NULL);
+    }
+    out[n] = NULL;
+    LocalFree((HLOCAL)w);
+    *argc = n;
+    return out;
+}
+#else
+static char **utf8_args(int *argc, char **argv) {     /* argv is the UTF-8 already */
+    (void)argc;
+    return argv;
+}
+#endif
+
 #define READ_FRAMES 16384
 
 static const char *usage =
@@ -816,7 +864,7 @@ int main(int argc, char **argv) {
     opts o;
     pk_os_stdio();
     /* every path the library takes is UTF-8, and on Windows argv is not */
-    if (!(argv = pk_os_args(&argc, argv)))
+    if (!(argv = utf8_args(&argc, argv)))
         die("cannot read the command line");
     parse(argc, argv, &o);
     pk_model *m = load_model(o.model, argv[0]);
