@@ -979,3 +979,97 @@ often: the quantizer writing the offset bytes, or pk_gemm's slices of 256
 rows, the copy a quarter as often (on the c7i.large, avx512-vnni, one
 thread: 19.1x to 19.9-20.0x, the AMX entries above); both outside the int8
 product. Rejected; the code is as before.
+
+## 2026-10-24 - the float kernels in zmm (measured, a case for Peter)
+
+CLAUDE.md makes the int8 product the only kernel that differs inside a
+family, so this is a measurement for that rule's owner, not a change. A
+prototype outside the tree, on d1bda18's code, gave the two AVX-512
+builds (avx512-vnni, amx-int8) zmm forms of four kernels, each lane doing
+what a ymm lane does in the same order:
+
+- the float product: two panels of 16 rows by eight columns, 16 chains,
+  where the ymm tile is one panel by four columns, 8 chains (T = 1 keeps
+  the ymm tile);
+- the quantizer: a block's 32 floats as two zmm, its bytes by VPMOVSDB;
+- the layer norm: its 16 lanes in one zmm where ymm has two;
+- SiLU.
+
+kcheck, 1777 cases, ref's bits on all four x86 backends, on the 9950X
+(gcc 15.2) and the c7i.large (gcc 13.3); test.wav v2 and v3 ref's bytes
+through avx512-vnni and amx-int8, and v2 on the two EC2 instances. One
+binary each, the forms picked by an environment variable read once (the
+prototype's, for the A/B alone), interleaved rounds, one sitting a box;
+`pktito bench` on test.wav, best of five:
+
+| box | backend | threads | ymm | the zmm product | all four in zmm |
+|---|---|---|---|---|---|
+| 9950X | avx512-vnni | 1 | 38.3-38.5x | 41.3-41.5x (+8%) | 41.8-42.0x (+9%) |
+| | | 16 | 252.0-260.1x | 259.6-266.0x (+2%) | 259.6-266.0x (+2%) |
+| c7i.large | amx-int8 | 1 | 31.7-31.9x | 34.2-34.9x (+9%) | 33.6-35.7x (+11%) |
+| | avx512-vnni | 1 | 19.2-19.3x | 19.8-19.9x (+4%) | 19.7-20.3x (+5%) |
+| c7i.xlarge | amx-int8 | 2 | 55.3-56.0x | | 60.2-60.8x (+8%) |
+| | | 1 | 31.1-31.6x | | 34.1-34.6x (+10%) |
+| | avx512-vnni | 2 | 36.8-37.3x | | 38.1-38.6x (+3%) |
+| | | 1 | 19.4-19.6x | | 20.4x (+5%) |
+| c8i.xlarge | amx-int8 | 2 | 56.9-57.3x | | 61.4-61.5x (+7%) |
+| | | 1 | 32.8-33.2x | | 35.8x (+8%) |
+| | avx512-vnni | 2 | 35.4-35.9x | | 36.7-37.1x (+4%) |
+| | | 1 | 19.1x | | 19.7-19.9x (+4%) |
+
+(9950X and c7i.large: five and three rounds, the ymm column the
+prototype's own ymm form, the percentages on the medians. The EC2 rows:
+us-east-1, Ubuntu 24.04, gcc 13.3 builds from the c7i.large, three
+rounds, the ymm column d1bda18's own binary; the prototype's ymm form ran
+0.3 to 1.4% below it there.) A second sitting on the 9950X, three rounds:
+one thread 38.3-38.6x against 41.7-41.9x, 16 threads 262.1-269.5x against
+267.4-271.0x, zmm ahead in every pair.
+
+PROFILE=1, one thread: the attention stage, which holds a query block's
+three float products, 233 to 125 ms on the 9950X and 386-391 to 236-240
+ms on the c7i.large (amx-int8); the quantize stage, which holds the layer
+norms and SiLU, 78 to 62 ms and 165 to 134 ms. The product's tile on the
+c7i.large (amx-int8, the attention stage): two panels by eight columns
+237-259 ms, two by four and one by eight (8 chains, as many as the ymm
+tile's) 280-284 ms; not tuned past that.
+
+Not measured: Ice Lake, whose clock falls under 512-bit work (the zmm
+product's entry: 2 to 6% at two threads); the softmax, GLU and the
+depthwise convolution, stages of 1 to 2%. On these CPUs at one and two
+threads it is the largest step left outside the int8 product, larger than
+the AMX padded group and the zmm copy would have been together.
+
+## 2026-10-24 - pk_gemm's step, 64 rows or 256 (measured, for Peter)
+
+The AMX entries above have 256-row slices faster on the c7i.large at one
+thread (amx-int8 29.5-29.9x to 30.7-31.6x, avx512-vnni 19.1x to
+19.9-20.0x): each call's own work, the zmm product's offset copy, the
+panels' weight sums, AMX's first panel of a group with its A from L2,
+made a quarter as often. The slice-size rows above (the 12900HK, six
+threads) have 64 best, 256 rows 1.166-1.169 s against 1.057-1.059: too few
+items for the threads.
+
+On the 9950X, avx512-vnni, d1bda18's code, gcc 15.2, interleaved rounds:
+256 everywhere, one pinned thread, 39.7-39.9x against 38.3-38.6x (+3%);
+16 threads 242.3-249.9x against 252.4-258.8x (-3 to -4%), two sittings.
+256 only where a product's 256-row slices are at least the threads
+(rows / 256 >= threads), 64 elsewhere: one thread 39.9x (the same code
+path), 16 threads 248.7-255.8x against 255.7-257.7x (-1.5%: at 16
+threads the feed-forward's up product is then one round of 16 slices,
+where 64 rows make four). On EC2 the same rule, gcc 13.3, three rounds,
+against d1bda18 (the float kernels' table above, the same sitting):
+
+| instance | backend | 2 threads | 1 thread |
+|---|---|---|---|
+| c7i.xlarge | amx-int8 | 59.5-60.6x (+7%) | 32.5-33.4x (+7%) |
+| | avx512-vnni | 38.6-38.7x (+4%) | 20.2-20.4x (+4%) |
+| c8i.xlarge | amx-int8 | 60.1-61.1x (+6%) | 33.8-34.2x (+3%) |
+| | avx512-vnni | 37.3-37.6x (+5%) | 19.8x (+4%) |
+
+and on the c7i.large, amx-int8, one thread, with the float kernels in zmm
+as well: 37.4-37.5x, against 31.9-32.3x for d1bda18, 33.1-34.2x for the
+step alone and 34.1-35.3x for the float kernels alone; the two add. A
+rule asking for two rounds (rows / 256 >= 2 x threads) would be this at one
+and two threads and today's code at 16. core/encoder.c's, outside the
+int8 product: not made here. The bits do not depend on the split, every
+output being one call's.
