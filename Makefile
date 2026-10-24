@@ -1,14 +1,15 @@
 # pktito
 #
 #   make                          ./pktito for this machine's family, every backend in it:
-#                                 neon-dp and neon on AArch64; avx2-vnni, avx512-vnni and avx2
-#                                 on x86-64; and ref. The CPU picks one when it runs.
+#                                 neon-dp and neon on AArch64; amx-int8, avx512-vnni, avx2-vnni
+#                                 and avx2 on x86-64; and ref. The CPU picks one when it runs.
 #   make BACKEND=<name>           that backend alone, with ref:
 #                                 neon     ARMv8.0 NEON: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
 #                                 neon-dp  ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
-#                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5, Sapphire Rapids
+#                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
+#                                 amx-int8     and AMX's int8 tiles: Sapphire and Granite Rapids
 #                                 ref      scalar C, any host
 #   PKTITO_KERNELS=<name> ./pktito  runs that backend, of those built, to compare them
 #   make libpktito.a               the library alone (examples/transcribe.c uses it)
@@ -24,8 +25,8 @@
 CC ?= cc
 
 # The backends. A build holds every one of the machine's family that the
-# compiler can make - neon-dp and neon on AArch64; avx2-vnni, avx512-vnni
-# and avx2 on x86-64 - each compiled with its own instruction set, and ref;
+# compiler can make - neon-dp and neon on AArch64; amx-int8, avx512-vnni,
+# avx2-vnni and avx2 on x86-64 - each compiled with its own instruction set, and ref;
 # the rest of the tree takes the family's baseline. Which runs is the CPU's
 # to say, at run time (backend/kernels.c), so one binary serves its family:
 # built on an Alder Lake it runs on a Zen 4, built on a Pi 5 on a Pi 3.
