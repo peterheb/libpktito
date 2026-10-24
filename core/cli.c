@@ -120,14 +120,13 @@ static void die(const char *fmt, ...) {
     exit(1);
 }
 
-/* pk_wav_open's reason; on Windows, for a name with a wildcard in it, also
- * why: cmd and PowerShell leave *.wav to the program, and this one takes
- * names (README) */
+/* pk_wav_open's reason; on Windows, for a name with a wildcard in it, the
+ * real one: cmd and PowerShell leave *.wav to the program, which takes
+ * names (README, "Try it"), where _wfopen says only "Invalid argument" */
 static void cannot_open(const char *path, const char *err) {
 #ifdef _WIN32
     if (strpbrk(path, "*?"))
-        die("%s (Windows leaves a wildcard to the program, and pktito-c takes names: "
-            "README, \"Try it\")", err);
+        die("%s: Windows doesn't expand wildcards; see README", path);
 #else
     (void)path;
 #endif
