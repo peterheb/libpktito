@@ -323,7 +323,9 @@ void pk_os_stdio(void) {}
 /* CPUID's bits for each feature, and the register state the operating
  * system must have switched on (XCR0) for its instructions to run: YMM's
  * for AVX2's, and the mask and ZMM registers too for any EVEX instruction,
- * the 256-bit ones included. */
+ * the 256-bit ones included. A name not here is a feature this file cannot
+ * vouch for, so the answer is no: the backend that needs it is passed over
+ * for the next, where a yes would let it die on its first instruction. */
 static int cpu_has(const char *f) {
     unsigned a, b, c, d, xcr0 = 0;
     if (!__get_cpuid(1, &a, &b, &c, &d))
@@ -352,7 +354,7 @@ static int cpu_has(const char *f) {
         return ((c7 >> 11) & 1) && zmm;
     if (!strcmp(f, "avx512vl"))
         return ((b7 >> 31) & 1) && zmm;
-    return 1;
+    return 0;
 }
 
 #elif defined(__aarch64__) && defined(__linux__)
@@ -364,7 +366,7 @@ static int cpu_has(const char *f) {
 static int cpu_has(const char *f) {
     if (!strcmp(f, "asimddp"))
         return (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
-    return 1;
+    return 0;
 }
 
 #elif (defined(__aarch64__) || defined(_M_ARM64)) && defined(PK_WINDOWS)
@@ -375,14 +377,19 @@ static int cpu_has(const char *f) {
 static int cpu_has(const char *f) {
     if (!strcmp(f, "asimddp"))
         return IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) != 0;
-    return 1;
+    return 0;
 }
 
-#else /* macOS on Apple silicon, whose every core has the dot product, and the rest */
+#else /* macOS on Apple silicon, whose every core has the dot product; elsewhere
+         no feature can be asked for, and ref and neon need none */
 
 static int cpu_has(const char *f) {
+#if defined(__aarch64__) && defined(__APPLE__)
+    return !strcmp(f, "asimddp");
+#else
     (void)f;
-    return 1;
+    return 0;
+#endif
 }
 
 #endif
