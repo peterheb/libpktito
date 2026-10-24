@@ -789,3 +789,22 @@ tiles loaded from there. The copy is 1024 loads and stores a group, about
 4% of the four panels' work in a 64-row slice. Predicted: q8bench's down
 shape 9 to 10% faster on the c7i.large, `pktito bench` 2 to 3%. The copy
 moves bytes and nothing else; the bits are untouched.
+
+## 2026-10-24 - AMX: the down shape's A copied off one L1 set (result: rejected)
+
+As the hypothesis above has it, the 16 columns' activations copied to a
+4160-byte stride before each group's panels, for n = 4096 alone. kcheck
+ref's bits on amx-int8 and test.wav v2 and v3 ref's bytes, on the
+c7i.large (gcc 13.3). Against the pipelined loop (49acfe4), one sitting,
+three interleaved rounds: q8bench in slices, the down shape, 375 to 378
+GMAC/s against 439 to 448 (the other two shapes level); `pktito bench`
+29.0 to 29.1x against 29.9 to 30.0x. Slower, not 9 to 10% faster.
+
+The standalone loop's A was in L2; in a slice of the real product it is
+not. The activations of a minute at n = 4096 are 3 MB, past the 2 MB L2,
+so every 64-row slice reads each group's 64 KB from L3 again, and the
+copy does that as a phase of its own (about 5,300 cycles a group, 5 a
+line), where the tile loads of the uncopied loop take it while the TMUL
+and the chains run. Rejected; a copy would have to be pipelined with the
+group before it to pay, for at most the 7 to 10% between the down shape
+and the up.
