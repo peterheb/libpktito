@@ -951,3 +951,31 @@ group's +2.3%. Across sittings the instances differ: this c7i.xlarge ran
 main's amx-int8 at 38.4x and avx512-vnni at 33.9x, against 46.8x and 37.7x
 for the same loop in the first AMX entry's sitting; the c8i.xlarge agrees
 with its row there within 2%. Only the rows of one sitting compare.
+
+## 2026-10-24 - the zmm product's offset copy made a tile ahead (result: rejected)
+
+As the hypothesis above has it: the first panel of a column block XORs
+the next tile's columns into the buffer, in zmm, before running its own
+tile, where the copy was a pass of its own before any panel. kcheck ref's
+bits on all four x86 backends, on the 9950X (gcc 15.2, AMX skipped) and
+the c7i.large (gcc 13.3); test.wav v2 and v3 ref's bytes through
+avx512-vnni, avx2-vnni and avx2 here and amx-int8 and avx512-vnni there.
+
+On the 9950X, avx512-vnni, one sitting (06:36 to 06:38 UTC), five
+interleaved rounds against d1bda18's code: q8bench in slices of 64 on one
+pinned core, GMAC/s (up, down, attention), at T 750 425-437, 418-423 and
+443-448 against 434-438, 421-424 and 439-442; at T 250 447-453, 422-428
+and 450-459 against 443-452, 421-423 and 451-458. `pktito bench` on
+test.wav, 16 threads, 252.5 to 260.4x against 250.0 to 263.1x (medians
+255.9x and 255.6x); one pinned thread 38.2 to 38.4x against 38.2 to
+38.5x. On the c7i.large, avx512-vnni, three rounds: q8bench at T 750
+225-228, 207-211 and 234-238 against 225-232, 206-210 and 229-231;
+`pktito bench`, one thread, 19.2x against 19.1 to 19.2x.
+
+Level everywhere, where 5 to 6% was predicted on the product: made beside
+the VPDPBUSDs, the copy's loads and stores cost what they cost as a pass
+of their own. What would take the 6-7% out is making the copy less
+often: the quantizer writing the offset bytes, or pk_gemm's slices of 256
+rows, the copy a quarter as often (on the c7i.large, avx512-vnni, one
+thread: 19.1x to 19.9-20.0x, the AMX entries above); both outside the int8
+product. Rejected; the code is as before.
