@@ -576,3 +576,85 @@ hw.optional.arm.FEAT_I8MM on macOS, PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE
 (66, MinGW's winnt.h) on Windows. Kept if kcheck and check-c are ref's
 bits on a Graviton and the M4 Pro, and the bench moves past its spread;
 first in the order only where it wins.
+
+## 2026-10-24 - the int8 product on I8MM's SMMLA (result: rejected)
+
+Built as the hypothesis above has it, with two changes the first version
+measured into: sixteen inputs a step (two columns' 16 bytes, ZIP1 and
+ZIP2 at 64 bits, make A for both halves, where two 8-byte loads and an
+insert made it for one), and the float chains run in SMMLA's order,
+[c r, c r+1, c+1 r, c+1 r+1], each lane its column's d, taken apart into
+the columns' rows once at the tile's end: the same fused multiply-add for
+every output, ref's chain. kcheck, 1777 cases, ref's bits on neon-i8mm,
+neon-dp and neon, and check-c passes, on a c8g (Neoverse V2, gcc 13.3),
+the M4 Pro (Apple clang) and the GB10 (gcc 13.3); every transcript below
+is ref's. The code is the commit before this entry's ("neon-i8mm: the
+int8 product on SMMLA, as measured"); this one takes it out.
+
+The tile's shape, on a c8g.large (one V2 core, two threads), `pktito
+bench` on test.wav, interleaved with neon-dp's 15.4 to 15.5x: eight
+inputs a step with the chains taken apart every block, 14.4x; sixteen a
+step, 15.9 to 16.0x; the chains in SMMLA's order, 16.1 to 16.2x; six
+columns a tile in place of four, 16.0x.
+
+EC2, us-east-1, each instance fresh, Ubuntu 24.04, one binary built on
+the c8g holding all three, three interleaved rounds of `pktito bench`
+(best of five, the default threads), then q8bench on one thread, the
+1024 x 1024 attention product at T 750 in pk_gemm's 64-row slices,
+GMAC/s; the M4 Pro (in use, load 3 to 4) and the GB10 (idle) by
+pktito-mac, three interleaved rounds:
+
+| board | core | neon-dp | neon-i8mm | | q8bench |
+|---|---|---|---|---|---|
+| c6g.xlarge | Neoverse N1 | 18.9x | (no I8MM: passed over) | | |
+| c7g.xlarge | Neoverse V1 | 24.5x | 26.3x | +7.3% | 81.3 to 85.8 |
+| c8g.xlarge | Neoverse V2 | 30.7x | 32.0x | +4.2% | 103.8 to 110.3 |
+| c9g.xlarge | Neoverse V3 | 44.3x | 45.9x | +3.6% | 126.5 to 133.1 |
+| GB10, -t 10 | X925 and A725 | 136.3-137.9x | 138.3-139.8x | +1.4% | X925 202-204 to 209, A725 61.0 to 63.9 |
+| GB10, its X925s alone | X925 | 135.6-136.9x | 137.1-137.9x | +0.8% | |
+| GB10, -t 20 | X925 and A725 | 105.0-108.1x | 104.7-107.4x | level | |
+| M4 Pro | M4 | 131.9-134.1x | 113.4-115.7x | -12 to -15% | 182-186 to 148 |
+
+(six columns on the M4 Pro: 117.0 and 118.4x, the product 155.)
+
+mmrate2.c, ns an instruction with 1, 4, 8 and 16 independent chains, one
+thread (1 is the latency; 16 the issue rate where the latency allows):
+
+| core | SDOT | SMMLA |
+|---|---|---|
+| Neoverse V2 (2.8 GHz) | 0.36, 0.17, 0.11, 0.097 | 0.36, 0.17, 0.10, 0.097 |
+| X925 (GB10) | 0.43, 0.12, 0.066, 0.047 | 0.44, 0.12, 0.065, 0.047 |
+| A725 (GB10) | 0.357, 0.179, 0.179, 0.179 | the same |
+| M4 Pro P-core (~4.5 GHz) | 0.67-0.72, 0.17, 0.087, 0.066 | 1.334, 0.333, 0.17, 0.131-0.135 |
+
+Where SMMLA issues as SDOT does (V2, X925, A725) it does twice the
+multiply-adds an instruction, but the tile does not live on the
+multiply: each SMMLA operand costs a ZIP that SDOT's lane form does not
+(0.75 a SMMLA at 4 columns by 8 rows), and 32-input blocks put a convert
+and a fused multiply-add on every accumulator every four SMMLAs, so the
+SIMD instructions a MAC fall by about 8% and the product moves 3 to 6%.
+Wider tiles to share the ZIPs run out of the 32 registers, as six
+columns did. On the M4 SMMLA issues at half SDOT's rate with twice its
+latency: the same multiply-adds a cycle, and the ZIPs all cost.
+
+Rejected. Not by the M4 alone - leaving Apple out would be a platform
+condition, not a list of models - but by what is left: 1 to 7% on the
+cores where it can win, a third NEON backend to keep and read for it,
+and two places it would run unmeasured and could lose (Linux on Apple's
+cores; Snapdragon X's Oryon, which has I8MM, under Windows). A core
+whose SMMLA is the limit - wider than SDOT, or a kernel whose blocks are
+longer than 32 - is where to look again. Untried, and the question for
+whoever does: the same tile timed with its ZIPs taken out (wrong sums,
+every other instruction as it is), which bounds what weights already in
+SMMLA's order - a second copy of the model laid out for it, or a file
+format of its own, with the page cache's sharing lost - could buy over
+SDOT on these cores.
+
+Seen in passing: without -t, the encoder's choice between every core and
+the fast kind (core/encoder.c, its layers 3% faster to keep the fast
+kind) took the GB10's twenty threads in two of three neon-i8mm runs,
+101.7x and 110.5x against 138.8x at its ten X925s, where neon-dp took
+the ten every time; on the M4 Pro neon-i8mm went between 8 and 12, and
+neon-dp held at 8. A kernel that moves the balance between the two kinds
+of core can move that choice, and the 3% margin gave way here: worth a
+look when one does.

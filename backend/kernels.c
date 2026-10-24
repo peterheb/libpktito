@@ -19,9 +19,6 @@
 #include <string.h>
 
 const pk_kernels *const pk_kernels_built[] = {
-#ifdef PK_HAVE_neon_i8mm
-    &pk_kernels_neon_i8mm,
-#endif
 #ifdef PK_HAVE_neon_dp
     &pk_kernels_neon_dp,
 #endif
