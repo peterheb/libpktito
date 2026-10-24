@@ -808,3 +808,24 @@ line), where the tile loads of the uncopied loop take it while the TMUL
 and the chains run. Rejected; a copy would have to be pipelined with the
 group before it to pay, for at most the 7 to 10% between the down shape
 and the up.
+
+## 2026-10-24 - AMX: the next group's A prefetched in the last panel (hypothesis)
+
+q8bench on the c7i.large with the pipelined loop, in slices of 64, 128
+and 256 rows and whole: 468-487, 492-514 and 542-585 GMAC/s on the
+feed-forward's up shape (the attention's 484-491, 518-525, 555-588). A
+64-row slice is four panels a group of 16 columns, and the group's first
+panel takes its A from L2, 16 lines a TILELOADD; fitting a + X/128 and
+a + X/512 cycles a block to the two ends gives about 43 a block and some
+1,600 more a group, the first panel's blocks near twice the others'.
+pk_gemm's step at 256 instead of 64 moved `pktito bench` there from 29.5-
+29.9x to 30.7-31.6x (amx-int8) and 19.1x to 19.9-20.0x (avx512-vnni), one
+thread: a seam change, for Peter, not made here.
+
+Inside the kernel: while a slice's last panel of one group runs, its
+steps prefetch the next group's A into L1, the 16 rows' lines of each
+pair of blocks (eight lines a block, 16 KB at n = 1024, beside the
+panel's 16 KB of B). Predicted: q8bench in slices of 64 most of the way
+to the 256-row figure on the n = 1024 shapes, 10 to 15%, and `pktito
+bench` 3 to 4%. At n = 4096 a group's A, 64 KB, is past L1; the same
+prefetch there should do little.
