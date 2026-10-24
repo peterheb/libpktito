@@ -23,7 +23,7 @@ same bits on every machine.
 | | |
 |---|---|
 | models | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints |
-| backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `avx2-vnni` (Alder Lake and later and Zen 5 with AVX-VNNI; Ice Lake, Tiger Lake and Zen 4 with AVX512-VNNI's encoding of the same instruction), `avx2` (Haswell and later), `ref` (scalar C, anything) |
+| backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5, Sapphire and Granite Rapids), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
 | numerics | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8") |
 | what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles |
 | audio | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; any channel count; any rate, brought to 16 kHz |

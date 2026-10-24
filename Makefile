@@ -35,7 +35,7 @@ UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
   FAMILY := neon-dp neon
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
-  FAMILY := avx2-vnni avx512-vnni avx2
+  FAMILY := avx512-vnni avx2-vnni avx2
 endif
 
 # Each backend's instruction set, and tuning for the core the build is on
