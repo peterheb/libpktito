@@ -10,8 +10,9 @@
  * 8 (signed) to 32 bits, big-endian, and AIFF-C's uncompressed types - big-
  * and little-endian (sowt) PCM, float at 32 and 64, A-law and mu-law; a
  * compressed one (ima4, MAC3, MAC6, GSM) is refused. It reads front to back
- * and never seeks, so stdin works as well as a file, and it keeps one block
- * of bytes, so a file of any length reads in the same memory.
+ * and never seeks, so stdin works as well as a file, and so does a file the
+ * caller already has open, and it keeps one block of bytes, so a file of any
+ * length reads in the same memory.
  *
  * Samples come out as float in [-1, 1) by the conventions torchaudio.load
  * and soundfile use (int16 / 32768, uint8 (x - 128) / 128, ...), and with
@@ -28,6 +29,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 enum { PK_WAV_PCM = 1, PK_WAV_FLOAT = 3, PK_WAV_ALAW = 6, PK_WAV_MULAW = 7 };
 
@@ -49,6 +51,13 @@ typedef struct pk_wav pk_wav;
  * UTF-8 on every system, Windows too, whatever its code page (core/os.h's
  * pk_os_fopen opens it). */
 pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errlen);
+
+/* The same for f, a file the caller has open, read from where it stands and
+ * left open: pk_wav_close does not close it, as it does not close stdin. A
+ * file with no name to open it by needs it, such as the descriptor
+ * Android's document picker hands over (fdopen makes it a FILE). name says
+ * which file in err; NULL is "the file". */
+pk_wav *pk_wav_open_file(FILE *f, const char *name, pk_wav_info *info, char *err, size_t errlen);
 
 /* Up to n more frames, each mixed to mono, into out[n]. Returns how many;
  * fewer than n only at the end of the data, or on a read error. */

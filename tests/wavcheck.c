@@ -14,6 +14,8 @@
  *   pieces     any file read a frame at a time, in odd-sized reads and all at
  *              once comes out the same
  *   writer     16-bit and float, read back
+ *   open FILE  pk_wav_open_file on a FILE read part way: pk_wav_open's
+ *              samples, and the FILE left open, a refused one too
  *   malformed  every prefix of a valid file, and each field of fmt wrong in
  *              each way it can be: refused with a message, never a crash
  *   AIFF       AIFF PCM of 5 to 32 bits (12 and 20 in wider containers), and
@@ -1006,6 +1008,54 @@ int main(int argc, char **argv) {
             }
         }
         free(y);
+    }
+
+    /* ---- open FILE: the WAV after 4 bytes the caller has read, then a refusal */
+    {
+        unsigned char d[600];
+        for (int i = 0; i < 600; i++) d[i] = (unsigned char)(i * 7);
+        spec st = s16;
+        st.channels = 2;
+        buf b = make(&st, d, sizeof d);
+        save(&b);
+        pk_wav_info want;
+        size_t n;
+        int status;
+        float *x = read_any(g_tmp, 0, 1, &n, &want, &status);
+        buf pre = { 0 };
+        put(&pre, "head", 4);
+        put(&pre, b.p, b.n);
+        save(&pre);
+        char head[4], err[256] = "";
+        pk_wav_info info;
+        float y[400];
+        FILE *f = fopen(g_tmp, "rb");
+        pk_wav *w = f && fread(head, 1, 4, f) == 4 ? pk_wav_open_file(f, "head+wav", &info, err, sizeof err) : NULL;
+        size_t k = w ? pk_wav_read_frames(w, y, 200) : 0;
+        g_cases++;
+        if (!w || !x || k != n || memcmp(y, x, n * 2 * sizeof *y) || info.rate != want.rate
+            || info.channels != want.channels || info.frames != want.frames || pk_wav_status(w, err, sizeof err))
+            FAIL("pk_wav_open_file: %s", w ? "not pk_wav_open's samples" : err);
+        pk_wav_close(w);
+        /* still the caller's: open, and read again from the start */
+        g_cases++;
+        if (!f || fseek(f, 0, SEEK_SET) || fread(head, 1, 4, f) != 4 || memcmp(head, "head", 4))
+            FAIL("pk_wav_open_file: the FILE not left open");
+        /* from the start, "head" is no header: refused, and the FILE left open */
+        w = f && !fseek(f, 0, SEEK_SET) ? pk_wav_open_file(f, "head+wav", &info, err, sizeof err) : NULL;
+        g_cases++;
+        if (w || strncmp(err, "head+wav: ", 10) || !f || fseek(f, 0, SEEK_SET) || fgetc(f) != 'h')
+            FAIL("pk_wav_open_file on a file that is no WAV: %s", w ? "opened" : err);
+        pk_wav_close(w);
+        if (f)
+            fclose(f);
+        w = pk_wav_open_file(NULL, "nothing", &info, err, sizeof err);
+        g_cases++;
+        if (w || !err[0])
+            FAIL("pk_wav_open_file on no FILE: %s", w ? "opened" : "no reason");
+        free(x);
+        free(pre.p);
+        free(b.p);
     }
 
     /* ---- malformed: every prefix of a valid file, then each field wrong */

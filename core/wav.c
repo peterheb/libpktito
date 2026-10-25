@@ -376,44 +376,58 @@ static int parse(pk_wav *w, char *err, size_t errlen) {
     return !memcmp(h, "FORM", 4) ? parse_aiff(w, h, err, errlen) : parse_riff(w, h, err, errlen);
 }
 
-pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errlen) {
-    if (!path) {
-        fail(err, errlen, "no path");
-        return NULL;
-    }
+/* f read from where it stands, name for err; own: pk_wav_close fcloses it,
+ * and so does a failure here */
+static pk_wav *open_file(FILE *f, int own, const char *name, pk_wav_info *info, char *err, size_t errlen) {
     pk_wav *w = calloc(1, sizeof *w);
     unsigned char *buf = malloc(PK_WAV_BUF);
     if (!w || !buf) {
         free(w);
         free(buf);
-        fail(err, errlen, "%s: out of memory", path);
+        if (own)
+            fclose(f);
+        fail(err, errlen, "%s: out of memory", name);
         return NULL;
     }
+    w->f = f;
+    w->own = own;
     w->buf = buf;
-    if (!strcmp(path, "-")) {
-        w->f = stdin;
-#ifdef _WIN32
-        _setmode(_fileno(stdin), _O_BINARY);
-#endif
-    } else {
-        w->f = pk_os_fopen(path, "rb");
-        w->own = 1;
-        if (!w->f) {
-            fail(err, errlen, "%s: %s", path, errno == EILSEQ ? "not a UTF-8 path" : strerror(errno));
-            free(buf);
-            free(w);
-            return NULL;
-        }
-    }
     char why[160];
     if (parse(w, why, sizeof why)) {
-        fail(err, errlen, "%s: %s", path, why);
+        fail(err, errlen, "%s: %s", name, why);
         pk_wav_close(w);
         return NULL;
     }
     if (info)
         *info = w->info;
     return w;
+}
+
+pk_wav *pk_wav_open(const char *path, pk_wav_info *info, char *err, size_t errlen) {
+    if (!path) {
+        fail(err, errlen, "no path");
+        return NULL;
+    }
+    if (!strcmp(path, "-")) {
+#ifdef _WIN32
+        _setmode(_fileno(stdin), _O_BINARY);
+#endif
+        return open_file(stdin, 0, path, info, err, errlen);
+    }
+    FILE *f = pk_os_fopen(path, "rb");
+    if (!f) {
+        fail(err, errlen, "%s: %s", path, errno == EILSEQ ? "not a UTF-8 path" : strerror(errno));
+        return NULL;
+    }
+    return open_file(f, 1, path, info, err, errlen);
+}
+
+pk_wav *pk_wav_open_file(FILE *f, const char *name, pk_wav_info *info, char *err, size_t errlen) {
+    if (!f) {
+        fail(err, errlen, "no file");
+        return NULL;
+    }
+    return open_file(f, 0, name ? name : "the file", info, err, errlen);
 }
 
 /* -------------------------------------------------------------- samples --- */
