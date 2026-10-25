@@ -21,6 +21,7 @@
 #   make fuzz                     coverage-guided harnesses (Clang libFuzzer)
 #   make fuzz-smoke               a short sanitizer-backed run of every harness
 #   make remote HOST=pi           rsync, make, check-c and bench over ssh
+#   make adb NDK=<ndk>            the same on an Android device over adb, cross-built here
 #
 # No dependency beyond the C library, libm and pthreads.
 
@@ -92,9 +93,16 @@ else ifneq ($(filter MINGW% MSYS% UCRT% CLANG%,$(UNAME_S)),)
 else
   PLATFLAGS := -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 endif
+# Android's C library, bionic, holds pthreads itself and has no libpthread
+# to link; the NDK's clang names its target (-dumpmachine) as Android.
+ifneq ($(findstring android,$(shell $(CC) -dumpmachine 2>/dev/null)),)
+  PTHREAD :=
+else
+  PTHREAD := -lpthread
+endif
 OPT     ?= -O3
 CFLAGS  ?= $(OPT) $(TUNE) -std=c11 -ffp-contract=off -fno-math-errno -Wall -Wextra -Wpedantic
-LDLIBS  ?= -lm -lpthread $(PLATLIBS)
+LDLIBS  ?= -lm $(PTHREAD) $(PLATLIBS)
 
 # make PROFILE=1: `pktito-c bench` also prints what each stage costs. Timing a
 # stage at a time costs a little; quote bench without it.
@@ -193,38 +201,10 @@ benches: $(BENCHES)
 # test.v2.json and test.v3.json, which ref wrote: every backend on every
 # machine computes the same ones (backend/kernels.h), and this is where a
 # board that does not would say so. A model file that is not there is
-# skipped, with a line.
+# skipped, with a line. The commands are tests/check-c.sh, so that a board
+# without make, Android over adb, runs the same ones.
 check-c: pktito-c $(TESTS) examples/transcribe
-	./tests/mathcheck
-	./tests/kcheck $(MODEL)
-	./tests/pkfcheck $(TINY) tests/pkfcheck.wav
-	./tests/wavcheck tests/wavcheck.tmp
-	./tests/pathcheck $(TINY)
-	./tests/capcheck
-	./tests/langcheck
-	./tests/chunkcheck
-	@./pktito-c -m $(TINY) --json tests/pkfcheck.wav > tests/pkfcheck.json \
-	  && ./pktito-c -m $(TINY) --srt tests/pkfcheck.wav > /dev/null \
-	  && ./pktito-c -m $(TINY) tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
-	  && echo "pktito-c: the tiny model through the CLI, chunked, three ways" \
-	  || { echo "pktito-c: FAIL on the tiny model"; exit 1; }
-	@d="tests/pathcheck-tést-ñ-я"; mkdir -p "$$d" && cp $(TINY) "$$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$$d/ñ.wav" \
-	  && ./pktito-c -m "$$d/tiny-é.pkf" --json "$$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$$?; rm -rf "$$d"; \
-	  [ $$r = 0 ] && echo "pktito-c: a model and a WAV named past ASCII, from its command line" \
-	  || { echo "pktito-c: FAIL on a model and a WAV named past ASCII"; exit 1; }
-	@rm -f tests/pkfcheck.wav tests/pkfcheck.json
-	@./pktito-c probs -m $(MODEL) tests/data/test.wav | cmp -s - tests/data/test.probs.txt \
-	  && echo "test.wav: VAD probabilities are vadito's, bit for bit" \
-	  || { echo "test.wav: FAIL - VAD probabilities differ from tests/data/test.probs.txt"; exit 1; }
-	@for v in v2 v3; do f=models/parakeet-tdt-0.6b-$$v.pkf; \
-	  if [ ! -f $$f ]; then echo "test.wav: no $$f - skipped"; continue; fi; \
-	  ./pktito-c --json -m $$f tests/data/test.wav | cmp -s - tests/data/test.$$v.json \
-	    && echo "test.wav: $$v transcript is ref's, every token and time" \
-	    || { echo "test.wav: FAIL - $$v transcript differs from tests/data/test.$$v.json"; exit 1; }; done
-	@./examples/transcribe $(MODEL) tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/example.out; \
-	  ./pktito-c -m $(MODEL) tests/data/test.wav | cmp -s - tests/example.out \
-	  && echo "examples/transcribe: the CLI's transcript, through the library alone" \
-	  || { echo "examples/transcribe: FAIL - not the CLI's transcript"; exit 1; }; rm -f tests/example.out
+	@MODEL=$(MODEL) sh tests/check-c.sh
 
 # The half that needs Python and NeMo's checkpoints to compare with: the
 # detokenizer against sentencepiece (whose package NeMo brings; PYNEMO is a
@@ -376,10 +356,18 @@ remote:
 	  --exclude '/tests/*check' --exclude /build ./ $(HOST):$(RDIR)/
 	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pktito-c bench -m $(MODEL) $(BENCH)'
 
-.PHONY: models check-c check-sanitize check-math fuzz fuzz-corpus fuzz-smoke fuzz-run fuzz-max fuzz-replay remote clean benches
+# The same loop for an Android device, over adb: the tree cross-built here
+# with the NDK's clang for the device's ABI, the programs, test data and
+# models pushed, and check-c and a bench run there (tests/adb.sh says how).
+# NDK is the NDK's folder; ANDROID_SERIAL picks the device of several.
+NDK ?=
+adb:
+	@NDK="$(NDK)" TESTS="$(TESTS)" MODEL="$(MODEL)" BENCH="$(BENCH)" BACKEND="$(BACKEND)" sh tests/adb.sh
+
+.PHONY: models check-c check-sanitize check-math fuzz fuzz-corpus fuzz-smoke fuzz-run fuzz-max fuzz-replay remote adb clean benches
 
 clean:
 	rm -f pktito-c pktito libpktito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
 	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
-	rm -rf tests/*.dSYM tests/pathcheck-*
+	rm -rf tests/*.dSYM tests/pathcheck-* build/android-*
 	rm -f $(FUZZ_BINS) $(FUZZ_DIR)/seeds   # not the corpora a campaign grew

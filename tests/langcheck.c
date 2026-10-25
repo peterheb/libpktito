@@ -20,12 +20,26 @@
 
 static int fails;
 
+/* The next word of *s, between any of the characters of sep, ended in place,
+ * or NULL at the end: strtok's split without its hidden state, which
+ * Android's C library marks deprecated (a warning in every make adb). */
+static char *word(char **s, const char *sep) {
+    char *w = *s + strspn(*s, sep);
+    if (!*w)
+        return NULL;
+    char *e = w + strcspn(w, sep);
+    *s = *e ? e + 1 : e;
+    *e = '\0';
+    return w;
+}
+
 static const char *guess(const char *text) {
     static char buf[4096];
     pk_capword w[512];
     size_t n = 0;
     snprintf(buf, sizeof buf, "%s", text);
-    for (char *t = strtok(buf, " "); t && n < 512; t = strtok(NULL, " "))
+    char *p = buf;
+    for (char *t; n < 512 && (t = word(&p, " "));)
         w[n++] = (pk_capword){ t, 0, 0 };
     return pk_language(w, n);
 }
@@ -96,7 +110,8 @@ static void eval(const char *path) {
             continue;
         lang_text *t = &langs[l];
         memcpy(t->code, line, 2);
-        for (char *w = strtok(tab + 1, " \n\r"); w; w = strtok(NULL, " \n\r")) {
+        char *p = tab + 1;
+        for (char *w; (w = word(&p, " \n\r"));) {
             if (t->n == t->cap && !(t->words = realloc(t->words, (t->cap = t->cap ? 2 * t->cap : 4096) * sizeof *t->words)))
                 exit(2);
             t->words[t->n++] = copy(w);
