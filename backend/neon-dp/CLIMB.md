@@ -769,3 +769,45 @@ to 15% slower. Not a core for it either; the rejection stands, with no
 core left where it could have won by more than the Gravitons' 1 to 7%.
 The same laptop's AliceBench on neon-dp, 0.9.2's signed pktito-cli: 51.0x
 (pktito-app ALICEBENCH.md).
+
+## 2026-10-25 - a Snapdragon X Elite's cores under Android, counted by thread siblings (a measurement)
+
+A Dell XPS Googlebook, X1E-80-100: 12 first-generation Oryon cores in
+three clusters of four, cpu0-3 to 3.42 GHz (cpu_capacity 870), cpu4-7 and
+cpu8-11 to 4.01 GHz (1022, 1024); Android 17 (API 37), its 6.12 GKI kernel,
+the WALT governor, 16 GB. pk_os_cores counted distinct (package, core_id)
+pairs, and the kernel numbers core_id 0 to 3 within each cluster, all in
+package 0, as Linux does for any device tree's cpu-map without a socket
+node (drivers/base/arch_topology.c, parse_cluster): 4 cores, so 4 threads.
+Each of its CPUs is its own thread_siblings_list, so counting the CPUs
+that head theirs gives 12; the fast kind is cpu4-11, 8, which the
+encoder's layers time against all 12 as before. The two counts read from
+sysfs, old and new: the Googlebook 4 and 12, the 9950X (32 threads, under
+WSL) 16 and 16, the Pi 5 4 and 4, the Pi 3B+ 4 and 4. An RK3588's cpu-map
+(rk3588-base.dtsi) has clusters of 4, 2 and 2, which the old count makes 4
+of 8; not measured.
+
+`make adb` (2a3d597), NDK r30's clang 21.0.0 for API 24, linked to the
+device's bionic: check-c passes there, kcheck every one of ref's bits on
+neon-dp and neon. `pktito-c bench` (test.wav through v2, best of 5), the
+two builds interleaved, four rounds, on AC with the laptop in use (Chrome
+playing media, 0.4 GB of 15.5 GB free), zone0 42 to 68 C, in seconds:
+
+| run | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|
+| before, default: 4 threads | 1.029 | 1.507 | 1.095 | 1.256 |
+| after, default: 8 each time | 0.677 | 1.243 | 0.876 | 0.665 |
+| after, -t 4 | 1.086 | 2.098 | 1.741 | 1.310 |
+| after, -t 8 | 0.694 | 1.231 | 1.223 | 1.205 |
+| after, -t 12 | 0.665 | 0.917 | 1.183 | 1.186 |
+
+The default is 1.2 to 1.9x faster in every round. Four rounds of a static
+build of the same change earlier the same day, the first two moving from
+battery to AC: the default 1.03-1.42 s before, 0.55-1.01 s after (8, 8, 12
+and 12 threads); -t 8 0.65-0.77 s, -t 12 0.61-0.63 s. make adb's own bench
+of the change: 0.580 s, 103.4x, on 12.
+
+Given -t, 12 beat 8 in all eight rounds, by 2 to 26%, yet the default kept
+8 in six of its nine runs. Its timing is two layers at a time while the
+laptop's other work comes and goes, and the 3% rule needs a quiet board to
+judge; left as it is until one is measured quiet.

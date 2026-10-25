@@ -132,6 +132,19 @@ static long sysfs_long(long cpu, const char *what) {
     }
     return v;
 }
+
+/* Whether cpu is the first of its core's hardware threads (the first number
+ * in thread_siblings_list), so that each physical core counts once whatever
+ * its IDs say. Distinct (package, core_id) pairs did that where a core_id is
+ * its package's own, as on x86, but Linux numbers a device tree's cores from
+ * 0 within each cluster, all in package 0 without a socket node
+ * (drivers/base/arch_topology.c, parse_cluster): Android 17 on a Snapdragon
+ * X Elite, three clusters of four, gave 4 cores of 12, and test.wav took
+ * 1.03 s on them against 0.68 s once counted (backend/neon-dp/CLIMB.md,
+ * 2026-10-25). An offline CPU has no topology to read, and is not counted. */
+static int first_thread(long cpu) {
+    return sysfs_long(cpu, "topology/thread_siblings_list") == cpu;
+}
 #endif
 
 /* One thread a physical core, of every kind. On a chip with two kinds of
@@ -160,20 +173,11 @@ int pk_os_cores(void) {
     long ncpu = sysconf(_SC_NPROCESSORS_CONF);
     if (ncpu > 4096)
         ncpu = 4096;
-    /* one per distinct (package, core) pair */
-    int seen[1024], nseen = 0;
-    for (long c = 0; c < ncpu; c++) {
-        long core = sysfs_long(c, "topology/core_id"), pkg = sysfs_long(c, "topology/physical_package_id");
-        if (core < 0)
-            continue;
-        int key = (int)((pkg < 0 ? 0 : pkg) * 65536 + core), dup = 0;
-        for (int i = 0; i < nseen; i++)
-            dup |= seen[i] == key;
-        if (!dup && nseen < 1024)
-            seen[nseen++] = key;
-    }
-    if (nseen > 0)
-        return nseen;
+    int cores = 0;
+    for (long c = 0; c < ncpu; c++)
+        cores += first_thread(c);
+    if (cores > 0)
+        return cores;
 #endif
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n < 1 ? 1 : (int)n;
@@ -191,23 +195,16 @@ int pk_os_fast_cores(void) {
     long ncpu = sysconf(_SC_NPROCESSORS_CONF);
     if (ncpu > 4096)
         ncpu = 4096;
-    int seen[1024], nseen = 0;
+    int nseen = 0;
     long speed[1024], top = 0;
     for (long c = 0; c < ncpu; c++) {
-        long core = sysfs_long(c, "topology/core_id"), pkg = sysfs_long(c, "topology/physical_package_id");
-        if (core < 0)
-            continue;
-        int key = (int)((pkg < 0 ? 0 : pkg) * 65536 + core), dup = 0;
-        for (int i = 0; i < nseen; i++)
-            dup |= seen[i] == key;
-        if (dup || nseen >= 1024)
+        if (!first_thread(c) || nseen >= 1024)
             continue;
         long s = sysfs_long(c, "cpu_capacity");
         if (s < 0)
             s = sysfs_long(c, "cpufreq/cpuinfo_max_freq");
         if (s < 0)
             return pk_os_cores();               /* a core whose speed it does not say */
-        seen[nseen] = key;
         speed[nseen++] = s;
         top = s > top ? s : top;
     }
