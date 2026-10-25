@@ -748,3 +748,24 @@ The quantizer is the one stage out of line, 4.1 times to the run's 3.0:
 brought into line it would give about 70 ms of the 4854, 1.5%. What
 would move the Arm products more is the longer integer sum the SMMLA and
 SMOPA entries above name, a quantization choice.
+
+## 2026-10-25 - SMMLA on Snapdragon X's Oryon (a measurement: the open case closed)
+
+The i8mm entry above left Snapdragon X's Oryon, which has I8MM, as a core
+it could have won or lost on unmeasured. snappy: an ASUS Vivobook S 15,
+X1E-78-100 (12 first-generation Oryon cores, 3.4 GHz), Windows 11 Home on
+AC in Best performance; its ID registers (Windows' "CP 40xx" values)
+give DP and I8MM, no SVE and no SME. mmrate2.c as above, built by
+pktito-9950x with llvm-mingw 20261020 (clang 23.1.4), `-O2
+-march=armv8.6-a+i8mm -static -lpthread`, three runs, within 1%:
+
+| core | SDOT | SMMLA |
+|---|---|---|
+| Oryon (X1E-78-100) | 0.887-0.892, 0.221-0.223, 0.110-0.111, 0.073-0.074 | 1.178-1.197, 0.294-0.295, 0.147-0.148, 0.147-0.148 |
+
+SMMLA issues at half SDOT's rate with a longer latency, as on the M4: the
+same multiply-adds a cycle, and the ZIPs all cost, where neon-i8mm was 12
+to 15% slower. Not a core for it either; the rejection stands, with no
+core left where it could have won by more than the Gravitons' 1 to 7%.
+The same laptop's AliceBench on neon-dp, 0.9.2's signed pktito-cli: 51.0x
+(pktito-app ALICEBENCH.md).
