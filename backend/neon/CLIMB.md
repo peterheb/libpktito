@@ -588,3 +588,38 @@ core/encoder.c's slices of 256 rows where a product's rows / 256 is at
 least twice the threads (backend/avx2/CLIMB.md, pk_gemm's step), which at
 four threads moves only the feed-forward's up product: Pi 3B+, neon: 44.70 s against 44.72 s (1.3x),
 interleaved, test.wav, best of five. Level.
+
+## 2026-10-25 - the Cortex-A35 (RK3326), 2.3 times the A53's time at its clock (measurement)
+
+The Anbernic RG351M handheld (Rockchip RK3326: four Cortex-A35 at
+1.416 GHz, 983 MB; ArchR 20260709, kernel 6.12), whose features (fp asimd
+aes pmull sha1 sha2 crc32) are this backend's baseline. AliceBench's
+chapter 1 (640.5 s) with v2, four threads, once each:
+
+- pktito.net's pktito-cli 0.9.2 for Linux arm64 (gcc 11.4): 1282.81 s,
+  0.50x real time.
+- This repository's program as the Pi 3B+ built it on 2026-10-22
+  (gcc 14.2): 1260.35 s transcribing and 14.47 s of VAD, 0.51x. 1.7% under
+  the first, so the compiler is not the gap.
+
+The clock read 1416 MHz in 48 of the first run's 52 readings, 30 s apart,
+and 1008 MHz in the other 4, when the SoC reached its first trip point,
+85 °C (84.6 and 85.0 °C at the two runs' hottest).
+
+The Pi 3B+ ran the same pktito-cli binary over the same chapter that
+evening, the first of its AliceBench run (ALICEBENCH.md in pktito-app):
+558.30 s, 1.15x, at 1.4 GHz throughout (47.8 to 63.9 °C, under its 70 °C
+soft limit). At about the same clock, the A35 takes 2.30 times the A53's
+time.
+
+Why is not measured. tests/gemmbench on the A35 would say whether it is
+the int8 product (the feed-forward was 53% of the A53's time after the
+climb), against the A53's 2.31 MAC/cycle on all four shapes. No climb for
+it: a kernel changed for the A35 has to leave the A53 and the A72, which
+run the same code, no slower, and the A53's tile is at about 93% of its
+instruction stream's price ("Where the climb ends"). A reordering cannot
+win back a unit that does less a cycle. A climb would have a case only if
+gemmbench found one instruction the A35 runs far slower than the A53 that
+the tile could do without. The board's full AliceBench stopped a few
+minutes in, when its battery ran out under load, so ALICEBENCH.md has no
+row for it.
