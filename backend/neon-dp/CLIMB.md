@@ -1245,3 +1245,33 @@ minutes, which a race run once cannot follow. The race costs one
 recording's twelve layers on the slower side: on the S25, twelve layers
 on two cores. check-c passes on the 9950X (gcc 15.2), the GB10 (gcc 13.3)
 and the M4 Pro (Apple clang 21), check-tsan on the GB10 and the M4 Pro.
+
+## 2026-10-27 - the power-throttling opt-out on snappy (a measurement)
+
+snappy: a Snapdragon X Elite, X1E78100, twelve identical Oryon cores,
+which Windows classes 0 (cpus 0-3) and 1 (cpus 4-11); Windows 11 Home
+26200, on AC, Best performance. Run by the pktito-windows session over
+ssh, so in session 0, the session locked and its screen off throughout.
+The builds were armlet's (above), each one's --json of test.wav
+test.v2.json byte for byte. `bench -m v2.pkf long10.wav`, test.wav ten
+times over (600 s), so that each timed pass outlasts the few seconds
+after which Windows packs a throttled process; default threads, three
+rounds with the order rotating and a fourth that read each busy thread's
+ThreadPowerThrottling 5 s in. Before each run, a check that no other
+process had used 1.0 s of CPU in 3 s; every cpu's busy share sampled once
+a second.
+
+| build | threads | best of 5, s | cpus busy, 0-3 / 4-11 | the busy threads |
+|---|---|---|---|---|
+| 98a54d1, before the opt-out | 8 | 9.01, 11.40, 11.36, 8.92 | 3.9 / 0.1 | all 8 system-managed (ControlMask 0) |
+| c42738d, the opt-out, H3's race | 8 | 5.79, 5.96, 6.24, 5.85 | 2.0 / 5.8-5.9 | all 8 ControlMask 1, StateMask 0 |
+| 79af521, H4's race | 12 | 4.94, 4.44, 4.73, 4.69 | 3.6 / 7.3-7.4 | all 12 opted out |
+
+About 3 s into each pass, Windows had all of 98a54d1's pool on cpus 0-3.
+The opt-out spread c42738d's over the twelve, 1.72 times faster (medians
+10.19 and 5.91 s), and H4's race kept twelve threads where H3's kept the
+eight Windows classes 1, a further 1.25 times (4.71 s). 98a54d1 predates
+both the workers' opt-out and the caller's, so these runs and armlet's
+compare none against all. Every run here was in session 0 with the
+session locked and the screen off, so which of those put the process
+under EcoQoS is not separated; core/os.c says what was measured.
