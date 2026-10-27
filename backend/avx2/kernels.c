@@ -169,13 +169,13 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
                     m = _mm512_max_ps(_mm512_castsi512_ps(_mm512_and_si512(_mm512_castps_si512(z), absm)), m);
                 }
                 float amax = hmax(_mm256_max_ps(z_lo(m), z_hi(m)));
-                if (bad || !isfinite(amax)) {
+                if (bad || !isfinite(amax) || amax < 0x1p-121f) {   /* ref's test */
                     a->d[(size_t)t * nb + b] = 0;
                     memset(q, 0, a->qb);
                     continue;
                 }
                 a->d[(size_t)t * nb + b] = amax / 127.0f;
-                const __m512 id = _mm512_set1_ps(amax > 0 ? 127.0f / amax : 0.0f);
+                const __m512 id = _mm512_set1_ps(127.0f / amax);
                 for (uint32_t i = 0; i < a->qb; i += 16) {
                     __m512i qi = _mm512_cvt_roundps_epi32(_mm512_mul_ps(_mm512_loadu_ps(v + i), id),
                                                           _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
@@ -198,13 +198,13 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
                 m = _mm256_max_ps(_mm256_andnot_ps(sign, z), m);
             }
             float amax = hmax(m);
-            if (_mm256_movemask_ps(bad) || !isfinite(amax)) {
+            if (_mm256_movemask_ps(bad) || !isfinite(amax) || amax < 0x1p-121f) {   /* ref's test */
                 a->d[(size_t)t * nb + b] = 0;
                 memset(q, 0, a->qb);
                 continue;
             }
             a->d[(size_t)t * nb + b] = amax / 127.0f;
-            const __m256 id = _mm256_set1_ps(amax > 0 ? 127.0f / amax : 0.0f);
+            const __m256 id = _mm256_set1_ps(127.0f / amax);
             for (uint32_t i = 0; i < a->qb; i += 32) {
                 __m256i q0 = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(_mm256_loadu_ps(v + i), id),
                                                 _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));

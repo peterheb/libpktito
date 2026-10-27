@@ -94,13 +94,13 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
                 m = vmaxnmq_f32(m, vabsq_f32(z));
             }
             float amax = vmaxnmvq_f32(m);
-            if (vmaxvq_u32(bad) || !isfinite(amax)) {
+            if (vmaxvq_u32(bad) || !isfinite(amax) || amax < 0x1p-121f) {   /* ref's test */
                 a->d[(size_t)t * nb + b] = 0;
                 memset(q, 0, a->qb);
                 continue;
             }
             a->d[(size_t)t * nb + b] = amax / 127.0f;
-            float32x4_t id = vdupq_n_f32(amax > 0 ? 127.0f / amax : 0.0f);
+            float32x4_t id = vdupq_n_f32(127.0f / amax);
             for (uint32_t i = 0; i < a->qb; i += 16) {
                 int32x4_t q0 = vcvtq_s32_f32(vrndnq_f32(vmulq_f32(vld1q_f32(v + i), id)));
                 int32x4_t q1 = vcvtq_s32_f32(vrndnq_f32(vmulq_f32(vld1q_f32(v + i + 4), id)));

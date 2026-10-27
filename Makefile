@@ -18,6 +18,8 @@
 #   make check-c                  what needs only a compiler and a model: runs on any board
 #   make check-sanitize           the two file parsers under ASan and UBSan
 #   make check-math               every float through exp, sigmoid, tanh and log
+#   make fuzz                     coverage-guided harnesses (Clang libFuzzer)
+#   make fuzz-smoke               a short sanitizer-backed run of every harness
 #   make remote HOST=pi           rsync, make, check-c and bench over ssh
 #
 # No dependency beyond the C library, libm and pthreads.
@@ -287,6 +289,79 @@ check-tsan:
 check-math: tests/mathcheck
 	./tests/mathcheck --all
 
+# --------------------------------------------------------------- fuzzing ----
+
+# Fuzzing is a development tool, not a library dependency.  The targets use
+# backend/ref so that their coverage and failures do not depend on the CPU
+# running them; tests/kcheck holds the native kernels to ref's bits.
+FUZZ_CC      ?= clang
+FUZZ_DIR     := build/fuzz
+FUZZ_CORPUS  := $(FUZZ_DIR)/corpus
+FUZZ_SAN     := -O1 -g -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all \
+                -fno-omit-frame-pointer
+FUZZ_CFLAGS  := $(FUZZ_SAN) -std=c11 -ffp-contract=off -fno-math-errno -Wall -Wextra -Wpedantic \
+                $(PLATFLAGS) $(INC) -Itests/fuzz
+FUZZ_NAMES   := pkf_bytes wav_bytes resample state audio_pipeline model_semantic
+FUZZ_BINS    := $(addprefix $(FUZZ_DIR)/,$(FUZZ_NAMES))
+FUZZ_KERNELS := backend/ref/kernels.c backend/kernels.c
+FUZZ_REF     := $(FUZZ_KERNELS) core/os.c
+# Every header, for each target: one clang call compiles and links a target,
+# and -MMD keeps only its last source's dependencies.
+FUZZ_HDRS    := $(wildcard core/*.h backend/*.h backend/*/*.h tests/fuzz/*.h)
+FUZZ_TIME    ?= 5
+FUZZ_MAX_pkf_bytes := 4194304
+FUZZ_MAX_wav_bytes := 1048576
+FUZZ_MAX_resample  := 8192
+FUZZ_MAX_state     := 65536
+FUZZ_MAX_audio_pipeline := 131073
+FUZZ_MAX_model_semantic := 8192
+# target, its corpus and its input limit: what every run of one starts with,
+# with any ASAN_OPTIONS the caller set taking precedence
+FUZZ_ONE = ASAN_OPTIONS=detect_leaks=1$${ASAN_OPTIONS:+:$$ASAN_OPTIONS} $(FUZZ_DIR)/$(1) $(FUZZ_CORPUS)/$(1) -max_len=$(FUZZ_MAX_$(1))
+
+$(FUZZ_DIR):
+	mkdir -p $@
+
+$(FUZZ_DIR)/pkf_bytes: tests/fuzz/pkf_bytes.c $(FUZZ_HDRS) core/model.c core/tokens.c $(FUZZ_REF) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tests/fuzz/pkf_bytes.c core/model.c core/tokens.c $(FUZZ_REF) $(LDLIBS)
+
+# wav_bytes includes core/wav.c, to reach its parser without a path
+$(FUZZ_DIR)/wav_bytes: tests/fuzz/wav_bytes.c $(FUZZ_HDRS) core/wav.c core/os.c | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tests/fuzz/wav_bytes.c core/os.c $(LDLIBS)
+
+$(FUZZ_DIR)/resample: tests/fuzz/resample.c $(FUZZ_HDRS) core/resample.c core/resample.h $(FUZZ_REF) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tests/fuzz/resample.c core/resample.c $(FUZZ_REF) $(LDLIBS)
+
+$(addprefix $(FUZZ_DIR)/,state audio_pipeline model_semantic): $(FUZZ_DIR)/%: tests/fuzz/%.c $(FUZZ_HDRS) \
+                $(LIB_SRC) $(FUZZ_KERNELS) | $(FUZZ_DIR)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ $< $(LIB_SRC) $(FUZZ_KERNELS) $(LDLIBS)
+
+$(FUZZ_DIR)/seeds: tests/fuzz/seeds.c | $(FUZZ_DIR)
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wpedantic -o $@ $<
+
+fuzz-corpus: $(FUZZ_DIR)/seeds
+	mkdir -p $(foreach f,$(FUZZ_NAMES),$(FUZZ_CORPUS)/$(f))
+	cp $(TINY) $(FUZZ_CORPUS)/pkf_bytes/tiny.pkf
+	$(FUZZ_DIR)/seeds $(FUZZ_CORPUS)
+
+fuzz: $(FUZZ_BINS) fuzz-corpus
+
+fuzz-smoke: fuzz
+	@set -e; $(foreach f,$(FUZZ_NAMES),echo "fuzz-smoke: $(f)"; \
+	  $(call FUZZ_ONE,$(f)) -max_total_time=$(FUZZ_TIME) -timeout=10 -rss_limit_mb=2048 \
+	  -print_final_stats=1 -verbosity=0;)
+
+fuzz-run: fuzz
+	@[ -n "$(FUZZ)" ] || { echo "make fuzz-run FUZZ=wav_bytes [FUZZ_TIME=3600]"; exit 1; }
+	$(call FUZZ_ONE,$(FUZZ)) -max_total_time=$(FUZZ_TIME) -timeout=10 -rss_limit_mb=2048 -print_final_stats=1
+
+# a target's input limit, for tests/fuzz/campaign.sh
+fuzz-max:
+	@echo $(FUZZ_MAX_$(FUZZ))
+
+fuzz-replay: fuzz
+	@set -e; $(foreach f,$(FUZZ_NAMES),echo "fuzz-replay: $(f)"; $(call FUZZ_ONE,$(f)) -runs=0 -verbosity=0;)
+
 # The loop a board gets: the tree to HOST:$(RDIR) (the models too, rsync
 # sends only what changed), then the build, the compiler half of the checks
 # and a bench, there. BENCH names the recording; Silero's test.wav, which
@@ -298,12 +373,13 @@ remote:
 	@[ -n "$(HOST)" ] || { echo "make remote HOST=user@board"; exit 1; }
 	rsync -a --delete --exclude .venv --exclude .venv-nemo --exclude .git --exclude '*.o' \
 	  --exclude '*.d' --exclude /pktito-c --exclude /pktito --exclude 'models/src' --exclude 'models/corpus' \
-	  --exclude '/tests/*check' ./ $(HOST):$(RDIR)/
+	  --exclude '/tests/*check' --exclude /build ./ $(HOST):$(RDIR)/
 	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pktito-c bench -m $(MODEL) $(BENCH)'
 
-.PHONY: models check-c check-sanitize check-math remote clean benches
+.PHONY: models check-c check-sanitize check-math fuzz fuzz-corpus fuzz-smoke fuzz-run fuzz-max fuzz-replay remote clean benches
 
 clean:
 	rm -f pktito-c pktito libpktito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
 	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM tests/pathcheck-*
+	rm -f $(FUZZ_BINS) $(FUZZ_DIR)/seeds   # not the corpora a campaign grew

@@ -36,13 +36,22 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
                 }
                 amax = fmaxf(amax, fabsf(v[i]));
             }
-            if (bad || !isfinite(amax)) {
+            /* A block whose amax is under 2^-121 is quantized as zero, as a
+             * block holding a NaN or inf is. Below about 2^-121 127/amax is
+             * inf, v * id inf or 0 * inf = NaN, and turning either into
+             * int8_t is undefined (each backend's vector conversion makes
+             * something different of it; tests/fuzz's model_semantic reached
+             * it through a model's weights). 2^-121 is the round number
+             * above that edge (127 * 2^121 is finite), tested before the
+             * division so that a block of zeros raises no divide-by-zero
+             * or overflow flag. */
+            if (bad || !isfinite(amax) || amax < 0x1p-121f) {
                 a->d[(size_t)t * nb + b] = 0;
                 memset(q, 0, a->qb);
                 continue;
             }
             a->d[(size_t)t * nb + b] = amax / 127.0f;
-            float id = amax > 0 ? 127.0f / amax : 0.0f;
+            float id = 127.0f / amax;
             for (uint32_t i = 0; i < a->qb; i++)
                 q[i] = (int8_t)rintf(v[i] * id);
         }

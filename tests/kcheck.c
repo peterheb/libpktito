@@ -9,8 +9,8 @@
  * panels, a block of channels, a window of rows, every column count a tile
  * can leave over - on values the arithmetic finds awkward: zeros of both
  * signs, subnormals, saturation, the exp clamp, a block of zeros (whose
- * scale is 0), values on a rounding tie, and non-finite quantizer inputs from
- * an earlier operation's overflow.
+ * scale is 0), a block too small for a finite 127/amax, values on a rounding
+ * tie, and non-finite quantizer inputs from an earlier operation's overflow.
  *
  * ref is in turn held to the same products in float64 where that is a
  * statement about the definition rather than about float: the int8 product
@@ -140,6 +140,36 @@ static void quant_nonfinite_case(void) {
         if (a1.d[i] != 0) {
             if (g_bad++ < 30) printf("FAIL non-finite quantize: d[%zu] is %a\n", i, a1.d[i]);
             break;
+        }
+    xfree(x); xfree(a1.q); xfree(a1.d); xfree(a2.q); xfree(a2.d);
+}
+
+/* Blocks whose largest value sits either side of 127/FLT_MAX, the smallest
+ * amax with a finite 127/amax: under it ref quantizes the block as zero,
+ * over it as any other block. Every backend has to agree on both sides. */
+static void quant_tiny_case(void) {
+    static const float top[] = { 0x1p-140f, 0x1p-130f, 0x1p-122f, 0x1.fffffep-122f, 0x1p-121f, 0x1p-120f, 0x1p-100f };
+    const uint32_t nt = sizeof top / sizeof top[0], qb = 32, n = qb * nt, T = 2;
+    float *x = xmalloc((size_t)T * n * sizeof *x);
+    for (uint32_t t = 0; t < T; t++)
+        for (uint32_t b = 0; b < nt; b++) {
+            float *v = x + (size_t)t * n + (size_t)b * qb;
+            for (uint32_t i = 0; i < qb; i++) v[i] = top[b] * frand();
+            v[rnd() % qb] = t ? -top[b] : top[b];
+            v[(rnd() % (qb / 2)) * 2] = 0.0f;
+            v[(rnd() % (qb / 2)) * 2 + 1] = -0.0f;
+        }
+    pk_act a1 = { xmalloc((size_t)T * n), xmalloc((size_t)T * n / qb * sizeof(float)), n, qb, T };
+    pk_act a2 = { xmalloc((size_t)T * n), xmalloc((size_t)T * n / qb * sizeof(float)), n, qb, T };
+    kt->quantize(&a1, x, n);
+    kr->quantize(&a2, x, n);
+    same("quantize tiny: q", a1.q, a2.q, (size_t)T * n, 1);
+    same("quantize tiny: d", a1.d, a2.d, (size_t)T * n / qb, sizeof(float));
+    for (uint32_t t = 0; t < T; t++)
+        for (uint32_t b = 0; b < nt; b++) {
+            int zero = top[b] < 0x1p-121f;
+            if ((a2.d[t * nt + b] == 0) != zero && g_bad++ < 30)
+                printf("FAIL tiny quantize: block of %a has d %a\n", top[b], a2.d[t * nt + b]);
         }
     xfree(x); xfree(a1.q); xfree(a1.d); xfree(a2.q); xfree(a2.d);
 }
@@ -499,6 +529,7 @@ static void run(const char *model) {
     resample_cases();
     if (model)
         model_cases(model);
+    quant_tiny_case();      /* last: it draws from rnd() and moves no case before it */
 }
 
 /* Each backend sees the same cases: the generator starts again for each.

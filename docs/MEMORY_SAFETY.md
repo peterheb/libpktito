@@ -188,6 +188,17 @@ flipped. Disabling any one of the AIFF parser's checks makes a case fail.
 `make check-sanitize` runs both under AddressSanitizer and
 UndefinedBehaviorSanitizer.
 
+`make fuzz` builds Clang/libFuzzer targets for the model bytes, WAV and AIFF
+bytes, streaming resampler, the segment, chunk and caption state machines,
+and inference over the tiny model with hostile weights and audio.
+They run the same code as the library under AddressSanitizer and
+UndefinedBehaviorSanitizer.  The byte readers start from small valid files and
+mutate them without a grammar; the state-machine target constructs inputs that
+keep the public functions' pointer, capacity and ordering contracts.  `make
+fuzz-replay` runs every input in the corpora once, and `make fuzz-smoke`
+runs a short coverage-guided campaign.  tests/fuzz/README.md has the targets,
+their oracles and the longer-running command.
+
 A parser bug gets a case in its corpus in the change that fixes it, and the
 case reaches the failing boundary rather than merely checking that something
 was refused: disabling any one check in core/model.c makes a case fail, the
