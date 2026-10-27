@@ -39,3 +39,7 @@ CLAUDE.local.md
 /libpktito.so
 /libpktito.dylib
 /libpktito.dll
+/examples/go/transcribe
+/examples/go/transcribe.exe
+/examples/rust/target/
+/examples/node/node_modules/

@@ -420,10 +420,11 @@ process's code page. `make libpktito.a` builds the library alone;
 core/pktito.h is all of its interface, core/wav.h and core/resample.h the
 WAV and AIFF library's.
 examples/transcribe.c is a whole program against it in a page, and `make
-check-c` holds its transcript to the CLI's. `make shared` builds it as
-libpktito.so (.dylib on macOS, .dll on Windows) for other languages, and
-examples/python is the same program through Python's ctypes: examples of
-the wiring, not packages (examples/README.md).
+check-c` holds its transcript to the CLI's. examples/ has the same program
+in Python, Go, Rust and Node, Go and Rust linking the archive and Python
+and Node the shared library `make shared` builds, libpktito.so (.dylib on
+macOS, .dll on Windows): examples of the wiring, not packages
+(examples/README.md).
 
 ## The model file
 
@@ -479,7 +480,7 @@ backend/     the seam (kernels.h, and kernels.c, which picks the backend that
 tools/       the converter, the float64 reference, the corpora, the
              quantization experiment
 tests/       the C checks, the Python ones, and test.wav with its golden files
-examples/    the library from the outside: from C, and from Python as a shared object
+examples/    the library from the outside: from C, Python, Go, Rust and Node
 docs/        MEMORY_SAFETY.md: the rules the two parsers keep; caption-spec.md:
              the method core/captions.c follows
 ```

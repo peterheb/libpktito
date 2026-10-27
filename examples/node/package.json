@@ -1,0 +1,10 @@
+{
+  "name": "pktito-transcribe",
+  "description": "examples/transcribe.c in Node, through koffi: an example of the wiring, not a package",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "koffi": "^3.3.4"
+  }
+}

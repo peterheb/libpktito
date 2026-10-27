@@ -2,18 +2,25 @@
 
 The library from the outside. transcribe.c is a whole program against it in
 a page: a WAV or AIFF file to its transcript, cut at its silences. The others
-are the same program in another language, through the library as a shared
-object, and print what it prints:
+are the same program in another language, and print what it prints:
 
-| | | through | needs |
-|---|---|---|---|
-| C | transcribe.c | libpktito.a | `make examples/transcribe` |
-| Python | python/transcribe.py | ctypes | Python 3.8, its standard library |
+| | | through | links | needs |
+|---|---|---|---|---|
+| C | transcribe.c | | libpktito.a | `make examples/transcribe` |
+| Python | python/transcribe.py | ctypes | libpktito.so | Python 3.8, its standard library |
+| Go | go/main.go | cgo | libpktito.a | Go 1.21 and a C compiler |
+| Rust | rust/src/main.rs | `extern "C"` | libpktito.a | Rust 1.73, no crates |
+| Node | node/transcribe.mjs | koffi 3 | libpktito.so | Node, and `npm install` there |
 
-`make shared` builds the shared library: libpktito.so, libpktito.dylib on
-macOS, libpktito.dll on Windows (MSYS2, as for the CLI, with winpthreads in
-it, so it needs nothing beside it). An example finds it at the top of the
-tree, or where PKTITO_LIB says.
+Go and Rust link the archive, `make libpktito.a`, into one binary that needs
+nothing beside it but the model, as ./pktito-c does. Python and Node can
+only load a shared library: `make shared` builds it,
+libpktito.so, libpktito.dylib on macOS, libpktito.dll on Windows (MSYS2, as
+for the CLI, with winpthreads in it, so it needs nothing beside it), and an
+example finds it at the top of the tree, or where PKTITO_LIB says. npm 11
+holds koffi's install script for approval; it only builds koffi from
+source where no prebuilt package (`@koromix/koffi-<system>`) fits, and the
+example runs without it.
 
 These are examples of the wiring, not packages: nothing here is published
 or versioned, and none is a binding kept to core/pktito.h. Each declares the
@@ -36,8 +43,10 @@ way. What every one has to get right:
   paths, on every system, Windows too.
 - **Threads.** A model may be shared by any number of threads; a
   transcriber belongs to one at a time and runs its own pool, so a call
-  into it is a long one: a language's binding should let go of its own lock
-  for it (ctypes lets go of Python's).
+  into it is a long one, and holds whatever the language gives the call:
+  ctypes lets go of Python's lock for it, and a cgo call holds only its
+  goroutine, but a koffi call holds Node's one thread, which a server gives
+  back with koffi's async form.
 
 `make check-ffi` runs each example whose language is here on test.wav and
 holds its transcript to ./pktito-c's, as `make check-c` holds transcribe.c

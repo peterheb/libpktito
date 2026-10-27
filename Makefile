@@ -308,18 +308,13 @@ check-math: tests/mathcheck
 	./tests/mathcheck --all
 
 # The examples in other languages (examples/README.md), through the shared
-# library: each whose language is here must print test.wav's transcript as
-# ./pktito-c does, as check-c holds examples/transcribe to it, and one whose
-# language is not is skipped with a line. Apart from check, since they are
-# examples of the wiring, not the library: a language missing or changed on
-# a board is no reason to hold up a commit.
-check-ffi: pktito-c $(SHLIB)
-	@if [ -n "$(PYTHON)" ]; then \
-	  $(PYTHON) examples/python/transcribe.py $(MODEL) tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/ffi.tmp; \
-	  ./pktito-c -m $(MODEL) tests/data/test.wav | cmp -s - tests/ffi.tmp \
-	    && echo "examples/python: the CLI's transcript, through ctypes" \
-	    || { echo "examples/python: FAIL - not the CLI's transcript"; rm -f tests/ffi.tmp; exit 1; }; \
-	else echo "examples/python: no python3 - skipped"; fi; rm -f tests/ffi.tmp
+# library or the archive: each whose language is here must print test.wav's
+# transcript as ./pktito-c does, as check-c holds examples/transcribe to it,
+# and one whose language is not is skipped with a line (examples/check.sh).
+# Apart from check, since they are examples of the wiring, not the library:
+# a language missing or changed on a board is no reason to hold up a commit.
+check-ffi: pktito-c libpktito.a $(SHLIB)
+	@sh examples/check.sh $(MODEL) "$(PYTHON)"
 
 # --------------------------------------------------------------- fuzzing ----
 
