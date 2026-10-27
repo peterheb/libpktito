@@ -14,9 +14,9 @@
 /* Queries the attention takes at a time on one thread */
 #define PK_ATT_BLOCK 16
 
-/* Recordings that race every core against the fast kind (core/encoder.c,
- * layers), the last one's verdict standing */
-#define PK_TUNE_RACES 2
+/* Which recording of PK_TUNE_FRAMES or more races every core against the
+ * fast kind (core/encoder.c, layers): the second */
+#define PK_TUNE_AT 2
 
 /* make PROFILE=1: wall time in each stage of a transcription, read on the
  * calling thread around whole passes, never inside a kernel, and printed by
@@ -47,8 +47,9 @@ struct pk_asr {
     int nth;
     /* Every core, or the fast kind alone (pk_os_fast_cores, `fast` of them)
      * where the cores are of two kinds and the threads are pktito's choice:
-     * `tune` the recordings left to time the encoder's layers on each
-     * (encoder.c, layers), `wide` the threads the passes run on. */
+     * `tune` the long recordings until the one that times the encoder's
+     * layers on each (encoder.c, layers), `wide` the threads the passes
+     * run on. */
     int fast, wide, tune;
 
     size_t cap;                      /* feature frames the buffers below hold */

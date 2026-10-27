@@ -467,39 +467,56 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     PROF(PK_P_NORM, norm(a, a->x, a->x, T, L->out_nw, L->out_nb));
 }
 
-/* Every core, or the fast kind alone (asr.h)? A recording long enough to
- * time, PK_TUNE_FRAMES, runs its first PK_TUNE_LAYERS layers on each by
- * turns, two at a time, and the transcriber keeps the fast kind if its
- * fastest pair took 3% less than every core's: other work only ever adds
- * time. The layers are the same shapes, so their times compare, and the
- * bits are the same on any threads. PK_TUNE_RACES recordings race, and the
- * last one's verdict stands: the first is the first pass over the int8
- * weights, whose pages are mapped in as each layer is timed, and an M4
- * Pro's first race took 3 to 4 times a warm pair's time with the model
- * read from disk, 5% more with it cached (backend/neon-dp/CLIMB.md,
- * 2026-10-27). Neither kind wins on every chip: a GB10's ten X925s ran the
+/* Every core, or the fast kind alone (asr.h)? The second recording long
+ * enough to time, PK_TUNE_FRAMES, runs its layers on each by turns, two at
+ * a time, and the transcriber keeps whichever's layers took less, each side
+ * by the median of its own. The first such recording is the first pass
+ * over the int8 weights, whose pages are mapped in as each layer runs: an
+ * M4 Pro's layers took 3 to 4 times their warm time there, the model read
+ * from disk. Taking turns puts the board's slow changes on both sides
+ * alike, and the median leaves out what lands on a few layers: a
+ * recording's setup, and stalls like a Dimensity 8300's, which took one
+ * layer in seven three to ten times its neighbours' time. The layers are
+ * the same shapes, so their times compare, and the bits are the same on
+ * any threads. Neither kind wins on every chip: a GB10's ten X925s ran the
  * encoder faster than its twenty cores, a Core 3 304's one P-core four
- * times slower than its five (backend/neon-dp/CLIMB.md,
+ * times slower than its five. The race kept the X925s in 35 runs of
+ * 36, an M4 Pro level with the faster of 8 and 12 threads in every round,
+ * and the Dimensity's four A715s, 2 to 16% ahead of its eight cores, in 11
+ * of 15 (backend/neon-dp/CLIMB.md, 2026-10-27 and before;
  * backend/avx2/CLIMB.md). */
 #define PK_TUNE_FRAMES 100       /* 8 s */
-#define PK_TUNE_LAYERS 16
+#define PK_TUNE_LAYERS 8         /* the fewest raced: two turns a side */
+#define PK_TUNE_SIDE   32        /* the most layers a side runs */
+
+/* The median of t[0..n), n > 0, which it sorts */
+static double median(double *t, uint32_t n) {
+    for (uint32_t i = 1; i < n; i++)
+        for (uint32_t j = i; j > 0 && t[j - 1] > t[j]; j--) {
+            double x = t[j];
+            t[j] = t[j - 1];
+            t[j - 1] = x;
+        }
+    return (t[(n - 1) / 2] + t[n / 2]) / 2;
+}
 
 static void layers(pk_asr *a, uint32_t T) {
     const pk_model *m = a->m;
+    /* in turns of two, as many on each side */
+    const uint32_t raced = m->n_layers / 4 * 4 < 2 * PK_TUNE_SIDE ? m->n_layers / 4 * 4 : 2 * PK_TUNE_SIDE;
     uint32_t i = 0;
-    if (a->tune && T >= PK_TUNE_FRAMES && m->n_layers >= PK_TUNE_LAYERS) {
-        double best[2] = { 1e30, 1e30 };   /* every core's fastest pair, the fast kind's */
-        for (; i < PK_TUNE_LAYERS; i += 2) {
-            int fast = (int)(i / 2) % 2;
-            pk_pool_set_active(a->pool, fast ? a->fast : a->nth);
+    if (a->tune && T >= PK_TUNE_FRAMES && raced >= PK_TUNE_LAYERS && --a->tune == 0) {
+        double took[2][PK_TUNE_SIDE];    /* every core's layers, the fast kind's */
+        uint32_t n[2] = { 0, 0 };
+        for (; i < raced; i++) {
+            const int side = (int)(i / 2) % 2;
+            if (i % 2 == 0)
+                pk_pool_set_active(a->pool, side ? a->fast : a->nth);
             double t0 = pk_os_now();
             layer(a, &m->layers[i], T);
-            layer(a, &m->layers[i + 1], T);
-            double t = pk_os_now() - t0;
-            best[fast] = t < best[fast] ? t : best[fast];
+            took[side][n[side]++] = pk_os_now() - t0;
         }
-        a->wide = best[1] < 0.97 * best[0] ? a->fast : a->nth;
-        a->tune--;
+        a->wide = median(took[1], n[1]) < median(took[0], n[0]) ? a->fast : a->nth;
         pk_pool_set_active(a->pool, a->wide);
     }
     for (; i < m->n_layers; i++)

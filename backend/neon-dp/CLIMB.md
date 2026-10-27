@@ -938,3 +938,310 @@ Both kept 8 in all ten runs, as predicted. Both rules race only within
 bench's first pass, the one that also maps the model in, and passes two
 to five do the same work under both, so the second's lower median is the
 board's spread (paired sd about 0.8 s at five pairs), not the rule.
+
+## 2026-10-27 - H4 on the GB10 (result: rejected), and the middle two pairs (hypothesis)
+
+The GB10 came up after H4 was kept: ten X925s and ten A725s, the
+performance governor, gcc 13.3, a vLLM container idle beside it.
+`./pktito-c bench`, test.wav through v2, six rounds, the order reversed
+every other round:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 10 in all six | 0.438, 0.438, 0.441, 0.443, 0.448, 0.447 |
+| H4 (79af521), default | 10, 20, 10, 10, 20, 10 | 0.441, 0.576, 0.445, 0.445, 0.567, 0.446 |
+| -t 10 | | 0.436, 0.438, 0.448, 0.440, 0.440, 0.444 |
+| -t 20 | | 0.586, 0.578, 0.603, 0.600, 0.561, 0.577 |
+
+H4 took the twenty in two runs of six and lost 30% in each, where H3
+kept the ten every time. Ten processes of the logging build, both races
+each: the second race's fastest pairs had the X925s 0.4 to 12% ahead, and
+within the 3% margin once, where a steady pass's layers have them 14 to
+46% ahead. Timed a layer at a time:
+
+| frames | -t 10, a layer | -t 20, a layer | in the race, the fast kind's | in the race, every core's |
+|---|---|---|---|---|
+| 150 | 3.4-4.7 ms | 5.4-7.5 | 3.4-5.2 | 4.6-8.9 |
+| 250 | 5.6-6.4 | 6.4-8.6 | 5.6-7.5 | 5.9-8.1 |
+| 348 | 7.7-9.1 | 8.4-10.7 | 7.6-9.1 | 7.8-10.4 |
+
+The pool's threads are not pinned, and a switch leaves them where they
+were. From twenty to ten, the ten that stay are on both kinds of core
+and take some layers to come onto the X925s: even a -t 10 pass's first
+four layers take 5.9-6.4 ms against 5.6 after, coming from the decoder's
+four threads. From ten to twenty, the first ten are on the X925s already,
+placed better than twenty threads are left to themselves: every core's
+layers in the race ran as fast as 5.9 ms at 250 frames, where -t 20 ran
+6.4 to 8.6. Both put the fast kind behind its true time, and the fastest
+pair takes each side's luckiest pair, which for every core is its best
+placement. H3's sum carried the slow first pair, always every core's,
+and that offset the switches here; on the Googlebook it was the other way.
+
+pinfer's race pins its threads, so its spread is other work's and its
+fastest sample is its true one. pktito's spread is also its own threads'
+placement, and that is part of a side's time.
+
+H5: each side by its four pairs without its fastest and its slowest - the
+middle two - so one slow pair (the first pair's setup, a burst of other
+work) drops out, and so does a side's luckiest placement. The second race
+decides, as in H4. Predict: the GB10 keeps its ten in every run (in the
+ten logged processes the middle two had the X925s 6 to 13% ahead in every
+second race); the M4 Pro keeps 12 (the middle two pick 12 in all seven of
+its logged second races); armlet's eight, which won its races by far more
+than any statistic of them moves, not rerun.
+
+## 2026-10-27 - H5 on the GB10 (result: rejected), and every layer raced (hypothesis)
+
+H5 as above, sixteen layers and the middle two of each side's four
+pairs, on the GB10: six rounds against H3, H5 kept the ten in all six
+(0.438-0.450 s, -t 10 0.437-0.447, -t 20 0.562-0.592), and H3 took the
+twenty in one (0.587 s); ten more H5 runs kept ten in nine. Logged, 55
+second races, the X925s' middle two against every core's: 0.856 to 0.976,
+three of them past 0.97, which keeps every core. At 348 frames a side's
+pairs vary by about 9% either way, and two pairs a side do not hold a
+true lead of 7 to 10% clear of a 3% margin.
+
+H6: race every layer, in pairs, as many as make the same number on each
+side - all 24 of a 0.6B model's, six pairs a side - and judge each side
+by its pairs without its fastest and its slowest, the middle four. The
+second race decides and the margin is 3%, as in H5. Measured before the
+change, in a build that raced all 24 layers: 25 second races put the
+X925s' middle four at 0.886 to 0.940 of every core's, and the first 16
+layers' middle two of the same races at 0.876 to 0.957. Predict: the
+GB10 keeps its ten in every run, the M4 Pro 12, the Tab S7 FE 4 (-t 4
+beat -t 8 by 3 to 8% in five rounds there, and H3 kept 4 in all five).
+
+## 2026-10-27 - H6, every layer raced and the middle four pairs (result: rejected, on the RG477V)
+
+`./pktito-c bench`, test.wav through v2, six rounds, the order reversed
+every other round, best of 5 in seconds and the threads each run kept.
+
+The GB10 (gcc 13.3):
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 10, 10, 20, 10, 10, 10 | 0.435, 0.442, 0.561, 0.447, 0.443, 0.449 |
+| H6, default | 10 in all six | 0.444, 0.440, 0.445, 0.452, 0.448, 0.448 |
+| -t 10 | | 0.438, 0.443, 0.446, 0.447, 0.450, 0.447 |
+| -t 20 | | 0.573, 0.588, 0.592, 0.571, 0.577, 0.585 |
+
+Thirty more default runs of each: H6 kept the ten in all thirty, H3 in 26.
+Over the day's runs on the GB10, H3 took the twenty in 6 of 48, each about
+30% slower (0.56-0.59 s against 0.44), and H6 in none of 36.
+
+The M4 Pro (Apple clang 21, in use, load 2.4 rising to 8.9):
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 12, 8, 8, 12, 12, 8 | 0.456, 0.467, 0.474, 0.486, 0.487, 0.510 |
+| H6, default | 12 in all six | 0.454, 0.453, 0.471, 0.484, 0.487, 0.487 |
+| -t 8 | | 0.442, 0.455, 0.485, 0.500, 0.509, 0.510 |
+| -t 12 | | 0.453, 0.453, 0.478, 0.480, 0.490, 0.488 |
+
+Twenty more H6 runs kept 12 in all twenty. -t 12 led -t 8 in four rounds
+of six, the more as the machine got busier, and H6's default is level with
+it.
+
+The Tab S7 FE (Snapdragon 778G: four A55s, four A78s; Android 14, NDK
+r30's clang 21, on AC): H6 kept 4 in five runs of five, as H3 did, where
+-t 4 had beaten -t 8 by 3 to 8% in every round. Its best of 5 trailed H3's
+in four rounds (8.7, 7.8, 7.1 and 1.9% behind, 1.5% ahead in the fifth),
+both on four threads after the first pass, which holds both rules' races.
+
+The RG477V (MediaTek Dimensity 8300: four A510s, cpu_capacity 221, and
+four A715s, 996-1024; Android 14, on battery). Both builds' --json is
+test.v2.json. Five rounds, the order reversed every other round:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 4, 8, 8, 4, 8 | 3.089, 3.613, 3.682, 3.299, 3.520 |
+| H6, default | 4, 8, 4, 8, 4 | 3.283, 3.533, 3.507, 3.769, 3.554 |
+| H3's build, -t 4 | | 3.240, 3.240, 3.372, 3.178, 3.306 |
+| H6's build, -t 4 | | 3.421, 3.116, 3.451, 3.423, 3.443 |
+| -t 8 | | 3.619, 3.372, 3.549, 3.740, 3.808 |
+
+Ten more default runs of each: H6 took 8 in eight, H3 in two. Over
+fifteen, H6 kept the four in five and H3 in ten, where -t 4 beat -t 8 in
+every round, by 3 to 15%. At -t 4, where neither build's race runs, H6's
+build trailed H3's in four rounds and led in one: the board's spread, not
+separable here from the binaries'.
+
+Timed a layer at a time, in a scratch build: in every mode, the -t 4 and
+-t 8 passes as much as the races, about one layer in seven took 90 to 260
+ms where its neighbours took 20 to 60 - the board stopping the threads
+every few hundred ms, other work's time. Steady, the four A715s took 35, 50
+and 21 ms a layer at 250, 348 and 150 frames, all eight cores 39, 54 and
+24.5: the fast kind 7 to 14% ahead. Fifteen pair races put the fast
+kind's middle four at 0.66 to 1.35 of every core's: two stalls in a
+side's six pairs outweigh the one the trim drops. Raced instead in two
+halves, the first twelve layers on every core and the last twelve on the
+fast kind, each side by the median of its last eight: 0.80 to 1.00 over
+fifteen races, fourteen of them keeping the four; 0.89-0.94 at 250 frames
+against 0.90 steady, 0.92-1.00 at 348 against 0.93, 0.80-0.86 at 150
+against 0.86. Stalls are one or two of a half's layers, which a median of
+eight leaves out, and a half has no turns to switch between: every
+core's twelve layers follow every core's passes, as they would in a
+steady pass, and the fast kind's first four give its threads time to
+come onto its cores (the GB10's took about four, above).
+
+## 2026-10-27 - every core, or the fast kind: raced in two halves, once (hypothesis)
+
+H7: the second recording long enough to time races; the first runs on
+every core as the transcriber starts, its pass over the weights mapping
+their pages in. The race runs the first half of the layers on every core
+and the second half on the fast kind, and judges each side by the median
+of its layers after its first four: eight a side on a 0.6B model. The
+fast kind is kept if its median is 3% less. Every layer races, so a first
+race's verdict would steer none of its recording's layers, which is why
+there is one race and not two; the pool is on every core until it, so the
+every-core half runs as a steady every-core pass does. Predict: the RG477V
+keeps its four in nearly every run (its closest halves were at 348 frames,
+where test.wav's second chunk falls, 0.92 to 1.00); the GB10 its ten in
+every run; the Tab S7 FE its four; the M4 Pro level with the better of -t
+8 and -t 12. Its cost is twelve layers of one recording on the slower
+side, where H6's was twenty-four.
+
+## 2026-10-27 - H7 (result: rejected), and turns judged by their layers' medians (hypothesis)
+
+H7, six rounds on the GB10:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 20, 20, 10, 20, 10, 10 | 0.569, 0.561, 0.439, 0.594, 0.447, 0.443 |
+| H7, default | 10 in all six | 0.435, 0.437, 0.442, 0.442, 0.443, 0.443 |
+| -t 10 | | 0.437, 0.447, 0.447, 0.445, 0.443, 0.440 |
+| -t 20 | | 0.582, 0.592, 0.562, 0.593, 0.587, 0.568 |
+
+Thirty more of each: H7 kept the ten in 27, H3 in 26. Thirty logged races,
+all at 348 frames, put the X925s' median at 0.856 to 1.005 of every
+core's (median 0.919), four of them past 0.97. The M4 Pro, six rounds: H7
+kept 12 in all six and twenty more, level with -t 12 (0.453-0.509 against
+0.460-0.502); H3 took 8 in three; -t 12 led -t 8 in five rounds by 3 to
+4.6%. The RG477V, now at 28 C throughout (22-27 in H6's runs): H7 kept the
+four in nine runs of fifteen, H3 in four, where -t 4 led -t 8 by 4 to 6%
+in four rounds and trailed by 3.4% in one.
+
+H7 does without the turns' bias but times the two sides apart, and the
+board's drift between halves lands on one side: at 348 frames, where the
+X925s lead by about 10%, its ratio spread over 0.856-1.005, where H6's
+turns held the same races to 0.886-0.940. What undid H6 on the RG477V was
+its stalls, one layer in seven, which a pair statistic cannot drop. A
+median of each side's single layers can: computed from the logged turns,
+it kept the four in 14 of the RG477V's 15 races, and the ten in 5 of the
+GB10's 6. The misses were at 0.977 and 0.982, inside the 3% margin, which
+favours every core. On the GB10, the RG477V and the Tab S7 FE, every core
+lost wherever its race was close; on the M4 Pro, where every core wins,
+the second races read 1.00 to 1.06.
+
+H8: turns of two layers over every layer, as in H6; each side by the
+median of its own layers; whichever is faster kept, with no margin; one
+race, on the second long recording, as in H7. Predict: the GB10 keeps its
+ten in every run; the RG477V its four in most (the medians of its logged
+turns put the fast kind at 0.81 to 0.98); the M4 Pro is level with the
+better of -t 8 and -t 12.
+
+## 2026-10-27 - H8, turns judged by their layers' medians (result: kept)
+
+`./pktito-c bench`, test.wav through v2, best of 5 in seconds and the
+threads each run kept, the order reversed every other round; then more
+default runs of each, threads only. Every build's --json of test.wav is
+test.v2.json.
+
+The GB10 (gcc 13.3), six rounds:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 10, 10, 10, 10, 20, 10 | 0.435, 0.436, 0.438, 0.441, 0.587, 0.438 |
+| H8, default | 10 in all six | 0.436, 0.440, 0.436, 0.446, 0.440, 0.440 |
+| -t 10 | | 0.433, 0.432, 0.441, 0.435, 0.443, 0.440 |
+| -t 20 | | 0.573, 0.567, 0.575, 0.571, 0.590, 0.573 |
+
+Thirty more of each: H8 kept the ten in 29, H3 in 24. In all, 35 of 36
+and 29 of 36.
+
+The M4 Pro (Apple clang 21, in use, load 2.4 rising to 11), six rounds:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 8, 8, 8, 12, 12, 12 | 0.443, 0.466, 0.470, 0.472, 0.475, 0.477 |
+| H8, default | 8, then 12 in five | 0.442, 0.451, 0.463, 0.472, 0.474, 0.476 |
+| -t 8 | | 0.442, 0.450, 0.485, 0.490, 0.502, 0.502 |
+| -t 12 | | 0.450, 0.450, 0.473, 0.475, 0.478, 0.476 |
+
+-t 8 led by 1.8% in the first round, where H8 took 8, and was level in
+the second; -t 12 led in the last four, by 2.5 to 5.2%, as the load rose.
+H8's default was level with or ahead of the faster count in every round.
+Thirty more of each: H8 took 12 in all thirty, H3 8 in 29.
+
+The RG477V (on battery, 28-29 C throughout), five rounds:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 4, 4, 8, 4, 8 | 3.625, 3.562, 3.422, 3.800, 3.645 |
+| H8, default | 4 in all five | 3.339, 3.636, 3.571, 3.935, 3.577 |
+| H3's build, -t 4 | | 3.326, 3.327, 3.961, 3.729, 3.638 |
+| H8's build, -t 4 | | 3.554, 3.549, 3.602, 3.789, 3.560 |
+| -t 8 | | 3.958, 3.789, 3.949, 3.819, 3.789 |
+
+-t 4 led -t 8 in every round, by 2.4 to 16%. Ten more of each: H8 kept
+the four in six, H3 in eight; over fifteen, eleven each. H3 had kept the
+four in 10 of 15 in H6's runs and 4 of 15 in H7's: on this board the count
+moves more from one session to the next than between the two rules.
+
+The Googlebook (2026-10-25, above; on AC, load 2.7 before the runs),
+five rounds:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 8 in all five | 0.619, 0.782, 0.665, 0.757, 0.639 |
+| H8, default | 12 in all five | 0.583, 0.580, 0.579, 0.809, 0.882 |
+| H3's build, -t 8 | | 0.644, 0.655, 0.813, 0.640, 0.692 |
+| H8's build, -t 8 | | 0.658, 0.788, 0.650, 0.756, 0.648 |
+| -t 12 | | 0.602, 0.582, 0.594, 0.762, 0.823 |
+
+Ten more of each: H8 took 12 in all ten, H3 8 in all ten. -t 12 led by
+6.5 to 11% in the first three rounds and -t 8 by 16 and 21% in the last
+two: every twelve-thread run took 0.58-0.60 s in rounds 1-3 and 0.76-0.88
+in 4-5, the eight-thread runs 0.62-0.81 throughout, while the battery
+went from 28 to 33 C. Each rule was right in the rounds that favoured its
+side, H8 in three and H3 in two; the board's answer changed within
+minutes, and a race run once, in a process's first seconds, follows
+neither.
+
+The Galaxy S25 Ultra (SM-S938U1, Snapdragon 8 Elite: six Oryon cores at
+cpu_capacity 765, two at 1024; NDK r30's clang 21, on battery, 29 C
+rising to 34), five rounds:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 8 in all five | 1.643, 1.705, 1.251, 1.930, 1.494 |
+| H8, default | 8 in all five | 1.336, 1.606, 1.789, 1.624, 1.755 |
+| H3's build, -t 2 | | 2.145, 4.547, 2.179, 2.223, 2.390 |
+| H8's build, -t 2 | | 3.818, 4.091, 2.447, 2.204, 2.794 |
+| -t 8 | | 1.687, 1.217, 1.231, 1.176, 2.297 |
+
+Ten more of each: both kept the eight in all ten. -t 8 led -t 2 in every
+round, by 4 to 70%, on a board whose -t 8 runs alone spread from 1.18 to
+2.30 s.
+
+snappy (the next entry), by the pktito-windows session: H8 cross-built as
+the others, its --json test.v2.json; `bench` of long10.wav, three rounds
+against 79af521 (H4), the order alternating. Both kept 12 in all six
+runs, where H3 had kept 8. Best of 5: H8 4.191, 4.887, 4.763; H4 4.890,
+4.661 and 8.425, a run of 43 s where the others took about 25, every
+quiet check passed. Level.
+
+Kept. H8 chose the faster side wherever one side led steadily: the
+GB10's X925s in 35 of 36 runs, one short of the prediction, snappy's
+twelve and the S25's eight in every run, and on the M4 Pro, where the
+load moved the answer between 8 and 12, a default level with or ahead of
+the faster count in every round. H3 did as well on the S25 and the
+RG477V, and worse on the GB10, the M4 Pro and snappy. Two boards stay
+open. The RG477V's four A715s lead its eight cores by about 7% at the
+race's 348 frames, and the board stops threads for three to ten times a
+layer's time about one layer in seven: a median of twelve layers a side
+kept the four in 11 of 15 runs. The Googlebook's answer changed within
+minutes, which a race run once cannot follow. The race costs one
+recording's twelve layers on the slower side: on the S25, twelve layers
+on two cores. check-c passes on the 9950X (gcc 15.2), the GB10 (gcc 13.3)
+and the M4 Pro (Apple clang 21), check-tsan on the GB10 and the M4 Pro.
