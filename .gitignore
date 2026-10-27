@@ -36,3 +36,6 @@ __pycache__/
 CLAUDE.local.md
 /tests/pathcheck
 /tests/pathcheck-*/
+/libpktito.so
+/libpktito.dylib
+/libpktito.dll

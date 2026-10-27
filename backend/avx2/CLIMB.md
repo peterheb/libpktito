@@ -1240,3 +1240,39 @@ finished: kept out. Next, the copy's activations interleaved by tile too
 one activation pointer and one weight pointer at constant offsets under
 either compiler; its cost is a transposing copy a call, which 64-row
 slices at 16 threads (four panels a call) would feel most.
+
+## 2026-10-27 - libpktito.so: the zmm product's thread-local copy under gcc (a measurement)
+
+`make shared` builds the library as a shared object, for other languages
+(examples/README.md), from the same sources compiled again with -fPIC.
+./pktito-c's cli.o linked against it, against ./pktito-c: the 9950X under
+WSL2 (1-minute load under 2, this bench's own), tree 226fbf8 with the
+shared target, avx512-vnni, test.wav, best of 5, three runs each (s):
+
+| build | 16 threads | 1 thread |
+|---|---|---|
+| gcc 15.2, ./pktito-c | 0.224-0.225 | 1.385-1.393 |
+| gcc 15.2, libpktito.so | 0.232-0.240 (+3.5 to 7%) | 1.418-1.420 (+2%) |
+| gcc 15.2, libpktito.so, -ftls-model=initial-exec | 0.225-0.227 | 1.386-1.388 |
+| clang 21.1, ./pktito-c | 0.215-0.216 | 1.323-1.326 |
+| clang 21.1, libpktito.so | 0.219-0.221 | 1.314-1.323 |
+
+The gap is q8_zmm's offset copy, `static _Thread_local xoff`. In an
+executable a thread-local is an offset from %fs; in a shared object it is
+a call to __tls_get_addr, and gcc makes it at 13 places in q8_zmm, the
+uses in PK_Q8_TILES' cases in the tile loop, where clang makes it once
+(objdump -dr of backend/avx512-vnni/kernels.pic.o). -ftls-model=
+initial-exec reads it at an offset again and closes the gap, but a
+library built so does not load by dlopen, which is how ctypes, koffi and
+P/Invoke load one: Python's ctypes.CDLL refuses it, "cannot allocate
+memory in static TLS block" (glibc 2.43), the library's thread-locals
+being 975 KB (each backend's offset copy, 320 KB of it the zmm
+product's) against the static TLS glibc keeps spare for a library loaded
+late. -ftls-model=local-dynamic, and the address copied to a
+`uint8_t *const` at the top of q8_zmm, leave gcc's 13 calls: it holds the
+address invariant and folds it back into each use.
+
+Next: the copy's address from a function gcc does not inline, taken once
+a call, should bring gcc's shared library to its executable's speed and
+leave the executable where it is (a call a q8_zmm call). A kernel change:
+its hypothesis here first, and benched under both compilers.

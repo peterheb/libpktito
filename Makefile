@@ -13,11 +13,14 @@
 #                                 ref      scalar C, any host
 #   PKTITO_KERNELS=<name> ./pktito-c  runs that backend, of those built, to compare them
 #   make libpktito.a               the library alone (examples/transcribe.c uses it)
+#   make shared                   the library as libpktito.so (.dylib on macOS, .dll on
+#                                 Windows), for other languages: examples/README.md
 #   make models                   models/*.pkf from the checkpoints (Python with numpy)
 #   make check                    the C half and, where it can run, the Python half
 #   make check-c                  what needs only a compiler and a model: runs on any board
 #   make check-sanitize           the two file parsers under ASan and UBSan
 #   make check-math               every float through exp, sigmoid, tanh and log
+#   make check-ffi                the examples in other languages, where they are installed
 #   make fuzz                     coverage-guided harnesses (Clang libFuzzer)
 #   make fuzz-smoke               a short sanitizer-backed run of every harness
 #   make remote HOST=pi           rsync, make, check-c and bench over ssh
@@ -117,8 +120,8 @@ LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/dec
 BACK_OBJ := $(foreach b,$(BACKENDS) ref,backend/$(b)/kernels.o) backend/kernels.o
 LIB_OBJ := $(LIB_SRC:.c=.o) $(BACK_OBJ)
 HAVE := $(foreach b,$(BACKENDS),-DPK_HAVE_$(subst -,_,$(b)))
-$(foreach b,$(BACKENDS),$(eval backend/$(b)/kernels.o: CFLAGS += $(ISA_$(b))))
-backend/kernels.o: CFLAGS += $(HAVE)
+$(foreach b,$(BACKENDS),$(eval backend/$(b)/kernels.o backend/$(b)/kernels.pic.o: CFLAGS += $(ISA_$(b))))
+backend/kernels.o backend/kernels.pic.o: CFLAGS += $(HAVE)
 
 .DEFAULT_GOAL := pktito-c
 
@@ -128,6 +131,39 @@ pktito-c: core/cli.o $(LIB_OBJ)
 libpktito.a: $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
+# The library as a shared object, for a language that loads one: Python's
+# ctypes, Node's koffi, C#'s P/Invoke (examples/README.md). Its objects are
+# compiled again, beside the others as *.pic.o, so that ./pktito-c and
+# libpktito.a stay what they were: with -fPIC, which ELF needs and macOS has
+# by default, and without it for a DLL, which Windows relocates as it loads
+# and which takes in winpthreads as pktito-c.exe does. Every name in the
+# library is pk_'s, so it exports them all, as libpktito.a does; core/pktito.h,
+# wav.h and resample.h say which are the interface. Built by gcc, on x86-64
+# it runs 2% behind ./pktito-c on one thread and 3.5 to 7% on sixteen (the
+# 9950X), clang's level: gcc reaches the zmm product's thread-local copy
+# through a call to __tls_get_addr at each use in its tile loop, which no
+# flag cures that dlopen allows (backend/avx2/CLIMB.md, 2026-10-27).
+ifeq ($(UNAME_S),Darwin)
+  SHLIB   := libpktito.dylib
+  SHFLAGS := -dynamiclib -install_name @rpath/$(SHLIB)
+  PIC     := -fPIC
+else ifneq ($(filter MINGW% MSYS% UCRT% CLANG%,$(UNAME_S)),)
+  SHLIB   := libpktito.dll
+  SHFLAGS := -shared
+else
+  SHLIB   := libpktito.so
+  SHFLAGS := -shared
+  PIC     := -fPIC
+endif
+SH_OBJ := $(LIB_OBJ:.o=.pic.o)
+
+shared: $(SHLIB)
+$(SHLIB): $(SH_OBJ)
+	$(CC) $(CFLAGS) $(SHFLAGS) -o $@ $^ $(LDLIBS)
+
+%.pic.o: %.c
+	$(CC) $(CFLAGS) $(PIC) $(PLATFLAGS) $(INC) -MMD -MP -c $< -o $@
+
 # The library from the outside: examples/transcribe.c is a page of it.
 examples/transcribe: examples/transcribe.c libpktito.a
 	$(CC) $(CFLAGS) -Icore -o $@ examples/transcribe.c libpktito.a $(LDLIBS)
@@ -135,7 +171,7 @@ examples/transcribe: examples/transcribe.c libpktito.a
 %.o: %.c
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -MMD -MP -c $< -o $@
 
--include $(LIB_OBJ:.o=.d) core/cli.d
+-include $(LIB_OBJ:.o=.d) $(SH_OBJ:.o=.d) core/cli.d
 
 # ---------------------------------------------------------------- models ----
 
@@ -272,6 +308,20 @@ check-tsan:
 check-math: tests/mathcheck
 	./tests/mathcheck --all
 
+# The examples in other languages (examples/README.md), through the shared
+# library: each whose language is here must print test.wav's transcript as
+# ./pktito-c does, as check-c holds examples/transcribe to it, and one whose
+# language is not is skipped with a line. Apart from check, since they are
+# examples of the wiring, not the library: a language missing or changed on
+# a board is no reason to hold up a commit.
+check-ffi: pktito-c $(SHLIB)
+	@if [ -n "$(PYTHON)" ]; then \
+	  $(PYTHON) examples/python/transcribe.py $(MODEL) tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/ffi.tmp; \
+	  ./pktito-c -m $(MODEL) tests/data/test.wav | cmp -s - tests/ffi.tmp \
+	    && echo "examples/python: the CLI's transcript, through ctypes" \
+	    || { echo "examples/python: FAIL - not the CLI's transcript"; rm -f tests/ffi.tmp; exit 1; }; \
+	else echo "examples/python: no python3 - skipped"; fi; rm -f tests/ffi.tmp
+
 # --------------------------------------------------------------- fuzzing ----
 
 # Fuzzing is a development tool, not a library dependency.  The targets use
@@ -367,10 +417,11 @@ NDK ?=
 adb:
 	@NDK="$(NDK)" TESTS="$(TESTS)" MODEL="$(MODEL)" BENCH="$(BENCH)" BACKEND="$(BACKEND)" sh tests/adb.sh
 
-.PHONY: models check-c check-sanitize check-math fuzz fuzz-corpus fuzz-smoke fuzz-run fuzz-max fuzz-replay remote adb clean benches
+.PHONY: models shared check-c check-sanitize check-math check-ffi fuzz fuzz-corpus fuzz-smoke fuzz-run fuzz-max fuzz-replay remote adb clean benches
 
 clean:
-	rm -f pktito-c pktito libpktito.a examples/transcribe core/*.o core/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
+	rm -f pktito-c pktito libpktito.a libpktito.so libpktito.dylib libpktito.dll examples/transcribe
+	rm -f core/*.o core/*.d backend/*.o backend/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
 	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM tests/pathcheck-* build/android-*
 	rm -f $(FUZZ_BINS) $(FUZZ_DIR)/seeds   # not the corpora a campaign grew

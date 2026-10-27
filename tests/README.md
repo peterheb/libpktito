@@ -18,6 +18,7 @@ needs is not there.
 | `chunkcheck` | check-c | core/asr.c's pk_chunks on 1000 random layouts of speech over silence, a tone and the two by turns: the speech chunks the same over any audio and all there is over silence, every other chunk one of the fewest equal pieces of a gap, 3 s or longer and audible, nothing audible of 3 s left out; and each rule's edge (a mean square of 1e-5, 3 s, samples not finite) |
 | test.wav | check-c | `./pktito-c probs` against tests/data/test.probs.txt (vadito's bits) and `./pktito-c --json` against test.v2.json and test.v3.json (ref's transcripts, every token and time), byte for byte |
 | `examples/transcribe` | check-c | the library alone gives the CLI's transcript |
+| `examples/python` | check-ffi | the shared library through Python's ctypes gives the CLI's transcript; skipped with a line where there is no Python |
 | `check-tsan` | check-tsan | the pool and every pass split over it: no race on six threads, file and stream, nor on the default threads, which on a chip of two kinds switch the pool between every core and the fast kind |
 | `tokcheck` | check-python | core/tokens.c against sentencepiece's decode_pieces and NeMo's punctuation rule, every piece alone and 3000 random sequences, for each model |
 | `segcheck` | check-python | core/segment.c's two state machines against Silero's Python on 3000 generated probability sequences, segments to the sample and events to the frame |

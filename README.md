@@ -420,7 +420,10 @@ process's code page. `make libpktito.a` builds the library alone;
 core/pktito.h is all of its interface, core/wav.h and core/resample.h the
 WAV and AIFF library's.
 examples/transcribe.c is a whole program against it in a page, and `make
-check-c` holds its transcript to the CLI's.
+check-c` holds its transcript to the CLI's. `make shared` builds it as
+libpktito.so (.dylib on macOS, .dll on Windows) for other languages, and
+examples/python is the same program through Python's ctypes: examples of
+the wiring, not packages (examples/README.md).
 
 ## The model file
 
@@ -446,6 +449,7 @@ make check                   # and the Python half: sentencepiece, Silero, torch
 make check-sanitize          # the model file and WAV/AIFF parsers under ASan and UBSan
 make check-tsan              # the pool under ThreadSanitizer
 make check-math              # every float through exp, sigmoid, tanh and log
+make check-ffi               # the examples in other languages, where they are installed
 make remote HOST=user@board  # rsync, build, check-c and bench there
 ```
 
@@ -475,7 +479,7 @@ backend/     the seam (kernels.h, and kernels.c, which picks the backend that
 tools/       the converter, the float64 reference, the corpora, the
              quantization experiment
 tests/       the C checks, the Python ones, and test.wav with its golden files
-examples/    the library from the outside
+examples/    the library from the outside: from C, and from Python as a shared object
 docs/        MEMORY_SAFETY.md: the rules the two parsers keep; caption-spec.md:
              the method core/captions.c follows
 ```
