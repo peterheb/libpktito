@@ -1276,3 +1276,19 @@ Next: the copy's address from a function gcc does not inline, taken once
 a call, should bring gcc's shared library to its executable's speed and
 leave the executable where it is (a call a q8_zmm call). A kernel change:
 its hypothesis here first, and benched under both compilers.
+
+## 2026-10-27 - the offset copies' addresses taken once a call (hypothesis)
+
+As the Next above: q8_zmm's offset copy, and the ymm product's (avx2-vnni's
+k_gemm_q8, where gcc makes 4 calls to __tls_get_addr), each moved into a
+function gcc does not inline that returns its address, taken once a call.
+Expected: gcc's libpktito.so level with its ./pktito-c, 3.5 to 7% faster
+at 16 threads and 2% at one on avx512-vnni, and avx2-vnni faster in kind;
+clang's unchanged; both compilers' ./pktito-c unchanged within the spread,
+the change there being one call a product call against its tile loops.
+The bits cannot move: the copy is the same bytes at the same kind of
+address. Benched as the measurement above, base and new interleaved,
+avx512-vnni and avx2-vnni (PKTITO_KERNELS), 16 threads and one, gcc 15.2
+and clang 21.1. amx-int8's own thread-locals (ready, xshort, dshort) stay
+as they are: this board has no AMX to run them, though its build takes
+the new q8_zmm with the others.
