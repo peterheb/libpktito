@@ -623,3 +623,45 @@ gemmbench found one instruction the A35 runs far slower than the A53 that
 the tile could do without. The board's full AliceBench stopped a few
 minutes in, when its battery ran out under load, so ALICEBENCH.md has no
 row for it.
+
+## 2026-10-27 - the quantizer's rounding in one instruction, FCVTNS (hypothesis)
+
+k_quantize rounds each scaled input with FRINTN and converts it with
+FCVTZS. FCVTNS, the conversion that rounds to nearest with ties to even
+itself, is one instruction for the two, and gives the same integers
+here: the block's values are finite (a block with a NaN or an infinity
+is zero before this loop) and at most 127 in magnitude once scaled, so
+neither conversion saturates, and a value in (-0.5, 0) becomes 0 either
+way (FRINTN's -0.0, truncated). pinfer's A76 table has FRINTN and FCVTZS
+at 2.0 cycles each (relayed by pktito-mac). The quantizing loop is, a 16
+inputs, 4 loads, 4 FMULs, 4 FRINTNs, 4 FCVTZSs, 6 narrows and a store,
+after the block's max pass of about 20 more: FCVTNS takes 4 of about 43
+instructions away. The quantize stage was 3.3% of a Pi 5 run on
+2026-10-20 (backend/neon-dp/CLIMB.md); the A72 and the A53 are not
+profiled since.
+
+Predict: kcheck's bits unchanged; `make PROFILE=1`'s quantize stage 5 to
+10% faster on the A72, the A53 and the A76; a run 0.1 to 0.4% faster,
+which is about a quiet Pi's spread between best-of-5s, so it is kept only
+if interleaved rounds put it past that under both compilers on a board:
+its gcc and clang 21, cross-built here.
+
+## 2026-10-27 - the softmax's exponentials sixteen at a time (hypothesis)
+
+k_softmax's second loop takes one vector of four exponentials a step:
+v_exp is a chain of about 15 dependent instructions, then the vector is
+added into one of four accumulators. The A72 and the A76 run the next
+steps' chains under this one's out of order, as far as their windows
+reach; the in-order A53 runs what the compiler put next, which is this
+chain's next instruction, waiting on the last. Four vectors a step give
+it four chains to interleave. Each element still goes to lane i % 16 and
+each lane takes its elements in order, so the sums, and the bits, are
+ref's. pinfer's softmax went from 35.8 to 30.5 ms with four exponentials
+in flight (relayed by pktito-mac); pktito's softmax, with the position
+add before it, was 1.9% of a Pi 5 run's thread time on 2026-10-20
+(348 ms, backend/neon-dp/CLIMB.md).
+
+Predict: kcheck's bits unchanged; the attention stage faster by up to a
+sixth of its softmax's time on the A53, by less on the A72 and the A76;
+a run 0.1 to 0.3% faster on the A53 and within the spread elsewhere.
+Kept only on a bench past the spread, as above.
