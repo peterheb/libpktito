@@ -237,8 +237,8 @@ tests/tokcheck: tests/tokcheck.c core/model.o core/os.o core/tokens.o $(BACK_OBJ
 	  $(BACK_OBJ) $(LDLIBS)
 tests/segcheck: tests/segcheck.c core/segment.o
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/segcheck.c core/segment.o $(LDLIBS)
-tests/rscheck: tests/rscheck.c core/resample.o
-	$(CC) $(CFLAGS) $(INC) -o $@ tests/rscheck.c core/resample.o $(LDLIBS)
+tests/rscheck: tests/rscheck.c core/resample.o core/os.o $(BACK_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/rscheck.c core/resample.o core/os.o $(BACK_OBJ) $(LDLIBS)
 check-python: pktito-c $(PYTESTS)
 	@if [ -n "$(SILERO)" ]; then SILERO=$(SILERO) $(PYNEMO) -W ignore tests/segcheck.py tests/segcheck || exit 1; \
 	else echo "segcheck: no silero-vad checkout in $(SRC) - skipped"; fi
