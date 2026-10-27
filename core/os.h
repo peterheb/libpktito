@@ -40,8 +40,8 @@ int pk_os_cores(void);
 int pk_os_fast_cores(void);
 
 /* The calling thread out of the operating system's power throttling where
- * it has one: on Windows the EcoQoS its heuristics can give the threads of
- * a process without a window, which it confines to the cores it calls
+ * it has one: on Windows the EcoQoS its heuristics give the threads of a
+ * process without a window, which it confines to the cores it calls
  * efficient. Nothing elsewhere. pk_os_rethrottle, given what it returns,
  * puts the thread back as it was. A pool worker stays out; the caller's
  * thread is out for a pk_asr_run, whose every job it runs a share of, and

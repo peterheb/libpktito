@@ -1275,3 +1275,33 @@ both the workers' opt-out and the caller's, so these runs and armlet's
 compare none against all. Every run here was in session 0 with the
 session locked and the screen off, so which of those put the process
 under EcoQoS is not separated; core/os.c says what was measured.
+
+## 2026-10-27 - the opt-out on snappy with the screen on (a measurement)
+
+By the pktito-windows session, as in the row above but with Peter's
+session unlocked and the screen held on: over ssh, so in session 0; a
+process in his session asking for ES_DISPLAY_REQUIRED alone, pktito's
+window closed; on AC (98%, Best performance), snappy warm from an
+8-minute window test just before. One round of `bench -m v2.pkf
+long10.wav`, default threads, a quiet check before each run:
+
+| build | threads | best of 5, s | cpus busy, 0-3 / 4-11 | the busy threads |
+|---|---|---|---|---|
+| 98a54d1, before the opt-out | 8 | 8.992 | 3.9 / 0.1 | all 8 system-managed |
+| c42738d, the opt-out | 8 | 6.412 | 2.0 / 5.8 | all 8 opted out |
+
+The packing waits for neither the lock nor the screen: with the session
+unlocked and the screen on, Windows held the windowless process's pool
+to cpus 0-3 as before, and the opt-out spread it, 1.40 times faster in
+this round. In the same window pktito-cli 0.9.2, without an opt-out,
+stayed packed (a median of 11.30 s over four rounds of Alice chapter 1)
+and 0.9.3, whose process opts out, used every core (5.57 s). In Peter's
+desktop session the app, focused or minimised, never packed under
+either version, on AC.
+
+## 2026-10-27 - the day's builds, by their commits on main (a note)
+
+The rows above name builds 98a54d1, c42738d and 79af521, the commits they
+were cut from before the branch was rebased onto main. On main they are
+1eb53f8, df52223 and 19dd301: the same code, but for main's make adb and
+pk_wav_open_file beneath them, which change nothing these rows time.

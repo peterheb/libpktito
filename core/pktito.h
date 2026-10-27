@@ -106,7 +106,7 @@ typedef struct {
  * recordings are pk_chunks' business.
  *
  * The calling thread does a share of the work. On Windows it is out of the
- * power throttling the system can give a process without a window for the
+ * power throttling the system gives a process without a window for the
  * call, as the transcriber's own threads are for good, and leaves as it
  * came (core/os.h). */
 long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks);
