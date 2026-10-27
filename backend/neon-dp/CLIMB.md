@@ -895,3 +895,46 @@ arithmetic, as predicted; the fastest pair drops the first pair's setup
 and the passes other work slowed; and the second verdict holds where the
 first moved. Still to measure: the GB10 (where H3 took its twenty threads
 under neon-i8mm), the Googlebook (where it kept 8), the 12900HK and armlet.
+
+## 2026-10-27 - the power-throttling opt-out and H4's race on armlet (a measurement)
+
+armlet: Snapdragon 7c, six A55s (Windows' EfficiencyClass 0, lp0-5) and
+two A76s (class 1, lp6-7), Windows 11 on Arm, on AC. Run by the
+pktito-windows session over ssh, so in session 0 with no window, the
+case that sent snappy's pool onto its four class-0 cores (core/os.c).
+The builds were 98a54d1 (before the opt-out), c42738d (with it) and
+79af521 (with it and H4), cross-built with llvm-mingw 20260922 (clang
+23.1.2, aarch64-w64-mingw32, static). Every build's --json of test.wav is
+test.v2.json byte for byte, on neon-dp. Before every run, a check that
+no other process had used more than 0.5 s of CPU in 3 s. Five rounds,
+the order of each pair reversed every other round. Best of 5, s,
+before / after:
+
+| run | 1 | 2 | 3 | 4 | 5 | median |
+|---|---|---|---|---|---|---|
+| default (8, every run) | 6.289 / 6.368 | 5.778 / 6.267 | 6.937 / 6.065 | 5.702 / 5.181 | 6.993 / 5.284 | 6.289 / 6.065 |
+| -t 8 | 6.324 / 6.409 | 5.271 / 5.977 | 6.010 / 5.835 | 6.522 / 5.346 | 5.418 / 6.948 | 6.010 / 5.977 |
+| -t 2 | 7.260 / 8.537 | 7.249 / 7.187 | 8.119 / 8.118 | 7.261 / 8.147 | 7.926 / 8.134 | 7.261 / 8.134 |
+
+The spread from run to run is about 13% either way, drifting slowly,
+and the best of 5 does not take it out. The -t 2 times fall near 7.2 or
+8.1 s under both builds, and two extra pairs went the other way (8.229 /
+8.004 and 7.976 / 7.176). Each core's busy share, from 1 s samples in one
+extra run of each: -t 8 put the A55s at 77-79% before and 85-88% after,
+and the A76s at 98-99% in both; -t 2 put both threads on the A76s
+(99-100%) under both builds, the A55s at 0-7%.
+
+So the opt-out moves nothing past the spread here. In session 0, Windows
+gave the 7c's two threads its A76s by itself, throttled or not: its
+classes name the right cores, and its heuristics did not hold the process
+to the class-0 ones as they held snappy's. The opt-out is for snappy's
+case, still unmeasured. -t 2 never beat -t 8 (the best -t 2 was 7.187 s,
+the worst -t 8 6.948), so 2026-10-22's verdict of eight stands, though
+those runs were over ssh too.
+
+H4's race, default threads, c42738d / 79af521: 6.811 / 5.974, 5.794 /
+5.329, 6.803 / 5.199, 5.642 / 5.228, 6.407 / 7.070; medians 6.407 / 5.329.
+Both kept 8 in all ten runs, as predicted. Both rules race only within
+bench's first pass, the one that also maps the model in, and passes two
+to five do the same work under both, so the second's lower median is the
+board's spread (paired sd about 0.8 s at five pairs), not the rule.

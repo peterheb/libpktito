@@ -312,13 +312,15 @@ int pk_os_fast_cores(void) { return cores(1); }
  * calls efficient, on a Snapdragon X Elite 4 of its 12 identical cores:
  * pinfer's pool, run over ssh there, went onto those 4 about 2 s in, 1.2
  * tokens a second against 30.6 with the throttling off for the process
- * (pinfer's core/SCHED.md, 2026-10). The library's threads opt out one at a
- * time, each worker for good and the caller's for the call that runs on it,
- * which leaves the rest of a host's process as it was. A thread's state is
- * two masks, both 0 - the system's to decide - until something sets them,
- * and that is what a thread whose Windows cannot say is put back to. A
- * Windows older than 10 1709, without ThreadPowerThrottling, refuses every
- * call, and nothing changes. */
+ * (pinfer's core/SCHED.md, 2026-10). A Snapdragon 7c, whose classes name
+ * its A76s, ran the same over ssh with it and without
+ * (backend/neon-dp/CLIMB.md, 2026-10-27). The library's threads opt out one
+ * at a time, each worker for good and the caller's for the call that runs
+ * on it, which leaves the rest of a host's process as it was. A thread's
+ * state is two masks, both 0 - the system's to decide - until something
+ * sets them, and that is what a thread whose Windows cannot say is put back
+ * to. A Windows older than 10 1709, without ThreadPowerThrottling, refuses
+ * every call, and nothing changes. */
 pk_os_throttle pk_os_unthrottle(void) {
     HANDLE t = GetCurrentThread();
     THREAD_POWER_THROTTLING_STATE s = { THREAD_POWER_THROTTLING_CURRENT_VERSION, 0, 0 };
