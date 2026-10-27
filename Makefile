@@ -391,16 +391,18 @@ fuzz-replay: fuzz
 
 # The loop a board gets: the tree to HOST:$(RDIR) (the models too, rsync
 # sends only what changed), then the build, the compiler half of the checks
-# and a bench, there. BENCH names the recording; Silero's test.wav, which
-# the tree carries, is the default.
+# and a bench, there. A models/ that links to a folder goes as the folder
+# (--copy-dirlinks): sent as a link, it would take the place of the board's
+# own models, pointing at a path on this machine. BENCH names the
+# recording; Silero's test.wav, which the tree carries, is the default.
 HOST  ?=
 RDIR  ?= pktito
 BENCH ?= tests/data/test.wav
 remote:
 	@[ -n "$(HOST)" ] || { echo "make remote HOST=user@board"; exit 1; }
-	rsync -a --delete --exclude .venv --exclude .venv-nemo --exclude .git --exclude '*.o' \
-	  --exclude '*.d' --exclude /pktito-c --exclude /pktito --exclude 'models/src' --exclude 'models/corpus' \
-	  --exclude '/tests/*check' --exclude /build ./ $(HOST):$(RDIR)/
+	rsync -a --copy-dirlinks --delete --exclude .venv --exclude .venv-nemo --exclude .git \
+	  --exclude '*.o' --exclude '*.d' --exclude /pktito-c --exclude /pktito --exclude 'models/src' \
+	  --exclude 'models/corpus' --exclude '/tests/*check' --exclude /build ./ $(HOST):$(RDIR)/
 	ssh $(HOST) 'cd $(RDIR) && make -s clean && make -s -j4 $(if $(BACKEND),BACKEND=$(BACKEND)) check-c MODEL=$(MODEL) && ./pktito-c bench -m $(MODEL) $(BENCH)'
 
 # The same loop for an Android device, over adb: the tree cross-built here
