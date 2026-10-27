@@ -1330,3 +1330,11 @@ interleaved rounds of it: base 0.223 / 0.225 / 0.227 (min, median, max),
 new 0.221 / 0.226 / 0.227, and avx2-vnni's 0.296 / 0.302 / 0.304 against
 0.298 / 0.302 / 0.305: level. So gcc's shared library is level with its
 executable, as clang's was, and neither executable moved. Kept.
+
+## 2026-10-27 - the day's builds, by their commits on main (a note)
+
+The base above, da42a7b, is the hypothesis's commit as it stood on
+226fbf8, before the branch was rebased onto main; on main it is 70a3891,
+with main's commits of 2026-10-25 to 27 and the threads branch's (the
+encoder's race, Windows' power throttling, PK_SPIN) beneath it, which
+these measurements predate.
