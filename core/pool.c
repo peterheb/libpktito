@@ -33,6 +33,8 @@ int pk_pool_active(const pk_pool *p) { return p->n; }
 
 #else
 
+#include "os.h"
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -94,6 +96,7 @@ static void *worker(void *v) {
     pk_pool *p = w->p;
     int id = w->id;
     free(w);
+    pk_os_unthrottle();
     uint64_t seen = 0;
     for (;;) {
         uint64_t g;

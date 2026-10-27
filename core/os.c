@@ -224,6 +224,8 @@ double pk_os_now(void) {
 }
 
 void pk_os_stdio(void) {}
+pk_os_throttle pk_os_unthrottle(void) { return (pk_os_throttle){ 0, 0 }; }
+void pk_os_rethrottle(pk_os_throttle was) { (void)was; }
 
 #elif defined(PK_WINDOWS)
 
@@ -305,6 +307,35 @@ static int cores(int fastest) {
 int pk_os_cores(void) { return cores(0); }
 int pk_os_fast_cores(void) { return cores(1); }
 
+/* Windows gives a process with no window - one run over ssh, a service -
+ * EcoQoS by its own heuristics, and confines its threads to the cores it
+ * calls efficient, on a Snapdragon X Elite 4 of its 12 identical cores:
+ * pinfer's pool, run over ssh there, went onto those 4 about 2 s in, 1.2
+ * tokens a second against 30.6 with the throttling off for the process
+ * (pinfer's core/SCHED.md, 2026-10). The library's threads opt out one at a
+ * time, each worker for good and the caller's for the call that runs on it,
+ * which leaves the rest of a host's process as it was. A thread's state is
+ * two masks, both 0 - the system's to decide - until something sets them,
+ * and that is what a thread whose Windows cannot say is put back to. A
+ * Windows older than 10 1709, without ThreadPowerThrottling, refuses every
+ * call, and nothing changes. */
+pk_os_throttle pk_os_unthrottle(void) {
+    HANDLE t = GetCurrentThread();
+    THREAD_POWER_THROTTLING_STATE s = { THREAD_POWER_THROTTLING_CURRENT_VERSION, 0, 0 };
+    pk_os_throttle was = { 0, 0 };
+    if (GetThreadInformation(t, ThreadPowerThrottling, &s, sizeof s))
+        was = (pk_os_throttle){ s.ControlMask, s.StateMask };
+    s.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    s.StateMask = 0;
+    SetThreadInformation(t, ThreadPowerThrottling, &s, sizeof s);
+    return was;
+}
+
+void pk_os_rethrottle(pk_os_throttle was) {
+    THREAD_POWER_THROTTLING_STATE s = { THREAD_POWER_THROTTLING_CURRENT_VERSION, was.control, was.state };
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &s, sizeof s);
+}
+
 double pk_os_now(void) {
     static LARGE_INTEGER hz;
     LARGE_INTEGER t;
@@ -384,6 +415,8 @@ double pk_os_now(void) {
 }
 
 void pk_os_stdio(void) {}
+pk_os_throttle pk_os_unthrottle(void) { return (pk_os_throttle){ 0, 0 }; }
+void pk_os_rethrottle(pk_os_throttle was) { (void)was; }
 
 #endif
 

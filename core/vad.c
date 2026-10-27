@@ -27,6 +27,7 @@
  */
 #include "model.h"
 #include "kernels.h"
+#include "os.h"
 #include "vmath.h"
 
 #include <math.h>
@@ -198,10 +199,12 @@ static void block(pk_vad *v, const float *x, uint32_t T, float *probs) {
 }
 
 void pk_vad_probs(pk_vad *v, const float *x, size_t n, float *probs) {
+    pk_os_throttle was = pk_os_unthrottle();  /* a recording's VAD, on this thread */
     for (size_t f = 0; f < n; f += PK_VAD_BLOCK) {
         uint32_t T = n - f < PK_VAD_BLOCK ? (uint32_t)(n - f) : PK_VAD_BLOCK;
         block(v, x + f * PK_VAD_FRAME, T, probs + f);
     }
+    pk_os_rethrottle(was);
 }
 
 float pk_vad_prob(pk_vad *v, const float *frame) {
