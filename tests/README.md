@@ -25,6 +25,7 @@ needs is not there.
 | `wercheck.py` | check-python | ./pktito-c's WER and transcripts over tools/corpus.py's LibriSpeech and FLEURS sets against float32's (tools/quantcheck.py's) |
 | `q8bench` | `make benches` | the int8 product alone, one thread, on the encoder's shapes and the decoder's, for a kernel climb (backend/avx2/CLIMB.md) |
 | `gemmbench` | `make benches` | the same over threads, sliced and dealt as pk_gemm deals it, in MAC a cycle at the core's clock (backend/neon/CLIMB.md) |
+| `spinbench` | `make benches` | how long a pool worker spins before it parks: PK_SPIN polls as core/pool.c makes them, on this core (pool.c's comment on PK_SPIN) |
 
 tests/data/test.wav is Silero's own test recording (MIT, from the
 silero-vad repository), a minute of English lecture; test.probs.txt is the

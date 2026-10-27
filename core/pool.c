@@ -37,8 +37,12 @@ int pk_pool_active(const pk_pool *p) { return p->n; }
 #include <stdatomic.h>
 #include <stdint.h>
 
-/* Polls of the generation counter before a worker parks: about 50-200 us,
- * depending on the core, which outlasts the gaps between a layer's jobs. */
+/* Polls of the generation counter before a worker parks, meant to outlast
+ * the gaps between a layer's jobs. A poll is the core's relax hint and two
+ * loads, so their time is the core's, sixty-fold apart: 20000 last 6 us on
+ * an M4 Pro, 40 on a Pi 5's A76, 169 on a Pi 4's A72, 214 on a Pi 3's A53
+ * and 372 on a 9950X, whose PAUSE waits about 100 cycles (tests/spinbench,
+ * best of 200, 2026-10-27). */
 #define PK_SPIN 20000
 
 static inline void relax(void) {

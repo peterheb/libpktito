@@ -156,7 +156,7 @@ MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
 TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck \
          tests/pathcheck
-BENCHES := tests/q8bench tests/gemmbench
+BENCHES := tests/q8bench tests/gemmbench tests/spinbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
 # for bit, in one binary.
@@ -186,6 +186,9 @@ tests/q8bench: tests/q8bench.c $(BACK_OBJ) core/os.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/q8bench.c $(BACK_OBJ) core/os.o $(LDLIBS)
 tests/gemmbench: tests/gemmbench.c $(BACK_OBJ) core/os.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/gemmbench.c $(BACK_OBJ) core/os.o $(LDLIBS)
+# spinbench includes core/pool.c, for the worker's spin: how long PK_SPIN lasts
+tests/spinbench: tests/spinbench.c core/pool.c core/pool.h core/os.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/spinbench.c core/os.o $(LDLIBS)
 benches: $(BENCHES)
 
 # check-c needs a compiler and nothing else but MODEL, so it runs on any
