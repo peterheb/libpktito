@@ -811,3 +811,87 @@ Given -t, 12 beat 8 in all eight rounds, by 2 to 26%, yet the default kept
 8 in six of its nine runs. Its timing is two layers at a time while the
 laptop's other work comes and goes, and the 3% rule needs a quiet board to
 judge; left as it is until one is measured quiet.
+
+## 2026-10-27 - every core, or the fast kind: each by its fastest pair, decided on the second recording (hypothesis)
+
+H3 (2026-10-22, above) sums the sixteen layers it times, eight pairs a
+side, on the first recording of 8 s or more, keeps the fast kind if its
+sum is 3% less, and decides once. Twice since, it has kept the slower
+side: the GB10 under neon-i8mm took its twenty threads in two of three
+runs, 101.7x and 110.5x against 138.8x on its ten X925s (2026-10-24), and
+the Googlebook kept 8 in six of nine runs where, given -t, 12 beat 8 in
+all eight rounds by 2 to 26% (2026-10-25). Two things in what it times can
+do that.
+
+A sum carries every pair that other work slowed, and the Googlebook was
+playing media. Other work only ever adds time, which is why pinfer's race
+between its pool's settings judges each by its fastest sample (pinfer's
+core/SCHED.md, 2026-10).
+
+And the first recording is the first pass over the model's int8 weights,
+which nothing reads before it: the loader reads the floats, to check each
+is finite, and none of a layer's 25 MB of int8. Every page of a layer is
+mapped in while that layer is timed - about 1,500 of macOS's 16 KB pages -
+by the kernel, whose work need not divide among the threads as the
+arithmetic does, nor the same way on both sides.
+
+H4: each side is judged by its fastest pair; the race runs on the first
+recording of 8 s or more, as before, and again on the next, and the
+second verdict stands, the first holding in between. The pairs and the 3%
+margin are H3's. Predict, on the M4 Pro (in use), with each race's pairs
+logged from inside: the first recording's pairs slower than the same
+audio's when its pages are warm, and the second verdict steadier from run
+to run than the first; the default level with the better of -t 8 and
+-t 12, which H3 found 4% apart. On the GB10 its ten X925s every run, as
+H3 had them under neon-dp; on the Googlebook 12. The 12900HK and armlet
+unmoved, and the Pis, one kind, never race. Its cost is a second
+recording whose sixteen raced layers run half on the slower side: on the
+GB10, where every core is 1.32 times the X925s' time, about a tenth of
+that recording's encoder.
+
+## 2026-10-27 - every core, or the fast kind: each by its fastest pair, decided on the second recording (result: kept, on the M4 Pro)
+
+The M4 Pro alone: of the boards the rule was written for, none was up.
+In use throughout (load 4 rising to 8.4), Apple clang 21, test.wav
+through v2: three chunks, 250, 348 and 150 encoder frames.
+
+From inside, a build that logged each race's eight pairs. Set to race
+every chunk of every pass, so that the first race's audio was raced again
+warm: the first process, after the mac had let the model's pages go (180
+MB free), timed the first chunk's pairs at 35.5-45.6 ms against 11.2-12.0
+in its four warm races, 3.0 to 3.9 times, with every core 15% ahead where
+warm the fast kind was 2-4% ahead - its 50 MB a pair at about 1.9 GB/s,
+the disk's rate. Two more processes, the file cached: the first race's
+first pair 14.4 and 15.0 ms, the rest 12.0-12.4, against 11.2-11.9 warm;
+and the second race's first pair, at 348 frames, where the buffers had
+just grown, 20.2 ms against 15.9-16.2. A race's first pair is always
+every core's, so a sum charges every core with what a recording sets up
+first: both cached processes summed to 8 in both races, where the fastest
+pairs were within the margin (12.12-12.27 against 11.96-12.08 ms, and
+15.93-15.97 against 16.13-16.23), which keeps every core. Warm, the fast
+kind's lead shrinks as a recording grows: 5-8% at 150 frames, 2.4-4.7% at
+250, none at 348.
+
+`./pktito-c bench`, six rounds, the order reversed every other round,
+best of 5 and the threads each run kept:
+
+| run | threads | best of 5, s |
+|---|---|---|
+| H3 (c42738d), default | 8, 8, 8, 12, 12, 12 | 0.474, 0.480, 0.484, 0.484, 0.485, 0.485 |
+| H4, default | 12 in all six | 0.460, 0.463, 0.473, 0.486, 0.490, 0.486 |
+| -t 8 | | 0.443, 0.615, 0.496, 0.508, 0.513, 0.513 |
+| -t 12 | | 0.494, 0.497, 0.482, 0.482, 0.484, 0.485 |
+
+-t 12 beat -t 8 in five rounds of six, the more as the machine got busier,
+and H4's default is level with it. Five more logged processes, normally
+run, the machine busier still (the 348-frame pairs 17-31 ms): the second
+race kept 12 in all five, the first 12, 12, 12, 12 and 8. In eleven
+processes H4 kept 12 every time; H3's verdict, the first race's sum, was
+12 in seven and 8 in four. check-c and check-tsan pass on the M4 Pro
+(check-tsan's default-thread run switches the pool through both races).
+
+Kept. The first race times the disk or the page tables as much as the
+arithmetic, as predicted; the fastest pair drops the first pair's setup
+and the passes other work slowed; and the second verdict holds where the
+first moved. Still to measure: the GB10 (where H3 took its twenty threads
+under neon-i8mm), the Googlebook (where it kept 8), the 12900HK and armlet.

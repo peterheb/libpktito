@@ -115,7 +115,7 @@ pk_asr *pk_asr_new(const pk_model *m, int threads) {
     a->nth = pk_pool_threads(a->pool);
     a->wide = a->nth;
     a->fast = threads > 0 ? a->nth : pk_os_fast_cores();
-    a->tune = a->fast > 0 && a->fast < a->nth;
+    a->tune = a->fast > 0 && a->fast < a->nth ? PK_TUNE_RACES : 0;
     return a;
 }
 

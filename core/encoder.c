@@ -467,14 +467,20 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     PROF(PK_P_NORM, norm(a, a->x, a->x, T, L->out_nw, L->out_nb));
 }
 
-/* Every core, or the fast kind alone (asr.h)? The first recording long
- * enough to time, PK_TUNE_FRAMES, runs its first PK_TUNE_LAYERS layers on
- * each by turns, two at a time, and the transcriber keeps the fast kind if
- * its layers took 3% less. The layers are the same shapes, so their times
- * compare, and the bits are the same on any threads. Neither kind wins on
- * every chip: a GB10's ten X925s ran the encoder faster than its twenty
- * cores, a Core 3 304's one P-core four times slower than its five
- * (backend/neon-dp/CLIMB.md, backend/avx2/CLIMB.md). */
+/* Every core, or the fast kind alone (asr.h)? A recording long enough to
+ * time, PK_TUNE_FRAMES, runs its first PK_TUNE_LAYERS layers on each by
+ * turns, two at a time, and the transcriber keeps the fast kind if its
+ * fastest pair took 3% less than every core's: other work only ever adds
+ * time. The layers are the same shapes, so their times compare, and the
+ * bits are the same on any threads. PK_TUNE_RACES recordings race, and the
+ * last one's verdict stands: the first is the first pass over the int8
+ * weights, whose pages are mapped in as each layer is timed, and an M4
+ * Pro's first race took 3 to 4 times a warm pair's time with the model
+ * read from disk, 5% more with it cached (backend/neon-dp/CLIMB.md,
+ * 2026-10-27). Neither kind wins on every chip: a GB10's ten X925s ran the
+ * encoder faster than its twenty cores, a Core 3 304's one P-core four
+ * times slower than its five (backend/neon-dp/CLIMB.md,
+ * backend/avx2/CLIMB.md). */
 #define PK_TUNE_FRAMES 100       /* 8 s */
 #define PK_TUNE_LAYERS 16
 
@@ -482,16 +488,18 @@ static void layers(pk_asr *a, uint32_t T) {
     const pk_model *m = a->m;
     uint32_t i = 0;
     if (a->tune && T >= PK_TUNE_FRAMES && m->n_layers >= PK_TUNE_LAYERS) {
-        double took[2] = { 0, 0 };    /* every core, the fast kind */
-        for (; i < PK_TUNE_LAYERS; i++) {
+        double best[2] = { 1e30, 1e30 };   /* every core's fastest pair, the fast kind's */
+        for (; i < PK_TUNE_LAYERS; i += 2) {
             int fast = (int)(i / 2) % 2;
             pk_pool_set_active(a->pool, fast ? a->fast : a->nth);
             double t0 = pk_os_now();
             layer(a, &m->layers[i], T);
-            took[fast] += pk_os_now() - t0;
+            layer(a, &m->layers[i + 1], T);
+            double t = pk_os_now() - t0;
+            best[fast] = t < best[fast] ? t : best[fast];
         }
-        a->wide = took[1] < 0.97 * took[0] ? a->fast : a->nth;
-        a->tune = 0;
+        a->wide = best[1] < 0.97 * best[0] ? a->fast : a->nth;
+        a->tune--;
         pk_pool_set_active(a->pool, a->wide);
     }
     for (; i < m->n_layers; i++)
