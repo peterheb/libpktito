@@ -366,6 +366,19 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
         }                                                                                \
     } while (0)
 
+/* The offset copy, a block a thread, its address taken once a call from a
+ * function gcc does not inline. In libpktito.so a thread-local is reached
+ * through a call to __tls_get_addr, and gcc, which holds such an address
+ * invariant in a function, would make the call at each of the copy's 13
+ * uses in q8_zmm, where clang makes it once: taken here, gcc's shared
+ * library runs level with ./pktito-c, 2% faster than with the thread-local
+ * in q8_zmm on one thread and 6% on sixteen, and the executables do not
+ * move (the 9950X, CLIMB.md, 2026-10-27). */
+static __attribute__((noinline)) uint8_t *zmm_xoff(void) {
+    static _Thread_local _Alignas(64) uint8_t xoff[PK_Q8_BLOCK_BYTES + PK_Q8_NC * 32 * PK_MAX_BLOCKS];
+    return xoff;
+}
+
 static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                    uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, nb = n / a->qb;
@@ -381,7 +394,7 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
         }
         return;
     }
-    static _Thread_local _Alignas(64) uint8_t xoff[PK_Q8_BLOCK_BYTES + PK_Q8_NC * 32 * PK_MAX_BLOCKS];
+    uint8_t *const xoff = zmm_xoff();
     __m512i wsum[PK_MAX_BLOCKS];
     const __m512i one = _mm512_set1_epi8(1), off = _mm512_set1_epi8((char)0x80);
     uint32_t cb = PK_Q8_BLOCK_BYTES / n;
@@ -696,6 +709,15 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
             q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 1);     \
     } while (0)
 
+/* The offset copy, taken as q8_zmm's is and for its reason: gcc would make
+ * 4 calls to __tls_get_addr here in libpktito.so, and taken once, its
+ * shared library's avx2-vnni runs 2.4% faster on one thread and 3.8% on
+ * sixteen, level with ./pktito-c (the 9950X, CLIMB.md, 2026-10-27). */
+static __attribute__((noinline)) uint8_t *ymm_xoff(void) {
+    static _Thread_local _Alignas(64) uint8_t xoff[PK_Q8_BLOCK_BYTES + 3 * 32 * PK_MAX_BLOCKS];
+    return xoff;
+}
+
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, nb = n / a->qb;
@@ -711,7 +733,7 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
         }
         return;
     }
-    static _Thread_local _Alignas(64) uint8_t xoff[PK_Q8_BLOCK_BYTES + 3 * 32 * PK_MAX_BLOCKS];
+    uint8_t *const xoff = ymm_xoff();
     __m256i wsum[2 * PK_MAX_BLOCKS];
     const __m256i one = _mm256_set1_epi8(1), off = _mm256_set1_epi8((char)0x80);
     uint32_t cb = PK_Q8_BLOCK_BYTES / n;

@@ -1292,3 +1292,41 @@ avx512-vnni and avx2-vnni (PKTITO_KERNELS), 16 threads and one, gcc 15.2
 and clang 21.1. amx-int8's own thread-locals (ready, xshort, dshort) stay
 as they are: this board has no AMX to run them, though its build takes
 the new q8_zmm with the others.
+
+## 2026-10-27 - the offset copies' addresses taken once a call (result: kept)
+
+As the hypothesis: zmm_xoff and ymm_xoff, noinline, each return its
+product's thread-local copy, taken once a product call. gcc's calls to
+__tls_get_addr in the shared objects went from 13 in q8_zmm and 4 in
+avx2-vnni's k_gemm_q8 to the one in each function; clang's stayed at one.
+kcheck: every case ref's bits under both compilers (1779 each, avx2,
+avx2-vnni, avx512-vnni); libpktito.so's test.wav transcripts ref's, v2
+and v3, on avx512-vnni and avx2-vnni under both. The 9950X under WSL2, the
+other sessions' jobs held, base (da42a7b) and new interleaved, test.wav,
+best of 5, three rounds (s):
+
+| kernel | threads | build | base | new | |
+|---|---|---|---|---|---|
+| avx512-vnni | 16 | gcc, libpktito.so | 0.238-0.241 | 0.224-0.227 | -5.9% |
+| avx512-vnni | 16 | gcc, ./pktito-c | 0.219-0.225 | 0.225-0.227 | (below) |
+| avx512-vnni | 16 | clang, libpktito.so | 0.220-0.222 | 0.220-0.222 | level |
+| avx512-vnni | 16 | clang, ./pktito-c | 0.218-0.222 | 0.213-0.222 | level |
+| avx512-vnni | 1 | gcc, libpktito.so | 1.414-1.418 | 1.386-1.387 | -2.0% |
+| avx512-vnni | 1 | gcc, ./pktito-c | 1.381-1.386 | 1.383-1.385 | level |
+| avx512-vnni | 1 | clang, libpktito.so | 1.315-1.316 | 1.313-1.323 | level |
+| avx512-vnni | 1 | clang, ./pktito-c | 1.317-1.320 | 1.311-1.321 | level |
+| avx2-vnni | 16 | gcc, libpktito.so | 0.315-0.319 | 0.303-0.306 | -3.8% |
+| avx2-vnni | 16 | gcc, ./pktito-c | 0.297-0.303 | 0.299-0.307 | level |
+| avx2-vnni | 16 | clang, libpktito.so | 0.298-0.301 | 0.299-0.305 | level |
+| avx2-vnni | 16 | clang, ./pktito-c | 0.294-0.300 | 0.296-0.302 | level |
+| avx2-vnni | 1 | gcc, libpktito.so | 2.291-2.302 | 2.237-2.248 | -2.4% |
+| avx2-vnni | 1 | gcc, ./pktito-c | 2.238-2.245 | 2.238-2.244 | level |
+| avx2-vnni | 1 | clang, libpktito.so | 2.212-2.217 | 2.215-2.217 | level |
+| avx2-vnni | 1 | clang, ./pktito-c | 2.212-2.214 | 2.210-2.215 | level |
+
+gcc's ./pktito-c on avx512-vnni at 16 threads read +2.7% by its minimum,
+one base run of 0.219 against pairs otherwise 0.4% apart; ten more
+interleaved rounds of it: base 0.223 / 0.225 / 0.227 (min, median, max),
+new 0.221 / 0.226 / 0.227, and avx2-vnni's 0.296 / 0.302 / 0.304 against
+0.298 / 0.302 / 0.305: level. So gcc's shared library is level with its
+executable, as clang's was, and neither executable moved. Kept.

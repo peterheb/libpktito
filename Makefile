@@ -138,11 +138,10 @@ libpktito.a: $(LIB_OBJ)
 # by default, and without it for a DLL, which Windows relocates as it loads
 # and which takes in winpthreads as pktito-c.exe does. Every name in the
 # library is pk_'s, so it exports them all, as libpktito.a does; core/pktito.h,
-# wav.h and resample.h say which are the interface. Built by gcc, on x86-64
-# it runs 2% behind ./pktito-c on one thread and 3.5 to 7% on sixteen (the
-# 9950X), clang's level: gcc reaches the zmm product's thread-local copy
-# through a call to __tls_get_addr at each use in its tile loop, which no
-# flag cures that dlopen allows (backend/avx2/CLIMB.md, 2026-10-27).
+# wav.h and resample.h say which are the interface. It runs level with
+# ./pktito-c under gcc and clang on the 9950X, once the int8 products take
+# their thread-local copies' addresses once a call (backend/avx2/kernels.c,
+# zmm_xoff; CLIMB.md, 2026-10-27).
 ifeq ($(UNAME_S),Darwin)
   SHLIB   := libpktito.dylib
   SHFLAGS := -dynamiclib -install_name @rpath/$(SHLIB)

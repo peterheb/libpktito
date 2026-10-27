@@ -39,9 +39,6 @@ way. What every one has to get right:
   into it is a long one: a language's binding should let go of its own lock
   for it (ctypes lets go of Python's).
 
-Built by gcc, the shared library runs 2 to 7% behind ./pktito-c on x86-64
-(clang's is level): the Makefile has why.
-
 `make check-ffi` runs each example whose language is here on test.wav and
 holds its transcript to ./pktito-c's, as `make check-c` holds transcribe.c
 to it; one whose language is not is skipped with a line. It is not part of
