@@ -1305,3 +1305,42 @@ The rows above name builds 98a54d1, c42738d and 79af521, the commits they
 were cut from before the branch was rebased onto main. On main they are
 1eb53f8, df52223 and 19dd301: the same code, but for main's make adb and
 pk_wav_open_file beneath them, which change nothing these rows time.
+
+## 2026-10-27 - snappy on battery (a measurement)
+
+By the pktito-windows session, in the hold of the screen-on entry above
+(Peter's session unlocked, the screen held on by ES_DISPLAY_REQUIRED
+alone, Normal priority) but unplugged, in Windows' default power mode on
+battery (Balanced, no DC overlay set). svchost and Defender were busy and
+every quiet check failed, so the times are noisy; each is the run's own,
+not a best.
+
+pktito's app: six copies of Alice chapter 1 (1:04:04 of audio, v2)
+handed to a fresh window that was then focused or minimised, two rounds
+with the order alternating, timed from launch to all done; the cpus' busy
+shares after the first 3 s.
+
+| app | window | s | cpus busy, 0-3 / 4-11 |
+|---|---|---|---|
+| 0.9.2 | focused | 74.8, 85.9 | 3.4 / 2.8, 3.5 / 2.4 |
+| 0.9.2 | minimised | 357.4, 400.2 | 3.9 / 0.1, 3.9 / 0.0 |
+| 0.9.3, its process opted out | focused | 70.3, 69.5 | 3.4 / 3.0, 3.4 / 3.1 |
+| 0.9.3, its process opted out | minimised | 75.2, 75.1 | 3.4 / 2.8, 3.4 / 2.9 |
+
+On AC the app never packed, focused or minimised (the screen-on entry).
+On battery 0.9.2's minimised window did, onto cpus 0-3, and took 4.7
+times as long as focused (757.6 s over the two rounds against 160.7).
+0.9.3's process-level opt-out, its masks 1 and 0 through each job, took
+that away: minimised within 8% of focused (150.3 s against 139.8).
+
+Over ssh in the same hold, pktito-cli on chapter 1: 0.9.2 packed (4.0 /
+0.0) and took 51.92 s, 4.6 times its 11.30 s median on AC with the screen
+on, in one run whose quiet check had failed (svchost 2.55 s of CPU in
+3 s). 0.9.3 took 9.89 and 12.19 s, against 5.57 s on AC, its 12 threads
+on cpus 0-7 alone: 84, 87, 82, 80, 73, 72, 69 and 68% busy in the first
+run, cpus 8-11 at 0-1% in both. Windows had parked the third cluster;
+the app's unpacked runs were as narrow, about 6.3 of the 12 cpus busy.
+Not measured: the threads' opt-out alone on battery (98a54d1 against
+c42738d, as on AC above), and fewer threads than 12 with cpus 8-11
+parked. The logs are on snappy, in `C:\pktito-test\window` (`window\ac`
+for AC) and `C:\pktito-test\ab-093\runs` (`bat*`).
