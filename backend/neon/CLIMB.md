@@ -980,3 +980,126 @@ first, inner and last, n from 32 to 4096, nb from 1), on pi3, pi4,
 pi5c and the M4 Pro (each runs the neon backend too); then interleaved
 rounds of pktito-c, base against the loop, under gcc 12 and clang 21 at
 two placements, on pi4 and pi3, and PROFILE=1 for the stages.
+
+## 2026-10-28 - the ARMv8.0 tile's blocks at 32 inputs as one loop of assembly (results: kept)
+
+The hypothesis above against be5c4ae (base) under the same compiler. Both
+trees cross-built static and generic in the Ubuntu 22.04 container, by
+its gcc 12.3 and by apt.llvm.org's clang 21.1.8, each at two placements
+(0 and 32 bytes at the head of each NEON backend object); on pi4 also
+be5c4ae under gcc 15.2 with -mtune=cortex-a72 on the whole tree, the
+tuning a Pi 4's own build has. kcheck's 1779 cases ref's bits on pi3
+and pi4 under both compilers, on pi5c (neon and neon-dp) under both, on
+the M4 Pro under Apple clang 21, and on armlet (Windows 11 on Arm,
+llvm-mingw's clang 23.1.4), where all of check-c's commands passed;
+every build's test.wav transcript test.v2.json's bytes, and with
+PKTITO_KERNELS=neon on pi5c, the M4 Pro and armlet too. kcheck fails
+with either of two one-register faults in the finish, an FMLA reading
+the wrong register for its scale, once in the loop and once in the tail.
+
+The product alone, gemmbench at T 250 (the encoder's four shapes, as
+pk_gemm calls them), two rounds, pi3's from 45 C, below its limit: the
+four shapes' time, and in brackets MAC a cycle a core at cpufreq's
+clock:
+
+| board | compiler | threads | base | loop | change |
+|---|---|---|---|---|---|
+| pi4, A72, 1.8 GHz | gcc 12.3 | 1 | 480.7 ms (3.33) | 362.6 ms (4.42) | -24.6% |
+| | | 4 | 123.9 ms (3.23) | 96.7 ms (4.14) | -22.0% |
+| | clang 21.1 | 1 | 523.8 ms (3.05) | 367.8 ms (4.36) | -29.8% |
+| | | 4 | 135.8 ms (2.95) | 97.4 ms (4.12) | -28.3% |
+| pi3, A53, 1.4 GHz | gcc 12.3 | 1 | 903.0 ms (2.28) | 842.5 ms (2.44) | -6.7% |
+| | | 4 | 235.8 ms (2.19) | 222.3 ms (2.32) | -5.8% |
+| | clang 21.1 | 1 | 1072.5 ms (1.92) | 849.6 ms (2.42) | -20.8% |
+| | | 4 | 278.5 ms (1.85) | 222.4 ms (2.31) | -20.2% |
+
+In L1 (64 rows by 256 inputs, T 48, one thread), a block's 768
+multiply-adds take the A72 212 to 217 cycles under gcc and 233 to 235
+under clang before, 159 to 167 under both with the loop, where the
+probe's loop alone took 148 to 168; the A53 312 under gcc and 366 to 367
+under clang before, 290 to 293 under both with the loop, where the
+probe's took 272 to 276.
+
+Whole runs: interleaved rounds, the order turned each round, test.wav
+through v2, best of 5 at the default threads (4); a build's time a
+round is its placements' mean, and its ratio to base a round, median
+(range):
+
+| board, rounds | compiler | base | loop | change |
+|---|---|---|---|---|
+| pi4, A72, 3 | gcc 12.3 | 23.425 s | 18.926 s | -19.17% (-19.34 to -19.09) |
+| | clang 21.1 | 25.242 s | 18.909 s | -25.09% (-25.13 to -25.01) |
+| | gcc 15.2, -mtune=cortex-a72 | 21.398 s | | the loop under gcc 12 against it: -11.55% (-11.79 to -11.45) |
+| pi3, A53, 3 | gcc 12.3 | 48.484 s | 46.654 s | -3.32% (-3.78 to -2.77) |
+| | clang 21.1 | 54.819 s | 46.847 s | -14.50% (-14.74 to -14.03) |
+
+pi4 throttled=0x0 through every run, 60 to 69 C, its placements within
+0.25% of each other. The loop runs level under the two compilers, on
+both boards (18.926 and 18.909 s, 46.654 and 46.847 s). make check-c
+with the loop passes on pi4 (Debian's gcc 14.2, which the Makefile tunes
+for the A72; its bench 18.788 s) and on pi3 (the same gcc, tuned for the
+A53; 43.544 s).
+
+PROFILE=1 builds under gcc 12, two runs of each, ms a run:
+
+| stage | pi4 base | pi4 loop | change | pi3 base | pi3 loop | change |
+|---|---|---|---|---|---|---|
+| feed-forward | 12990 | 10146 | -21.9% | 26472 | 25423 | -4.0% |
+| q k v pos | 3992 | 3089 | -22.6% | 7990 | 7709 | -3.5% |
+| attention out | 817 | 635 | -22.2% | 1659 | 1604 | -3.4% |
+| conv pw1 pw2 | 2412 | 1882 | -22.0% | 4857 | 4664 | -4.0% |
+| subsampling | 600 | 538 | -10.3% | 1299 | 1277 | -1.7% |
+| run, best of 5 | 23.42 s | 18.94 s | -19.1% | 48.23 s | 46.69 s | -3.2% |
+
+(the subsampling's two pointwise convolutions are int8 products). Every
+other stage within 2.8% on pi4 and 2.4% on pi3.
+
+pi3 ran at its soft temperature limit from the first round's third
+build on: 70 C on this board (its firmware's temp_soft_limit=70),
+throttled=0x80000, 69 to 70 C after every bench, the core clock at 400
+MHz throughout. There the firmware holds the temperature by the ARM
+clock, between 1.2 and 1.4 GHz, so a time is the loop's cycles and the
+clock together. After the rounds, three pairs of five single runs, base
+and the loop under gcc 12 alternating, the ARM clock read every half
+second (vcgencmd measure_clock), each run's transcription time against
+its samples' mean clock:
+
+| | base | loop | change |
+|---|---|---|---|
+| a run at 1400 MHz throughout (each's first three) | 46.40 to 46.45 s | 44.15 to 44.31 s | -4.7% |
+| cycles a run, time by mean clock, all fifteen, median (range) | 64.96 G (63.95 to 65.87) | 61.47 G (60.62 to 61.87) | -5.4% |
+| mean clock at the limit (pairs 2 and 3), median | 1288 MHz | 1251 MHz | -2.9% |
+
+So the loop takes 5.4% of a run's cycles at every clock, and 4.7% of its
+time at 1.4 GHz; held at its limit, the board ran the loop's runs at a
+clock about 3% lower, and the rounds' 3.3% is what was left. That the
+loop draws more power a cycle, which the limit answers with the clock,
+is the likely reading; the power was not measured.
+
+Against the prediction. The block, from about 196 cycles to 148 on the
+A72 (-24.5%), held: gemmbench -24.6% at one thread, -24.4% in L1. The
+stages went past it: predicted 13 to 16% for the int8 stages and 11 to
+14% for a run, measured 22.1% and 19.2%. The prediction took 60% of the
+int8 stages to move with the step's order, from the A72 tuning's 9.2% on
+them over its 17% on the probe's step; the loop's 22% on them against
+its 24.5% says they move nearly whole, and so that the A72 order took
+less off the tile than off the probe (not measured apart). Against the
+tree tuned for the A72, predicted 3 to 6%, measured 11.6%. On pi3,
+predicted 4 to 7% a run: 4.7% at its full clock, 3.3% held at its soft
+limit.
+
+Kept: past the spread on both boards under both compilers. The release
+build is generic, and with the loop it runs the A72 11.6% ahead of the
+C tile tuned for it, so no -mtune is missed. An NDK build for an ARMv8.0
+phone, which only clang makes, takes the clang rows. The C step stays
+for tiles of fewer than three columns and for blocks other than 32.
+
+The entry before the hypothesis said the .deb is cross-built. It is
+built on the GB10, natively, in an arm64 Ubuntu 22.04 container by its
+gcc; TUNE is empty there too, since the Makefile tunes only for the A53,
+A72 and A76 (0xd03, 0xd08, 0xd0b) and the GB10's cores are 0xd85 and
+0xd87. jammy's arm64 gcc-12 and gcc-11 (12.3.0-1ubuntu1~22.04.3,
+11.4.0-1ubuntu1~22.04.3) make the same objects as the cross compilers
+these entries measured (the same versions, cross1): all 37 of the tree's
+objects, static and PIC, on be5c4ae and with the loop, the same under
+objdump -dr, at the release's flags. So the figures stand for the .deb.

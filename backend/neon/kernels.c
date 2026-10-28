@@ -182,6 +182,290 @@ void q8_step_v80(const int8_t *g, const int8_t *const *x, uint32_t k, int32x4_t 
         }
     }
 }
+
+/* The 3-column tile's blocks at 32 inputs, which is every product in the
+ * encoder, as one loop of assembly: in C the step's order is the
+ * compiler's, and gcc's generic order (the release build's) is its A53
+ * order, which takes the A72 44.0 cycles a step against its own 36.5; the
+ * A53 takes 3% longer in the A72's. The order below came from probes on
+ * both cores (backend/neon/CLIMB.md, 2026-10-28): 148 cycles a block on
+ * the A72 and 273 on the A53, each within 0.4% of the best order measured
+ * on that core. Against the C step it takes 19% off a Pi 4's run under
+ * gcc 12 and 25% under clang 21, and 4.7% off a Pi 3's at its full clock
+ * (the same file, the results of 2026-10-28).
+ *
+ * A block is twelve units, unit u column u % 3 of step u / 3 (8 inputs):
+ * its 8 multiplies of the step's weights v0-v3 (rows 0-3 and 4-7 of
+ * groups k/4 and k/4 + 1) by its activation pair a, b (the column's first
+ * 4 inputs across a, the next 4 across b) into int16 sums t0-t3, two
+ * products each. The unit before's four pairwise adds into its column's
+ * int32 sums (SADDLP in a block's first step, SADALP after) sit among the
+ * multiplies, and the unit loads the next unit's 8 bytes of activations
+ * into the b register of the other pair and DUPs them across it. A step's
+ * third unit loads the next step's weights after its 4th and 8th
+ * multiplies. Each block's finish - each column's int32 pairs added
+ * (ADDP), made floats and added to its floats times the block's scale
+ * (FMLA by element: fused, as the C tile's vfmaq_f32), the C tile's
+ * operations in its order - is spread over the next block's first three
+ * units, whose activations and weights the block's last unit loads: so
+ * the loop is block 0's first three units, nb - 1 rounds of units 3-11
+ * and the next block's 0-2, and the last block's 3-11 and finish, and no
+ * load reaches past the tile's last block.
+ *
+ * Registers: v0-v3 the weights; v4/v5 and v6/v7 the activation pairs,
+ * unit u's pair u % 2; v8-v13 the int16 sums, unit u's j-th in
+ * v8 + (j - u) mod 6, which comes back every 12 units and which the order
+ * allows, each unit's j-th SMULL coming after its (j - 1)-th add of the
+ * unit before; v14-v25 the int32 sums, column c's j-th in v14 + 4c + j;
+ * v26-v31 the floats, column c's two in v26 + 2c and v27 + 2c. The finish
+ * works in place: sums 0 and 2 take the ADDPs and become floats, sum 1
+ * the block's scale. */
+
+/* one unit, in the order L S M M S S M S M M M A M M B: l loads the next
+ * unit's activations, s0-s3 are the unit before's adds, da and db the next
+ * unit's DUPs, and e1-e8 follow the multiplies */
+#define Q8V_UNIT(t0, t1, t2, t3, a, b, s0, s1, s2, s3, l, da, db,            \
+                 e1, e2, e3, e4, e5, e6, e7, e8)                             \
+    l s0                                                                     \
+    "smull v" t0 ".8h, v0.8b, v" a ".8b\n\t" e1                              \
+    "smull2 v" t1 ".8h, v0.16b, v" a ".16b\n\t" e2                           \
+    s1 s2                                                                    \
+    "smull v" t2 ".8h, v1.8b, v" a ".8b\n\t" e3                              \
+    s3                                                                       \
+    "smull2 v" t3 ".8h, v1.16b, v" a ".16b\n\t" e4                           \
+    "smlal v" t0 ".8h, v2.8b, v" b ".8b\n\t" e5                              \
+    "smlal2 v" t1 ".8h, v2.16b, v" b ".16b\n\t" e6                           \
+    da                                                                       \
+    "smlal v" t2 ".8h, v3.8b, v" b ".8b\n\t" e7                              \
+    "smlal2 v" t3 ".8h, v3.16b, v" b ".16b\n\t" e8                           \
+    db
+
+/* int16 sum t's pairs added into int32 sum s: op saddlp or sadalp */
+#define Q8V_ADD(op, s, t) op " v" s ".4s, v" t ".8h\n\t"
+/* 8 bytes of a column's activations at x + o into b, and lane l of b
+ * across v */
+#define Q8V_LDD(b, x, o) "ldr d" b ", [%[" x "], #" o "]\n\t"
+#define Q8V_DUP(v, b, l) "dup v" v ".4s, v" b ".s[" l "]\n\t"
+/* two weight vectors at g + o */
+#define Q8V_LDW(v, w, o) "ldp q" v ", q" w ", [%[g], #" o "]\n\t"
+/* the finish of a column: its int32 sums s and t's pairs added into s; s
+ * made floats; the block's scale from d into s1; float f plus s times it */
+#define Q8V_ADDP(s, t) "addp v" s ".4s, v" s ".4s, v" t ".4s\n\t"
+#define Q8V_SCVTF(s) "scvtf v" s ".4s, v" s ".4s\n\t"
+#define Q8V_SCALE(s1, d) "ldr s" s1 ", [%[" d "]], #4\n\t"
+#define Q8V_FMLA(f, s, s1) "fmla v" f ".4s, v" s ".4s, v" s1 ".s[0]\n\t"
+
+/* The loop is one asm string of about 11 KB, past the 4095 characters
+ * C11 requires a compiler to take in a literal, which clang's -Wpedantic
+ * points out; gcc and clang take it whole. */
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Woverlength-strings"
+#endif
+
+/* nb blocks from g (the half panel's weights), x[c] (each column's int8
+ * activations) and d[c] (its scales), into f (each column's 8 floats) */
+static inline __attribute__((always_inline))
+void q8_blocks3_qb32(float f[24], const int8_t *g, const int8_t *const *x,
+                     const float *const *d, uint32_t nb) {
+    const int8_t *x0 = x[0], *x1 = x[1], *x2 = x[2];
+    const float *d0 = d[0], *d1 = d[1], *d2 = d[2];
+    __asm__ volatile(
+        "ld1 {v26.4s, v27.4s, v28.4s, v29.4s}, [%[f]]\n\t"
+        "ldp q30, q31, [%[f], #64]\n\t"
+        /* block 0: its first weights and words, units 0-2 */
+        Q8V_LDW("0", "1", "0") Q8V_LDW("2", "3", "64")
+        Q8V_LDD("5", "x0", "0") Q8V_DUP("4", "5", "0") Q8V_DUP("5", "5", "1")
+        /* unit 0: column 0 of step 0 */
+        Q8V_UNIT("8", "9", "10", "11", "4", "5",
+                 "", "",
+                 "", "",
+                 Q8V_LDD("7", "x1", "0"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 1: column 1 of step 0 */
+        Q8V_UNIT("13", "8", "9", "10", "6", "7",
+                 Q8V_ADD("saddlp", "14", "8"), Q8V_ADD("saddlp", "15", "9"),
+                 Q8V_ADD("saddlp", "16", "10"), Q8V_ADD("saddlp", "17", "11"),
+                 Q8V_LDD("5", "x2", "0"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 2: column 2 of step 0 */
+        Q8V_UNIT("12", "13", "8", "9", "4", "5",
+                 Q8V_ADD("saddlp", "18", "13"), Q8V_ADD("saddlp", "19", "8"),
+                 Q8V_ADD("saddlp", "20", "9"), Q8V_ADD("saddlp", "21", "10"),
+                 Q8V_LDD("7", "x0", "8"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", Q8V_LDW("0", "1", "128"), "", "", "", Q8V_LDW("2", "3", "192"))
+        "subs %w[nb], %w[nb], #1\n\t"
+        "b.eq 2f\n"
+#ifndef _WIN32
+        ".p2align 6\n"
+#endif
+        "1:\n\t"
+        /* units 3-11 of block b; unit 11 loads block b + 1's first weights and words */
+        /* unit 3: column 0 of step 1 */
+        Q8V_UNIT("11", "12", "13", "8", "6", "7",
+                 Q8V_ADD("saddlp", "22", "12"), Q8V_ADD("saddlp", "23", "13"),
+                 Q8V_ADD("saddlp", "24", "8"), Q8V_ADD("saddlp", "25", "9"),
+                 Q8V_LDD("5", "x1", "8"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 4: column 1 of step 1 */
+        Q8V_UNIT("10", "11", "12", "13", "4", "5",
+                 Q8V_ADD("sadalp", "14", "11"), Q8V_ADD("sadalp", "15", "12"),
+                 Q8V_ADD("sadalp", "16", "13"), Q8V_ADD("sadalp", "17", "8"),
+                 Q8V_LDD("7", "x2", "8"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 5: column 2 of step 1 */
+        Q8V_UNIT("9", "10", "11", "12", "6", "7",
+                 Q8V_ADD("sadalp", "18", "10"), Q8V_ADD("sadalp", "19", "11"),
+                 Q8V_ADD("sadalp", "20", "12"), Q8V_ADD("sadalp", "21", "13"),
+                 Q8V_LDD("5", "x0", "16"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", Q8V_LDW("0", "1", "256"), "", "", "", Q8V_LDW("2", "3", "320"))
+        /* unit 6: column 0 of step 2 */
+        Q8V_UNIT("8", "9", "10", "11", "4", "5",
+                 Q8V_ADD("sadalp", "22", "9"), Q8V_ADD("sadalp", "23", "10"),
+                 Q8V_ADD("sadalp", "24", "11"), Q8V_ADD("sadalp", "25", "12"),
+                 Q8V_LDD("7", "x1", "16"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 7: column 1 of step 2 */
+        Q8V_UNIT("13", "8", "9", "10", "6", "7",
+                 Q8V_ADD("sadalp", "14", "8"), Q8V_ADD("sadalp", "15", "9"),
+                 Q8V_ADD("sadalp", "16", "10"), Q8V_ADD("sadalp", "17", "11"),
+                 Q8V_LDD("5", "x2", "16"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 8: column 2 of step 2 */
+        Q8V_UNIT("12", "13", "8", "9", "4", "5",
+                 Q8V_ADD("sadalp", "18", "13"), Q8V_ADD("sadalp", "19", "8"),
+                 Q8V_ADD("sadalp", "20", "9"), Q8V_ADD("sadalp", "21", "10"),
+                 Q8V_LDD("7", "x0", "24"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", Q8V_LDW("0", "1", "384"), "", "", "", Q8V_LDW("2", "3", "448"))
+        /* unit 9: column 0 of step 3 */
+        Q8V_UNIT("11", "12", "13", "8", "6", "7",
+                 Q8V_ADD("sadalp", "22", "12"), Q8V_ADD("sadalp", "23", "13"),
+                 Q8V_ADD("sadalp", "24", "8"), Q8V_ADD("sadalp", "25", "9"),
+                 Q8V_LDD("5", "x1", "24"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 10: column 1 of step 3 */
+        Q8V_UNIT("10", "11", "12", "13", "4", "5",
+                 Q8V_ADD("sadalp", "14", "11"), Q8V_ADD("sadalp", "15", "12"),
+                 Q8V_ADD("sadalp", "16", "13"), Q8V_ADD("sadalp", "17", "8"),
+                 Q8V_LDD("7", "x2", "24"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 11: column 2 of step 3 */
+        Q8V_UNIT("9", "10", "11", "12", "6", "7",
+                 Q8V_ADD("sadalp", "18", "10"), Q8V_ADD("sadalp", "19", "11"),
+                 Q8V_ADD("sadalp", "20", "12"), Q8V_ADD("sadalp", "21", "13"),
+                 Q8V_LDD("5", "x0", "32"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", Q8V_LDW("0", "1", "512"), "", "", "", Q8V_LDW("2", "3", "576"))
+        "add %[g], %[g], #512\n\t" "add %[x0], %[x0], #32\n\t"
+        "add %[x1], %[x1], #32\n\t" "add %[x2], %[x2], #32\n\t"
+        /* units 0-2 of block b + 1, with block b's finish: column 0's before
+         * unit 1's SADDLPs reuse its sums, column 1's before unit 2's, column
+         * 2's after unit 0's SADALPs complete it and before unit 3's */
+        /* unit 0: column 0 of step 0 */
+        Q8V_UNIT("8", "9", "10", "11", "4", "5",
+                 Q8V_ADD("sadalp", "22", "9"), Q8V_ADD("sadalp", "23", "10"),
+                 Q8V_ADD("sadalp", "24", "11"), Q8V_ADD("sadalp", "25", "12"),
+                 Q8V_LDD("7", "x1", "0"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 Q8V_ADDP("14", "15"), Q8V_ADDP("16", "17"), Q8V_SCVTF("14"), Q8V_SCVTF("16"), Q8V_SCALE("15", "d0"), Q8V_FMLA("26", "14", "15"), Q8V_FMLA("27", "16", "15"), Q8V_ADDP("18", "19"))
+        /* unit 1: column 1 of step 0 */
+        Q8V_UNIT("13", "8", "9", "10", "6", "7",
+                 Q8V_ADD("saddlp", "14", "8"), Q8V_ADD("saddlp", "15", "9"),
+                 Q8V_ADD("saddlp", "16", "10"), Q8V_ADD("saddlp", "17", "11"),
+                 Q8V_LDD("5", "x2", "0"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 Q8V_ADDP("20", "21"), Q8V_SCVTF("18"), Q8V_SCVTF("20"), Q8V_SCALE("19", "d1"), Q8V_FMLA("28", "18", "19"), Q8V_FMLA("29", "20", "19"), Q8V_ADDP("22", "23"), Q8V_ADDP("24", "25"))
+        /* unit 2: column 2 of step 0 */
+        Q8V_UNIT("12", "13", "8", "9", "4", "5",
+                 Q8V_ADD("saddlp", "18", "13"), Q8V_ADD("saddlp", "19", "8"),
+                 Q8V_ADD("saddlp", "20", "9"), Q8V_ADD("saddlp", "21", "10"),
+                 Q8V_LDD("7", "x0", "8"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 Q8V_SCVTF("22"), Q8V_SCVTF("24"), Q8V_SCALE("23", "d2"), Q8V_LDW("0", "1", "128") Q8V_FMLA("30", "22", "23"), Q8V_FMLA("31", "24", "23"), "", "", Q8V_LDW("2", "3", "192"))
+        "subs %w[nb], %w[nb], #1\n\t"
+        "b.ne 1b\n"
+        "2:\n\t"
+        /* units 3-11 of the last block, and its finish */
+        /* unit 3: column 0 of step 1 */
+        Q8V_UNIT("11", "12", "13", "8", "6", "7",
+                 Q8V_ADD("saddlp", "22", "12"), Q8V_ADD("saddlp", "23", "13"),
+                 Q8V_ADD("saddlp", "24", "8"), Q8V_ADD("saddlp", "25", "9"),
+                 Q8V_LDD("5", "x1", "8"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 4: column 1 of step 1 */
+        Q8V_UNIT("10", "11", "12", "13", "4", "5",
+                 Q8V_ADD("sadalp", "14", "11"), Q8V_ADD("sadalp", "15", "12"),
+                 Q8V_ADD("sadalp", "16", "13"), Q8V_ADD("sadalp", "17", "8"),
+                 Q8V_LDD("7", "x2", "8"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 5: column 2 of step 1 */
+        Q8V_UNIT("9", "10", "11", "12", "6", "7",
+                 Q8V_ADD("sadalp", "18", "10"), Q8V_ADD("sadalp", "19", "11"),
+                 Q8V_ADD("sadalp", "20", "12"), Q8V_ADD("sadalp", "21", "13"),
+                 Q8V_LDD("5", "x0", "16"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", Q8V_LDW("0", "1", "256"), "", "", "", Q8V_LDW("2", "3", "320"))
+        /* unit 6: column 0 of step 2 */
+        Q8V_UNIT("8", "9", "10", "11", "4", "5",
+                 Q8V_ADD("sadalp", "22", "9"), Q8V_ADD("sadalp", "23", "10"),
+                 Q8V_ADD("sadalp", "24", "11"), Q8V_ADD("sadalp", "25", "12"),
+                 Q8V_LDD("7", "x1", "16"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 7: column 1 of step 2 */
+        Q8V_UNIT("13", "8", "9", "10", "6", "7",
+                 Q8V_ADD("sadalp", "14", "8"), Q8V_ADD("sadalp", "15", "9"),
+                 Q8V_ADD("sadalp", "16", "10"), Q8V_ADD("sadalp", "17", "11"),
+                 Q8V_LDD("5", "x2", "16"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 8: column 2 of step 2 */
+        Q8V_UNIT("12", "13", "8", "9", "4", "5",
+                 Q8V_ADD("sadalp", "18", "13"), Q8V_ADD("sadalp", "19", "8"),
+                 Q8V_ADD("sadalp", "20", "9"), Q8V_ADD("sadalp", "21", "10"),
+                 Q8V_LDD("7", "x0", "24"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", Q8V_LDW("0", "1", "384"), "", "", "", Q8V_LDW("2", "3", "448"))
+        /* unit 9: column 0 of step 3 */
+        Q8V_UNIT("11", "12", "13", "8", "6", "7",
+                 Q8V_ADD("sadalp", "22", "12"), Q8V_ADD("sadalp", "23", "13"),
+                 Q8V_ADD("sadalp", "24", "8"), Q8V_ADD("sadalp", "25", "9"),
+                 Q8V_LDD("5", "x1", "24"), Q8V_DUP("4", "5", "0"), Q8V_DUP("5", "5", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 10: column 1 of step 3 */
+        Q8V_UNIT("10", "11", "12", "13", "4", "5",
+                 Q8V_ADD("sadalp", "14", "11"), Q8V_ADD("sadalp", "15", "12"),
+                 Q8V_ADD("sadalp", "16", "13"), Q8V_ADD("sadalp", "17", "8"),
+                 Q8V_LDD("7", "x2", "24"), Q8V_DUP("6", "7", "0"), Q8V_DUP("7", "7", "1"),
+                 "", "", "", "", "", "", "", "")
+        /* unit 11: column 2 of step 3 */
+        Q8V_UNIT("9", "10", "11", "12", "6", "7",
+                 Q8V_ADD("sadalp", "18", "10"), Q8V_ADD("sadalp", "19", "11"),
+                 Q8V_ADD("sadalp", "20", "12"), Q8V_ADD("sadalp", "21", "13"),
+                 "", "", "",
+                 "", "", "", "", "", "", "", "")
+        Q8V_ADD("sadalp", "22", "9") Q8V_ADDP("14", "15") Q8V_ADD("sadalp", "23", "10")
+        Q8V_ADDP("16", "17") Q8V_SCVTF("14") Q8V_ADD("sadalp", "24", "11")
+        Q8V_ADDP("18", "19") Q8V_ADD("sadalp", "25", "12") Q8V_ADDP("20", "21")
+        Q8V_SCVTF("16") Q8V_SCVTF("18") Q8V_SCALE("15", "d0")
+        Q8V_SCVTF("20") Q8V_FMLA("26", "14", "15") Q8V_FMLA("27", "16", "15")
+        Q8V_SCALE("19", "d1") Q8V_ADDP("22", "23") Q8V_ADDP("24", "25")
+        Q8V_FMLA("28", "18", "19") Q8V_FMLA("29", "20", "19") Q8V_SCVTF("22")
+        Q8V_SCVTF("24") Q8V_SCALE("23", "d2") Q8V_FMLA("30", "22", "23")
+        Q8V_FMLA("31", "24", "23")
+        "st1 {v26.4s, v27.4s, v28.4s, v29.4s}, [%[f]]\n\t"
+        "stp q30, q31, [%[f], #64]\n\t"
+        : [g] "+r"(g), [x0] "+r"(x0), [x1] "+r"(x1), [x2] "+r"(x2),
+          [d0] "+r"(d0), [d1] "+r"(d1), [d2] "+r"(d2), [nb] "+r"(nb)
+        : [f] "r"(f)
+        : "cc", "memory", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10",
+          "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22",
+          "v23", "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31");
+}
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+#undef Q8V_UNIT
+#undef Q8V_ADD
+#undef Q8V_LDD
+#undef Q8V_DUP
+#undef Q8V_LDW
+#undef Q8V_ADDP
+#undef Q8V_SCVTF
+#undef Q8V_SCALE
+#undef Q8V_FMLA
 #endif
 
 #ifdef PK_NEON_DOTPROD
@@ -326,6 +610,24 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
             d[c] = a->d + (size_t)(t0 + c) * nb + b0;
         }
         q8_blocks4_qb32(f, w + (size_t)b0 * 8 * 64 + 16 * h, xb, d, b1 - b0);
+        b0 = b1;
+    }
+#else
+    if (NC == 3 && qb == 32 && b1 > b0) {
+        const int8_t *xb[3];
+        const float *d[3];
+        float fb[24];
+        for (int c = 0; c < 3; c++) {
+            xb[c] = x[c] + (size_t)b0 * 32;
+            d[c] = a->d + (size_t)(t0 + c) * nb + b0;
+            vst1q_f32(fb + 8 * c, f[c][0]);
+            vst1q_f32(fb + 8 * c + 4, f[c][1]);
+        }
+        q8_blocks3_qb32(fb, w + (size_t)b0 * 8 * 64 + 16 * h, xb, d, b1 - b0);
+        for (int c = 0; c < 3; c++) {
+            f[c][0] = vld1q_f32(fb + 8 * c);
+            f[c][1] = vld1q_f32(fb + 8 * c + 4);
+        }
         b0 = b1;
     }
 #endif
