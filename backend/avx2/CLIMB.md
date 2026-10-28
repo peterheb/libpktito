@@ -1338,3 +1338,96 @@ The base above, da42a7b, is the hypothesis's commit as it stood on
 with main's commits of 2026-10-25 to 27 and the threads branch's (the
 encoder's race, Windows' power throttling, PK_SPIN) beneath it, which
 these measurements predate.
+
+## 2026-10-27 - the release builds' compiler, x86 (a measurement)
+
+0.9.4's x86 builds were gcc's: the Linux .debs gcc 11.4 (Ubuntu 22.04's,
+for its glibc), the app's Windows x64 engine MSYS2's gcc 16.2. Each is
+measured here against what its build could use instead, on be5c4ae's tree
+(whose x86 objects are ebce152's under gcc and clang 21; clang 14 needs
+be5c4ae to link at all). Every binary static; each one's test.wav
+transcript is test.v2.json's bytes, and kcheck gives ref's bits under
+every compiler on every backend each CPU has (1779 cases). Each
+compiler's binary was built at four placements, 0, 16, 32 and 48 bytes
+of NOPs at the head of each x86 backend object (a top-level .skip,
+through -include), so that a compiler's figure is not one layout's.
+Interleaved rounds, the order turned each round, test.wav through v2,
+best of 5 at the default threads. A compiler's time a round is its four
+placements' mean; the tables give its ratio to the base compiler a
+round, median (range), and the spread is the largest over the compilers
+of the slowest placement's median over the fastest's.
+
+Linux: EC2 xlarge instances in us-east-1b, Ubuntu 24.04, one instance
+each, the binaries from an Ubuntu 22.04 container: its gcc 11.4.0 and
+12.3.0 and clang 14.0.0, the toolchain PPA's gcc 13.4.0 and
+apt.llvm.org's clang 21.1.8. The threads are the cores: two on Intel's
+xlarge and on AMD's with SMT, four on the c7a and the c8a.
+
+| instance, rounds | CPU | backend, threads | gcc 11 | gcc 12 | gcc 13 | clang 14 | clang 21 | spread |
+|---|---|---|---|---|---|---|---|---|
+| c5a, 6 | EPYC 7R32, Zen 2 | avx2, 2 | 6.381 s | -0.5% (-0.6 to -0.2) | -0.3% (-0.5 to -0.2) | -4.6% (-4.9 to -4.5) | -4.5% (-4.7 to -4.2) | 0.3% |
+| c6a, 6 | EPYC 7R13, Zen 3 | avx2, 2 | 4.219 s | -1.0% (-1.5 to -0.5) | -1.0% (-1.3 to -0.7) | -3.0% (-3.2 to -2.7) | -5.2% (-5.5 to -5.1) | 0.4% |
+| c7a, 6 | EPYC 9R14, Zen 4 | avx512-vnni, 4 | 0.866 s | +0.5% (+0.4 to +0.5) | -0.1% (-0.3 to -0.1) | -1.2% (-1.3 to -1.1) | -1.8% (-1.9 to -1.7) | 0.3% |
+| c8a, 6 | EPYC 9R45, Zen 5 | avx512-vnni, 4 | 0.457 s | -0.9% (-1.0 to -0.8) | +0.4% (+0.3 to +0.5) | -2.7% (-2.8 to -2.5) | -4.3% (-4.5 to -4.1) | 1.1% |
+| m5zn, 6 | Xeon 8252C, Cascade Lake | avx512-vnni, 2 | 1.921 s | -0.5% (-0.6 to -0.2) | +0.1% (0.0 to +0.3) | +1.7% (+1.6 to +2.2) | -2.7% (-3.1 to -2.2) | 0.3% |
+| c6i, 6 | Xeon 8375C, Ice Lake | avx512-vnni, 2 | 2.448 s | -0.9% (-1.4 to -0.6) | +0.2% (0.0 to +0.5) | +0.2% (-0.1 to +0.6) | -2.6% (-2.9 to -2.3) | 0.4% |
+| c7i, 6 | Xeon 8488C, Sapphire Rapids | amx-int8, 2 | 1.127 s | -0.5% (-0.8 to 0.0) | 0.0% (-0.3 to 0.0) | +0.8% (+0.3 to +1.4) | +0.4% (+0.4 to +1.0) | 0.5% |
+| c8i, 6 | Xeon 6975P-C, Granite Rapids | amx-int8, 2 | 0.913 s | +0.1% (-0.3 to +0.2) | 0.0% (-0.5 to +0.4) | +2.5% (+1.8 to +2.9) | +2.1% (+1.7 to +2.5) | 0.8% |
+
+clang 21 is ahead everywhere but amx-int8, by 1.8 to 5.2%; gcc 12 and 13
+are within about 1% of gcc 11; clang 14 runs from 4.6% ahead to 2.5%
+behind. On the two AMX Xeons each compiler's binary was linked with the
+other's backend/amx-int8 object (pads 0 and 32, 8 rounds, a fresh c8i
+and c7i, every transcript test.v2.json's bytes):
+
+| build | c8i | c7i |
+|---|---|---|
+| gcc 11 | 0.912 s | 0.944 s |
+| gcc 11, clang 21's amx-int8 | +2.80% (+2.02 to +3.51) | +1.51% (+0.53 to +2.60) |
+| clang 21, gcc 11's amx-int8 | -0.58% (-1.14 to +0.05) | -0.58% (-0.95 to +0.21) |
+| clang 21 | +2.02% (+1.59 to +2.41) | +0.69% (+0.26 to +1.55) |
+
+The loss is clang's amx-int8 object, and the rest of clang's build is
+ahead there too. PROFILE=1 on the c8i, two runs of each: under clang 21
+the int8 products' stages are 2.2 to 3.1% slower (feed-forward, q k v,
+attention out, conv), attention's float kernels 4.0%, and subsampling,
+layer norms and the depthwise convolution 3 to 6% faster. Its loop of
+four AMX steps is gcc's to within three instructions (159 against
+gcc 11's 162), with the same 20 tile operations in the same order, the
+same 64 reads of the C buffers and no spill; where the time goes is not
+found.
+
+Windows x64: the 9950X (Windows 11, the other sessions' jobs held),
+MSYS2 UCRT64's gcc 16.2.0 against llvm-mingw's clang 23.1.4, each the
+whole toolchain (llvm-mingw's lld and runtime with its clang), at the
+same four placements, 6 rounds at 16 threads, each backend through
+PKTITO_KERNELS:
+
+| backend | gcc 16.2 | clang 23.1 | clang against gcc | spread, gcc / clang |
+|---|---|---|---|---|
+| avx512-vnni | 0.2165 s | 0.2120 s | -1.99% (-3.87 to -0.80) | 2.6% / 4.1% |
+| avx2-vnni | 0.2910 s | 0.2850 s | -2.42% (-3.32 to -1.32) | 1.4% / 1.2% |
+| avx2 | 0.5500 s | 0.5000 s | -10.25% (-13.42 to -8.81) | 1.5% / 3.8% |
+
+At one thread (PROFILE=1, one run of each) clang is 5.4%, 2.2% and 9.3%
+ahead, in the int8 products' stages: avx2's feed-forward, q k v,
+attention out and conv each 9 to 10%. The app built both ways
+(pktito-9950x; its route b is the whole of llvm-mingw, as here) ran
+AliceBench 3.5% faster on the 9950X under clang, its transcripts byte for
+byte gcc's.
+
+So on these CPUs clang's int8 products are the faster, amx-int8's aside,
+and gcc 16.2's avx2 product is 10% behind clang 23's. By the
+two-compiler rule each is a climb of its own: why, then code both
+compilers agree on - for a product's block loop, what neon-dp's 4-column
+tile now is, assembly (backend/neon-dp/CLIMB.md). 0.9.4 takes clang for
+both (pktito-mac's call): llvm-mingw for Windows x64, apt.llvm.org's
+clang 21 for the Linux x86_64 .deb, amx-int8 included.
+
+The app's own build of it, the 0.9.4 candidate's amd64 .deb (pktito-app
+23d9b73, its engine 69e8242's under clang 21.1.8, all of it): on a c7i
+(Xeon 8488C) its pktito-cli's --json of test.wav is the same 9292 bytes
+at the default backend, amx-int8, and under PKTITO_KERNELS ref, avx2,
+avx2-vnni, avx512-vnni and amx-int8, and they are the bytes it writes on
+the 9950X under every backend there and 0.9.3's .deb (gcc 11.4) wrote
+(pktito-9950x's check).
