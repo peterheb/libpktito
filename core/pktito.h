@@ -44,7 +44,8 @@ typedef struct pk_model pk_model;
  * UTF-8 on every system: on Windows it is opened as UTF-16, so a model in
  * a user folder whose name is past ASCII loads whatever the process's
  * code page, and bytes that are not UTF-8 are refused, never read in the
- * code page instead. */
+ * code page instead. The checks run on the calling thread, which on
+ * Windows is out of power throttling for the call, as for a pk_asr_run. */
 pk_model *pk_model_load(const char *path, char *err, size_t errlen);
 
 /* The same from a copy the caller holds - a file embedded in a binary, or

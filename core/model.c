@@ -624,7 +624,7 @@ static int cpu_ok(char *err, size_t errlen) {
     return fail(err, errlen, "%s", why);
 }
 
-pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
+static pk_model *load_file(const char *path, char *err, size_t errlen) {
     char why[256];
     size_t size = 0;
     if (!path) {
@@ -654,7 +654,7 @@ pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
     return m;
 }
 
-pk_model *pk_model_from_bytes(const void *bytes, size_t n, char *err, size_t errlen) {
+static pk_model *load_bytes(const void *bytes, size_t n, char *err, size_t errlen) {
     char why[256];
     if (!bytes) {
         fail(err, errlen, "no model bytes");
@@ -685,6 +685,27 @@ pk_model *pk_model_from_bytes(const void *bytes, size_t n, char *err, size_t err
         pk_model_free(m);
         return NULL;
     }
+    return m;
+}
+
+/* The checks run on the calling thread, and a load is the first thing a
+ * program does, before any of its threads are pktito's: on Windows that
+ * thread is out of power throttling for the call (core/os.h), as it is
+ * for a pk_asr_run. One start of pktito-c on an i7-10875H was still
+ * loading 4 s in, its thread system-managed and busy, where the checks
+ * take 3.4 ms on a 9950X with the file cached (backend/avx2/CLIMB.md,
+ * 2026-10-28). */
+pk_model *pk_model_load(const char *path, char *err, size_t errlen) {
+    pk_os_throttle was = pk_os_unthrottle();
+    pk_model *m = load_file(path, err, errlen);
+    pk_os_rethrottle(was);
+    return m;
+}
+
+pk_model *pk_model_from_bytes(const void *bytes, size_t n, char *err, size_t errlen) {
+    pk_os_throttle was = pk_os_unthrottle();
+    pk_model *m = load_bytes(bytes, n, err, errlen);
+    pk_os_rethrottle(was);
     return m;
 }
 

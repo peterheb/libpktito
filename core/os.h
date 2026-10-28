@@ -44,8 +44,9 @@ int pk_os_fast_cores(void);
  * process without a window, which it confines to the cores it calls
  * efficient. Nothing elsewhere. pk_os_rethrottle, given what it returns,
  * puts the thread back as it was. A pool worker stays out; the caller's
- * thread is out for a pk_asr_run, whose every job it runs a share of, and
- * for a pk_vad_probs, which runs on it alone. */
+ * thread is out for a pk_asr_run, whose every job it runs a share of, for
+ * a pk_vad_probs, which runs on it alone, and for a pk_model_load or a
+ * pk_model_from_bytes, whose checks do. */
 typedef struct { unsigned long control, state; } pk_os_throttle;
 pk_os_throttle pk_os_unthrottle(void);
 void pk_os_rethrottle(pk_os_throttle was);

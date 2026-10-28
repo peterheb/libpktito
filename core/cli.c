@@ -885,6 +885,12 @@ static int info(pk_model *m) {
 int main(int argc, char **argv) {
     opts o;
     pk_os_stdio();
+    /* A program run for its answer, window or none: its thread out of
+     * Windows' power throttling for the whole run (core/os.h), where the
+     * library takes it out only for the calls that work on it. What the
+     * program does on it between them - the audio read and resampled, a
+     * stream's VAD a frame at a time, the output - is the run's too. */
+    pk_os_unthrottle();
     /* every path the library takes is UTF-8, and on Windows argv is not */
     if (!(argv = utf8_args(&argc, argv)))
         die("cannot read the command line");

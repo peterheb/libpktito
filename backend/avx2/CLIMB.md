@@ -1726,3 +1726,36 @@ padding test was the 9950X's third more is not separated. Kept: the
 9950X's one-thread runs moved by more than the spread on Windows (-1.00%
 against spreads of 0.3 and 0.5%), every Linux pair at one thread is
 level or faster, and no board fell by more than its own spread.
+
+## 2026-10-28 - a model's load out of the power throttling (a note)
+
+pktito-windows, in the i7-10875H sitting above, read each busy thread's
+ThreadPowerThrottling 4 s into one of its bits checks (pktito-c --json,
+test.wav): only the calling thread was busy, 3.8 s of CPU, system-managed,
+and no pool worker had started yet; in a trial two minutes before, the
+same program had its 8 workers out of the throttling by 4 s. Untimed.
+In pktito-c a pool starts with pk_asr_new, right after pk_model_load, so
+that start was still loading. The library took the caller's thread out
+for a pk_asr_run and a pk_vad_probs (core/os.c), not for a load.
+
+pk_model_load and pk_model_from_bytes now take it out for the call, and
+pktito-c takes its own thread out for the whole run: the audio's read
+and resampling, a stream's VAD a frame at a time and the output were on
+a system-managed thread too. On the 9950X (Windows 11 x64, llvm-mingw
+clang 23), a probe that loads v2 twenty times while a second thread
+reads the loading thread's two masks as fast as it can:
+
+| build | the thread before | during the loads | after | best load |
+|---|---|---|---|---|
+| HEAD (2b34cd3) | 0/0, system-managed | 0/0 | 0/0 | 3.43 ms |
+| | 1/1, EcoQoS | 1/1 | 1/1 | 3.37 |
+| this | 0/0 | 1/0, out | 0/0 | 3.41 |
+| | 1/1 | 1/0 | 1/1 | 3.43 |
+
+(ControlMask/StateMask; the poller also saw each thread's own state
+between the loads.) With the file in the page cache the checks take
+3.4 ms, under EcoQoS or not: the 9950X has no cores Windows calls
+efficient, so EcoQoS moves only its clock, and 3.4 ms is far from the
+3.8 s seen. What that start spent its time on is not known; neither a
+load from a file not yet cached nor a chip with efficient cores, where
+EcoQoS moves threads, was measured.
