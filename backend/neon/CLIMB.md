@@ -665,3 +665,35 @@ Predict: kcheck's bits unchanged; the attention stage faster by up to a
 sixth of its softmax's time on the A53, by less on the A72 and the A76;
 a run 0.1 to 0.3% faster on the A53 and within the spread elsewhere.
 Kept only on a bench past the spread, as above.
+
+## 2026-10-27 - the activations' columns 64 bytes apart past their width (hypothesis)
+
+The int8 product's activations are column after column, column t at
+q + t * n. On ARMv8.0 a 4096-input product, the feed-forward's down
+projection (half its multiply-adds), is taken 1024 inputs a chunk (H6),
+three columns a tile, and a tile reads its three columns' chunks in step,
+4096 bytes apart: the same offset in their 4 KB pages. The A72's L1D is
+32 KB in two ways, 16 KB a way, its set picked by address bits 6 to 13,
+of which 12 and 13 come from wherever the page landed; a chunk's 16 KB of
+weights fill about a way's worth of lines. Where two or three of a tile's
+columns sit in pages that agree on bits 12 and 13, their lines contend
+for one way, and with three random pages that is five tiles in eight.
+With the columns n + 64 bytes apart, a tile's columns start a line apart
+and never share a set. pinfer packed its activations at the width + 64
+on a Pi 400 (PN_XQ_PAD) and took 1.9 to 3.7% off prefill where the
+hidden width was 2048, neutral on a Pi 5 and the A53 (its
+backend/neon-dp/CLIMB.md, 2026-09-24). Neither the A53 (four ways) nor
+the A76 (64 KB in four ways, and 16 KB pages on the Pi 5's kernel, which
+make bits 12 and 13 the address's own) has the A72's conflict. pi4 and
+pi3 run 4 KB pages, no transparent huge pages. Only addresses move, so
+the bits are ref's.
+
+The change: pk_act carries the columns' stride, n + 64, which every
+backend's quantizer writes and every int8 product reads, and the buffers
+are sized for it. Measured first in a build of the core, ref and the NEON
+backends, which is all an AArch64 build compiles. Predict, on the A72:
+the feed-forward stage (PROFILE=1) 2 to 5% faster, and a run 1 to 2%
+faster, past the spread under both compilers. On the A53 and the A76,
+within the spread. If it holds, the AVX2 backends take the stride too
+(they copy their columns each call, so only the copy's reads move), and
+the 9950X is benched for no loss before it is kept.
