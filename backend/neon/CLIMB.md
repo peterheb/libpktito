@@ -1115,3 +1115,61 @@ the android-9950x session. neon's bench there was 7.453 s at 8 threads
 and neon-dp's 3.639 s; the C tile was not timed beside it, so this is a
 check of the bits, not of the speed. No device on hand runs neon by
 default: all four have dotprod.
+
+## 2026-10-28 - where the A72's block goes (a probe)
+
+The loop above takes 148 to 157 cycles a block on the A72 in L1, where
+its 96 multiplies need 96 at one a cycle; the rate probes have the
+multiplies and SADALP together, two to one as the loop has them, at
+1.23 a cycle, about 117 cycles for those alone. What the rest is: the
+loop copied into a probe (scratch, not the tree: a script takes
+q8_blocks3_qb32's text as it stands and puts each kind of instruction
+behind a switch, each variant a function of its own), called as
+k_gemm_q8 calls it, 32 blocks a call (the half panel's 8 KB of weights
+over a 16 KB span, three columns of 1 KB, their scales) on one 32 KB
+arena; on pi4 (A72 at 1.8 GHz throughout, get_throttled 0x0), eight
+processes in turn pinned to one core, each variant's best of 5 batches
+against the whole loop's in the same process. The loop's own cycles move
+with the pages a process gets, 150.3 to 167.1 here; a variant with no
+loads takes the same cycles in every process (115.03 for the multiplies
+and adds in all eight). Cycles a block, median over the processes, and
+the ratio to the loop, median (range):
+
+| variant | cycles | of the loop |
+|---|---|---|
+| the loop | 154.6 | |
+| no DUP (24 a block) | 138.4 | 89.5% (89.2 to 91.0) |
+| no finish (21: 6 ADDP, 6 SCVTF, 3 scale loads, 6 FMLA) | 136.5 | 88.0% (87.4 to 89.2) |
+| no FMLA | 146.7 | 94.5% (93.4 to 97.5) |
+| no SCVTF | 149.3 | 96.5% (96.5 to 97.5) |
+| no ADDP | 150.6 | 97.3% (96.6 to 97.7) |
+| no scale load | 154.3 | 99.2% (98.8 to 100.6) |
+| no load (12 of activations, 8 of weights) | 151.6 | 98.1% (90.7 to 100.9) |
+| no SADDLP or SADALP (48) | 126.0 | 81.2% (80.6 to 82.1) |
+| no multiply (96) | 89.7 | 57.0% (54.8 to 60.2) |
+| no DUP and no finish | 121.9 | 77.4% (76.8 to 80.5) |
+| no finish, the DUPs into v26-v29, read by nothing | 141.7 | 91.4% (91.2 to 92.0) |
+| the multiplies and adds alone | 115.0 | 74.4% (68.8 to 76.5) |
+| the multiplies alone | 96.9 | 62.7% (58.0 to 64.5) |
+| the adds alone | 49.7 | 32.2% (29.8 to 33.1) |
+
+and in a third run, the scale by LD1R and the FMLA by vector, the same
+bits: 102.2% (101.1 to 102.4).
+
+So the multiplies issue at one a cycle (96.9 for 96), the adds put 18 on
+them (115.0, the rate probes' 117), and the rest is the DUPs, about 16
+cycles (0.7 a DUP), and the finish, about 18 (FMLA 1.3 each, SCVTF 0.9,
+ADDP 0.7, a scale load 0.1), with the loads about free; the parts add
+(the DUPs 10.5% of the loop and the finish 12.0% apart, 22.6% together).
+DUPs that nothing reads cost what the loop's do, or more (the loop
+without its finish takes 16% longer with them than without, and 12%
+longer with its own), so it is their issue that costs, not the
+multiplies waiting on them, and an order cannot take an instruction's
+issue away: the 35 to 40 cycles past the multiplies and adds are about a
+cycle for each DUP and finish operation, wherever it sits. What would
+take them is fewer instructions, and the DUPs come from the weights'
+groups of 4 inputs (core/pkf.h, PK_Q8), a 4-byte word of a column's
+activations across a vector for each; the finish is the C tile's
+operations on the same values (ref's bits). Nothing to take here: the 10
+to 20 cycles a schedule from a model of the core might have found are
+not in this loop's instruction mix.
