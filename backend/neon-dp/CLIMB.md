@@ -1435,3 +1435,29 @@ gone. The loop's head at 32 modulo 64 (a pad for the measurement only)
 slower by a measurable share if the A76's sensitivity is the line, and
 within the spread if it was the chunk loop's branch. No loss on the M4
 Pro or the GB10's X925s, which run the same tile.
+
+## 2026-10-27 - the SDOT block loop in assembly (result: slower as written), and its scales a register each (hypothesis)
+
+The block loop above (scratch tree; kcheck ref's bits on the M4 Pro,
+1779 cases, and a copy with one FMLA's lane wrong fails a 4-column qb-32
+case, so the cases reach it), pi5c, six interleaved rounds, test.wav
+through v2, best of 5 at 4 threads, each build's --json test.v2.json byte
+for byte, not throttled:
+
+| build | clang 21 | gcc 15 |
+|---|---|---|
+| base | 3.845 s | 3.726 s |
+| the loop in assembly | 3.886 s, +1.13% (+0.96 to +1.25) | 3.893 s, +4.51% (+4.21 to +4.56) |
+| the same, its head 32 bytes along | 3.884 s, +1.07% | 3.896 s, +4.56% |
+
+It took the compiler out of it: the two builds were within 0.2% of each
+other, and the head 32 bytes along changed nothing. But it is slower than
+both compilers' C. One difference from both: it gathers the four
+columns' scales into one register's lanes (LD1 {v12.s}[c]), and each lane
+insert reads the register the last one wrote, a chain of four loads a
+block carried into the next. gcc 15 and clang 21 load each scale into a
+register of its own (LDR s) and FMLA by its lane 0.
+
+Hypothesis: the same loop with the scales in v12 to v15, one LDR each.
+The chain goes, and the loop reaches gcc 15's 3.726 s or better under
+both compilers; the bits are the same, each scale the same float.
