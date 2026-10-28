@@ -1461,3 +1461,37 @@ register of its own (LDR s) and FMLA by its lane 0.
 Hypothesis: the same loop with the scales in v12 to v15, one LDR each.
 The chain goes, and the loop reaches gcc 15's 3.726 s or better under
 both compilers; the bits are the same, each scale the same float.
+
+## 2026-10-27 - the SDOT block loop in assembly, its scales a register each (result: kept)
+
+The loop of the entry before, with each column's scale loaded into one
+register of its own (LDR s12 to s15) and each FMLA taking lane 0 of its
+own. kcheck ref's bits on every board below under each of its
+compilers, and check-c's transcripts ref's on the M4 Pro (Apple clang),
+the GB10 (gcc 13.3 and clang 18.1) and pi5c (its gcc 12.2). Interleaved
+rounds, test.wav through v2, best of 5 at the default threads, each
+build's --json test.v2.json byte for byte:
+
+| board | compiler | base | the loop in assembly | |
+|---|---|---|---|---|
+| pi5c, Pi 5, 4 threads, 6 rounds | clang 21.1 | 3.842 s | 3.657 s | -4.82% (-4.94 to -4.69) |
+| | gcc 15.2 | 3.726 s | 3.671 s | -1.46% (-1.56 to -1.31) |
+| GB10, 10 X925s, 6 rounds | clang 18.1 | 0.426 s | 0.429 s | +0.82% (-0.94 to +1.17) |
+| | gcc 13.3 | 0.441 s | 0.431 s | -2.27% (-3.17 to -1.37) |
+| M4 Pro, 12 threads, 6 rounds | Apple clang 21.0 | 0.456 s | 0.444 s | -2.23% (-3.36 to +1.73) |
+
+pi5c's builds were cross-compiled static (clang 21.1.8, gcc 15.2); the
+GB10's and the M4 Pro's were built on the board. The M4 Pro was in use (a
+load of 3, Chrome and the Claude app about 1.3 cores), and its one round
+the other way was +1.7%. The chain was the loss: with it gone the loop
+beats both compilers' C on the A76, and the two builds of it are within
+0.4% of each other (clang's 3.657 s, gcc's 3.671 s) where the C tile's
+were 3.2% apart; on the GB10 the gap between gcc and clang went from 3.5%
+to 0.5%. The head 32 bytes along was measured on the first version only,
+where it changed nothing. The loop stays at its 64-byte line, which
+costs at most 15 NOPs a tile.
+
+Kept: the 4-column, 32-input-block tile of neon-dp runs this loop; tiles
+of 1 to 3 columns and other block sizes keep the C. FCVTNS, the softmax
+at sixteen and the activations' stride (backend/neon/CLIMB.md) are to be
+measured again on top of it.

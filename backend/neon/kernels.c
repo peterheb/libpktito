@@ -184,6 +184,107 @@ void q8_step_v80(const int8_t *g, const int8_t *const *x, uint32_t k, int32x4_t 
 }
 #endif
 
+#ifdef PK_NEON_DOTPROD
+/* The 4-column tile's blocks at 32 inputs, which is every product in the
+ * encoder, as one loop of assembly. A block is two chunks of 16 inputs, each
+ * eight weight vectors (two LDPs a group of 4 inputs, 64 bytes apart) and
+ * one activation vector a column, and 32 SDOTs by lane: each weight vector
+ * against the four columns in turn, rows 0-3 of the half panel into v16,
+ * v18, v20, v22 and rows 4-7 into v17, v19, v21, v23. Then the sums are
+ * floats (SCVTF, exact: 32 products of at most 128 * 127) and each column's
+ * two take one FMLA by element with its block's scale, v12 + c: the
+ * fused multiply-add vfmaq_f32 is, so f's chain is the C tile's and ref's.
+ * f[c][0] and f[c][1] are v24 + 2c and v25 + 2c, zero at the start.
+ *
+ * Each scale has a register of its own. Gathered into one register's lanes,
+ * each lane's load waited on the one before, and the loop ran 1.1% slower
+ * than clang 21's C and 4.5% slower than gcc 15's.
+ *
+ * Written out so that where the loop sits is not a compiler's to choose: a
+ * build that put the C tile's loops 32 bytes along modulo 64 ran a Pi 5
+ * 6 to 8% slower under clang 21 and gcc 15. A64's instructions are 4 bytes
+ * whatever the registers, so the loop below is the same bytes, its head on
+ * a 64-byte line, under every compiler. Against the C tile it ran a Pi 5's
+ * minute 4.8% faster under clang 21 and 1.5% under gcc 15, its two builds
+ * within 0.4% of each other; a GB10's X925s 2.3% faster under gcc 13 and
+ * level under clang 18; an M4 Pro 2.2% faster (backend/neon-dp/CLIMB.md,
+ * 2026-10-27). */
+
+/* weight vectors a (rows 0-3) and b (rows 4-7) against lane L of v8-v11 */
+#define Q8_SDOT8(a, b, L)                                                  \
+    "sdot v16.4s, v" a ".16b, v8.4b[" L "]\n\t"                           \
+    "sdot v18.4s, v" a ".16b, v9.4b[" L "]\n\t"                           \
+    "sdot v20.4s, v" a ".16b, v10.4b[" L "]\n\t"                          \
+    "sdot v22.4s, v" a ".16b, v11.4b[" L "]\n\t"                          \
+    "sdot v17.4s, v" b ".16b, v8.4b[" L "]\n\t"                           \
+    "sdot v19.4s, v" b ".16b, v9.4b[" L "]\n\t"                           \
+    "sdot v21.4s, v" b ".16b, v10.4b[" L "]\n\t"                          \
+    "sdot v23.4s, v" b ".16b, v11.4b[" L "]\n\t"
+
+/* 16 inputs: the four columns' activations, and the four groups' weights at
+ * g + o0 .. g + o3 */
+#define Q8_CHUNK(o0, o1, o2, o3)                                           \
+    "ldr q8, [%[x0]], #16\n\t"                                             \
+    "ldr q9, [%[x1]], #16\n\t"                                             \
+    "ldr q10, [%[x2]], #16\n\t"                                            \
+    "ldr q11, [%[x3]], #16\n\t"                                            \
+    "ldp q0, q1, [%[g], #" o0 "]\n\t"                                      \
+    "ldp q2, q3, [%[g], #" o1 "]\n\t"                                      \
+    "ldp q4, q5, [%[g], #" o2 "]\n\t"                                      \
+    "ldp q6, q7, [%[g], #" o3 "]\n\t"                                      \
+    Q8_SDOT8("0", "1", "0") Q8_SDOT8("2", "3", "1")                        \
+    Q8_SDOT8("4", "5", "2") Q8_SDOT8("6", "7", "3")
+
+/* nb blocks from g (the half panel's weights), x[c] (each column's int8
+ * activations) and d[c] (its scales), into f */
+static inline __attribute__((always_inline))
+void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *x,
+                     const float *const *d, uint32_t nb) {
+    const int8_t *x0 = x[0], *x1 = x[1], *x2 = x[2], *x3 = x[3];
+    const float *d0 = d[0], *d1 = d[1], *d2 = d[2], *d3 = d[3];
+    float out[32], *o = out;
+    __asm__ volatile(
+        "movi v24.4s, #0\n\t" "movi v25.4s, #0\n\t" "movi v26.4s, #0\n\t" "movi v27.4s, #0\n\t"
+        "movi v28.4s, #0\n\t" "movi v29.4s, #0\n\t" "movi v30.4s, #0\n\t" "movi v31.4s, #0\n\t"
+        ".p2align 6\n"
+        "1:\n\t"
+        "movi v16.4s, #0\n\t" "movi v17.4s, #0\n\t" "movi v18.4s, #0\n\t" "movi v19.4s, #0\n\t"
+        "movi v20.4s, #0\n\t" "movi v21.4s, #0\n\t" "movi v22.4s, #0\n\t" "movi v23.4s, #0\n\t"
+        Q8_CHUNK("0", "64", "128", "192")
+        Q8_CHUNK("256", "320", "384", "448")
+        "add %[g], %[g], #512\n\t"
+        "ldr s12, [%[d0]], #4\n\t"
+        "ldr s13, [%[d1]], #4\n\t"
+        "ldr s14, [%[d2]], #4\n\t"
+        "ldr s15, [%[d3]], #4\n\t"
+        "scvtf v16.4s, v16.4s\n\t" "scvtf v17.4s, v17.4s\n\t"
+        "scvtf v18.4s, v18.4s\n\t" "scvtf v19.4s, v19.4s\n\t"
+        "scvtf v20.4s, v20.4s\n\t" "scvtf v21.4s, v21.4s\n\t"
+        "scvtf v22.4s, v22.4s\n\t" "scvtf v23.4s, v23.4s\n\t"
+        "fmla v24.4s, v16.4s, v12.s[0]\n\t" "fmla v25.4s, v17.4s, v12.s[0]\n\t"
+        "fmla v26.4s, v18.4s, v13.s[0]\n\t" "fmla v27.4s, v19.4s, v13.s[0]\n\t"
+        "fmla v28.4s, v20.4s, v14.s[0]\n\t" "fmla v29.4s, v21.4s, v14.s[0]\n\t"
+        "fmla v30.4s, v22.4s, v15.s[0]\n\t" "fmla v31.4s, v23.4s, v15.s[0]\n\t"
+        "subs %w[nb], %w[nb], #1\n\t"
+        "b.ne 1b\n\t"
+        "st1 {v24.4s, v25.4s, v26.4s, v27.4s}, [%[o]], #64\n\t"
+        "st1 {v28.4s, v29.4s, v30.4s, v31.4s}, [%[o]]\n\t"
+        : [g] "+r"(g), [x0] "+r"(x0), [x1] "+r"(x1), [x2] "+r"(x2), [x3] "+r"(x3),
+          [d0] "+r"(d0), [d1] "+r"(d1), [d2] "+r"(d2), [d3] "+r"(d3), [nb] "+r"(nb),
+          [o] "+r"(o)
+        :
+        : "cc", "memory", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10",
+          "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22",
+          "v23", "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31");
+    for (int c = 0; c < 4; c++) {
+        f[c][0] = vld1q_f32(out + 8 * c);
+        f[c][1] = vld1q_f32(out + 8 * c + 4);
+    }
+}
+#undef Q8_CHUNK
+#undef Q8_SDOT8
+#endif
+
 /* Blocks [b0, b1) of the product, for NC columns from t0. A tile that
  * takes all the blocks starts its float accumulators at zero and finishes
  * the outputs; one that takes a chunk of them (pk_k_gemm_q8 below) starts
@@ -207,6 +308,18 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
     }
     const int8_t *x[4];
     for (int c = 0; c < NC; c++) x[c] = a->q + (size_t)(t0 + c) * n;
+#ifdef PK_NEON_DOTPROD
+    if (NC == 4 && qb == 32 && first && b1 > b0) {
+        const int8_t *xb[4];
+        const float *d[4];
+        for (int c = 0; c < 4; c++) {
+            xb[c] = x[c] + (size_t)b0 * 32;
+            d[c] = a->d + (size_t)(t0 + c) * nb + b0;
+        }
+        q8_blocks4_qb32(f, w + (size_t)b0 * 8 * 64 + 16 * h, xb, d, b1 - b0);
+        b0 = b1;
+    }
+#endif
     for (uint32_t b = b0; b < b1; b++) {
 #ifdef PK_NEON_DOTPROD
         int32x4_t s[4][2];
