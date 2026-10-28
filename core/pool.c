@@ -3,8 +3,10 @@
  * Workers wait on a generation counter: spinning for a while, because a
  * layer of the encoder is a dozen jobs back to back and a wakeup through
  * the condition variable costs tens of microseconds each time, then parked
- * on it, so that an idle pool between recordings costs nothing. Built
- * without pthreads (-DPK_NO_THREADS) the pool is the calling thread alone.
+ * on it, so that an idle pool between recordings costs nothing. The last
+ * worker may also be lent one long call, which runs beside the jobs while
+ * they run on the others (pk_pool_aside). Built without pthreads
+ * (-DPK_NO_THREADS) the pool is the calling thread alone.
  */
 #include "pool.h"
 
@@ -12,11 +14,15 @@
 
 #ifdef PK_NO_THREADS
 
-struct pk_pool { int n; };
+struct pk_pool {
+    int n;
+    void (*aside)(void *);      /* pk_pool_aside's, for pk_pool_join to run */
+    void *arg;
+};
 
 pk_pool *pk_pool_new(int threads) {
     (void)threads;
-    pk_pool *p = malloc(sizeof *p);
+    pk_pool *p = calloc(1, sizeof *p);
     if (p)
         p->n = 1;
     return p;
@@ -30,6 +36,16 @@ void pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items) {
 }
 void pk_pool_set_active(pk_pool *p, int k) { (void)p; (void)k; }
 int pk_pool_active(const pk_pool *p) { return p->n; }
+void pk_pool_aside(pk_pool *p, void (*fn)(void *), void *arg) {
+    p->aside = fn;
+    p->arg = arg;
+}
+void pk_pool_join(pk_pool *p) {
+    void (*fn)(void *) = p->aside;
+    p->aside = NULL;
+    if (fn)
+        fn(p->arg);
+}
 
 #else
 
@@ -78,6 +94,12 @@ struct pk_pool {
     int items;
     pk_job_fn fn;
     void *arg;
+    /* pk_pool_aside's fn and arg, for the last thread; aside is 1 from the
+     * call until fn has returned. A pool of one thread keeps them for
+     * pk_pool_join to run. */
+    void (*aside_fn)(void *);
+    void *aside_arg;
+    _Atomic int aside;
 };
 
 typedef struct { pk_pool *p; int id; } pk_worker;
@@ -89,6 +111,11 @@ static void take(pk_pool *p, int id) {
             return;
         p->fn(p->arg, i, id);
     }
+}
+
+/* pk_pool_aside's fn, out for the last thread */
+static int aside(pk_pool *p, int id) {
+    return id == p->n - 1 && atomic_load_explicit(&p->aside, memory_order_acquire);
 }
 
 static void *worker(void *v) {
@@ -103,13 +130,13 @@ static void *worker(void *v) {
         int spins = 0;
         /* an inactive worker sleeps at once; an active one spins first */
         while ((g = atomic_load_explicit(&p->gen, memory_order_acquire)) == seen && spins < PK_SPIN
-               && id < atomic_load_explicit(&p->active, memory_order_relaxed)) {
+               && id < atomic_load_explicit(&p->active, memory_order_relaxed) && !aside(p, id)) {
             relax();
             spins++;
         }
-        if (g == seen) {
+        if (g == seen && !aside(p, id)) {
             pthread_mutex_lock(&p->mu);
-            while (!atomic_load_explicit(&p->quit, memory_order_relaxed)) {
+            while (!atomic_load_explicit(&p->quit, memory_order_relaxed) && !aside(p, id)) {
                 if (id >= atomic_load_explicit(&p->active, memory_order_relaxed))
                     pthread_cond_wait(&p->idle, &p->mu);
                 else if ((g = atomic_load_explicit(&p->gen, memory_order_acquire)) == seen)
@@ -121,6 +148,15 @@ static void *worker(void *v) {
         }
         if (atomic_load_explicit(&p->quit, memory_order_acquire))
             return NULL;
+        if (aside(p, id)) {
+            p->aside_fn(p->aside_arg);
+            /* Every job since pk_pool_aside ran without this thread, so it
+             * counts them seen before it says it is back: a job that finds
+             * it back has a later number and counts it in. */
+            seen = atomic_load_explicit(&p->gen, memory_order_acquire);
+            atomic_store_explicit(&p->aside, 0, memory_order_release);
+            continue;
+        }
         seen = g;
         if (id < (int)(g & ((1u << PK_WIDTH_BITS) - 1))) {
             take(p, id);
@@ -188,7 +224,9 @@ void pk_pool_set_active(pk_pool *p, int k) {
 int pk_pool_active(const pk_pool *p) { return atomic_load_explicit(&p->active, memory_order_relaxed); }
 
 void pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items) {
-    const int k = atomic_load_explicit(&p->active, memory_order_relaxed);
+    int k = atomic_load_explicit(&p->active, memory_order_relaxed);
+    if (k == p->n && atomic_load_explicit(&p->aside, memory_order_acquire))
+        k = p->n - 1;                  /* the last thread is out on pk_pool_aside's fn */
     if (k == 1 || items <= 1) {
         for (int i = 0; i < items; i++)
             fn(arg, i, 0);
@@ -206,6 +244,30 @@ void pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items) {
     pthread_mutex_unlock(&p->mu);
     take(p, 0);
     while (atomic_load_explicit(&p->busy, memory_order_acquire) > 0)
+        relax();
+}
+
+void pk_pool_aside(pk_pool *p, void (*fn)(void *), void *arg) {
+    p->aside_fn = fn;
+    p->aside_arg = arg;
+    if (p->n == 1)
+        return;
+    pthread_mutex_lock(&p->mu);
+    atomic_store_explicit(&p->aside, 1, memory_order_release);
+    pthread_cond_broadcast(&p->cv);
+    pthread_cond_broadcast(&p->idle);
+    pthread_mutex_unlock(&p->mu);
+}
+
+void pk_pool_join(pk_pool *p) {
+    if (p->n == 1) {
+        void (*fn)(void *) = p->aside_fn;
+        p->aside_fn = NULL;
+        if (fn)
+            fn(p->aside_arg);
+        return;
+    }
+    while (atomic_load_explicit(&p->aside, memory_order_acquire))
         relax();
 }
 

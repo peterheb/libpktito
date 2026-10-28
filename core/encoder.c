@@ -562,6 +562,9 @@ static void layers(pk_asr *a, uint32_t T) {
     if (a->tune && T >= PK_TUNE_FRAMES && raced >= PK_TUNE_LAYERS && --a->tune == 0) {
         double took[2][PK_TUNE_SIDE];    /* every core's layers, the fast kind's */
         uint32_t n[2] = { 0, 0 };
+        /* the chunk before's search, beside this encoder (asr.c), done
+         * first, so that each side has the threads it names */
+        pk_pool_join(a->pool);
         for (; i < raced; i++) {
             const int side = (int)(i / 2) % 2;
             if (i % 2 == 0)

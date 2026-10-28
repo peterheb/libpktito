@@ -452,6 +452,81 @@ static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
     free(c->text);
 }
 
+/* A file's chunks as each comes out of the transcriber (pk_asr_run_chunks'
+ * fn): what printing one needs, and the seconds the printing took, which
+ * the transcription's time leaves out. */
+typedef struct {
+    const opts *o;
+    const pk_model *m;
+    const pk_seg *c;
+    int many, rate;
+    double fs, printing;
+    char *text;
+    size_t cap;
+    capwords words;
+} chunk_out;
+
+/* One chunk's tokens, printed as -o asks */
+static void print_chunk(void *arg, size_t i, const pk_tok *t, long nt) {
+    chunk_out *p = arg;
+    const opts *o = p->o;
+    const pk_model *m = p->m;
+    const double fs = p->fs, t0 = pk_os_now();
+    size_t len;
+    while ((len = pk_text(m, t, (size_t)nt, p->text, p->cap)) >= p->cap)
+        if (!(p->text = realloc(p->text, p->cap *= 2)))
+            die("out of memory");
+    double start = (double)p->c[i].start / p->rate, end = (double)p->c[i].end / p->rate;
+    if (o->json) {
+        printf("%s\n {\"start\": %.3f, \"end\": %.3f, \"text\": ", i ? "," : "", start, end);
+        json_str(p->text);
+        pk_word *wd = malloc(((size_t)nt ? (size_t)nt : 1) * sizeof *wd);
+        if (!wd)
+            die("out of memory");
+        size_t nw = pk_words(m, t, (size_t)nt, wd);
+        printf(", \"words\": [");
+        for (size_t k = 0; k < nw; k++) {
+            char word[1024];
+            pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
+            printf("%s{\"word\": ", k ? ", " : "");
+            json_str(word);
+            cap_add(&p->words, word, 0, 0);
+            printf(", \"start\": %.2f, \"end\": %.2f}", start + wd[k].start * fs,
+                   start + wd[k].end * fs);
+        }
+        free(wd);
+        printf("], \"tokens\": [");
+        for (long k = 0; k < nt; k++) {
+            size_t pl;
+            const char *piece = pk_piece(m, t[k].id, &pl);
+            char buf[256];
+            snprintf(buf, sizeof buf, "%.*s", (int)(pl < 255 ? pl : 255), piece);
+            printf("%s{\"id\": %d, \"piece\": ", k ? ", " : "", t[k].id);
+            json_str(buf);
+            printf(", \"start\": %.2f, \"end\": %.2f}", start + t[k].frame * fs,
+                   start + (t[k].frame + t[k].dur) * fs);
+        }
+        printf("]}");
+    } else if (o->subs) {
+        pk_word *wd = malloc(((size_t)nt ? (size_t)nt : 1) * sizeof *wd);
+        if (!wd)
+            die("out of memory");
+        size_t nw = pk_words(m, t, (size_t)nt, wd);
+        for (size_t k = 0; k < nw; k++) {
+            char word[1024];
+            pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
+            cap_add(&p->words, word, llround((start + wd[k].start * fs) * 1000), llround((start + wd[k].end * fs) * 1000));
+        }
+        free(wd);
+    } else if (p->many) {
+        printf("%s%s", i && len ? " " : "", p->text);
+    } else if (len) {
+        puts(p->text);
+    }
+    fflush(stdout);
+    p->printing += pk_os_now() - t0;
+}
+
 /* One file through the transcriber: its chunks, printed as -o asks. With
  * several files a line each, the file's name, a tab and its chunks' text. */
 static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, int many,
@@ -462,12 +537,9 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     size_t nc;
     double vad_s;
     pk_seg *c = chunks_of(m, x, n, o->max_chunk, &nc, &vad_s);
-    size_t cap = 1 << 16;
-    char *text = malloc(cap);
-    if (!text)
+    chunk_out out = { o, m, c, many, rate, pk_model_frame_seconds(m), 0, malloc(1 << 16), 1 << 16, { 0 } };
+    if (!out.text)
         die("out of memory");
-    double fs = pk_model_frame_seconds(m);
-    capwords words = { 0 };
     if (many && !o->json)
         printf("%s\t", path);
     if (o->json && many) {
@@ -475,83 +547,27 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         json_str(path);
         printf(", \"chunks\": [");
     }
-    const double asr_before = *asr_total;
-    for (size_t i = 0; i < nc; i++) {
-        const pk_tok *t;
-        double t0 = pk_os_now();
-        long nt = pk_asr_run(a, x + c[i].start, (size_t)(c[i].end - c[i].start), &t);
-        *asr_total += pk_os_now() - t0;
-        if (nt < 0)
-            die("out of memory");
-        size_t len;
-        while ((len = pk_text(m, t, (size_t)nt, text, cap)) >= cap)
-            if (!(text = realloc(text, cap *= 2)))
-                die("out of memory");
-        double start = (double)c[i].start / rate, end = (double)c[i].end / rate;
-        if (o->json) {
-            printf("%s\n {\"start\": %.3f, \"end\": %.3f, \"text\": ", i ? "," : "", start, end);
-            json_str(text);
-            pk_word *wd = malloc(((size_t)nt ? (size_t)nt : 1) * sizeof *wd);
-            if (!wd)
-                die("out of memory");
-            size_t nw = pk_words(m, t, (size_t)nt, wd);
-            printf(", \"words\": [");
-            for (size_t k = 0; k < nw; k++) {
-                char word[1024];
-                pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
-                printf("%s{\"word\": ", k ? ", " : "");
-                json_str(word);
-                cap_add(&words, word, 0, 0);
-                printf(", \"start\": %.2f, \"end\": %.2f}", start + wd[k].start * fs,
-                       start + wd[k].end * fs);
-            }
-            free(wd);
-            printf("], \"tokens\": [");
-            for (long k = 0; k < nt; k++) {
-                size_t pl;
-                const char *piece = pk_piece(m, t[k].id, &pl);
-                char buf[256];
-                snprintf(buf, sizeof buf, "%.*s", (int)(pl < 255 ? pl : 255), piece);
-                printf("%s{\"id\": %d, \"piece\": ", k ? ", " : "", t[k].id);
-                json_str(buf);
-                printf(", \"start\": %.2f, \"end\": %.2f}", start + t[k].frame * fs,
-                       start + (t[k].frame + t[k].dur) * fs);
-            }
-            printf("]}");
-        } else if (o->subs) {
-            pk_word *wd = malloc(((size_t)nt ? (size_t)nt : 1) * sizeof *wd);
-            if (!wd)
-                die("out of memory");
-            size_t nw = pk_words(m, t, (size_t)nt, wd);
-            for (size_t k = 0; k < nw; k++) {
-                char word[1024];
-                pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
-                cap_add(&words, word, llround((start + wd[k].start * fs) * 1000), llround((start + wd[k].end * fs) * 1000));
-            }
-            free(wd);
-        } else if (many) {
-            printf("%s%s", i && len ? " " : "", text);
-        } else if (len) {
-            puts(text);
-        }
-        fflush(stdout);
-    }
+    const double t0 = pk_os_now();
+    if (pk_asr_run_chunks(a, x, c, nc, print_chunk, &out))
+        die("out of memory");
+    const double asr_s = pk_os_now() - t0 - out.printing;
+    *asr_total += asr_s;
     if (o->json)
-        *lang = file_language(m, &words);
+        *lang = file_language(m, &out.words);
     if (o->json && many) {
         printf("\n], \"meta\": ");
-        json_meta(o, m, a, 0, (double)n / rate, vad_s, *asr_total - asr_before, 1, *lang);
+        json_meta(o, m, a, 0, (double)n / rate, vad_s, asr_s, 1, *lang);
         putchar('}');
     } else if (many)
         putchar('\n');
     if (o->subs) {
         /* the English model's are English; the multilingual model's say */
         const char *langs = pk_model_meta(m, "languages");
-        cap_print(&words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en") ? 1 : -1, (int64_t)n * 1000 / rate);
+        cap_print(&out.words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en") ? 1 : -1, (int64_t)n * 1000 / rate);
     }
     *audio_s += (double)n / rate;
     *vad_total += vad_s;
-    free(text);
+    free(out.text);
     free(c);
     free(x);
 }
@@ -780,6 +796,12 @@ static double bench_resample(const char *path, int rate, uint32_t *from) {
     return best;
 }
 
+static void count_tokens(void *arg, size_t i, const pk_tok *t, long nt) {
+    (void)i;
+    (void)t;
+    *(long *)arg += nt;
+}
+
 static int bench(const opts *o, pk_model *m) {
     size_t n;
     const int rate = pk_model_rate(m);
@@ -797,10 +819,8 @@ static int bench(const opts *o, pk_model *m) {
     for (int rep = 0; rep < 5; rep++) {
         double t0 = pk_os_now();
         ntok = 0;
-        for (size_t i = 0; i < nc; i++) {
-            const pk_tok *t;
-            ntok += pk_asr_run(a, x + c[i].start, (size_t)(c[i].end - c[i].start), &t);
-        }
+        if (pk_asr_run_chunks(a, x, c, nc, count_tokens, &ntok))
+            die("out of memory");
         double dt = pk_os_now() - t0;
         best = dt < best ? dt : best;
     }

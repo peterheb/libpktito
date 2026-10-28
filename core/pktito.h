@@ -17,7 +17,9 @@
  *                pk_segments      get_speech_timestamps' segments from them
  *   chunks       pk_chunks        a long recording cut at its silences into
  *                                 pieces the encoder takes whole, its
- *                                 silence left out
+ *                                 silence left out; pk_asr_run_chunks
+ *                                 transcribes them, each chunk's decoder
+ *                                 beside the next one's encoder
  *   captions     pk_captions      words with times to a subtitle track's cues
  *
  * A model is read-only once loaded and may be shared by any number of
@@ -112,6 +114,24 @@ typedef struct {
  * came (core/os.h). */
 long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks);
 
+/* A stretch of a recording, in samples; end is exclusive. */
+typedef struct { int64_t start, end; } pk_seg;
+
+/* pk_asr_run over a recording's chunks c[0..n) of x (pk_chunks), in order:
+ * fn(arg, i, toks, count) for each, with chunk i's tokens as pk_asr_run
+ * would return them, the same bits, lasting until fn returns. Each chunk's
+ * decoder runs beside the next chunk's encoder, on a thread of its own, so
+ * that only the last one's is waited for, and fn has a chunk once the next
+ * one's encoder is done: 1.2 to 5.6% less time than through pk_asr_run a
+ * chunk at a time where there are more than four cores, and about the
+ * same on four (core/asr.c). The working memory is the longest
+ * chunk's, as that loop's is, and a second chunk's joint half, 1 MB at
+ * 30 s. Returns 0, or -1 if memory runs out (fn has then seen the chunks
+ * before). */
+typedef void (*pk_chunk_fn)(void *arg, size_t i, const pk_tok *toks, long count);
+int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
+                      void *arg);
+
 /* The text of n tokens, UTF-8 and NUL-terminated in out[cap]: SentencePiece's
  * decoding with NeMo's one change to it, the space before punctuation taken
  * away. Returns the text's length; if that is cap or more, out holds as much
@@ -174,9 +194,6 @@ typedef struct {
 } pk_seg_params;
 
 void pk_seg_defaults(pk_seg_params *p);
-
-/* A stretch of a recording, in samples; end is exclusive. */
-typedef struct { int64_t start, end; } pk_seg;
 
 /* get_speech_timestamps_from_probs (silero_vad/utils_vad.py, v6.2.3): the
  * speech in n frames' probabilities. Returns how many segments there are;

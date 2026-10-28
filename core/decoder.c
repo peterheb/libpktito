@@ -45,7 +45,9 @@
  * microseconds' work a thread, and on every thread of a GB10's twenty it
  * waited on all of them, ten Cortex-A725s among them: the decoder took 183
  * ms of a run at 20 threads against 17 at 10, and 29 on one thread
- * (backend/neon-dp/CLIMB.md, 2026-10-22). */
+ * (backend/neon-dp/CLIMB.md, 2026-10-22). Beside the next chunk's encoder
+ * (core/asr.c) the search splits nothing, its products whole on the one
+ * thread it has. */
 #define PK_DEC_THREADS 4
 
 static void gemv(pk_asr *a, float *out, const pk_q8 *w, const float *bias, const float *x,
@@ -54,7 +56,7 @@ static void gemv(pk_asr *a, float *out, const pk_q8 *w, const float *bias, const
     act->n = act->qb = w->cols;
     act->T = 1;
     pk_k_quantize(act, x, w->cols);
-    if (w->rows >= PK_DEC_SPLIT)
+    if (w->rows >= PK_DEC_SPLIT && a->dsplit)
         pk_gemm(a, out, 0, w, bias, act, add);
     else
         pk_k_gemm_q8(out, 0, w->q, w->s, bias, w->rows, act, add);
@@ -76,11 +78,11 @@ static void predict(pk_asr *a, uint32_t label) {
     gemv(a, a->gp, &m->jpred, m->jpred_b, x, 0);
 }
 
-/* The joint at frame t: the best token and the best duration's index */
-static void joint(pk_asr *a, uint32_t t, uint32_t *k, uint32_t *di) {
+/* The joint at a frame whose encoder half is f: the best token and the
+ * best duration's index */
+static void joint(pk_asr *a, const float *f, uint32_t *k, uint32_t *di) {
     const pk_model *m = a->m;
     const uint32_t J = m->joint_hidden, V = m->vocab;
-    const float *f = a->fproj + (size_t)t * J;
     for (uint32_t j = 0; j < J; j++) {
         float v = f[j] + a->gp[j];
         a->z[j] = v > 0 ? v : 0;
@@ -116,16 +118,16 @@ static int emit(pk_asr *a, uint32_t k, uint32_t t, uint32_t d) {
 
 /* TDT's greedy search, from frame 0 and the blank's prediction: the loop the
  * file's header has */
-static long search(pk_asr *a, uint32_t T) {
+static long search(pk_asr *a, uint32_t T, const float *f) {
     const pk_model *m = a->m;
-    const uint32_t blank = m->blank;
+    const uint32_t blank = m->blank, J = m->joint_hidden;
     predict(a, blank);
     uint32_t t = 0, last = UINT32_MAX, lasts = 0;
     while (t < T) {
         uint32_t k, di, d, at;
         do {
             at = t;
-            joint(a, t, &k, &di);
+            joint(a, f + (size_t)t * J, &k, &di);
             d = m->dur[di];
             if (k == blank && d == 0)
                 d = 1;
@@ -144,20 +146,28 @@ static long search(pk_asr *a, uint32_t T) {
     return (long)a->ntoks;
 }
 
-long pk_decode(pk_asr *a, uint32_t T) {
+void pk_joint_frames(pk_asr *a, uint32_t T, float *f) {
     const pk_model *m = a->m;
-    const uint32_t D = m->d_model, P = m->pred_hidden;
+    const uint32_t D = m->d_model;
+    if (!T)
+        return;
+    pk_quantize(a, &a->act, a->x, D, T, D, D);
+    pk_gemm(a, f, m->joint_hidden, &m->jenc, m->jenc_b, &a->act, 0);
+}
+
+long pk_decode(pk_asr *a, uint32_t T, const float *f, int split) {
+    const pk_model *m = a->m;
+    const uint32_t P = m->pred_hidden;
     a->ntoks = 0;
     if (!T)
         return 0;
-    /* the joint's encoder half, for every frame at once */
-    pk_quantize(a, &a->act, a->x, D, T, D, D);
-    pk_gemm(a, a->fproj, m->joint_hidden, &m->jenc, m->jenc_b, &a->act, 0);
-
     memset(a->dh, 0, (size_t)m->pred_layers * P * sizeof *a->dh);
     memset(a->dc, 0, (size_t)m->pred_layers * P * sizeof *a->dc);
-    pk_pool_set_active(a->pool, PK_DEC_THREADS < a->wide ? PK_DEC_THREADS : a->wide);
-    long n = search(a, T);
-    pk_pool_set_active(a->pool, a->wide);
+    a->dsplit = split;
+    if (split)
+        pk_pool_set_active(a->pool, PK_DEC_THREADS < a->wide ? PK_DEC_THREADS : a->wide);
+    long n = search(a, T, f);
+    if (split)
+        pk_pool_set_active(a->pool, a->wide);
     return n;
 }

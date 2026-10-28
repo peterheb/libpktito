@@ -60,7 +60,8 @@ static int reserve(pk_asr *a, size_t T0) {
         CARVE(a->ape.d, R * D / 32, sizeof(float));
         CARVE(a->hid.q, Te * F, 1);
         CARVE(a->hid.d, Te * F / 32, sizeof(float));
-        CARVE(a->fproj, Te * J, sizeof(float));
+        CARVE(a->fproj[0], Te * J, sizeof(float));
+        CARVE(a->fproj[1], Te * J, sizeof(float));
         for (int t = 0; t < a->nth; t++) {
             pk_thread_ws *w = &a->tws[t];
             CARVE(w->s1, s1, sizeof(float));
@@ -140,6 +141,18 @@ void pk_asr_free(pk_asr *a) {
     free(a);
 }
 
+/* A chunk up to its search: its features, the encoder, and the joint's
+ * encoder half of its frames, into f. Returns its encoder frames. */
+static uint32_t encode(pk_asr *a, const float *x, size_t n, float *f) {
+    const size_t T0 = pk_mel_frames(a->m, n);
+    if (T0 == 0)
+        return 0;
+    PROF(PK_P_MEL, pk_mel(a, x, n));
+    uint32_t Te = pk_encode(a, (uint32_t)T0);
+    PROF(PK_P_DEC, pk_joint_frames(a, Te, f));
+    return Te;
+}
+
 long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks) {
     const size_t T0 = pk_mel_frames(a->m, n);
     *toks = a->toks;
@@ -149,13 +162,71 @@ long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks) {
     if (T0 > UINT32_MAX / 4 || reserve(a, T0))
         return -1;
     pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
-    PROF(PK_P_MEL, pk_mel(a, x, n));
-    uint32_t Te = pk_encode(a, (uint32_t)T0);
+    uint32_t Te = encode(a, x, n, a->fproj[0]);
     long nt;
-    PROF(PK_P_DEC, nt = pk_decode(a, Te));
+    PROF(PK_P_DEC, nt = pk_decode(a, Te, a->fproj[0], 1));
     pk_os_rethrottle(was);
     *toks = a->toks;
     return nt;
+}
+
+/* A chunk's search, for the pool's last thread */
+typedef struct {
+    pk_asr *a;
+    uint32_t Te;
+    const float *f;
+    long n;
+} search_job;
+
+static void search_aside(void *arg) {
+    search_job *s = arg;
+    s->n = pk_decode(s->a, s->Te, s->f, 0);
+}
+
+/* Chunk i's search, on the pool's last thread, while chunk i + 1's
+ * features and encoder take the others, each chunk's joint half in a
+ * buffer of its own; the last chunk's search alone, as pk_asr_run's.
+ * Over test.wav's three chunks a run waited 2.8 ms on the decoder where
+ * it had waited 11.8, on a 9950X at 16 threads, and ran 1.9 to 5.6%
+ * faster, a GB10's X925s 2.0 to 2.8%, whose race leaves the last thread
+ * idle. Where the encoder gives up a thread of its own for the search,
+ * and shares its memory with the search's reads, it gives back some of
+ * that: all but 0.2 to 0.4% of it on a Pi 5's four cores, 0.6 to 0.7% on
+ * a Pi 4's and 0.8% on a Pi 3's (backend/avx2/CLIMB.md, 2026-10-28). */
+int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
+                      void *arg) {
+    size_t most = 0;
+    for (size_t i = 0; i < n; i++) {
+        const size_t T0 = pk_mel_frames(a->m, (size_t)(c[i].end - c[i].start));
+        most = T0 > most ? T0 : most;
+    }
+    if (most > UINT32_MAX / 4 || reserve(a, most))
+        return -1;
+    if (n == 0)
+        return 0;
+    pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
+    uint32_t Te = encode(a, x + c[0].start, (size_t)(c[0].end - c[0].start), a->fproj[0]);
+    int rc = 0;
+    for (size_t i = 0; i < n && !rc; i++) {
+        const float *f = a->fproj[i % 2];
+        long nt;
+        if (i + 1 < n) {
+            search_job s = { a, Te, f, 0 };
+            pk_pool_aside(a->pool, search_aside, &s);
+            Te = encode(a, x + c[i + 1].start, (size_t)(c[i + 1].end - c[i + 1].start),
+                        a->fproj[(i + 1) % 2]);
+            PROF(PK_P_DEC, pk_pool_join(a->pool));
+            nt = s.n;
+        } else {
+            PROF(PK_P_DEC, nt = pk_decode(a, Te, f, 1));
+        }
+        if (nt < 0)
+            rc = -1;
+        else
+            fn(arg, i, a->toks, nt);
+    }
+    pk_os_rethrottle(was);
+    return rc;
 }
 
 const char *pk_backend(void) { return pk_k_name(); }

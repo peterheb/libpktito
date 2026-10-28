@@ -32,4 +32,13 @@ void     pk_pool_run(pk_pool *p, pk_job_fn fn, void *arg, int items);
 void     pk_pool_set_active(pk_pool *p, int k);
 int      pk_pool_active(const pk_pool *p);
 
+/* fn(arg) on the pool's last thread, beside the jobs, which run on the
+ * threads before it until fn returns: the decoder's search over one chunk
+ * while the encoder takes the next (core/asr.c). fn must run no jobs.
+ * pk_pool_join returns once fn has, at once if none is out. Both are
+ * called by the thread that runs the jobs, between them, and pk_pool_free
+ * after the join. A pool of one thread runs fn in pk_pool_join. */
+void     pk_pool_aside(pk_pool *p, void (*fn)(void *), void *arg);
+void     pk_pool_join(pk_pool *p);
+
 #endif /* PK_POOL_H */

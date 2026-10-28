@@ -407,6 +407,8 @@ pk_vad *v = pk_vad_new(m);                        /* Silero VAD, as vadito has i
 pk_vad_probs(v, frames, n_frames, probs);
 size_t ns = pk_segments(probs, n_frames, 16000, n_samples, &sp, seg, cap);
 size_t nc = pk_chunks(samples, seg, ns, n_samples, 30 * 16000, chunk);
+pk_asr_run_chunks(a, samples, chunk, nc, show, arg);
+/* show(arg, i, t, n) has chunk i's tokens, its decoder run beside chunk i + 1's encoder */
 
 pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */
 long nq = pk_captions(w, 2, 1, 0, cue);           /* 1: English; 0: the end unknown */

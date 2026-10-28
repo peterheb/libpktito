@@ -69,7 +69,8 @@ struct pk_asr {
     pk_thread_ws *tws;
 
     /* the decoder */
-    float *fproj;                    /* [Te][J]: the joint's encoder half */
+    float *fproj[2];                 /* [Te][J]: the joint's encoder half, a chunk's and the next's */
+    int dsplit;                      /* the search's widest products split over the pool */
     float *dx, *gates, *dh, *dc, *gp, *z, *logit;
     pk_act dact;
     pk_tok *toks;
@@ -80,9 +81,16 @@ struct pk_asr {
  * Te frames, which it returns. */
 uint32_t pk_encode(pk_asr *a, uint32_t T0);
 
-/* TDT's greedy search over Te encoder frames in a->x: a->toks. Returns the
- * token count, or -1 if memory runs out. */
-long pk_decode(pk_asr *a, uint32_t Te);
+/* The joint's encoder half of Te encoder frames in a->x, every frame at
+ * once: f[Te][J] */
+void pk_joint_frames(pk_asr *a, uint32_t Te, float *f);
+
+/* TDT's greedy search over Te frames whose joint half is f: a->toks.
+ * Returns the token count, or -1 if memory runs out. With split, its
+ * widest products go over the pool's first threads, from the thread that
+ * runs its jobs; without, the search runs on a thread of its own beside
+ * them (pk_pool_aside), each product whole. */
+long pk_decode(pk_asr *a, uint32_t Te, const float *f, int split);
 
 /* Encoder frames T0 feature frames make: three halvings, each rounding up. */
 static inline uint32_t pk_enc_frames(uint32_t T0) {

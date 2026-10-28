@@ -1833,3 +1833,140 @@ Kept if the bench moves by more than its spread on the 9950X under two
 compilers and on the boards, with none slower by more than its own; the
 bits checked as for the fused passes (make check-c; test.wav's --json at
 every thread count from 1 to 32; --stream; make check-tsan).
+
+## 2026-10-28 - each chunk's decoder beside the next chunk's encoder (result: kept)
+
+The bits, on the 9950X: test.wav's --json through v2 and v3 the bytes of
+test.v2.json and test.v3.json at every thread count from 1 to 32;
+--stream through both the bytes of be4b58a's at 1, 2, 3, 8 and 16
+threads; long10.wav's --json (test.wav ten times over: 600 s, 22 chunks,
+2303 tokens) the bytes of be4b58a's; make check-c on Linux (gcc 15) and
+Windows (llvm-mingw; v2), make check-tsan clean, and the TSan build at
+1, 2 and 3 threads giving test.v2.json's bytes. On the GB10 (gcc 13.3)
+make check-c with both models, make check-tsan clean, and the TSan build
+at 1, 2, 3, 10 and 20 threads the same bytes. Every board's builds gave
+test.v2.json's bytes before their rounds.
+
+The 9950X, in pinfer's quiet window (13:37-13:42): be4b58a (base) and
+this tree (new), test.wav through v2, best of 5, four interleaved rounds
+at 16 and 8 threads and three at one; long10.wav two rounds at 16:
+
+| | threads | base | new | new against base, a round |
+|---|---|---|---|---|
+| Linux, clang 21 | 16 | 0.212 s (1.4%) | 0.205 (1.0%) | -3.53% (-4.23 to -1.90) |
+| | 8 | 0.218 (11.0%) | 0.210 (6.7%) | -3.66% (-12.55 to +3.72) |
+| | 1 | 1.322 (0.2%) | 1.319 (0.4%) | -0.30% (-0.38 to +0.08) |
+| Linux, gcc 15 | 16 | 0.212 (2.8%) | 0.209 (0.5%) | -1.88% (-4.13 to -1.42) |
+| | 8 | 0.245 (3.7%) | 0.217 (0.5%) | -11.01% (-12.50 to -9.21) |
+| | 1 | 1.388 (0.5%) | 1.390 (0.6%) | +0.14% (-0.79 to +0.29) |
+| Windows, clang 23 | 16 | 0.197 (3.1%) | 0.185 (3.2%) | -5.60% (-7.61 to -1.57) |
+| | 8 | 0.206 (3.9%) | 0.202 (3.5%) | -3.15% (-4.69 to +0.49) |
+| | 1 | 1.296 (0.2%) | 1.294 (0.2%) | -0.15% (-0.15 to -0.08) |
+| long10.wav, Linux, clang 21 | 16 | 2.090 (0.2%) | 2.014 (0.3%) | -3.61% (-3.87 to -3.35) |
+| long10.wav, Windows | 16 | 1.936 (0.7%) | 1.867 (0.2%) | -3.59% (-3.86 to -3.32) |
+
+(the medians, each with its rounds' range over the median; a round's
+change is new's time over base's in that round, their median and range.)
+PROFILE=1 builds, two runs each turned, the stages' means, ms a run (gcc
+15's in a second window, 13:50):
+
+| | threads | the decoder, base and new | the mel and encoder stages, new less base | the run |
+|---|---|---|---|---|
+| Linux, clang 21 | 16 | 11.8, 2.8 | -1.8 | 210.5 to 203.5 (-3.3%) |
+| Linux, gcc 15 | 16 | 11.8, 2.8 | -1.1 | 217.0 to 210.5 (-3.0%) |
+| Windows | 16 | 10.7, 2.2 | +1.6 | 193.0 to 188.0 (-2.6%) |
+| Linux, clang 21 | 8 | 10.9, 2.5 | +19.7 | 217.5 to 211.5 (-2.8%) |
+| Linux, gcc 15 | 8 | 11.0, 2.6 | +21.0 | 242.5 to 240.5 (-0.8%) |
+| Windows | 8 | 9.8, 2.1 | +5.6 | 205.5 to 204.0 (-0.7%) |
+
+The boards, static generic builds as before (arm64: Ubuntu 22.04's
+aarch64 gcc 12.3 and clang 21.1.8; storage1: gcc 15.2 and clang 21.1.8;
+the M4 Pro its own Apple clang 21 builds), test.wav at the default
+threads, interleaved rounds, best of 5:
+
+| board | threads | compiler | base | new | new against base, a round |
+|---|---|---|---|---|---|
+| GB10, 8 rounds | 10 of 20 | gcc 12 | 0.397 (3.8%) | 0.391 (2.0%) | -2.01% (-3.45 to -1.26) |
+| | | clang 21 | 0.395 (2.3%) | 0.384 (3.9%) | -2.77% (-5.06 to -1.53) |
+| | long10.wav, 3 | gcc 12 | 4.019 (0.2%) | 3.917 (1.2%) | -2.47% (-2.73 to -1.42) |
+| M4 Pro, 6 rounds, in use | 12, the race's | Apple clang 21 | 0.459 (7.0%) | 0.449 (8.2%) | -2.58% (-3.38 to -1.55) |
+| | 12 | | 0.463 (7.6%) | 0.449 (8.0%) | -2.57% (-3.44 to -1.62) |
+| | 8 | | 0.477 (10.9%) | 0.471 (11.3%) | -1.66% (-2.57 to -1.05) |
+| 12900HK (storage1), 6 | 14 | gcc 15 | 0.822 (0.9%) | 0.813 (1.1%) | -1.27% (-1.83 to -1.09) |
+| | | clang 21 | 0.817 (1.0%) | 0.806 (0.4%) | -1.22% (-1.71 to -0.98) |
+| | long10.wav, 2 | gcc 15 | 8.134 (0.6%) | 8.018 (0.0%) | -1.42% (-1.69 to -1.15) |
+| Pi 5 (pi5c), 6 | 4 | gcc 12 | 3.641 (0.3%) | 3.632 (0.3%) | -0.16% (-0.60 to -0.05) |
+| | | clang 21 | 3.630 (0.3%) | 3.617 (0.5%) | -0.36% (-0.58 to +0.06) |
+| Pi 4, 4 | 4 | gcc 12 | 18.827 (0.7%) | 18.681 (0.8%) | -0.72% (-1.16 to -0.16) |
+| | | clang 21 | 18.776 (1.1%) | 18.655 (0.4%) | -0.63% (-1.28 to -0.59) |
+| Pi 3, 3 | 4 | gcc 12 | 49.345 (13.0%) | 49.071 (13.0%) | -0.56% (-0.56 to -0.55) |
+| | | clang 21 | 49.543 (4.7%) | 49.320 (0.9%) | -0.19% (-0.53 to +3.68) |
+| | 15 pairs, single runs | gcc 12 | 50.57 (0.9%) | 50.16 (1.4%) | -0.79% (-1.42 to +0.26), a pair |
+
+PROFILE=1 (gcc 12 on the arm64 boards, clang 21 on storage1, Apple clang
+on the M4 Pro), two runs each, the Pi 3's one:
+
+| board | threads | the decoder, base and new | the mel and encoder stages, new less base | the run |
+|---|---|---|---|---|
+| GB10 | 10 of 20 | 17.4, 3.9 | +2.4 | 401.5 to 390.5 (-2.7%) |
+| M4 Pro | 12 | 18.8, 4.2 | +4.6 | 468.5 to 456.5 (-2.6%) |
+| | 8 | 18.8, 4.2 | +8.0 | 478.0 to 472.5 (-1.2%) |
+| 12900HK | 14 | 25.2, 6.3 | +8.2 | 811.0 to 803.5 (-0.9%) |
+| Pi 5 | 4 | 138.4, 28.6 | +122.2, the subsampling +69.0 | 3644.5 to 3630.0 (-0.4%) |
+| Pi 4 | 4 | 555.1, 121.6 | +314.3, the subsampling +193.3 | 18835.0 to 18779.5 (-0.3%) |
+| Pi 3 | 4 | 1120.6, 250.1 | +581.2, the subsampling +330.1 | 49478.0 to 49198.0 (-0.6%) |
+
+pi5-8gb's rounds are not here: its runs took 4.69 to 5.75 s where they
+took 4.15 to 4.20 this morning, with spreads of 7 to 19% and rounds
+from -14% to +10%, nothing else running and the board not throttled.
+
+pi3 reached its soft temperature limit in the first round (70 C on this
+board, throttled=0x80008), where its firmware holds the ARM clock at 1.2
+GHz; the round's first builds ran partly at 1.4 GHz, which the ranges
+carry. After the rounds, fifteen pairs of single runs (-v's
+transcription time), base and new under gcc 12, the pair's order turned
+each time, the ARM clock read every half second through each
+(vcgencmd measure_clock, 94 to 96 samples a run): every sample read
+1200 MHz, so the times are the cycles' measure as well. New was faster
+in 14 of the 15 pairs, -0.75% at the mean (sd 0.43).
+
+What the change takes away is the same everywhere: the decoder's wait
+falls to a fifth or a quarter of what it was, the last chunk's 44 tokens
+(19%) and the joint halves. What it costs is where the pool's last thread
+is one the encoder had, and where the search's reads (the LSTM's 6.5 MB
+a token, from DRAM once a layer's weights have passed through the
+caches) share a memory path with the encoder's. The GB10's last thread
+is one its X925s leave idle (its race keeps 10 of 20), and its encoder
+lost 2.4 ms; the 9950X at 16 threads, across two CCDs, lost none. At 8
+threads, on one CCD, its encoder lost 5.6 ms on Windows and 20 under
+WSL, two thirds of it in the feed-forward, the products most bound by
+bandwidth. The M4 Pro at 8 threads, its P-cores, lost nearly twice what
+it did at 12. A Pi 5's four cores give the search one of the encoder's,
+and its encoder lost more than the 110 ms the decoder gave back, most of
+it in the subsampling, the stage beside which each search starts; its
+best of 5 is 0.2 to 0.4% ahead and its stages' means 0.3% behind: level.
+A Pi 4's encoder lost 314 ms of the 434 its decoder gave back, 193 of
+them in the subsampling, and every round was faster, by 0.6 to 0.7% at
+the medians, inside spreads of 0.4 to 1.1%. A Pi 3's lost 581 of 871
+ms, 330 in the subsampling, and at its held clock it is 0.8% ahead. At
+one thread level on every system, as expected. Longer recordings keep
+the gain: long10.wav 3.6% on the 9950X, 2.5% on the GB10, 1.4% on the
+12900HK.
+
+Against the hypothesis: the 9950X at 16 threads 1.9 to 5.6% where it
+expected 4% (3.7% on Windows); at 8, 0.7 to 2.8% by PROFILE where it
+expected 3%. The gcc build's -11.01% at 8 threads is placement, not the
+change: in the PROFILE window both gcc builds took about 0.24 s at 8
+threads, the decoder's 8.4 ms taken away in each and 21 given back by
+the encoder. The GB10 2.0 to 2.8% (3 to 3.4% expected), the M4 Pro 1.7
+to 2.6% (3%), the 12900HK 1.2 to 1.3% (2.3%), the Pis 0.2 to 0.8% (1.2 to
+1.9%): the estimate counted a thread's share of the encoder for the
+search's time, and left the memory the two share to its risks.
+
+Kept: at 16 threads on the 9950X the runs moved by more than their
+spreads under clang on both systems (Linux -3.53% against spreads of 1.0
+and 1.4%, Windows -5.60% against 3.1 and 3.2%), and under gcc every
+round was faster, by 1.42% or more; long10.wav by 3.6% against spreads
+under 1%; the 12900HK's by more than its spreads; every round faster on
+the GB10 and the M4 Pro; the Pis level or a little ahead; and nothing
+slower by more than its spread.

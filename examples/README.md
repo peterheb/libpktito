@@ -38,7 +38,10 @@ way. What every one has to get right:
 - **Memory is the caller's.** The library fills the arrays it is given,
   at the sizes pktito.h states: samples, probabilities, segments, chunks,
   text. The tokens `pk_asr_run` points at are the transcriber's, and last
-  until its next call.
+  until its next call. `pk_asr_run_chunks`, which takes a recording's
+  chunks at once and runs each one's decoder beside the next one's
+  encoder, hands each chunk's to a callback instead, which these examples
+  leave out.
 - **Text is UTF-8**, NUL-terminated, in a buffer the caller sized; so are
   paths, on every system, Windows too.
 - **Threads.** A model may be shared by any number of threads; a
