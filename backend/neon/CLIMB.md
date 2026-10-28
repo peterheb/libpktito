@@ -781,3 +781,202 @@ prediction there, where keeping it means every backend taking the stride,
 the AMX path's tile loads included, and a no-loss bench on each x86
 family. If the A72's chunking is measured, the stride is worth measuring
 again with it.
+
+## 2026-10-28 - the release builds' compiler and tuning, arm64 (a measurement)
+
+0.9.4's arm64 .deb is cross-built in an Ubuntu 22.04 container by its gcc
+11.4, and a cross build's TUNE is empty (the Makefile reads the core's part
+number only on the core), so the .deb is generic: `-march=armv8-a` for neon
+and `-march=armv8.2-a+dotprod` for neon-dp, no -mtune. Measured here against
+the same container's gcc 12.3 and clang 14.0, apt.llvm.org's clang 21.1.8
+and this machine's cross gcc 15.2, and gcc 12, gcc 15 and clang 21 with
+-mtune for the core (on the whole tree, as a native build on that core has
+it), on be5c4ae's tree.
+Every binary static; kcheck ref's bits for each build on its board (1779
+cases on the ARMv8.0 cores; neon and neon-dp on the others), and each
+build's test.wav transcript test.v2.json's bytes. Each build at two
+placements, 0 and 32 bytes at the head of each NEON backend object
+(through -include), but the Pi 3's tuning set at 0 only. Interleaved
+rounds, the order turned each round, test.wav through v2, best of 5 at the
+default threads; a build's time a round is its placements' mean, and the
+tables give its ratio to the base a round, median (range).
+
+The GB10 ran the compilers twice: 6 rounds of the eight builds, and again
+among the tuned builds, where the script's turn, `(3i + r - 1) mod n`,
+made each round of 18 builds three cycles of six; in that set each build
+has six runs over the rounds, its figure is their median, and the runs
+where the engine took 20 threads (two, 0.549 and 0.567 s) are left out. Two
+rounds of the first set took 20 threads for gcc 12's pad 32 (0.552 and
+0.556 s), which its range carries. The vLLM worker on it was idle (GPU
+0%) through both sets.
+
+pi3 reached its soft temperature limit in both sets (throttled=0x80000):
+its first round of each ran partly at 1.4 GHz, and its ranges carry it.
+
+The compiler, against the .deb's gcc 11.4, every build generic:
+
+| board, rounds | backend, threads | gcc 11.4 | gcc 12.3 | clang 14.0 | clang 21.1 |
+|---|---|---|---|---|---|
+| pi3, A53, 3 | neon, 4 | 51.386 s | -5.69% (-5.71 to -5.32) | +54.98% (+54.29 to +61.80) | +6.84% (+6.53 to +12.22) |
+| pi4, A72, 3 | neon, 4 | 23.589 s | -1.09% (-1.12 to -0.95) | +46.55% (+46.36 to +46.90) | +6.60% (+6.37 to +6.67) |
+| pi5c, A76, 6 | neon-dp, 4 | 3.670 s | -0.28% (-0.38 to -0.20) | -0.61% (-0.80 to -0.54) | -0.42% (-0.57 to -0.31) |
+| gb10, X925, 6 | neon-dp, 10 | 0.433 s | -0.29% (-1.14 to +14.00) | -1.32% (-2.18 to -0.46) | -1.45% (-2.18 to -0.35) |
+| gb10, the second set | | 0.4350 s | -0.86% | -1.03% | -1.21% |
+
+The tuning, against gcc 12.3 generic:
+
+| board, rounds | gcc 12 a53 | gcc 12 a72 | gcc 12 a76 | gcc 15.2 generic | gcc 15 a53 | gcc 15 a72 | gcc 15 a76 | gcc 15 x925 | clang 21 | clang 21 tuned |
+|---|---|---|---|---|---|---|---|---|---|---|
+| pi3, A53, 3 | -0.22% (-0.24 to +0.17) | +3.30% (+2.93 to +3.67) | | +0.48% (-0.02 to +4.09) | +0.39% (+0.10 to +5.24) | +3.84% (+3.59 to +9.85) | | | +13.77% (+13.75 to +20.98) | a53: +9.65% (+9.40 to +16.52) |
+| pi4, A72, 3 | -1.45% (-1.48 to -1.42) | -9.16% (-9.17 to -8.93) | | -0.67% (-0.88 to -0.65) | -0.87% (-0.95 to -0.84) | -8.56% (-8.71 to -8.55) | | | | |
+| pi5c, A76, 6 | | | -0.01% (-0.20 to +0.05) | -0.08% (-0.10 to +0.01) | | | +0.20% (+0.11 to +0.31) | +0.33% (+0.16 to +0.45) | -0.26% (-0.33 to -0.19) | a76: +0.01% (-0.12 to +0.18) |
+| gb10, 6 runs a build | | | +0.46% | +0.35% | | | +0.29% | +0.52% | -0.35% | a76: +0.29% |
+
+gb10's runs of one build spread over 1 to 2%, so nothing there is past
+its noise; pi5c's spread between placements is at most 0.25%, pi4's 0.12%.
+
+On the dotprod cores, then, no compiler or tuning moves a run by more
+than 1.5%. On the ARMv8.0 cores clang is 7 to 14% behind gcc, and gcc 12
+is ahead of gcc 11 by 5.7% on the A53 and 1.1% on the A72. Tuning for the
+A72 is worth 9% on the A72 and costs 3.3 to 3.8% on the A53; tuning for
+the A53 is within 0.5% of generic on the A53 and 0.2 to 1.5% ahead of it
+on the A72.
+
+Where the A72's 9% is. PROFILE=1 builds of gcc 15 generic and tuned for
+the A72 on pi4, two runs of each: the int8 products' stages 8.6 to 10.7%
+faster tuned (feed-forward 12768 to 11675 ms a run, q k v 4005 to 3578,
+attention out 817 to 731, conv 2415 to 2171), subsampling 4.9%, and
+attention 6.1% slower (943 to 1001 ms); every other stage within 1.5%.
+The ARMv8.0 tile's step loop, three columns of 8 inputs, is the same 59
+instructions under every tuning, and only their order differs: gcc's
+generic order is its A53 order (the same instructions in the same places,
+the registers renamed), every load and DUP, then the 12 SMULL, the 12
+SMLAL and the 12 SADALP; the A72 order interleaves the three. Both loops
+copied into a probe (the loads on one 4 KB buffer, w3 held still, the
+same instructions otherwise), each with its head 0, 8 and 32 bytes past a
+64-byte line, on pi4 at 1.8 GHz: the generic order takes 44.04 cycles a
+step and the A72 order 36.53, at every one of the three heads.
+
+What the A72 issues of the tile's instructions, operands in registers,
+all independent (16 a pass, unrolled 8 times): SMULL, SMULL2, SMLAL,
+SADALP, SADDLP and DUP from a w register once a cycle each; DUP by element
+and a 4s ADD 1.49 a cycle; mixed, SMULL and SADALP 8 + 8 1.46 a cycle,
+2 : 1 1.23, SMULL with DUP by element or ADD 1.35, SADALP with DUP by
+element 1.32, SMULL with a 128-bit load 1.49, SADALP with a 32-bit load
+1.99. So the multiplies take one pipe and the SADALPs share it with them
+some of the time; how the A72 assigns them was not worked out.
+
+So the release build gets the A53's order, in which the A72 takes 21%
+longer than in its own, and neither tuning is right for both cores in one
+binary.
+For the .deb: gcc 12, generic. The loop's order is a climb of its own
+(the next entry).
+
+## 2026-10-28 - the ARMv8.0 tile's blocks at 32 inputs as one loop of assembly (hypothesis)
+
+The entry above found that the release build runs the tile's step in the
+A53's order, where the A72 takes 44.04 cycles a step against its own
+order's 36.53, and that the A53 takes 3% longer in the A72's order than
+in its own; one binary carries only one. A loop of assembly has the same
+order under every compiler and tuning, so the question is which order,
+and whether one order is near the best on both cores. Measured with
+probes (scratch, not the tree): the loop's instructions written out by a
+generator from a pattern, on one buffer, timed on pi4 (A72, 1.8 GHz) and
+pi3 (A53, 1.4 GHz; each batch started below 56 C and ran on one core;
+get_throttled read 0x80000 around each, the soft limit reached earlier in
+the day and not engaged, and the runs of one order agree within 0.1%).
+
+What the A53 issues, by the probes of the entry above: SMULL, SMULL2,
+SMLAL, SADDLP, DUP by element and a 4s ADD once a cycle and never two
+together; SADALP, Q or D form, once every two cycles; DUP from a w
+register about twice a cycle. With a vector instruction, a 128-bit load
+or a 32-bit load takes its own cycles (SMULL and ldr q 8 + 8 in 24
+cycles, SADALP and ldr s in 24): the A53 pairs a vector load with no
+vector instruction. A step's price on it is then about its vector
+instructions' cycles plus its vector loads': 24 multiplies, 12 SADALP at
+two, the 4 weight vectors' two LDPs, and the activations.
+
+The step, 8 inputs by 3 columns (192 multiply-adds), as units: a unit is
+one column's 8 multiplies (SMULL, SMULL2 against the low and high halves
+of the first group's two weight vectors, then SMLAL, SMLAL2 of the
+second's) into 4 int16 sums, whose 4 SADALP are placed in the next unit
+among its multiplies, while it loads the next unit's activation words
+into the other of two register pairs. A unit's order is a pattern of its
+slots, M (the next multiply), S (the next SADALP of the unit before) and
+the loads. On one 4 KB buffer, its addresses fixed, cycles a step:
+
+| order | A72 | A53 |
+|---|---|---|
+| gcc's generic (the .deb's) | 44.04 | 67.42 |
+| gcc's A72 | 36.53 | 69.44 |
+| column by column, each column's SADALP after its multiplies | 48.05 | 72.46 |
+| M M S four times, words by ldr s + DUP | 35.31 | 68.94 |
+| hill-climbed on the A72, single moves, ldr s + DUP (`S M S a b S M M S M M M A M M B`) | 31.86 | 68.93 |
+| M M S, the words by LD1R | 37.81 | 62.91 |
+| hill-climbed on the A72, LD1R (`S M M S M S M a b M M M M S`) | 33.03 | 62.92 |
+| M M S, the words by ldr d and two DUPs by element | 35.82 | 65.93 |
+
+The A53 takes every interleaving of M and S at the same price (eleven
+orders measured at 68.93 to 68.95 with ldr s + DUP, four at 62.90 to
+62.92 with LD1R): what it pays for is instructions, a DUP a cycle that
+LD1R does not need. The A72 is the other way: the order moves it from
+48 cycles to 32, and LD1R costs it.
+
+A block is 12 units, then each column's int32 pairs added (ADDP), made
+floats (SCVTF) and added to its floats times the block's scale (FMLA by
+element): the C tile's operations on the same values in the same order,
+so the same bits. Registers: 4 weight, 4 activation, 6 int16 sums (unit
+u's j-th in v8 + (j - u) mod 6, which every order here allows when each
+unit's j-th SMULL comes after its j-1-th SADALP of the unit before, and
+which comes back to the same registers every 12 units), 12 int32 and 6
+float sums: 32, the finish in place (the block's scale loaded into an
+int32 sum its ADDP has read). Each block's finish is spread over the
+next block's first three units, and the block's last unit loads the
+next block's first weights and words, so the loop runs a head (block
+0's first three units), nb - 1 rounds of units 3-11 and the next block's
+0-2, and a tail (the last block's units 3-11 and its finish): no load
+past the tile's last block. Timed as k_gemm_q8 calls it, 32 blocks a
+call (a 1024-input chunk: the half panel's 8 KB of weights and the
+columns' 1 KB each, scales of 1.0), cycles a block:
+
+| loop | A72, six processes | against the last | A53, three | against the last |
+|---|---|---|---|---|
+| words by ldr s + DUP, post-indexed (`S M S a b S M M S M M M A M M B`) | 159.8 to 179.2 | +7.7% (+6.1 to +8.0) | 303.7 to 307.8 | +11.8% (+11.6 to +11.8) |
+| words by LD1R, post-indexed (`S M M S M S M a b M M M M S`) | 174.6 to 195.4 | +17.6% (+16.2 to +18.3) | 279.3 to 283.8 | +2.8% (+2.8 to +2.9) |
+| words by ldr d at offsets, climbed on the A53 (`L M S M S M S M S M A M M M B`) | 159.0 to 176.6 | +7.0% (+4.9 to +7.4) | 270.6 to 274.8 | -0.4% (-0.4 to -0.3) |
+| words by ldr d at offsets, climbed on the A72 (`S M M S S M S M L M M A M M B`) | 149.7 to 165.6 | +0.7% (-1.5 to +1.1) | 281.7 to 285.8 | +3.7% (+3.6 to +3.7) |
+| words by ldr d at offsets, `L S M M S S M S M M M A M M B` | 148.1 to 167.5 | | 271.6 to 275.8 | |
+
+(L the ldr d of the next unit's two words into its b register, A and B
+the DUPs of its lanes 0 and 1 into a and b.) One binary of the five, run
+six times on pi4 and three on pi3; each loop's ratio to the last a
+process, median (range). The A72's figures move by up to 13% from one
+process to the next with the pages the buffer gets (its two-way L1: the
+conflicts the entry of 2026-10-27 on the activations' stride counted),
+the loops together; the A53's by 1.5%. The climbs ran on this harness,
+each batch beside its starting order in one process.
+
+So the loop takes the last order: level with the A72's climbed order on
+the A72 and within 0.4% of the A53's climbed order on the A53, where
+LD1R is 2.8% behind it, and 17.6% on the A72. LD1R has no offset form,
+so its loop steps a pointer on every load, as the ldr s loop here does;
+ldr d takes immediate offsets, and its loop steps the four pointers once
+a block. Whether the post-indexing or the memory puts the A72's ldr s
+loop 7.7% behind in the block, where its order led in the step, was not
+separated.
+
+Predicted, against the C tile under gcc 12 generic (the .deb's): the
+tile's block from about 196 cycles (the step's 44.0 four times and the
+finish) to 148 on the A72, and from about 295 (67.4 four times and the
+finish) to 273 on the A53. Today's
+profiles put the order-sensitive part of the A72's int8 stages at about
+60% (the A72 tuning's 17% in the step moved them 9.2%), so on pi4 the
+int8 stages 13 to 16% faster and a run 11 to 14%, and against a tree
+tuned for the A72 (TUNE from its part number) 3 to 6%. On pi3, a run 4
+to 7% faster. On the cores with dotprod nothing changes: they run
+neon-dp. Measured by tests/kcheck (ref's bits on every case: the
+3-column tile at 32 inputs whole, and k_gemm_q8's 1024-input chunks
+first, inner and last, n from 32 to 4096, nb from 1), on pi3, pi4,
+pi5c and the M4 Pro (each runs the neon backend too); then interleaved
+rounds of pktito-c, base against the loop, under gcc 12 and clang 21 at
+two placements, on pi4 and pi3, and PROFILE=1 for the stages.
