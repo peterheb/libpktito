@@ -1551,3 +1551,21 @@ byte for byte the same.
 | Galaxy S25 Ultra | Snapdragon 8 Elite | no result | 1.10 s or 1.6 to 2.2 s in both builds, which looks like where the threads were placed, not the kernel; the fastest of each 1.096 s and 1.104 s (+0.7%) |
 
 Faster or level where a result could be had, as on the boards above.
+
+## 2026-10-27 - the SDOT block loop in assembly on Android, the S25 Ultra on AC and a Googlebook (a measurement, android-9950x's)
+
+The same pair as the entry above, ebce152 against bf5abaa, by the same
+method and session: NDK r30's clang 21 for API 24, test.wav through v2,
+best of 5 at the default threads, 8 interleaved rounds with 45 s of rest
+before each, every build's --json byte for byte the same. Both devices on
+AC, and each bench logged the phone's wake state: every one Awake.
+
+| device | SoC | the loop in assembly | |
+|---|---|---|---|
+| Galaxy S25 Ultra (SM-S938U1) | Snapdragon 8 Elite | -6.5% (-14.8 to +59.3) | faster in 7 rounds of 8 (-2.5 to -14.8); round 7's +59.3% is one bench of the new build at 1.913 s; else base 1.194-1.377 s, new 1.138-1.204 s; the fastest of each -4.7% |
+| XPS Googlebook | arm64, 12 cores | -0.86% (-2.1 to +1.0) | faster in 7 rounds of 8; base 0.520-0.532 s, new 0.516-0.525 s; the fastest of each -0.8% |
+
+The S25 Ultra's first run, 1.1 s or 1.6 to 2.2 s in both builds, was the
+phone asleep on battery, not where the threads were placed. Awake, the
+loop is faster there, and on the Googlebook, as on every other device
+measured.
