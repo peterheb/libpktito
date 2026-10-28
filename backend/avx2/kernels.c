@@ -47,6 +47,12 @@
 #error "backend/avx2-vnni wants AVX-VNNI or AVX512-VNNI with AVX512-VL"
 #endif
 #endif
+/* The amx-int8 build. gcc and clang 21 name -mamx-int8 __AMX_INT8__, clang
+ * 14 (Ubuntu 22.04's) __AMXINT8__: with the one name looked for, clang 14
+ * made backend/amx-int8 a second avx512-vnni, and the link failed. */
+#if defined(__AMX_INT8__) || defined(__AMXINT8__)
+#define PK_AMX_INT8 1
+#endif
 #include <math.h>
 #include <string.h>
 
@@ -422,7 +428,7 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
 }
 
 
-#ifdef __AMX_INT8__
+#ifdef PK_AMX_INT8
 /* AMX (the amx-int8 build). TDPBSSD multiplies tile A, signed bytes, by
  * tile B, signed bytes, into tile C's exact int32 sums: C[m][r] += sum over
  * i of A[m][i] B[i/4][4r + i%4]. A block of one panel is a B tile as the
@@ -599,7 +605,7 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
                       uint32_t rows, const pk_act *a, int add) {
     q8_zmm(out, os, w, ws, bias, rows, a, add);
 }
-#endif /* __AMX_INT8__ */
+#endif /* PK_AMX_INT8 */
 
 #else
 /* One tile: a whole panel, 16 rows in two vectors, by NC columns (up to
@@ -1416,7 +1422,7 @@ static const char *const needs[] = { "avx2", "fma", "avxvnni", NULL };
 const pk_kernels pk_kernels_avx2_vnni = {
     .id = "avx2-vnni",
     .name = "avx2-vnni (x86-64 AVX2 + FMA: AVX-VNNI's VPDPBUSD int8, fp32)",
-#elif defined(__AMX_INT8__)
+#elif defined(PK_AMX_INT8)
 static const char *const needs[] = { "avx2", "fma", "avx512f", "avx512vnni", "avx512vl", "amx_tile",
                                      "amx_int8", NULL };
 const pk_kernels pk_kernels_amx_int8 = {
