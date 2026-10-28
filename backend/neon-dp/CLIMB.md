@@ -1344,3 +1344,94 @@ Not measured: the threads' opt-out alone on battery (98a54d1 against
 c42738d, as on AC above), and fewer threads than 12 with cpus 8-11
 parked. The logs are on snappy, in `C:\pktito-test\window` (`window\ac`
 for AC) and `C:\pktito-test\ab-093\runs` (`bat*`).
+
+## 2026-10-27 - the int8 product's loops, 32 bytes along (a measurement)
+
+FCVTNS in the quantizer (backend/neon/CLIMB.md, its hypothesis) measured
+on two Pi 5s, eight interleaved rounds each, test.wav through v2, best
+of 5 at 4 threads: under gcc (12.2 on pi5c, 14.2 on pi5a) -0.32% and
+-0.28%, under clang 21 +5.24% and +4.81%. The control, 1120 bytes of
+uncalled code ahead of core/cli.c's, moved what follows it by 1152 bytes
+and the runs by +0.07% and -0.26% under clang, +0.05% and -0.23% under
+gcc. In the clang build FCVTNS's instructions were as meant: four FCVTNS
+where base has four FRINTNs and four FCVTZSs. And k_quantize shrank by
+16 bytes, which moved k_gemm_q8 behind it. clang 21 aligns a function to
+16 bytes and a loop to 32 where that costs at most 16
+(`.p2align 5, , 16`), gcc 15 the same (`.p2align 5,,15`), in a .text
+that is 32-aligned. Re-padded at its new place, every SDOT loop in
+k_gemm_q8 sat 32 bytes along modulo 64, the same instructions; the
+control's 1152 bytes are a multiple of 64.
+
+The same code moved by exactly 32 bytes, by linking a 32-byte, 32-aligned
+object ahead of backend/neon-dp/kernels.o: pi5c, six interleaved rounds
+as above, static builds from clang 21.1.8 and gcc 15.2 (cross-compiled,
+-mtune=cortex-a76), each build's --json test.v2.json byte for byte, not
+throttled.
+
+| build | clang 21 | gcc 15 |
+|---|---|---|
+| base | 3.845 s | 3.725 s |
+| base, 32 bytes along | +6.21% (+5.67 to +6.46) | +7.91% (+7.81 to +7.95) |
+| FCVTNS | +5.08% (+4.33 to +5.74) | +0.01% (-0.08 to +0.13) |
+| FCVTNS, 32 bytes along | -0.08% (-0.41 to +0.08) | -0.01% (-0.11 to +0.19) |
+
+gcc's tile is a clone, q8_cols.constprop.0. FCVTNS moved it 16 bytes,
+which gcc's re-padding absorbed. Base moved 32 bytes cost 7.9%. Under
+clang, FCVTNS 32 bytes along put its loops back where base's are, and the
+5% went with them. `make PROFILE=1` on the clang pair, three runs each,
+medians:
+
+| stage | base, ms | FCVTNS, ms | |
+|---|---|---|---|
+| quantize | 218.6 | 203.2 | -7.0% |
+| feed-forward | 1889.5 | 2054.7 | +8.7% |
+| q k v pos | 576.9 | 600.3 | +4.1% |
+| attention out | 118.5 | 129.6 | +9.4% |
+| conv pw1 pw2 | 349.4 | 371.0 | +6.2% |
+| attention | 295.1 | 295.0 | 0.0% |
+| decoder | 140.3 | 138.8 | -1.1% |
+
+FCVTNS's own effect is the quantize stage's 15 ms, 0.4% of the run; the
+rest is the int8 products, the four stages that are 76% of it. So the
+place a compiler gives the product's loops is worth 6 to 8% of a Pi 5
+run under either compiler, and it moves with code nothing in the product
+calls. Every function at a 64-byte boundary (-falign-functions=64) pins
+that much: the product was then the same bytes under base, FCVTNS and
+the softmax change. It does not pin what the product's own code does to
+its loops. The activations' stride (backend/neon/CLIMB.md) changes only
+the tile's setup, and put the 4-column loop at 36 modulo 64, where base
+has it at 4. Each compiler, at the place it gave the product: clang
+3.845 s, gcc 15 3.725 s.
+
+## 2026-10-27 - the SDOT tile's block loop in assembly, at a 64-byte line (hypothesis)
+
+Every product in the encoder is the 4-column SDOT tile at 32-input
+blocks. Both compilers make it a loop over blocks around a loop of two
+16-input chunks, since qb is a run-time value. gcc 15 also spills a
+counter to the stack in the block loop and works out each chunk's
+addresses again. The change writes that block loop in inline assembly.
+Per block: the two chunks written out, 16 weight vectors in 8 LDPs, 8
+activation loads, 64 SDOTs by lane over the 8 int accumulators in gcc's
+order (each weight vector against the four columns in turn); then 8
+SCVTFs, the four columns' scales into one vector's lanes, and 8 FMLAs by
+element. The loop's head is at a 64-byte line (`.p2align 6`).
+
+The bits are ref's. A block's integer sums are exact, its sum is exact
+as a float (32 products of at most 128 * 127, under 2^24), and an FMLA
+by element is the fused multiply-add vfmaq_f32 is, block after block,
+ref's chain. The rest stays C: tiles of 1 to 3 columns, other block
+sizes (the decoder's), and each output's scale, bias and add. A64's
+instructions are all 4 bytes, so the loop is the same bytes and the same
+place under every compiler, whichever registers each gives the pointers.
+Inline rather than a .S file leaves the function's prologue, CFI, BTI
+landing pads and each platform's symbol and section rules to the
+compiler. GNU inline asm is already in the tree (core/os.c,
+core/pool.c), so no compiler is newly required.
+
+Predict: kcheck's bits unchanged. On pi5c, gcc 15 and clang 21 within
+the spread of each other, and both at gcc 15's 3.725 s or faster: the
+product stages a few % faster for the chunks written out and the spill
+gone. The loop's head at 32 modulo 64 (a pad for the measurement only)
+slower by a measurable share if the A76's sensitivity is the line, and
+within the spread if it was the chunk loop's branch. No loss on the M4
+Pro or the GB10's X925s, which run the same tile.
