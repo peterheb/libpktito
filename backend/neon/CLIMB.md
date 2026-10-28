@@ -1103,3 +1103,15 @@ A72 and A76 (0xd03, 0xd08, 0xd0b) and the GB10's cores are 0xd85 and
 these entries measured (the same versions, cross1): all 37 of the tree's
 objects, static and PIC, on be5c4ae and with the loop, the same under
 objdump -dr, at the release's flags. So the figures stand for the .deb.
+
+## 2026-10-28 - the loop under the NDK (a check)
+
+3720a1b built by NDK r30's clang 21 (API 24) without a warning, and make
+adb on the Tab S7 FE (Snapdragon 778G, whose cores run neon-dp) passes
+check-c: kcheck's 1779 cases ref's bits on neon-dp and on neon, test.wav
+ref's under v2 and v3 on every token and time, and with
+PKTITO_KERNELS=neon test.wav's v2 --json test.v2.json's bytes. Run by
+the android-9950x session. neon's bench there was 7.453 s at 8 threads
+and neon-dp's 3.639 s; the C tile was not timed beside it, so this is a
+check of the bits, not of the speed. No device on hand runs neon by
+default: all four have dotprod.
