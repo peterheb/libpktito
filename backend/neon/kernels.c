@@ -203,12 +203,12 @@ void q8_step_v80(const int8_t *g, const int8_t *const *x, uint32_t k, int32x4_t 
  * Written out so that where the loop sits is not a compiler's to choose: a
  * build that put the C tile's loops 32 bytes along modulo 64 ran a Pi 5
  * 6 to 8% slower under clang 21 and gcc 15. A64's instructions are 4 bytes
- * whatever the registers, so the loop below is the same bytes, its head on
- * a 64-byte line, under every compiler. Against the C tile it ran a Pi 5's
- * minute 4.8% faster under clang 21 and 1.5% under gcc 15, its two builds
- * within 0.4% of each other; a GB10's X925s 2.3% faster under gcc 13 and
- * level under clang 18; an M4 Pro 2.2% faster (backend/neon-dp/CLIMB.md,
- * 2026-10-27). */
+ * whatever the registers, so the loop below is the same bytes under every
+ * compiler, and its head is on a 64-byte line everywhere but Windows.
+ * Against the C tile it ran a Pi 5's minute 4.8% faster under clang 21 and
+ * 1.5% under gcc 15, its two builds within 0.4% of each other; a GB10's
+ * X925s 2.3% faster under gcc 13 and level under clang 18; an M4 Pro 2.2%
+ * faster (backend/neon-dp/CLIMB.md, 2026-10-27). */
 
 /* weight vectors a (rows 0-3) and b (rows 4-7) against lane L of v8-v11 */
 #define Q8_SDOT8(a, b, L)                                                  \
@@ -246,7 +246,16 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
     __asm__ volatile(
         "movi v24.4s, #0\n\t" "movi v25.4s, #0\n\t" "movi v26.4s, #0\n\t" "movi v27.4s, #0\n\t"
         "movi v28.4s, #0\n\t" "movi v29.4s, #0\n\t" "movi v30.4s, #0\n\t" "movi v31.4s, #0\n\t"
+        /* Not on Windows. Its Arm64 unwind records hold each function's
+         * length, and llvm-mingw's clang 23.1 cannot work one out past an
+         * alignment inside a function that saves registers: "Failed to
+         * evaluate function length in SEH unwind info", from this or from
+         * its own -falign-loops=16. There the loop lands where the linker
+         * puts it: 16 bytes into a line in pktito-c.exe, on one in
+         * tests/kcheck.exe. */
+#ifndef _WIN32
         ".p2align 6\n"
+#endif
         "1:\n\t"
         "movi v16.4s, #0\n\t" "movi v17.4s, #0\n\t" "movi v18.4s, #0\n\t" "movi v19.4s, #0\n\t"
         "movi v20.4s, #0\n\t" "movi v21.4s, #0\n\t" "movi v22.4s, #0\n\t" "movi v23.4s, #0\n\t"

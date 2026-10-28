@@ -1495,3 +1495,43 @@ Kept: the 4-column, 32-input-block tile of neon-dp runs this loop; tiles
 of 1 to 3 columns and other block sizes keep the C. FCVTNS, the softmax
 at sixteen and the activations' stride (backend/neon/CLIMB.md) are to be
 measured again on top of it.
+
+## 2026-10-27 - the SDOT block loop on Windows, without its line (a build fix)
+
+f13f54a did not build for Windows on Arm64: llvm-mingw's clang 23.1.4,
+for aarch64-w64-mingw32, stopped on backend/neon-dp/kernels.c with
+"fatal error: error in backend: Failed to evaluate function length in
+SEH unwind info". Windows on Arm64 keeps an unwind record for every
+function that saves registers or moves the stack, and the record holds
+the function's length, which clang 23.1 does not work out across an
+alignment inside the function. A test file shows it is any alignment: a
+loop under -falign-loops=16, 32 or 64 fails the same way, and so does an
+inline .p2align 3. A leaf function, which has no record, takes a
+.p2align 6 inside it. -fno-unwind-tables builds, by dropping every
+record, which a debugger's or a crash dump's walk through the kernels
+needs: not that.
+
+So on Windows the loop is written without its .p2align 6: the same
+instructions, the head where the linker puts it, the object's .text
+being aligned to 4 there - 16 bytes into a 64-byte line in pktito-c.exe,
+on a line in tests/kcheck.exe. Elsewhere nothing changed: the neon and
+neon-dp objects for Linux, under gcc 15.2 and clang 21.1, are byte for
+byte f13f54a's.
+
+Checked on armlet (Snapdragon 7c, Windows 11 on Arm), the programs
+cross-built with llvm-mingw clang 23.1.4: kcheck ref's bits on neon-dp
+and neon, 1779 cases each; check-c's other programs pass; test.wav's VAD
+probabilities and its v2 and v3 transcripts are the files' bytes;
+examples/transcribe gives the CLI's transcript; and a model and a WAV
+named past ASCII go through the CLI's arguments. armlet has no shell, so
+check-c's commands ran from a batch file, and the outputs were compared
+on the 9950X. make check-c passes on pi5c (gcc 12.2).
+
+Not measured: what the head's place costs on Windows. On a Pi 5 the
+first version's head 32 bytes along changed nothing (above); the kept
+version's was not tried. armlet's AliceBench runs spread by 13% today,
+so a few percent there takes many interleaved rounds. A loop that saves
+no registers and moves no stack - out of line, a leaf, clear of v8 to
+v15 - would keep its line on Windows as well, with 24 registers to this
+loop's 32: the weights two at a time and the four scales through two.
+That is a different loop, to be measured as one.
