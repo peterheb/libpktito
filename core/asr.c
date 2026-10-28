@@ -32,8 +32,7 @@ static int reserve(pk_asr *a, size_t T0) {
     const size_t H = m->n_heads, dk = D / H, F1 = (M + 1) / 2, F2 = (F1 + 1) / 2, F3 = M / 8;
     const size_t U = F > 2 * D ? F : 2 * D, R = 2 * Te - 1;
     const size_t Tp = up16z(Te), Pp = up16z(R) + 16;
-    size_t widest = U > F3 * C ? U : F3 * C;
-    widest = widest > D ? widest : D;
+    const size_t widest = F3 * C > D ? F3 * C : D;     /* of a->act's inputs */
     /* the subsampling's windows (core/encoder.c, sub_item) */
     const size_t s1 = 3 * F1 * C, s2 = F2 * C, s3 = 3 * F2 * C, s4 = PK_SUB_BLOCK * F3 * C;
     const size_t sq = s2 > s4 ? s2 : s4;
@@ -59,6 +58,8 @@ static int reserve(pk_asr *a, size_t T0) {
         CARVE(a->act.d, Te * widest / 32, sizeof(float));
         CARVE(a->ape.q, R * D, 1);
         CARVE(a->ape.d, R * D / 32, sizeof(float));
+        CARVE(a->hid.q, Te * F, 1);
+        CARVE(a->hid.d, Te * F / 32, sizeof(float));
         CARVE(a->fproj, Te * J, sizeof(float));
         for (int t = 0; t < a->nth; t++) {
             pk_thread_ws *w = &a->tws[t];
@@ -73,7 +74,7 @@ static int reserve(pk_asr *a, size_t T0) {
             CARVE(w->sc, PK_ATT_BLOCK * Tp, sizeof(float));
             CARVE(w->bd, PK_ATT_BLOCK * (Tp + 32), sizeof(float));
             CARVE(w->mel, pk_mel_thread_scratch(m), sizeof(float));
-            CARVE(w->row, F, sizeof(float));
+            CARVE(w->row, D > F ? D : F, sizeof(float));
         }
         if (!pass) {
             mem = malloc((size_t)p + 64);

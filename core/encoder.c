@@ -72,6 +72,12 @@ void pk_quantize(pk_asr *a, pk_act *act, const float *x, size_t xs, uint32_t T, 
     pk_par(a, quant_item, &j, (int)((T + j.step - 1) / j.step));
 }
 
+/* What an item of a product does next with the tile it has just made,
+ * rows [r0, r0 + nr) of the output's columns [c0, c0 + nc), while the tile
+ * is in its core's cache (the feed-forward's SiLU, the attention's panels),
+ * on thread th */
+typedef void (*tile_fn)(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th);
+
 typedef struct {
     float *out;
     size_t os;
@@ -80,10 +86,11 @@ typedef struct {
     const pk_act *act;
     int add;
     uint32_t step, rb, cstep;
+    tile_fn then;
+    void *then_arg;
 } gemm_job;
 
 static void gemm_item(void *arg, int i, int th) {
-    (void)th;
     gemm_job *j = arg;
     uint32_t r0 = ((uint32_t)i % j->rb) * j->step, nr = min32(j->step, j->w->rows - r0);
     uint32_t c0 = ((uint32_t)i / j->rb) * j->cstep, nc = min32(j->cstep, j->act->T - c0);
@@ -93,6 +100,8 @@ static void gemm_item(void *arg, int i, int th) {
     sub.T = nc;
     pk_k_gemm_q8(j->out + (size_t)c0 * j->os + r0, j->os, j->w->q + (size_t)r0 * j->w->cols,
                  j->w->s + r0, j->bias ? j->bias + r0 : NULL, nr, &sub, j->add);
+    if (j->then)
+        j->then(j->then_arg, r0, nr, c0, nc, th);
 }
 
 /* Rows in slices of 64: few enough that each streams its weights through
@@ -109,9 +118,10 @@ static void gemm_item(void *arg, int i, int th) {
  * is whole tiles of 3 and 4 columns, and at least 48 columns, so that a
  * call's per-call work - the backend's copy of its columns, its panels'
  * sums - stays a few percent of it. Every output is still one call's, so
- * the bits do not depend on the split. */
-void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
-             const pk_act *act, int add) {
+ * the bits do not depend on the split. Each item then hands its tile to
+ * then, if there is one. */
+static void gemm_then(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
+                      const pk_act *act, int add, tile_fn then, void *then_arg) {
     const uint32_t nth = (uint32_t)pk_pool_active(a->pool);
     const uint32_t step = w->rows / 256 >= 2 * nth ? 256 : 64, rb = (w->rows + step - 1) / step;
     uint32_t best = 1, best_idle = UINT32_MAX, best_all = 1;
@@ -127,8 +137,13 @@ void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias
     uint32_t cstep = (act->T + best - 1) / best;
     cstep = best > 1 ? (cstep + 11) / 12 * 12 : act->T;
     uint32_t cc = cstep ? (act->T + cstep - 1) / cstep : 1;
-    gemm_job j = { out, os, w, bias, act, add, step, rb, cstep ? cstep : 1 };
+    gemm_job j = { out, os, w, bias, act, add, step, rb, cstep ? cstep : 1, then, then_arg };
     pk_par(a, gemm_item, &j, (int)(rb * cc));
+}
+
+void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
+             const pk_act *act, int add) {
+    gemm_then(a, out, os, w, bias, act, add, NULL, NULL);
 }
 
 typedef struct {
@@ -152,54 +167,73 @@ static void norm(pk_asr *a, float *out, const float *x, uint32_t T, const float 
     pk_par(a, norm_item, &j, (int)((T + 15) / 16));
 }
 
-/* The feed-forward's hidden activations SiLU'd and quantized in one pass,
- * a frame at a time through a row of thread scratch: the [T][F] array
- * (12 MB at a minute) is read once and never written back, where a SiLU
- * pass in place and then pk_quantize read it twice and wrote it once, and
- * on a Pi 5 that traffic, not the arithmetic, set the pace. The values
- * quantized are the same floats. */
-typedef struct { pk_asr *a; const float *x, *w, *b; uint32_t T; } rowq_job;
-
-/* row t of the int8 activations from the n floats at x */
-static void quant_row(pk_act *act, uint32_t t, const float *x) {
-    const uint32_t nb = act->n / act->qb;
-    pk_act one = { act->q + (size_t)t * act->n, act->d + (size_t)t * nb, act->n, act->qb, 1 };
-    pk_k_quantize(&one, x, act->n);
+/* T columns of n inputs in the encoder's blocks, as act's shape */
+static pk_act *shape(pk_act *act, uint32_t T, uint32_t n) {
+    act->n = n;
+    act->qb = QB;
+    act->T = T;
+    return act;
 }
 
-static void siluq_item(void *arg, int i, int th) {
-    rowq_job *j = arg;
-    pk_act *act = &j->a->act;
-    float *row = j->a->tws[th].row;
-    for (uint32_t t = (uint32_t)i * 16; t < min32((uint32_t)i * 16 + 16, j->T); t++) {
-        memcpy(row, j->x + (size_t)t * act->n, act->n * sizeof *row);
-        pk_k_silu(row, act->n);
-        quant_row(act, t, row);
-    }
+/* Inputs [k0, k0 + n) of column t of act, from the n floats at x: whole
+ * blocks, each quantized alone, so the bytes and scales that quantizing
+ * the whole column gives them. */
+static void quant_part(pk_act *act, uint32_t t, uint32_t k0, uint32_t n, const float *x) {
+    const size_t at = (size_t)t * act->n + k0;
+    pk_act part = { act->q + at, act->d + at / act->qb, n, act->qb, 1 };
+    pk_k_quantize(&part, x, n);
 }
 
-/* A layer norm straight into the int8 activations, the same way: its
- * output was read only by the quantize after it, 3 MB at a minute written
- * and read again, four times a layer. */
+/* A layer norm straight into the int8 activations, a frame at a time
+ * through a row of thread scratch: its output was read only by the
+ * quantize after it, 3 MB at a minute written and read again, four times
+ * a layer. */
+typedef struct { pk_asr *a; const float *x, *w, *b; uint32_t T; } normq_job;
+
 static void normq_item(void *arg, int i, int th) {
-    rowq_job *j = arg;
+    normq_job *j = arg;
     pk_act *act = &j->a->act;
     float *row = j->a->tws[th].row;
     for (uint32_t t = (uint32_t)i * 16; t < min32((uint32_t)i * 16 + 16, j->T); t++) {
         pk_k_layernorm(row, act->n, j->x + (size_t)t * act->n, act->n, 1, act->n, j->w, j->b,
                        j->a->m->ln_eps);
-        quant_row(act, t, row);
+        quant_part(act, t, 0, act->n, row);
     }
 }
 
-/* a->act for T frames of n floats at x, through item, which takes 16 */
-static void rowq(pk_asr *a, void (*item)(void *, int, int), const float *x, uint32_t T,
-                 uint32_t n, const float *w, const float *b) {
-    a->act.n = n;
-    a->act.qb = QB;
-    a->act.T = T;
-    rowq_job j = { a, x, w, b, T };
-    pk_par(a, item, &j, (int)((T + 15) / 16));
+/* a->act for the T frames of n floats at x, normalized by w and b */
+static void normq(pk_asr *a, const float *x, uint32_t T, uint32_t n, const float *w, const float *b) {
+    normq_job j = { a, x, w, b, T };
+    shape(&a->act, T, n);
+    pk_par(a, normq_item, &j, (int)((T + 15) / 16));
+}
+
+/* The feed-forward's hidden activations SiLU'd and quantized by the items
+ * of its up product, each over its own tile a frame at a time, while the
+ * tile is in its core's cache: a slice of 64 or 256 of the hidden's rows
+ * is whole blocks of 32. As a pass of their own after the product they
+ * read every frame across all the slices, lines that every thread had
+ * written, and on the 9950X at 16 threads, half of those in the other
+ * CCD's caches, the pass's jobs took 76 us where sixteen threads' share
+ * of one thread's was 16. Made by the items, with the attention's panels
+ * and the convolution module's quantize (dw_item), a 16-thread run there
+ * is 3.9 to 6.1% faster and the GB10's, on ten X925s in two clusters,
+ * 7.6%; a Pi 5's 1%, the other boards' level, and the 9950X at one
+ * thread 0.7 to 1.1% behind (backend/avx2/CLIMB.md, 2026-10-28). A frame
+ * goes through a row of thread scratch so that the tile is only read:
+ * SiLU in place dirtied again the lines a Pi 5's 512 KB of L2 had already
+ * written back, and its run took 1.3% longer than with the pass, an 8 GB
+ * Pi 5's 4.6% (the same entry). */
+typedef struct { pk_asr *a; pk_act *hid; } siluq_job;
+
+static void siluq_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th) {
+    siluq_job *j = arg;
+    float *row = j->a->tws[th].row;
+    for (uint32_t t = c0; t < c0 + nc; t++) {
+        memcpy(row, j->a->u + (size_t)t * j->hid->n + r0, nr * sizeof *row);
+        pk_k_silu(row, nr);
+        quant_part(j->hid, t, r0, nr, row);
+    }
 }
 
 typedef struct { float *out; const float *x; uint32_t T, D; } glu_job;
@@ -211,14 +245,19 @@ static void glu_item(void *arg, int i, int th) {
     pk_k_glu(j->out + (size_t)t0 * j->D, j->D, j->x + (size_t)t0 * 2 * j->D, 2 * j->D, nt, j->D);
 }
 
-typedef struct { float *out; const float *x; const pk_layer *L; uint32_t T, D, K; } dw_job;
+typedef struct { float *out; const float *x; const pk_layer *L; pk_act *act; uint32_t T, D, K; } dw_job;
 
+/* 64 channels over every frame, and their int8 for pw2 while they are in
+ * this core's cache: a frame's 64 are two whole blocks (backend/avx2/
+ * CLIMB.md, 2026-10-28, the passes between the products). */
 static void dw_item(void *arg, int i, int th) {
     (void)th;
     dw_job *j = arg;
-    uint32_t c0 = (uint32_t)i * 64;
-    pk_k_dwconv(j->out + c0, j->D, j->x + c0, j->D, j->T, min32(64, j->D - c0),
-                j->L->dw + (size_t)c0 * j->K, j->L->dw_b + c0, j->K);
+    const uint32_t c0 = (uint32_t)i * 64, nc = min32(64, j->D - c0);
+    pk_k_dwconv(j->out + c0, j->D, j->x + c0, j->D, j->T, nc, j->L->dw + (size_t)c0 * j->K,
+                j->L->dw_b + c0, j->K);
+    for (uint32_t t = 0; t < j->T; t++)
+        quant_part(j->act, t, c0, nc, j->out + (size_t)t * j->D + c0);
 }
 
 /* -------------------------------------------------------- subsampling --- */
@@ -331,50 +370,49 @@ static void panel_item(void *arg, int i, int th) {
 typedef struct {
     pk_asr *a;
     const pk_layer *L;
-    const float *k;          /* K, [T][D], as its product wrote it */
     uint32_t T, Tp, Pp;
 } att_job;
 
-/* K and the position table as pk_k_gemm_f32 panels, a head and 64 frames
- * (and 128 rows of the table) an item:
+/* K and the position table as pk_k_gemm_f32 panels, made by the items of
+ * their products, each transposing its own tile into them while the tile
+ * is in its core's cache:
  *
  *   kp: (d, key j)      at ((j/16) dk + d) 16 + j%16     keys padded to Tp with zeros
  *   pp: (d, position m) at ((m/16) dk + d) 16 + m%16     positions padded to Pp
  *
- * Each is a transpose, so a panel's sixteen rows are read while a
- * dimension's sixteen values are written as one run: the rows stay in L1
- * and every store lands beside the last. A row at a time put each store a
- * cache line from the one before, and that copy, with V's and the queries'
- * beside it, was 5.8% of a Pi 5's minute; V now needs none (panel_item),
- * the queries are made a block at a time where they are used (att_item),
- * and what is left is 2.2%. Taking K and P as their products leave them
- * and transposing each block's scores instead, which grows with T squared,
- * was slower: 5.08 s a minute where this is 4.75 (backend/neon-dp/CLIMB.md). */
-#define PK_REPACK 64
+ * head h's from kp + h Tp dk and pp + h Pp dk, the padding written by the
+ * items with the last columns. A panel's sixteen columns are read while a
+ * dimension's sixteen values are written as one run: the columns stay in
+ * L1 and every store lands beside the last. A row at a time put each store
+ * a cache line from the one before, and that copy, with V's and the
+ * queries' beside it, was 5.8% of a Pi 5's minute; V now needs none
+ * (panel_item), the queries are made a block at a time where they are used
+ * (att_item), and what was left was 2.2%. Taking K and P as their products
+ * leave them and transposing each block's scores instead, which grows with
+ * T squared, was slower: 5.08 s a minute where this was 4.75 (backend/
+ * neon-dp/CLIMB.md). As a pass of its own after the products, a head and
+ * 64 frames an item, it read lines every thread had written, and on the
+ * 9950X its jobs took 54 us at 8 threads and 123 at 16; made here, the
+ * products take on 39 to 55% of its time at 16 threads there, and a
+ * third more than it at one (backend/avx2/CLIMB.md, 2026-10-28). */
+typedef struct { float *dst; const float *src; uint32_t n, np, D, dk; } panels_job;
 
-static void panels_t(float *dst, const float *src, size_t ld, uint32_t r0, uint32_t r1,
-                     uint32_t n, uint32_t dk) {
-    for (uint32_t p0 = r0; p0 < r1; p0 += 16) {
-        const float *rows[16];
-        for (uint32_t i = 0; i < 16; i++)
-            rows[i] = p0 + i < n ? src + (size_t)(p0 + i) * ld : NULL;
-        float *d0 = dst + (size_t)(p0 / 16) * dk * 16;
-        for (uint32_t d = 0; d < dk; d++)
-            for (uint32_t i = 0; i < 16; i++)
-                d0[d * 16 + i] = rows[i] ? rows[i][d] : 0.0f;
-    }
-}
-
-static void repack_item(void *arg, int item, int th) {
+static void panels_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th) {
     (void)th;
-    att_job *j = arg;
-    pk_asr *a = j->a;
-    const uint32_t D = a->m->d_model, dk = D / a->m->n_heads, T = j->T, R = 2 * T - 1;
-    const uint32_t nb = (T + PK_REPACK - 1) / PK_REPACK, h = (uint32_t)item / nb, b = (uint32_t)item % nb;
-    const uint32_t t0 = b * PK_REPACK, t1 = b + 1 == nb ? j->Tp : t0 + PK_REPACK;
-    const uint32_t r0 = 2 * t0, r1 = b + 1 == nb ? j->Pp : r0 + 2 * PK_REPACK;
-    panels_t(a->kp + (size_t)h * j->Tp * dk, j->k + h * dk, D, t0, t1, T, dk);
-    panels_t(a->pp + (size_t)h * j->Pp * dk, a->p + h * dk, D, r0, r1, R, dk);
+    panels_job *j = arg;
+    const uint32_t dk = j->dk, c1 = c0 + nc == j->n ? j->np : c0 + nc;
+    for (uint32_t p0 = c0 & ~15u; p0 < c1; p0 += 16) {
+        /* the panel's columns [lo, hi) are the tile's, padding as zeros */
+        const uint32_t lo = c0 > p0 ? c0 - p0 : 0, hi = min32(16, c1 - p0);
+        const float *col[16];
+        for (uint32_t i = lo; i < hi; i++)
+            col[i] = p0 + i < j->n ? j->src + (size_t)(p0 + i) * j->D : NULL;
+        for (uint32_t r = r0; r < r0 + nr; r++) {
+            float *d = j->dst + (size_t)(r / dk) * j->np * dk + ((size_t)(p0 / 16) * dk + r % dk) * 16;
+            for (uint32_t i = lo; i < hi; i++)
+                d[i] = col[i] ? col[i][r] : 0.0f;
+        }
+    }
 }
 
 /* One head over PK_ATT_BLOCK queries [i0, i1):
@@ -429,38 +467,39 @@ static void att_item(void *arg, int item, int th) {
 static void ff(pk_asr *a, uint32_t T, const float *nw, const float *nb, const pk_q8 *up,
                const pk_q8 *down) {
     const uint32_t D = a->m->d_model, F = a->m->ff_dim;
-    PROF(PK_P_QUANT, rowq(a, normq_item, a->x, T, D, nw, nb));
-    PROF(PK_P_FF, pk_gemm(a, a->u, F, up, NULL, &a->act, 0));
-    PROF(PK_P_QUANT, rowq(a, siluq_item, a->u, T, F, NULL, NULL));
-    PROF(PK_P_FF, pk_gemm(a, a->x, D, down, NULL, &a->act, 1));     /* the 0.5 is in down */
+    siluq_job sj = { a, shape(&a->hid, T, F) };
+    PROF(PK_P_QUANT, normq(a, a->x, T, D, nw, nb));
+    PROF(PK_P_FF, gemm_then(a, a->u, F, up, NULL, &a->act, 0, siluq_tile, &sj);
+                  pk_gemm(a, a->x, D, down, NULL, &a->hid, 1));     /* the 0.5 is in down */
 }
 
 static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     const pk_model *m = a->m;
-    const uint32_t D = m->d_model, H = m->n_heads;
-    float *k = a->o;                     /* free until the attention writes it */
+    const uint32_t D = m->d_model, H = m->n_heads, dk = D / H, R = 2 * T - 1;
+    const uint32_t Tp = up16(T), Pp = up16(R) + 16;
 
     ff(a, T, L->ff1_nw, L->ff1_nb, &L->ff1_up, &L->ff1_down);
 
-    PROF(PK_P_QUANT, rowq(a, normq_item, a->x, T, D, L->att_nw, L->att_nb));
+    PROF(PK_P_QUANT, normq(a, a->x, T, D, L->att_nw, L->att_nb));
+    /* K's floats in a->o, free until the attention writes it, and P's in
+     * a->p, each tile there on its way into the panels */
     panel_job vj = { a->vp, (size_t)T * 16, &L->v, &a->act };
+    panels_job kj = { a->kp, a->o, T, Tp, D, dk }, pj = { a->pp, a->p, R, Pp, D, dk };
     PROF(PK_P_QKV, pk_gemm(a, a->q, D, &L->q, NULL, &a->act, 0);
-                   pk_gemm(a, k, D, &L->k, NULL, &a->act, 0);
+                   gemm_then(a, a->o, D, &L->k, NULL, &a->act, 0, panels_tile, &kj);
                    pk_par(a, panel_item, &vj, (int)((L->v.rows + 63) / 64));
-                   pk_gemm(a, a->p, D, &L->pos, NULL, &a->ape, 0));
-    att_job aj = { a, L, k, T, up16(T), up16(2 * T - 1) + 16 };
-    PROF(PK_P_REPACK, pk_par(a, repack_item, &aj, (int)(H * ((T + PK_REPACK - 1) / PK_REPACK))));
+                   gemm_then(a, a->p, D, &L->pos, NULL, &a->ape, 0, panels_tile, &pj));
+    att_job aj = { a, L, T, Tp, Pp };
     PROF(PK_P_ATT, pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
     PROF(PK_P_ATTO, pk_gemm(a, a->x, D, &L->o, NULL, &a->act, 1));
 
-    PROF(PK_P_QUANT, rowq(a, normq_item, a->x, T, D, L->conv_nw, L->conv_nb));
+    PROF(PK_P_QUANT, normq(a, a->x, T, D, L->conv_nw, L->conv_nb));
     PROF(PK_P_CONV, pk_gemm(a, a->u, 2 * D, &L->pw1, NULL, &a->act, 0));
     glu_job gj = { a->h, a->u, T, D };
-    dw_job dj = { a->o, a->h, L, T, D, m->conv_kernel };
+    dw_job dj = { a->o, a->h, L, shape(&a->act, T, D), T, D, m->conv_kernel };
     PROF(PK_P_DW, pk_par(a, glu_item, &gj, (int)((T + 15) / 16));
                   pk_par(a, dw_item, &dj, (int)((D + 63) / 64)));
-    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
     PROF(PK_P_CONV, pk_gemm(a, a->x, D, &L->pw2, NULL, &a->act, 1));
 
     ff(a, T, L->ff2_nw, L->ff2_nb, &L->ff2_up, &L->ff2_down);

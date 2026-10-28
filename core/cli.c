@@ -807,7 +807,7 @@ static int bench(const opts *o, pk_model *m) {
     double audio = (double)n / rate;
 #ifdef PK_PROFILE
     static const char *stage[PK_NPROF] = { "mel", "subsampling", "positions", "layer norms",
-        "quantize", "feed-forward", "q k v pos", "attention repack", "attention", "attention out",
+        "quantize", "feed-forward", "q k v pos", "attention", "attention out",
         "conv pw1 pw2", "glu + depthwise", "decoder" };
     double total = 0;
     for (int i = 0; i < PK_NPROF; i++) total += pk_prof[i];

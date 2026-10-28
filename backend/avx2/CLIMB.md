@@ -1531,3 +1531,155 @@ where it read its whole array from L3. Every board runs this code
 (core/encoder.c); on the others, level or ahead. Kept if the 9950X's
 16-thread run moves by more than the spread on Linux and Windows, and no
 board falls by more than its own.
+
+## 2026-10-28 - the passes between the products, made by the products' items (result: kept)
+
+The bits, on the 9950X: make check-c (kcheck, every x86 variant);
+test.wav's --json through v2 and v3 the bytes of test.v2.json and
+test.v3.json at 15 thread counts from 1 to 32; the tiny model's --json
+and --stream, and v2's and v3's --stream, the bytes of f6bc689's at 8
+thread counts; and make check-tsan clean. make check-c also passes on
+pi5c (gcc 12.2: kcheck's neon-dp and neon) and pi4 (gcc 14.2: neon, both
+models' transcripts).
+
+The SiLU as the hypothesis had it, in place on the up product's tile and
+quantized from there, lost on every Pi. Static builds of f6bc689 and of
+it, gcc 12.3 and clang 21.1.8, test.wav at the default threads, best of
+5, interleaved rounds (five; three on pi4), the medians:
+
+| board | gcc 12 | clang 21 |
+|---|---|---|
+| pi5c (Pi 5, 4 GB) | +1.29% | +0.90% |
+| pi5-8gb (Pi 5, 8 GB) | +4.60% | +4.55% |
+| pi4 (Pi 400) | +0.95% | +0.71% |
+
+and pi3, in cycles a run (each run's transcription time times the ARM
+clock's mean over it, sampled every half second, the board at its 70 C
+limit; the best of a build's five in each of three pairs), +0.07% (-0.29
+to +0.46). PROFILE=1 (gcc 12, two runs a build) put it in the
+feed-forward: +231.7 ms a run on pi5c for the 173.0 the quantize gave
+back, +433.9 for 185.7 on pi5-8gb. An item of the up product at four
+threads is 256 rows of all of a chunk's frames (250 at 20 s), a 250 KB
+tile made while the item streams the slice's 256 KB of weights; by the
+time it reaches a frame's SiLU most of the tile has left a Pi 5's 512 KB
+of L2, written back, and the SiLU in place dirtied those lines again, so
+they went out twice. The form measured from here on, and the one in the
+tree, takes a frame of the tile through a row of thread scratch as the
+pass did (copy, SiLU, quantize), so that the tile is only read.
+
+On the 9950X (the box quiet, pinfer's jobs held; Linux in WSL, clang
+21.1.8 and gcc 15.2; Windows, llvm-mingw clang 23.1.4), interleaved
+rounds, four at 16 and 8 threads and three at 1, 2 and 4, best of 5,
+f6bc689 against this, the medians (in brackets f6bc689's rounds' range
+over its median, then the paired rounds' changes):
+
+| threads | Linux clang 21 | Linux gcc 15 | Windows clang 23 |
+|---|---|---|---|
+| 16 | 0.221 to 0.212 s, -3.85% (0.9%; -1.83 to -4.52) | 0.228 to 0.216, -5.05% (0.4%; -3.96 to -5.70) | 0.205 to 0.193, -6.10% (2.9%; -4.37 to -7.69) |
+| 8 | 0.230 to 0.220, -4.57% (9.6%; +1.86 to -7.59) | 0.230 to 0.230, 0.00% (7.0%; +2.17 to -6.50) | 0.208 to 0.206, -0.72% (2.9%; +1.46 to -2.37) |
+| 4 | 0.376 to 0.377, +0.27% (0.5%) | | |
+| 2 | 0.690 to 0.691, +0.14% (0.6%) | | |
+| 1 | 1.319 to 1.330, +0.83% (0.3%; +0.23 to +0.83) | | 1.291 to 1.305, +1.08% (0.5%; +0.93 to +1.08) |
+
+and the in-place form at 16 threads -3.40% (Linux, clang) and -5.12%
+(Windows), at 8 +0.43% and -1.20%. The other boards, the same way as the
+Pis above (the M4 Pro: Apple clang 21, eight rounds, the Mac in use and
+its rounds drifting from 0.43 to 0.49 s, so paired; storage1, the
+12900HK: gcc 15.2 and clang 21.1.8 static, six rounds; the GB10: its ten
+X925s, six rounds, GLM's vLLM idle on the GPU throughout):
+
+| board | threads | compiler | f6bc689 | this | change | f6bc689's spread |
+|---|---|---|---|---|---|---|
+| GB10 | 10 | gcc 12 | 0.432 s | 0.399 s | -7.64% | 2.5% |
+| | | clang 21 | 0.430 | 0.398 | -7.55% | 2.3% |
+| pi5c | 4 | gcc 12 | 3.661 | 3.629 | -0.87% | 0.14% |
+| | | clang 21 | 3.656 | 3.618 | -1.04% | 0.30% |
+| pi5-8gb | 4 | gcc 12 | 4.190 | 4.158 | -0.76% | 0.57% |
+| | | clang 21 | 4.177 | 4.127 | -1.20% | 1.3% |
+| pi4 | 4 | gcc 12 | 18.759 | 18.752 | -0.04% | 0.42% |
+| | | clang 21 | 18.729 | 18.690 | -0.21% | 0.29% |
+| pi3 | 4 | gcc 12 | cycles | | +0.03% (pairs -0.32 to +0.36) | |
+| M4 Pro | 8 | Apple clang 21 | 0.479 | 0.480 | +0.21% (paired 0.00) | drift |
+| | 12 | | 0.469 | 0.468 | -0.32% (paired -0.95) | |
+| | default (12) | | 0.469 | 0.465 | -0.85% (paired -0.65) | |
+| storage1 | 14 | clang 21 | 0.819 | 0.819 | 0.00% | 1.0% |
+| | | gcc 15 | 0.825 | 0.824 | -0.06% | 1.0% |
+
+PROFILE=1, each stage's change in ms a run (two runs a build; the
+9950X's clang builds on Linux at 16, 8 and 1 thread and Windows at 16
+and 8; the boards' at their default threads, the M4 Pro's at 8):
+
+| stage | L16 | W16 | L8 | W8 | L1 | GB10 | pi5c | pi5-8gb | pi4 | M4 Pro | storage1 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| quantize | -12.2 | -11.9 | -6.5 | -6.9 | -39.0 | -37.9 | -171.6 | -191.7 | -497.9 | -15.6 | -32.6 |
+| feed-forward | +6.0 | +8.5 | +1.5 | +5.8 | +35.1 | +14.6 | +163.6 | +180.3 | +529.8 | +12.7 | +26.2 |
+| q k v pos | +3.5 | +4.8 | +3.9 | +4.1 | +25.7 | +3.8 | +58.7 | +103.7 | +185.0 | +2.4 | +7.0 |
+| attention repack | -8.9 | -8.8 | -3.8 | -4.0 | -19.5 | -15.5 | -83.4 | -149.1 | -151.9 | -3.4 | -8.1 |
+| glu + depthwise | +1.0 | +1.0 | +1.0 | +0.9 | +2.5 | +0.8 | +9.5 | +5.2 | +33.6 | +0.7 | +2.5 |
+| the run | -13.5 | -7.5 | +3.5 | +3.5 | +6.5 | -32.0 | -28.5 | -41.0 | +118.5 | -1.5 | -5.5 |
+
+Which logical processors ran the threads (the hypervisor's % Total Run
+Time for each, typeperf, over three benches; LPs 0-15 the first CCD): at
+8 threads Windows put 417 points of 459 on the first CCD and WSL 476 of
+525; at 16, 498 of 827 and 572 of 887.
+
+So what a pass costs made by the items is its work less its traffic, and
+the 9950X's traffic is between its CCDs. At 16 threads, half on each
+CCD, the feed-forward took on 49 to 71% of the quantize stage's fall
+(the convolution module's quantize, in it, went to glu + depthwise) and
+the K and position products 39 to 55% of the repack's, and the run is 4
+to 6% faster: the hypothesis' 5 to 8% at its low end, 9 to 12 ms where
+it expected 11 to 17. Sixteen threads now run ahead of eight (Linux
+0.212 s against 0.220, Windows 0.193 against 0.206), where f6bc689's
+were level with eight on Windows. At 8 threads, all on one CCD, the
+passes had found their lines in its L3, and made by the items they cost
+about what they did (84 and 103% on Windows): level, not the 1.5 to 2%
+expected. So on the boards whose cores share a last-level cache: the
+feed-forward took on 80 to 95% of the quantize's fall on pi5c, pi5-8gb,
+storage1 and the M4 Pro, and the products 70 to 86% of the repack (pi4
+106 and 122%: its four cores share 1 MB of L2 with the products'
+weights; its bench rounds are level). On the GB10, whose ten X925s are
+five in each of its two clusters, each with an L3 of its own (cpus 5-9
+with 8 MB, 15-19 with 16 MB; sysfs), 39% and 25%, and the run 7.6%
+faster.
+
+At one thread the change costs 0.7 to 1.1% on the 9950X (+6.5 ms in the
+profile), where the hypothesis expected level or a little ahead: the
+feed-forward took on 90% of the quantize's fall, but the products 132%
+of the repack, 25.7 ms for its 19.5. The repack walked one head's
+dimensions down 16 frames at a time; panels_tile works out each row's
+head and dimension with a division by dk, for every row of every
+16-column group of the tile, and loops over a panel's columns between
+bounds it computes, so no compiler unrolls that loop. Whether that is
+the third more is the next entry's question.
+
+Peak RSS, storage1, test.wav at 14 threads (GNU time's maximum resident
+set): 670,764 KB to 672,852, the hidden's int8 array (Te F 9/8 bytes).
+
+Kept: the 9950X's 16-thread runs moved by more than their spread on
+Linux (-3.85% under clang, -5.05% under gcc; spreads 0.9 and 0.4%) and
+Windows (-6.10%; 2.9%), the GB10's by 7.6%, and no board fell at its
+default threads by more than its own spread. The 9950X at one thread,
+0.7 to 1.1% behind, is the next entry's.
+
+## 2026-10-28 - the panels' rows a head at a time (hypothesis)
+
+At one thread on the 9950X the K and position products' items take 25.7
+ms a run more making the panels than the products did alone, where the
+repack pass they replace took 19.5 (the entry above). For every row of
+every 16-column group of its tile, panels_tile finds the row's head and
+dimension as r / dk and r % dk, a division by a value known only at run
+time, and copies the group's columns in a loop whose bounds it computes
+and whose every column it tests for padding. The repack walked one
+head's dimensions down a group of 16 frames, no division, in a loop of
+16. The hypothesis: the head and dimension stepped along the rows (one
+division a group, for the tile's first row), and a group whose 16
+columns are all the tile's and all keys or positions (every group but
+the tile's edges and the padding) copied by a loop of 16 with no test,
+make the panels cost the products no more than the repack cost at one
+thread: the 9950X's one-thread run back to f6bc689's (1.319 s under
+clang on Linux, 1.291 on Windows), and the 16-thread run level with the
+entry above's or a little ahead. No bits change: the same copy, in the
+same order. Measured on the 9950X at 1 and 16 threads under clang and
+gcc on Linux and clang on Windows, and on pi5c, against the entry
+above's tree.
