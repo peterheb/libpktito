@@ -1759,3 +1759,77 @@ efficient, so EcoQoS moves only its clock, and 3.4 ms is far from the
 3.8 s seen. What that start spent its time on is not known; neither a
 load from a file not yet cached nor a chip with efficient cores, where
 EcoQoS moves threads, was measured.
+
+## 2026-10-28 - each chunk's decoder beside the next chunk's encoder (hypothesis)
+
+pk_asr_run takes one chunk at a time: its features, its encoder, then its
+decoder, whose search runs a token's LSTM and a step's joint one after
+another, the widest products split over four threads (PK_DEC_THREADS)
+while the others wait. test.wav is three chunks (20.0, 27.8 and 12.0 s;
+71, 117 and 44 tokens), and the decoder's part of a run, from the
+PROFILE=1 runs of the entries above (d648b27's tree; the decoder is the
+same at 25ca5e6):
+
+| board | threads | the decoder, ms a run | of the run |
+|---|---|---|---|
+| 9950X, Linux, clang 21 | 16 | 11.7-11.9 | 5.1-5.4% of 0.208-0.212 s |
+| | 8 | 10.9-11.0 | 4.7% |
+| | 1 | 22.1 (cb12bab) | 1.7% |
+| 9950X, Windows, clang 23 | 16 | 10.2 | 4.7% |
+| GB10, its X925s | 10 | 16.3-17.7 | 3.9-4.1% |
+| M4 Pro | 8 | 18.7 | 3.8-3.9% |
+| 12900HK (storage1) | 14 | 25.1-25.5 | 3.1% |
+| | 1 | 34.2-36.2 | 1.2% |
+| Pi 5 (pi5c) | 4 | 139.5-144.2 | 3.8-4.0% |
+| Pi 4 | 4 | 551-554 | 2.9% |
+
+A chunk's search starts from a zero state and reads nothing of the
+encoder's but the joint's encoder half of its own frames, which one
+product makes for every frame before the search starts: Te x J floats,
+0.96 MB for 30 s. So chunk i's search can run while chunk i+1's
+features and encoder do, if the two chunks' joint halves are kept apart.
+
+The hypothesis: pk_asr_run_chunks(a, x, chunks, n, fn, arg) runs the
+loop itself. Chunk 0's encoder; then for each chunk i, its search on the
+pool's last thread beside chunk i+1's features, encoder and joint half
+on the others, and fn(arg, i, its tokens) once both are done; the last
+chunk's search as now, on four threads. Beside the encoder the search
+splits nothing, its products whole on its own thread. That thread is one
+of the encoder's, except where the transcriber runs on its fast kind
+alone (a GB10's X925s, an M4 Pro's P-cores where the race keeps them), and
+there it is an idle one. The encoder's race (encoder.c, layers) waits for
+the search first, so that each side has the threads it names. pk_asr_run
+stays as it is; pktito-c's transcription and bench take the new call,
+and --stream keeps pk_asr_run, its next stretch not yet heard.
+
+No bits change: a product computes every output element whole in one
+item, so the search's arithmetic is the same on one thread as split over
+four, and its input is its own chunk's alone.
+
+Expected on test.wav: the searches of chunks 0 and 1, 188 of the 232
+tokens (81%), hide behind the encoders of chunks 1 and 2, which take 4
+to 14 times as long as the search does on one thread (on the 9950X at 16
+threads, about 97 ms against 6.8, and 42 against 11.1). What is lost is
+one of the encoder's threads for the search's one-thread time, where
+that thread is the encoder's: 22.1 x 0.81 / 16 = 1.1 ms on the 9950X at
+16 threads and 2.2 at 8. So on the 9950X at 16 threads 0.81 x 11.8 - 1.1
+= 8.5 ms (4%), at 8 6.7 ms (3%), on Windows at 16 about 3.7%; the GB10,
+and an M4 Pro on its P-cores, the whole 81%, 3 to 3.4%, if the search's
+thread lands on a core the encoder isn't using; the 12900HK at 14
+threads 18.5 ms (2.3%); the Pis at 4 threads, where the search on one
+thread may take 1.5 to 2 times its four threads' time and a quarter of
+the encoder goes for it, 1.5 to 1.9% (Pi 5) and 1.2 to 1.5% (Pi 4). At
+one thread level: the search runs after the next chunk's encoder instead
+of before it, the same work. A longer recording hides nearly all of its
+decoder: test.wav ten times over, in about 25 chunks, 96%.
+
+Risks: beside the encoder, which streams 600 MB of weights a chunk, the
+search reads the LSTM's 6.5 MB a token from farther out than its own
+22 ms has them, and takes some of the encoder's bandwidth; on the GB10
+the scheduler may put the search on an X925 and an encoder thread on an
+A725. The memory is a second joint half, 0.96 MB with 30 s chunks.
+
+Kept if the bench moves by more than its spread on the 9950X under two
+compilers and on the boards, with none slower by more than its own; the
+bits checked as for the fused passes (make check-c; test.wav's --json at
+every thread count from 1 to 32; --stream; make check-tsan).
