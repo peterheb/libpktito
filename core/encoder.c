@@ -218,8 +218,8 @@ static void normq(pk_asr *a, const float *x, uint32_t T, uint32_t n, const float
  * of one thread's was 16. Made by the items, with the attention's panels
  * and the convolution module's quantize (dw_item), a 16-thread run there
  * is 3.9 to 6.1% faster and the GB10's, on ten X925s in two clusters,
- * 7.6%; a Pi 5's 1%, the other boards' level, and the 9950X at one
- * thread 0.7 to 1.1% behind (backend/avx2/CLIMB.md, 2026-10-28). A frame
+ * 7.6%; a Pi 5's 1%, and the other boards' and the 9950X's at one to
+ * eight threads level (backend/avx2/CLIMB.md, 2026-10-28). A frame
  * goes through a row of thread scratch so that the tile is only read:
  * SiLU in place dirtied again the lines a Pi 5's 512 KB of L2 had already
  * written back, and its run took 1.3% longer than with the pass, an 8 GB
@@ -393,8 +393,12 @@ typedef struct {
  * neon-dp/CLIMB.md). As a pass of its own after the products, a head and
  * 64 frames an item, it read lines every thread had written, and on the
  * 9950X its jobs took 54 us at 8 threads and 123 at 16; made here, the
- * products take on 39 to 55% of its time at 16 threads there, and a
- * third more than it at one (backend/avx2/CLIMB.md, 2026-10-28). */
+ * products take on 39 to 55% of its time at 16 threads there. At one
+ * thread they took on a third more than it until each row's head and
+ * dimension were stepped along the rows rather than divided out, and a
+ * whole panel was copied in a loop of sixteen with no padding test: the
+ * one-thread run there 0.2 to 1.0% faster for it, back to its time with
+ * the pass (backend/avx2/CLIMB.md, 2026-10-28). */
 typedef struct { float *dst; const float *src; uint32_t n, np, D, dk; } panels_job;
 
 static void panels_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th) {
@@ -402,15 +406,26 @@ static void panels_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32
     panels_job *j = arg;
     const uint32_t dk = j->dk, c1 = c0 + nc == j->n ? j->np : c0 + nc;
     for (uint32_t p0 = c0 & ~15u; p0 < c1; p0 += 16) {
-        /* the panel's columns [lo, hi) are the tile's, padding as zeros */
+        /* the panel's columns [lo, hi) are the tile's, padding as zeros;
+         * whole, all sixteen are the tile's and none is padding */
         const uint32_t lo = c0 > p0 ? c0 - p0 : 0, hi = min32(16, c1 - p0);
+        const int whole = lo == 0 && hi == 16 && p0 + 16 <= j->n;
         const float *col[16];
         for (uint32_t i = lo; i < hi; i++)
             col[i] = p0 + i < j->n ? j->src + (size_t)(p0 + i) * j->D : NULL;
-        for (uint32_t r = r0; r < r0 + nr; r++) {
-            float *d = j->dst + (size_t)(r / dk) * j->np * dk + ((size_t)(p0 / 16) * dk + r % dk) * 16;
-            for (uint32_t i = lo; i < hi; i++)
-                d[i] = col[i] ? col[i][r] : 0.0f;
+        /* row r is dimension d of head h, the two stepped along with it */
+        for (uint32_t r = r0, h = r0 / dk, d = r0 % dk; r < r0 + nr; r++) {
+            float *out = j->dst + ((size_t)h * j->np + p0) * dk + (size_t)d * 16;
+            if (whole)
+                for (uint32_t i = 0; i < 16; i++)
+                    out[i] = col[i][r];
+            else
+                for (uint32_t i = lo; i < hi; i++)
+                    out[i] = col[i] ? col[i][r] : 0.0f;
+            if (++d == dk) {
+                d = 0;
+                h++;
+            }
         }
     }
 }

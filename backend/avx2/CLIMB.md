@@ -1683,3 +1683,46 @@ entry above's or a little ahead. No bits change: the same copy, in the
 same order. Measured on the 9950X at 1 and 16 threads under clang and
 gcc on Linux and clang on Windows, and on pi5c, against the entry
 above's tree.
+
+## 2026-10-28 - the panels' rows a head at a time (result: kept)
+
+No bits change: test.wav's --json through v2 and v3 the bytes of
+test.v2.json and test.v3.json at 9 thread counts from 1 to 32, the tiny
+model's --json and --stream and v2's --stream the bytes of f6bc689's at
+8, and make check-c on the 9950X.
+
+On the 9950X (the box quiet, pinfer's jobs held), three interleaved
+rounds at one thread and four at 16, best of 5, against d648b27 (the
+entry above's tree) and, at one thread, f6bc689:
+
+| threads | tree | Linux clang 21 | Linux gcc 15 | Windows clang 23 |
+|---|---|---|---|---|
+| 1 | f6bc689 | 1.323 s (1.7%) | | 1.292 (0.4%) |
+| | d648b27 | 1.324 (0.4%) | 1.397 (0.2%) | 1.304 (0.3%) |
+| | this | 1.321 (0.5%) | 1.388 (0.9%) | 1.291 (0.5%) |
+| 16 | d648b27 | 0.213 (2.8%) | 0.214 (2.8%) | 0.190 (5.3%) |
+| | this | 0.209 (3.3%) | 0.215 (2.3%) | 0.190 (1.6%) |
+
+(the medians, each with its rounds' range over the median). Against
+d648b27 at one thread: Windows -1.00% (pairs -0.77 to -1.00), back to
+f6bc689's 1.291 s from the +0.93% that d648b27 cost it (+1.08% in the
+entry above); Linux -0.23% under clang (pairs 0.00 to -0.45) and -0.64%
+under gcc (pairs -0.14 to -0.79). d648b27's one-thread cost on Linux did
+not show in this sitting, +0.08% against f6bc689 where the entry above
+had +0.83%. At 16 threads level: -1.88%, +0.47% and 0.00%, inside the
+spreads.
+
+pi5c (static gcc 12.3 and clang 21.1.8, 4 threads, five rounds): +0.03%
+(pairs -0.33 to +0.06) and +0.49% (pairs -0.11 to +1.19), spreads 0.8 to
+1.0%: level, PROFILE's q k v pos +3.0 ms of 587. storage1 (the 12900HK,
+clang 21 and gcc 15 static, five rounds): at one thread -0.14% and
+-0.07%, inside spreads of 3.0 to 5.6% (one thread there lands on a P-core
+or an E-core), at 14 threads -0.61% (pairs -0.85 to -0.12) and -0.24%;
+PROFILE's q k v pos -0.6 ms at either.
+
+So what the change takes away is the 9950X's: on the 12900HK the panels
+cost about the same both ways, and whether the division or the loop's
+padding test was the 9950X's third more is not separated. Kept: the
+9950X's one-thread runs moved by more than the spread on Windows (-1.00%
+against spreads of 0.3 and 0.5%), every Linux pair at one thread is
+level or faster, and no board fell by more than its own spread.
