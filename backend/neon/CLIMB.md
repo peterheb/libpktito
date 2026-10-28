@@ -734,3 +734,50 @@ rounds, but at the edge of the control's range, and level under gcc 15;
 the softmax at sixteen is nowhere past it, on the A53 it was written for
 included. The quantize stage is faster by what the hypothesis said, and
 that is about 0.4% of a run, under the boards' spread. Not kept.
+
+## 2026-10-27 - the activations' columns 64 bytes apart past their width (results: not kept)
+
+The hypothesis above against its base under the same compiler, beside the
+layout control of the entry above, by the same method. kcheck ref's bits
+for every build on its board (2259 cases with the stride, whose quantizer
+and product cases take the columns packed or 64 bytes apart), and each
+build's test.wav transcript test.v2.json's bytes. All cross-compiled
+static on ebce152 with -mtune for the core; interleaved rounds, the order
+turned each round, best of 5 at the default threads; each build's ratio
+to base a round, median (range):
+
+| board | compiler | stride | control |
+|---|---|---|---|
+| pi4, A72, 6 rounds | gcc 15.2 | -0.60% (-0.86 to -0.51) | +0.01% (-0.17 to +0.14) |
+| | clang 21.1 | -0.21% (-0.33 to -0.10) | +0.06% (-0.11 to +0.28) |
+| pi5c, A76, 6 rounds | gcc 15.2 | -0.31% (-0.60 to +0.03) | -0.25% (-0.43 to 0.00) |
+| | clang 21.1 | -0.26% (-0.84 to -0.08) | -0.03% (-0.38 to +0.16) |
+
+Both boards throttled=0x0. PROFILE=1 builds of base and stride on pi4,
+one bench each: the feed-forward stage 11679 to 11563 ms a run under gcc
+15 (-1.0%) and 13115 to 13035 ms under clang 21 (-0.6%), every other
+stage within 0.6% either way. The A53 was not measured.
+
+On the A72 the stride is below base in every round under both compilers,
+past the control's range under gcc and touching it under clang, but a
+third of what was predicted: a run 0.2 to 0.6% faster where 1 to 2% was,
+the feed-forward 0.6 to 1.0% where 2 to 5% was. On the A76 it is within
+the control's range under both, as predicted.
+
+Where the rest went, by the cache's arithmetic (not measured): the stride
+keeps a tile's columns out of one set at any one step, which is the
+conflict the hypothesis counted. But over a tile's 1024 inputs, columns
+whose pages agree on bits 12 and 13 still pass through the same sets, a
+line apart in time, and a two-way set that takes two activation lines
+between two uses of its weight line has lost the weight line, at the same
+step or not. And the chunk's weights conflict among themselves: a panel's
+16 KB for a chunk lie in four 4 KB pages, and unless all four differ in
+bits 12 and 13 (24 draws in 256), two of them fill both ways of 64 sets,
+where every activation line evicts a weight. The A53's four ways hold
+both; the A72's two hold one.
+
+Not kept: past the spread on one core of the three, at a third of the
+prediction there, where keeping it means every backend taking the stride,
+the AMX path's tile loads included, and a no-loss bench on each x86
+family. If the A72's chunking is measured, the stride is worth measuring
+again with it.
