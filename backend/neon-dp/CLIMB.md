@@ -1535,3 +1535,19 @@ no registers and moves no stack - out of line, a leaf, clear of v8 to
 v15 - would keep its line on Windows as well, with 24 registers to this
 loop's 32: the weights two at a time and the four scales through two.
 That is a different loop, to be measured as one.
+
+## 2026-10-27 - the SDOT block loop in assembly on Android (a measurement, android-9950x's)
+
+ebce152 against bf5abaa (the loop's parent, the C tile), measured by the
+android-9950x session: NDK r30's clang 21 for API 24, both trees from git
+archive, test.wav through v2, best of 5 at the default threads, 8
+interleaved rounds with 45 s of rest before each; every build's --json
+byte for byte the same.
+
+| device | SoC | the loop in assembly | |
+|---|---|---|---|
+| Galaxy Tab S7 FE (SM-T733) | Snapdragon 778G | -0.50% (-1.0 to -0.0) | base 3.216-3.243 s, new 3.205-3.231 s |
+| RG477V | Dimensity 8300 | -4.8% (-10.9 to +4.5) | noisy; the fastest of each 3.161 s and 3.096 s (-2.1%) |
+| Galaxy S25 Ultra | Snapdragon 8 Elite | no result | 1.10 s or 1.6 to 2.2 s in both builds, which looks like where the threads were placed, not the kernel; the fastest of each 1.096 s and 1.104 s (+0.7%) |
+
+Faster or level where a result could be had, as on the boards above.
