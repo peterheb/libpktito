@@ -697,3 +697,40 @@ faster, past the spread under both compilers. On the A53 and the A76,
 within the spread. If it holds, the AVX2 backends take the stride too
 (they copy their columns each call, so only the copy's reads move), and
 the 9950X is benched for no loss before it is kept.
+
+## 2026-10-27 - FCVTNS, and the softmax's exponentials sixteen at a time (results: not kept)
+
+The two hypotheses above, each against its base under the same compiler,
+beside a layout control: 1120 bytes of code nothing calls at the head of
+core/cli.c, which moves every object linked after it 32 bytes modulo 64.
+kcheck ref's bits for every build on its board, and each build's test.wav
+transcript test.v2.json's bytes. Interleaved rounds, the order turned
+each round, test.wav through v2, best of 5 at the default threads; each
+variant's ratio to its base a round, median (range):
+
+| board | compiler | FCVTNS | softmax16 | control |
+|---|---|---|---|---|
+| pi4, A72, 6 rounds | gcc 14.2 | -0.07% (-0.37 to +0.22) | -0.08% (-0.34 to +0.02) | -0.01% (-0.22 to +0.39) |
+| | clang 21.1 | -0.06% (-0.54 to +0.66) | -0.23% (-0.46 to +0.14) | +0.10% (-0.19 to +0.32) |
+| pi3, A53, 3 rounds | gcc 14.2 | +0.07% (-1.88 to +0.18) | -0.09% (-1.14 to +0.12) | +0.18% (-1.22 to +0.35) |
+| | clang 21.1 | -0.11% (-0.33 to +0.53) | +0.66% (-0.52 to +1.28) | +0.94% (-0.20 to +1.99) |
+| pi5c, A76, on ebce152, 6 rounds | clang 21.1 | -0.38% (-1.12 to -0.22) | -0.10% (-0.49 to +0.03) | -0.03% (-0.38 to +0.16) |
+| | gcc 15.2 | -0.18% (-0.43 to +0.19) | -0.23% (-0.54 to -0.19) | -0.25% (-0.43 to 0.00) |
+
+pi4's and pi3's gcc builds were the boards' own (Debian 13), their clang
+builds cross-compiled with -mtune for the core; pi5c's were all
+cross-compiled static, on ebce152, where the 4-column SDOT tile's loop is
+assembly at a 64-byte line (backend/neon-dp/CLIMB.md). pi3 reached its
+soft temperature limit (throttled=0x80008), and its runs drifted 7%
+slower over the rounds, which the rounds' turned order spreads over every
+build. On pi5c before ebce152, a build of each with the product's loops
+put 32 bytes along read FCVTNS at -0.08% under clang and -0.01% under gcc
+against base the same (backend/neon-dp/CLIMB.md, the int8 product's loops
+32 bytes along), where PROFILE=1 had its quantize stage 7% faster.
+
+Neither moves a run past its control on any board under both compilers.
+FCVTNS under clang on the A76 comes nearest, below base in all six
+rounds, but at the edge of the control's range, and level under gcc 15;
+the softmax at sixteen is nowhere past it, on the A53 it was written for
+included. The quantize stage is faster by what the hypothesis said, and
+that is about 0.4% of a run, under the boards' spread. Not kept.
