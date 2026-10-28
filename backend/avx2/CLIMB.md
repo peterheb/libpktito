@@ -1431,3 +1431,103 @@ at the default backend, amx-int8, and under PKTITO_KERNELS ref, avx2,
 avx2-vnni, avx512-vnni and amx-int8, and they are the bytes it writes on
 the 9950X under every backend there and 0.9.3's .deb (gcc 11.4) wrote
 (pktito-9950x's check).
+
+## 2026-10-28 - the release builds' compiler, x86: an i7-10875H (a measurement)
+
+The Windows x64 binaries of the entry above (be5c4ae's tree, MSYS2's
+gcc 16.2.0 and llvm-mingw's clang 23.1.4, each at the four placements)
+on a laptop's i7-10875H (Comet Lake, 8 cores, 16 threads; Windows 11 on
+AC, the Balanced plan, the clock steady at about 2.4 GHz), pktito-
+windows' sitting of 2026-10-28: 6 interleaved rounds, test.wav through
+v2, best of 5, every run avx2 at its default 8 threads. Every binary's
+transcript is test.v2.json's bytes. clang against gcc a round: -12.3%
+(-13.5 to -10.0), gcc's time 3.65 s; the spread 1.5% (clang's; gcc's
+1.1%). The 9950X's avx2 row above is -10.25%: clang's avx2 product is
+ahead on both. The laptop's other processes took 4.7 of its 16 threads'
+time throughout (2.0 to 8.0), alike in both compilers' rounds.
+
+## 2026-10-28 - the passes between the products, made by the products' items (hypothesis)
+
+On the 9950X a run at 16 threads is no faster than at 8. cb12bab, clang
+21.1.8, avx512-vnni, test.wav (60 s in three chunks), plain builds, three
+interleaved rounds, best of 5: Linux (WSL) 0.218-0.316 s at 8 threads,
+0.222-0.232 at 16, 0.283-0.647 at 32; Windows 0.205-0.206, 0.204-0.227 and
+0.229-0.260. A PROFILE=1 build of the same tree that also counts each
+stage's pool jobs, two rounds at each of 1, 2, 4, 8 and 16 threads on
+each OS (the other sessions' jobs held), Linux, the two rounds' means:
+
+| stage | 1 thread | 8 | 16 | jobs | a job at 1 | at 8 | at 16 |
+|---|---|---|---|---|---|---|---|
+| norm+quantize | 14.1 ms | 3.0 | 6.0 | 288 | 48.9 us | 10.6 | 21.1 |
+| silu+quantize | 37.1 | 6.7 | 10.9 | 144 | 257.6 | 46.0 | 75.7 |
+| quantize, attention and conv out | 3.3 | 0.9 | 2.7 | 144 | 23.3 | 6.1 | 18.9 |
+| attention repack | 19.0 | 3.9 | 8.8 | 72 | 265.0 | 53.8 | 122.7 |
+| glu | 5.0 | 1.1 | 2.6 | 72 | 68.8 | 15.1 | 36.5 |
+| depthwise | 15.2 | 2.5 | 2.8 | 72 | 211.6 | 35.3 | 38.8 |
+| layer norms | 1.9 | 0.6 | 1.0 | 72 | 25.9 | 7.8 | 14.3 |
+| feed-forward | 665.8 | 118.2 | 96.7 | 288 | | | |
+| q k v pos | 206.4 | 40.0 | 35.2 | 288 | | | |
+| decoder | 22.1 | 11.4 | 12.4 | 946 | | | |
+| the run, best of 5 | 1.317 s | 0.218 | 0.222 | | | | |
+
+The products still gain from 8 threads to 16; the passes between them
+lose, every job slower at 16 threads than at 8 in its own time, with the
+same work: the depthwise convolution's by a tenth, the rest's 1.6 to 3.1
+times (the repack's 54 us a job to 123). Windows' rounds are the same.
+The pool's own cost is not it: a job of one empty item a thread takes
+0.76 us at 8 threads, 2.05 at 16 and 4.46 at 32, and 16 items of 20 us
+22.47 us at 16 (a bench of core/pool.c alone, best of 5 batches), about
+3.5 ms of a run's 1,750 jobs at 16.
+
+What these passes share is that each reads what the product before it
+wrote, all of it, split the other way: a product's items are slices of
+its output's rows (pk_gemm), a pass's are blocks of frames, heads or
+channels, so every item reads lines most of the other threads wrote. At
+16 threads half of those are on the other CCD, the lines in its caches,
+reached over Infinity Fabric; at 8, if the scheduler keeps them on one
+CCD (Windows prefers the faster CCD's cores, and WSL's vCPUs are threads
+Windows schedules), none are. The sitting will check which cores 8
+threads run on.
+
+The hypothesis: three of the passes read only what one item of the work
+before them made, and can be made by that item, from its own core's
+cache, with nothing to wait for and no lines from the other threads:
+
+- the feed-forward's SiLU and quantize, by the up product's items, on
+  their tile, a frame at a time: a slice of 64 or 256 of the hidden's
+  rows is 2 or 8 whole blocks of 32. The hidden's int8 then needs an
+  array of its own, since the up product reads a->act while its items
+  write the hidden: Te (F + F/8) bytes, 3.5 MB at a minute.
+- the attention's repack, by the K and position products' items: each
+  transposes its tile into the panels, the last column chunk's item
+  writing the padding.
+- the convolution module's output quantize, by dw_item: its 64 channels
+  of a frame are 2 whole blocks.
+
+Not here: the attention's output quantize, which att_item could make
+only where a head's dimensions are whole blocks of 32 (Parakeet's are
+128, but the tiny model's, tools/pktito_tools/tiny.py, 16); the layer
+norms (a frame's norm needs all of its rows, which every item of the
+product before wrote), the GLU (its gate is D rows from its value, in
+another item's slice; with pw1's items made of a slice and its gate's
+slice it could be the product's, a split of its own for an entry of its
+own), and the depthwise convolution, which reads the GLU's output across
+frames.
+
+No bits change: SiLU is element-wise, the quantizer's blocks are
+independent (a column's blocks quantized a part at a time are the bytes
+of the whole column's), the repack is a copy, and kcheck holds every
+backend's quantize and SiLU to ref's at these lengths (n of 32 to 1280,
+T of 1 to 20; SiLU at 1 to 3000).
+
+Expected on the 9950X, Linux: at 16 threads the three passes' 21.1 ms a
+run (10.9 + 8.8 and half of 2.7) fall to about their one thread's work
+over 16 (57.8 / 16 = 3.6 ms), plus the epilogues' calls (each kernel
+call takes 32 to 256 inputs), so the run 11 to 17 ms faster (5 to 8%)
+and then ahead of 8 threads. At 8 threads 11.1 ms (6.7 + 3.9 + 0.45) to
+about 7.2, 1.5 to 2%. At one thread level or a little ahead: SiLU's copy
+through a row of scratch is gone, and the repack reads its tile from L2
+where it read its whole array from L3. Every board runs this code
+(core/encoder.c); on the others, level or ahead. Kept if the 9950X's
+16-thread run moves by more than the spread on Linux and Windows, and no
+board falls by more than its own.
