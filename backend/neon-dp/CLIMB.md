@@ -1569,3 +1569,61 @@ The S25 Ultra's first run, 1.1 s or 1.6 to 2.2 s in both builds, was the
 phone asleep on battery, not where the threads were placed. Awake, the
 loop is faster there, and on the Googlebook, as on every other device
 measured.
+
+## 2026-10-28 - the int8 product on SME2's SMOPA with its loads, a scale a row (a measurement)
+
+The 2026-10-24 entry measured SMOPA on registers. This one gives it its
+loads, for the products that could take SMOPA's integer sums whole:
+activations with one scale a column (qb = n), which tools/quantcheck.py
+finds cost nothing measurable for q, k, v and the positions (README,
+"Why int8"): paired against the engine's blocks of 32, dlogp +0.003 (t
++1.1) on v2 over LibriSpeech's 200 and -0.004 (t -1.1) on v3 over
+FLEURS' 360. The engine itself built so (a scratch build of 33c5e7c,
+tests/wercheck.py) keeps the same 4 of 200 and 45 of 360 transcripts
+different from float32's as 33c5e7c, at WER 1.49% and 4.38% against
+1.51% and 4.42%.
+
+The probe, kept with the session's notes and not in the tree: the QKV
+stage of a 20 s chunk, 24 layers of q, k and v (1024 x 1024 at T 256)
+and the positions (1024 x 1024 at 512), each product with its own
+weights so that they stream as the encoder's do; four ZA tiles, 32 rows
+by 32 columns a step; the weights' panels as the file holds them (16
+rows by 4 inputs, 64 bytes: SMOPA's operand as it is), the activations
+packed 16 columns by 4 inputs (0.02 ms for 256 columns of 1024); each
+tile drained once, at the end (MOVA vgx4, SCVTF x4, the column's scale,
+the row's, the bias). Every output is ref's bits: 0 of 262,144
+different from ref's formula. Apple clang 21, the M4 Pro in use (load
+1.9 to 5.4), best of 7, multiply-adds a second:
+
+| threads | the stage | SMOPA on registers alone |
+|---|---|---|
+| 1 | 1331-1358 G | 2005-2009 G |
+| 2 | 2497-2533 G | 4004-4012 G |
+| 4, from a shared counter | 2647-2914 G (a static split: 1135) | 1223-1250 G |
+| 8, from a shared counter | 2298-2809 G (a static split: 1440, 2027) | 1424-1984 G |
+| 8: 1 SMOPA thread, the rest the tree's pk_k_gemm_q8 (SDOT) | 1765-1766 G | |
+| 8: 2, 3 or 4 SMOPA threads, the rest SDOT | 2447-2466 G | |
+| 8, all SDOT at blocks of 32 (33c5e7c's numerics) | 1342-1430 G | |
+| 8, all SDOT at a scale a row | 1262-1315 G | |
+
+With its loads one thread gets two thirds of the unit's peak. The K loop
+in assembly, the next four groups' loads issued ahead of this four's
+SMOPAs, ran level with clang's (1331 against 1351 G), so the loads'
+latency is not what is lost. Two threads used both clusters' units (4.0
+T on registers). At four and eight, threads in streaming mode ran 3 to
+12 times slower than the fastest (8.2 ms against 25 to 103 on
+registers), sharing a unit or on the E cores', and a shared counter
+takes most of that back. SDOT threads beside SMOPA's add nothing. So
+SMOPA takes these products in about half the time eight cores of SDOT
+take now, and the QKV stage, 77 ms of a 475 ms run at 8 threads (16.2%,
+PROFILE, 2026-10-28), would give back about 7 to 8% of an M4 Pro run.
+
+Not taken up yet. A scale a row needs every backend's tile fast at a
+whole row first. Through this file's C tile an M4 core does 180-194 G
+at a row, against 188 at 32 in the same code and 193-212 in the
+assembly (q8bench, 1024 x 1024 at 256 columns): each accumulator is one
+chain of SDOTs the row's length, where shorter blocks let the next
+block's chains overlap, and two chains a sum would take it back at the
+same bits. Then the SME2 variant, and a place to pack the activations: a
+call takes a slice of rows and every column, so packing in the kernel
+would pack them again for each slice.

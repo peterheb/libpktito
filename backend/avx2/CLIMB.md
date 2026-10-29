@@ -1970,3 +1970,81 @@ round was faster, by 1.42% or more; long10.wav by 3.6% against spreads
 under 1%; the 12900HK's by more than its spreads; every round faster on
 the GB10 and the M4 Pro; the Pis level or a little ahead; and nothing
 slower by more than its spread.
+
+## 2026-10-28 - blocks of 64 at the caller's choice: a fast mode (hypothesis)
+
+The encoder's activations are int8 in blocks of 32 (README, "Why int8"):
+every block's integer sum ends in a convert and a fused multiply-add, and
+every block costs the quantizer an absolute maximum and two divisions.
+Blocks of 64 halve both, and move transcripts further from float32's,
+which is why the default stays 32.
+
+What they cost, measured before this (2026-10-28). tools/quantcheck.py,
+the encoder's activations at 64 paired against the engine's 32: v2 over
+LibriSpeech's 200 recordings dlogp +0.002 (t +0.8), 3 transcripts
+different; v3 over FLEURS' 360 -0.006 (t -1.2), 26 different; the
+encoder's error 4.1% against 3.6% and 5.8% against 5.3%. The engine
+itself, core/encoder.c's QB at 64 on 33c5e7c (a scratch build), through
+tests/wercheck.py against quantcheck's float32:
+
+| | v2: WER | differ from float32 | v3: WER | differ from float32 (WER between) |
+|---|---|---|---|---|
+| blocks of 32 (33c5e7c) | 1.51% | 4 of 200 | 4.42% | 45 of 360 (0.35%) |
+| blocks of 64 | 1.47% | 7 | 4.43% | 49 (0.50%) |
+
+What they buy: the same scratch build against 33c5e7c, test.wav through
+v2, best of 5 at the default threads, four interleaved rounds, the order
+turned, each base build's --json test.v2.json's bytes:
+
+| board | threads | compiler | 33c5e7c | blocks of 64 | a round's change, median (range) |
+|---|---|---|---|---|---|
+| 9950X, Linux | 16 | gcc 15 | 0.209 s | 0.198 | -5.5% (-5.7 to -3.9) |
+| | | clang 21 | 0.204 | 0.1945 | -4.4% (-5.9 to -3.4) |
+| 12900HK (storage1) | 14 | gcc 15 | 0.809 | 0.764 | -5.6% (-6.2 to -5.1) |
+| | | clang 21 | 0.8055 | 0.7595 | -5.8% (-6.0 to -5.0) |
+| GB10 | 10 | gcc 13 | 0.388 | 0.372 | -3.7% (-4.6 to -3.1) |
+| | | clang 18 | 0.3815 | 0.3655 | -4.6% (-4.7 to -2.7) |
+| M4 Pro, in use | 12 | Apple clang 21 | 0.422 | 0.401 | -5.0% (-5.4 to -4.1) |
+| Pi 5 (pi5c) | 4 | gcc 12 | 3.628 | 3.440 | -5.2% (-5.4 to -5.0) |
+
+And the int8 product alone: q8bench on one core (taskset), the
+encoder's three shapes (4096 x 1024, 1024 x 4096, 1024 x 1024) at 256
+columns in 64-row slices, best of 5, three interleaved rounds, blocks of
+64 against 32, the range over the shapes' medians:
+
+| core | the tile at 32 | at 64 | 64 against 32 |
+|---|---|---|---|
+| Zen 5 (9950X) | zmm, unrolled (as now) | the same, unrolled | +8 to +12% (gcc 15), +5 to +7.5% (clang 21) |
+| Zen 5, PKTITO_KERNELS=avx2 | VPMADDUBSW, unrolled | the same | -5 to -6% (gcc 15), +3 to +4% (clang 21) |
+| Golden Cove (12900HK) | AVX-VNNI, unrolled | the same | +1 to +2% (gcc 15), -0.7 to +1.1% (clang 21) |
+| M4 Pro P-core | SDOT, the assembly | the C tile | +8 to +13% (Apple clang 21) |
+| X925 (GB10) | | | +3.5 to +10% (gcc 13, clang 18) |
+| A76 (Pi 5) | | | +5 to +7% (gcc 12) |
+| A72 (Pi 4) | ARMv8.0, the assembly | the C tile | -4 to -8% (gcc 14); the C tile at 64 against its own 32, +8 to +10% |
+| A53 (Pi 3) | | | -2 to 0% (gcc 14); the C tile's, +4 to +5% |
+
+The hypothesis: a fast mode, pk_asr_set_fast_mode(a, 1) and pktito-c's
+--fast, for a caller who wants the speed more than float32's nearest
+transcripts. Off by default, and the default's bits are 33c5e7c's. In it
+the encoder's activations are in blocks of 64 wherever a product's input
+is whole blocks of 64 (every one of Parakeet's; the tiny model's 32
+subsampling channels keep 32), and the decoder's stay a row each.
+core/encoder.c's QB becomes a choice the transcriber makes from that.
+The slices the fused passes quantize, 64 and 256 of a product's rows,
+and the depthwise items' 64 channels are whole blocks of 64 already.
+Each x86 tile's unrolled block of 32 becomes a macro, and a block of 64
+two of it, which is what the table measured; NEON with dotprod takes
+blocks of 64 through its C tile, as measured; the ARMv8.0 loop at 64 is
+backend/neon/CLIMB.md's next entry, and until it the A72 and the A53 run
+the C tile at 64, slower than their default. AMX's pipeline takes blocks
+of 32 only, and at 64 the amx-int8 build runs its zmm tile, unmeasured.
+Every backend computes ref's bits in each mode: kcheck learns blocks of
+64, and make check-c checks --fast's test.wav against ref's
+(tests/data/test.v2.fast.json and test.v3.fast.json).
+
+Predicted: --fast against the default as the whole-run table above,
+within a point; the default against 33c5e7c level, its bits the same.
+The VPMADDUBSW tile's -6% under gcc is to be looked at before the
+commit. Kept if --fast is faster than the default by more than the
+spread on every board with a dotprod or a VNNI tile, under both
+compilers, and the default is level with 33c5e7c.
