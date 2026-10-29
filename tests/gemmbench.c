@@ -2,14 +2,15 @@
  * climbs, where a whole transcription takes minutes on a Pi 3 and this takes
  * seconds.
  *
- *     ./tests/gemmbench [T] [threads] [MHz] [column block]
+ *     ./tests/gemmbench [T] [threads] [MHz] [column block] [QB]
  *
  * Each shape is called as core/encoder.c's pk_gemm calls it: in slices of 64
  * rows, every column of a T-column activation (T 250 is a 20 s chunk, what
  * --max-chunk 30 makes of Silero's 60 s test.wav), activations in blocks of
- * 32. With more than one thread the slices are dealt from a counter, as the
- * pool deals them. MAC/cycle is per core, at MHz (default: cpu0's cpufreq,
- * read before and after; a run whose clock moved says so).
+ * QB, 32 (the default) or the fast mode's 64. With more than one thread the
+ * slices are dealt from a counter, as the pool deals them. MAC/cycle is per
+ * core, at MHz (default: cpu0's cpufreq, read before and after; a run whose
+ * clock moved says so).
  */
 #include "kernels.h"
 #include "pkf.h"
@@ -97,24 +98,29 @@ int main(int argc, char **argv) {
     int nth = argc > 2 ? atoi(argv[2]) : 1;
     double mhz = argc > 3 ? atof(argv[3]) : 0;
     uint32_t cb = argc > 4 ? (uint32_t)atoi(argv[4]) : 0;
+    uint32_t qb = argc > 5 ? (uint32_t)atoi(argv[5]) : 32;
+    if (qb != 32 && qb != 64) {
+        fprintf(stderr, "gemmbench: QB is 32 or 64\n");
+        return 1;
+    }
     static const struct { const char *name; uint32_t rows, n; } shapes[] = {
         { "ff up      4096x1024", 4096, 1024 },
         { "ff down    1024x4096", 1024, 4096 },
         { "q k v o    1024x1024", 1024, 1024 },
         { "conv pw1   2048x1024", 2048, 1024 },
     };
-    printf("%s, T %u, %d thread%s\n", pk_k_name(), T, nth, nth == 1 ? "" : "s");
+    printf("%s, T %u, %d thread%s, blocks of %u\n", pk_k_name(), T, nth, nth == 1 ? "" : "s", qb);
     double tot_mac = 0, tot_s = 0;
     for (size_t i = 0; i < sizeof shapes / sizeof shapes[0]; i++) {
         uint32_t rows = shapes[i].rows, n = shapes[i].n;
         int8_t *w = amalloc((size_t)rows * n), *q = amalloc((size_t)T * n);
-        float *ws = amalloc(rows * 4), *d = amalloc((size_t)T * n / 32 * 4);
+        float *ws = amalloc(rows * 4), *d = amalloc((size_t)T * n / qb * 4);
         float *out = amalloc((size_t)T * rows * 4);
         for (size_t k = 0; k < (size_t)rows * n; k++) w[k] = (int8_t)((int)(rnd() % 255) - 127);
         for (size_t k = 0; k < (size_t)T * n; k++) q[k] = (int8_t)((int)(rnd() % 255) - 127);
         for (uint32_t r = 0; r < rows; r++) ws[r] = 0.01f;
-        for (size_t k = 0; k < (size_t)T * n / 32; k++) d[k] = 0.02f;
-        pk_act a = { q, d, n, 32, T };
+        for (size_t k = 0; k < (size_t)T * n / qb; k++) d[k] = 0.02f;
+        pk_act a = { q, d, n, qb, T };
         double best = 1e30, m0 = cur_mhz(), m1 = 0;
         for (int rep = 0; rep < 5; rep++) {
             job j = { out, w, ws, rows, &a, cb, 0 };
@@ -145,13 +151,13 @@ int main(int argc, char **argv) {
     {
         uint32_t rows = 64, n = 256, TL = 48;
         int8_t *w = amalloc((size_t)rows * n), *q = amalloc((size_t)TL * n);
-        float *ws = amalloc(rows * 4), *d = amalloc((size_t)TL * n / 32 * 4);
+        float *ws = amalloc(rows * 4), *d = amalloc((size_t)TL * n / qb * 4);
         float *out = amalloc((size_t)TL * rows * 4);
         for (size_t k = 0; k < (size_t)rows * n; k++) w[k] = (int8_t)((int)(rnd() % 255) - 127);
         for (size_t k = 0; k < (size_t)TL * n; k++) q[k] = (int8_t)((int)(rnd() % 255) - 127);
         for (uint32_t r = 0; r < rows; r++) ws[r] = 0.01f;
-        for (size_t k = 0; k < (size_t)TL * n / 32; k++) d[k] = 0.02f;
-        pk_act a = { q, d, n, 32, TL };
+        for (size_t k = 0; k < (size_t)TL * n / qb; k++) d[k] = 0.02f;
+        pk_act a = { q, d, n, qb, TL };
         double best = 1e30;
         for (int rep = 0; rep < 5; rep++) {
             double t0 = now_s();

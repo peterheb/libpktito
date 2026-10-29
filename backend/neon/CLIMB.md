@@ -1208,3 +1208,82 @@ time level with its build before. Kept if the fast mode is faster than
 the default by more than the spread on both boards under both
 compilers, kcheck gives ref's bits on both, on a Pi 5's neon and on the
 M4 Pro's, and the block of 32's loop is the same bytes.
+
+## 2026-10-29 - the ARMv8.0 loop at blocks of 64, for the fast mode (results: kept)
+
+q8_blocks3_qb64 as the hypothesis has it, and the block of 32's loop
+written in the same segments (Q8V_HEAD, Q8V_UNITS3_11, Q8V_STEP32,
+Q8V_HALF, Q8V_NEXT_FINISH, Q8V_TAIL): its asm template, preprocessed and
+joined, is the 433 lines it was, character for character. The block of
+64's is 817 lines. In the objects the block of 32's loop is the same
+instructions, its vector registers the template's, but not the same
+bytes: the general registers that hold its pointers and count are the
+compiler's, and both compilers give them others now (objdump of pi3's
+builds, addresses and branch targets taken out: the longest run the same
+37 to 54 instructions, and with the general registers' names taken out
+too 386 to 434). kcheck's 1906 cases give ref's bits on pi4 and pi3
+under gcc 14.2 (each board's own, tuned for its core) and clang 21.1.8
+(cross-built, static, tuned for the core), on the GB10 (gcc 13.3 and
+clang 18, neon and neon-dp), on pi5c (gcc 12.2) and on the M4 Pro (Apple
+clang 21); and they fail with either of two planted faults, the second
+half's first unit starting its sums with SADDLP where it adds to the
+first half's with SADALP, and the same in its unit 3. make check-c
+passes on pi4 and pi3, with --fast's transcripts. pi5c, the M4 Pro and
+the GB10 run neon-dp by default, which this does not reach.
+
+The product alone, gemmbench at T 250 on one thread (the encoder's four
+shapes as pk_gemm calls them), two rounds, blocks of 64 against 32, the
+loop at each, the four shapes' time:
+
+| board | compiler | blocks of 32 | 64 | change |
+|---|---|---|---|---|
+| pi4, A72 | gcc 14.2 | 365.15, 366.93 ms | 339.47, 339.89 | -7.0%, -7.4% |
+| | clang 21.1 | 360.04, 360.59 | 344.36, 340.74 | -4.4%, -5.5% |
+| pi3, A53 | gcc 14.2 | 847.16, 842.19 | 812.49, 812.88 | -4.1%, -3.5% |
+| | clang 21.1 | 851.99, 845.91 | 822.93, 822.65 | -3.4%, -2.7% |
+
+In L1 (64 rows by 256 inputs, T 48, one thread), MAC a cycle at
+cpufreq's clock: the A72 4.82 and 4.84 at 32 and 5.04 and 5.13 at 64
+under gcc, 4.74 and 4.77 and 5.07 and 5.13 under clang, a block of 32's
+768 multiply-adds 158.7 to 162.0 cycles at 32 and 149.7 to 152.4 at 64,
+6.3 to 12.3 fewer, where the prediction was half the finish's 18; the
+A53 2.64 at 32 and 2.73 and 2.74 at 64 under gcc, 2.60 and 2.62 and 2.71
+under clang, 290.9 to 295.4 cycles and 280.3 to 283.4, 9.6 to 12.0
+fewer.
+
+Whole runs: interleaved rounds, the order turned each round, test.wav
+through v2, best of 5 at the default threads (4), against the default of
+this build (s2) and against 33c5e7c's (base) under the same compiler, a
+round's change, median (range); s1 is the fast mode's commit (de85e2a),
+whose ARMv8.0 tile takes blocks of 64 in its C:
+
+| board, rounds | compiler | base | s2 default | s2 --fast | s1 --fast |
+|---|---|---|---|---|---|
+| pi4, A72, 3 | gcc 14.2 | 18.742 s | 18.742, +0.0% (0.0 to +0.1) | 17.711, -5.5% (-5.6 to -5.5) | 19.692, +4.9% (+4.8 to +5.4) |
+| | clang 21.1 | 18.712 | 18.702, -0.1% (-0.2 to +0.3) | 17.672, -5.5% (-5.6 to -5.4) | |
+| pi3, A53, 2 | gcc 14.2 | 48.491 | 48.981, +1.0% (-0.3 to +2.4) | 47.323, -3.4% (-3.6 to -3.1) | 49.507, +1.1% (+1.0 to +1.2) |
+| | clang 21.1 | 49.193 | 49.322, +0.3% (+0.1 to +0.4) | 47.746, -3.2% (-3.2 to -3.2) | |
+
+pi4 throttled=0x0 throughout, its clock 1.8 GHz. pi3 ran its whole runs
+at the soft limit its config sets (temp_soft_limit=70), 70.9 to 74.7 C,
+its clock sampled at 0.9 to 1.2 GHz of its 1.4 (throttled=0x80008), and
+base-gcc's two runs, the sitting's first and last, are 47.783 and 49.199
+s, 3.0% apart; with the order turned by one a round, the other pairs ran
+in the same order both rounds. So the default's product alone on pi3,
+gemmbench as above on core 2, base's against s2's at blocks of 32, 6
+rounds in the order base, s2, s2, base and its reverse, the board at 64
+to 67 C: under gcc +0.26% (+0.08 to +0.89), slower in every round, and
+under clang +0.10% (-0.16 to +0.64).
+
+Predicted were 5 to 7% on the A72's product and 3 to 5% on the A53's,
+and 3 to 5% and 2 to 4% of a run. The A72's product is 7.0 to 7.4%
+faster under gcc and 4.4 to 5.5% under clang, and its run 5.5% under
+both; the A53's product 3.5 to 4.1% under gcc and 2.7 to 3.4% under
+clang, and its run 3.4% and 3.2%.
+
+Kept: the fast mode past the spread on both boards under both compilers,
+from 4.9% and 1.1% slower than the default with the C tile at 64 to 5.5%
+and 3.2 to 3.4% faster. The hypothesis asked too for the block of 32's
+loop in the same bytes, and it is the same instructions in other general
+registers: the default's time is level on the A72, and on the A53 its
+product is 0.26% slower under gcc and level under clang.

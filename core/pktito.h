@@ -98,12 +98,12 @@ int     pk_asr_threads(const pk_asr *a);
  * transcript nearest float32's: WER is level, a few more transcripts differ
  * from float32's (49 of FLEURS' 360 against 45), and on the boards
  * measured a run is 3.9 to 7.3% faster where the int8 product is a dot
- * product (SDOT, VPDPBUSD) and 1 to 3% with x86's VPMADDUBSW (README, "Why
- * int8"; backend/avx2/CLIMB.md, 2026-10-29). Without dotprod (an A72, an
- * A53) the tile takes blocks of 64 in C, and the mode is slower, 4.9% on a
- * Pi 4 and 1.1% on a Pi 3; AMX's pipeline takes blocks of 32 alone, and in the mode the
- * amx-int8 build runs its zmm tile, unmeasured. From the next call on;
- * every backend computes the same bits in either mode. */
+ * product (SDOT, VPDPBUSD), 5.5% on a Pi 4 and 3.2 to 3.4% on a Pi 3 with
+ * the ARMv8.0 loop, and 1 to 3% with x86's VPMADDUBSW (README, "Why int8";
+ * backend/avx2/CLIMB.md and backend/neon/CLIMB.md, 2026-10-29). AMX's
+ * pipeline takes blocks of 32 alone, and in the mode the amx-int8 build
+ * runs its zmm tile, unmeasured. From the next call on; every backend
+ * computes the same bits in either mode. */
 void    pk_asr_set_fast_mode(pk_asr *a, int on);
 
 /* One token of a transcript: a piece of the vocabulary, the encoder frame

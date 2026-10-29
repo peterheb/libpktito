@@ -240,12 +240,12 @@ and divisions - for a little of that nearness, and are the fast mode's
 (`--fast`, `pk_asr_set_fast_mode`). Through `tests/wercheck.py`, v2 over
 LibriSpeech is 1.47% in it, 7 transcripts not float32's (4 at 32), and v3
 over FLEURS 4.43%, 49 (45); the WER between them and float32's 0.07% and
-0.50% (0.07% and 0.35%). On the boards measured a run in it is 3.9 to
-7.3% faster where the int8 product is a dot product (SDOT, VPDPBUSD) and
-1 to 3% with x86's VPMADDUBSW (avx2 forced on two of them); without
-dotprod (an A72, an A53) the tile takes blocks of 64 in C, and the mode
-is slower, 4.9% on a Pi 4 and 1.1% on a Pi 3 (backend/avx2/CLIMB.md,
-2026-10-29). The default stays the transcript nearest float32's.
+0.50% (0.07% and 0.35%). On the boards measured a run in it is 3.9 to 7.3%
+faster where the int8 product is a dot product (SDOT, VPDPBUSD), 5.5% on a
+Pi 4 and 3.2 to 3.4% on a Pi 3 with the ARMv8.0 loop, and 1 to 3% with
+x86's VPMADDUBSW, avx2 forced on two of them (backend/avx2/CLIMB.md and
+backend/neon/CLIMB.md, 2026-10-29). The default stays the transcript
+nearest float32's.
 
 The attention's own three products stay float. Making them int8 as well -
 keys, positions and values rounded a row at a time like weights, queries and
