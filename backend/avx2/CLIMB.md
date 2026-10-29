@@ -2226,3 +2226,30 @@ but for that: gcc's product to within 2% of clang's on the Zen 5,
 clang's level, and the fast mode faster than the default under both,
 beyond the spread on the 12900HK. Kept: gcc's product and run move by more
 than the spread, and clang's do not fall.
+
+## 2026-10-29 - the ymm tiles' blocks of 32 a constant in the default (hypothesis)
+
+The fast mode's entry above measured a build, qb, whose every tile took
+its block size as a constant: tiles for each of 32, 64 and the decoder's
+rows, chosen a panel at a time. Its default against 33c5e7c on the
+12900HK, whose products are the ymm VNNI tile's: -1.6% (-2.2 to -1.0)
+under gcc 15 and -1.7% (-2.1 to -1.4) under clang 21, 6 rounds, where
+the kept build's is -0.2% (-0.5 to 0.0) and -0.3% (-0.4 to +0.5); with
+avx2 forced, the VPMADDUBSW tile, -6.2% (-7.1 to -5.5) and -1.8% (-2.1
+to -1.5) against the kept build's -5.9% (-6.2 to -5.4) and -1.6% (-1.8
+to -1.3), the empty asm's gain in both. qb's zmm tile at 32 was gcc's
+-1.9% (-2.8 to -1.4) and clang's +23.5% on the 9950X, which is why the
+kept zmm tile chooses as the loop runs; the kept ymm tiles' default
+does too, its block loop testing qb == 32 each block.
+
+The hypothesis: the ymm tiles (avx2-vnni's and avx2's) take the block
+size as a parameter, 32, 64, or 0 for whatever a->qb is (the decoder's,
+a row a block, as a loop), and k_gemm_q8 picks one of three functions
+by a->qb: k_gemm_q8_32, k_gemm_q8_64 as now, and the default's for any
+other size. The zmm tile as it is. The bits are the same: kcheck.
+
+Predicted: on the 12900HK the default 1 to 2% faster than the kept
+build under both compilers, as qb's, and --fast's time level; with avx2
+forced the default 0 to 0.5% faster. The 9950X runs the zmm tile, which
+this leaves as it is. Kept if the 12900HK's default moves by more than
+the spread under both compilers.
