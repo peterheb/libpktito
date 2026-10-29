@@ -2080,3 +2080,149 @@ move by more than the spread and clang's do not fall. The Zen 2 and
 Zen 3 instances, where clang 21's avx2 build was 4.5 to 5.2% ahead of
 gcc 11's (the release builds' entry, 2026-10-27), are the machines this
 is for, and are not measured here.
+
+## 2026-10-29 - blocks of 64 at the caller's choice: a fast mode (result: kept)
+
+As the hypothesis has it: pk_asr_set_fast_mode and pktito-c's --fast,
+core/encoder.c's qb(a, n) 64 wherever n is whole blocks of 64 in the
+mode and 32 otherwise, the decoder a row a block in both. kcheck's 1779
+cases are 1906: the quantizer at blocks of 64 on 30 shapes, the int8
+product at 64 on 60, and the model's matrices against real activations
+at 64. check-c holds --fast's test.wav to ref's for each model
+(tests/data/test.v2.fast.json, test.v3.fast.json), and passes, with
+backend/neon's loop at 64 (the commit after this one) in the tree, on
+the 9950X (gcc 15.2), the 12900HK (gcc 15.2), the GB10 (gcc 13.3), pi5c
+(gcc 12.2; v2 alone, the board's one model), pi4 and pi3 (gcc 14.2) and
+the M4 Pro (Apple clang 21); kcheck there gives ref's bits on every
+backend each of those CPUs has. This commit's own tree passes check-c
+on the 9950X and the GB10 (neon and neon-dp), its build gives ref's
+test.wav transcripts in both modes on pi4 and pi3, and on the 9950X
+under clang 21.1.8 too, under each of avx512-vnni, avx2-vnni and avx2,
+with kcheck's 1906 cases.
+
+tests/wercheck.py on the commit's --fast against quantcheck's float32,
+as the hypothesis's table's blocks of 64: v2 1.47%, 7 of LibriSpeech's
+200 transcripts not float32's (WER between 0.07%); v3 4.43%, 49 of
+FLEURS' 360 (0.50%). Every one of the 560 is the scratch build's.
+
+Where an x86 tile's two sizes go took four builds. Each block of 32 is a
+macro, PK_Q8_BLOCK32, eight groups at constant offsets, and a block of
+64 is two of it; what differs is where the choice between them is made.
+Whole runs as the hypothesis's: test.wav through v2, best of 5 at the
+default threads (16 and 14), interleaved rounds (4 to 6), the order
+turned each round; a build's change against 33c5e7c (base) a round,
+median (range):
+
+| build: the tiles | 9950X: default, gcc 15 / clang 21 | --fast against the default | 12900HK: default | --fast |
+|---|---|---|---|---|
+| new: one tile a variant, 32, 64 or a loop chosen as it runs | +0.5% (+0.5 to +1.9) / +1.2% (+0.5 to +1.5) | -6.4% (-8.3 to -4.8) / -3.9% (-5.8 to -3.4) | +1.5% (+1.1 to +1.9) / -0.3% (-0.9 to 0.0) | -7.2% (-8.0 to -6.8) / -5.5% (-5.7 to -4.6) |
+| qb: a tile for each size, chosen a panel at a time, the size a constant | -1.9% (-2.8 to -1.4) / +23.5% (+22.9 to +25.7) | -5.3% (-5.4 to -3.9) / -17.4% (-18.5 to -16.5) | -1.6% (-2.2 to -1.0) / -1.7% (-2.1 to -1.4) | -5.4% (-5.8 to -4.9) / -5.5% (-5.6 to -5.1) |
+| fa: the default's tile as at 33c5e7c; the fast mode's its own function, 64 a constant | 0.0% (-1.9 to +1.0) / -0.5% (-2.4 to +1.0) | -6.7% (-8.5 to -6.2) / +2.5% (-0.5 to +2.5) | 0.0% (-0.5 to +0.5) / -0.2% (-0.6 to -0.1) | -7.4% (-7.7 to -7.0) / -6.7% (-6.9 to -6.3) |
+| fb: as fa, the fast tile choosing 32, 64 or the loop as it runs | +0.5% (0.0 to +1.4) / 0.0% (-1.4 to +1.0) | -5.2% (-8.0 to -5.2) / -4.9% (-5.9 to -4.4) | -0.1% (-0.2 to +0.1) / -0.2% (-0.9 to +0.1) | -6.0% (-6.4 to -5.2) / -5.3% (-5.8 to -4.4) |
+
+new: gcc 15 merged the tile's 64 and 32 paths' last six groups, and the
+32's loop jumped into the 64's for them; q8bench at 32 on a 12900HK
+P-core 1.2 to 5.2% below 33c5e7c's in two sittings (one shape level in
+one). qb: clang 21's zmm tile at 32 with the size a constant kept its
+column pointers on the stack, the product 31% slower on a Zen 5 core.
+fa: the same of clang's zmm tile at 64, its two eleven-column blocks of
+176 VPDPBUSDs with 84 and 160 stack references where the choice made as
+the loop runs has 33 and 18 (objdump -d), and q8bench's 64 2.9 to 6.0%
+below its 32. fb gives clang's fast tiles new's loops, block for block
+the same products, instructions and stack references, and gcc's lose to
+fa's: in fb's sitting on the 12900HK, fa's fast mode is -7.0% (-7.5 to
+-6.2) and -6.8% (-7.0 to -6.5) against fb's default, under gcc and
+clang; on the 9950X fa's is -7.6% (-8.5 to -7.1) under gcc.
+
+Kept: the default's tiles fb's (fa's under clang instruction for
+instruction, under gcc to within a few instructions a block), the fast
+mode's ymm tiles fa's (64 a constant), and its zmm tile fb's (choosing as
+it runs). Each kept object's tiles are those builds' instruction for
+instruction (objdump -d, every block of 8 or more products), gcc's ymm
+VNNI fast tile up to the names of its registers. The kept build itself
+on the 12900HK, and the rows above elsewhere: --fast against the default
+
+| board | threads | compiler | default | --fast | change, median (range) |
+|---|---|---|---|---|---|
+| 9950X, Linux (zmm, fb's) | 16 | gcc 15.2 | 0.211 s | 0.199 | -5.2% (-8.0 to -5.2) |
+| | | clang 21.1 | 0.205 | 0.195 | -4.9% (-5.9 to -4.4) |
+| 12900HK, storage1 (ymm VNNI, the kept build) | 14 | gcc 15.2 | 0.801 s | 0.748 | -6.6% (-7.4 to -6.3) |
+| | | clang 21.1 | 0.7995 | 0.7465 | -6.6% (-7.1 to -6.0) |
+| GB10 | 10 | gcc 13.3 | 0.3895 | 0.3755 | -3.9% (-5.2 to -2.8) |
+| | | clang 18 | 0.3885 | 0.3710 | -4.3% (-5.2 to -2.6) |
+| M4 Pro, in use | 12 | Apple clang 21 | 0.4305 | 0.4105 | -4.5% (-6.1 to -3.4) |
+| Pi 5 (pi5c) | 4 | gcc 12.2 | 3.676 | 3.4805 | -5.3% (-5.5 to -5.3) |
+| | | clang 21.1 | 3.664 | 3.3935 | -7.3% (-7.7 to -7.2) |
+| Pi 4, ARMv8.0 (the C at 64) | 4 | gcc 14.2 | 18.742 | 19.692 | +4.9% (+4.8 to +5.4) |
+| Pi 3B+, ARMv8.0 (the C at 64) | 4 | gcc 14.2 | 48.981 | 49.507 | +1.1% (+1.0 to +1.2) |
+
+and the default against 33c5e7c within its spread on every board: the
+9950X +0.5% (0.0 to +1.4) and 0.0%, the 12900HK -0.2% (-0.5 to 0.0) and
+-0.3% (-0.4 to +0.5), the GB10 -0.2% (-1.8 to +0.5) and +0.6% (-1.0 to
++1.6), the M4 Pro 0.0% (-0.9 to +0.9), pi5c +0.1% (-0.1 to +0.2) and
++0.4% (+0.1 to +0.4). On the dotprod boards the build is new, whose NEON
+objects are this commit's. Without dotprod the ARMv8.0 tile takes blocks
+of 64 in its C, and the fast mode is slower, as the hypothesis said: the
+Pis' rows are against the default of backend/neon/CLIMB.md's loop at 64
+(its hypothesis, 2026-10-28), whose block of 32's loop is this commit's,
+the same rounds (pi4 3, pi3 2, the order turned; pi3 at its 70 C soft
+limit, its clock moving between runs).
+
+The int8 product at the kept tiles, q8bench on one core, the range over
+the three shapes' medians, 64 against 32: the 9950X's zmm +8.7 to +9.6%
+under gcc 15 and +4.3 to +7.3% under clang 21 (fb); the 12900HK's ymm
+VNNI on a P-core +1.5 to +2.3% under gcc (+4.6 to +6.2% in fa's
+sitting) and +4.8 to +7.0% under clang (the kept build); avx2 forced,
+VPMADDUBSW, +2.6 to +4.0% and +2.2 to +4.5% on the 9950X (fa) and +3.7
+to +4.1% and +3.7 to +4.3% on the 12900HK (the kept build). There the
+fast mode's whole run is -1.1% (-3.9 to +0.4) and -0.8% (-2.5 to +1.0) on
+the 9950X, within its spread, and -3.0% (-3.2 to -2.7) and -2.4% (-2.9 to
+-2.3) on the 12900HK.
+
+Not settled: gcc 15's zmm tile, whose fast mode would be 2.4 points
+faster with fa's constant, where clang's would be 7.4 points slower. Both
+compilers' best is two different forms of the same C, so this is the
+climb the release builds' entry (2026-10-27) names: the block loop in
+assembly, as backend/neon's ARMv8.0 tile now is. Nor AMX: its pipeline
+takes blocks of 32, and in the fast mode the amx-int8 build runs the zmm
+tile, unmeasured.
+
+## 2026-10-29 - the VPMADDUBSW tile's sums kept a chain under gcc (result: kept)
+
+The empty asm as the hypothesis has it, in the fast mode's tree (the
+entry above), against the same tree without it (nobar: new, the entry
+above's first build, less the asm) and against 33c5e7c. gcc 15's tile
+has no stack reference in a block of 32 (objdump -d: 151 instructions in
+the three-column block, 24 VPMADDUBSWs, and 188 in the four-column one,
+from 158 with 26 stack references and 213 with 46) and 4 in a block of
+64; clang 21's 156 and 199 with one each, from 154 and 208 with 0 and 5,
+the block of 32 now PK_Q8_BLOCK32, which clang orders a little
+differently. kcheck: ref's bits, 1906 cases, under both.
+
+avx2 forced (PKTITO_KERNELS=avx2), test.wav through v2, best of 5 at the
+default threads, 4 interleaved rounds, against nobar:
+
+| board | gcc 15.2: default | --fast | clang 21.1: default |
+|---|---|---|---|
+| 9950X | -9.7% (-10.4 to -7.6) | -13.6% (-15.7 to -10.4) | +0.9% (-1.7 to +2.3) |
+| 12900HK | -5.5% (-6.4 to -5.0) | -12.0% (-12.2 to -10.7) | +0.5% (+0.1 to +0.6) |
+
+and the kept build against 33c5e7c: gcc -8.9% (-11.5 to -6.9) on the
+9950X (fa's sitting, its tile the kept one's to within an instruction)
+and -5.9% (-6.2 to -5.4) on the 12900HK, clang -1.5% (-5.0 to +0.6) and
+-1.6% (-1.8 to -1.3). Without the asm gcc's fast mode was slower than
+its default, +3.2% (+0.4 to +6.0) and +3.6% (+1.7 to +4.0); with it
+-1.1% (-3.9 to +0.4) on the 9950X, within the spread, and -3.0% (-3.2 to
+-2.7) on the 12900HK, where clang's is -2.4% (-2.9 to -2.3).
+
+q8bench on one core, GMAC/s, the three shapes' medians: on a Zen 5 core
+gcc's tile at 32 from 119.5-120.3 to 131.5-132.9 (+9.8 to +10.5%) and at
+64 from 112.2-115.8 to 134.3-136.9 (+18.2 to +19.7%), where clang's is
+131.8-133.2 and 135.2-139.4: level. On the 12900HK's P-core 33c5e7c's
+and the kept build, gcc's and clang's, 89.5 to 90.5 at 32, the tile
+there at its ports' rate with the asm or without; the run's 5.5% is the
+other cores', the E-cores' presumably (not measured alone). As predicted
+but for that: gcc's product to within 2% of clang's on the Zen 5,
+clang's level, and the fast mode faster than the default under both,
+beyond the spread on the 12900HK. Kept: gcc's product and run move by more
+than the spread, and clang's do not fall.

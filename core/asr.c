@@ -123,6 +123,8 @@ pk_asr *pk_asr_new(const pk_model *m, int threads) {
 
 int pk_asr_threads(const pk_asr *a) { return a->wide; }
 
+void pk_asr_set_fast_mode(pk_asr *a, int on) { a->qb64 = on != 0; }
+
 void pk_asr_free(pk_asr *a) {
     if (!a)
         return;

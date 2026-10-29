@@ -92,6 +92,20 @@ pk_asr *pk_asr_new(const pk_model *m, int threads);
 void    pk_asr_free(pk_asr *a);
 int     pk_asr_threads(const pk_asr *a);
 
+/* The fast mode, off until asked for: the encoder's activations in blocks
+ * of 64 inputs, not 32, wherever an input is whole blocks of 64 (every one
+ * of Parakeet's). For a caller who wants the speed more than the
+ * transcript nearest float32's: WER is level, a few more transcripts differ
+ * from float32's (49 of FLEURS' 360 against 45), and on the boards
+ * measured a run is 3.9 to 7.3% faster where the int8 product is a dot
+ * product (SDOT, VPDPBUSD) and 1 to 3% with x86's VPMADDUBSW (README, "Why
+ * int8"; backend/avx2/CLIMB.md, 2026-10-29). Without dotprod (an A72, an
+ * A53) the tile takes blocks of 64 in C, and the mode is slower, 4.9% on a
+ * Pi 4 and 1.1% on a Pi 3; AMX's pipeline takes blocks of 32 alone, and in the mode the
+ * amx-int8 build runs its zmm tile, unmeasured. From the next call on;
+ * every backend computes the same bits in either mode. */
+void    pk_asr_set_fast_mode(pk_asr *a, int on);
+
 /* One token of a transcript: a piece of the vocabulary, the encoder frame
  * it was emitted at, and the number of frames TDT says it lasts. */
 typedef struct {

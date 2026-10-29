@@ -51,6 +51,9 @@ struct pk_asr {
      * layers on each (encoder.c, layers), `wide` the threads the passes
      * run on. */
     int fast, wide, tune;
+    /* The caller's fast mode (pk_asr_set_fast_mode): the encoder's
+     * activations in blocks of 64 where an input allows, not 32 */
+    int qb64;
 
     size_t cap;                      /* feature frames the buffers below hold */
     void  *mem;

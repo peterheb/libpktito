@@ -236,9 +236,10 @@ benches: $(BENCHES)
 # through ./pktito-c. Its VAD probabilities must be
 # tests/data/test.probs.txt exactly - vadito's bits, which vadito holds to
 # onnxruntime - and its transcripts, every token and its time, the bytes in
-# test.v2.json and test.v3.json, which ref wrote: every backend on every
-# machine computes the same ones (backend/kernels.h), and this is where a
-# board that does not would say so. A model file that is not there is
+# test.v2.json and test.v3.json, which ref wrote, and in the fast mode's
+# test.v2.fast.json and test.v3.fast.json: every backend on every machine
+# computes the same ones (backend/kernels.h), and this is where a board
+# that does not would say so. A model file that is not there is
 # skipped, with a line. The commands are tests/check-c.sh, so that a board
 # without make, Android over adb, runs the same ones.
 check-c: pktito-c $(TESTS) examples/transcribe

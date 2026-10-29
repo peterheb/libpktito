@@ -468,7 +468,7 @@ static void resample_cases(void) {
 
 /* ----------------------------------------------------------- the model --- */
 
-static void model_cases(const char *path) {
+static void model_cases(const char *path, uint32_t qb) {
     char err[256];
     pk_model *m = pk_model_load(path, err, sizeof err);
     if (!m) {
@@ -483,10 +483,33 @@ static void model_cases(const char *path) {
         uint32_t T = i < 5 ? 1 + rnd() % 13 : 1;
         float *x = xmalloc((size_t)T * q->cols * 4);
         for (size_t k = 0; k < (size_t)T * q->cols; k++) x[k] = awkward(3.0f);
-        gemm_q8_case("real", q->rows, q->cols, T, i < 5 ? 32 : q->cols, i % 2, i % 3 == 0, q->q, q->s, x);
+        gemm_q8_case("real", q->rows, q->cols, T, i < 5 ? qb : q->cols, i % 2, i % 3 == 0, q->q, q->s, x);
         xfree(x);
     }
     pk_model_free(m);
+}
+
+/* The fast mode's blocks of 64 (pk_asr_set_fast_mode), the shapes of the
+ * cases of 32 above, after all of them, so that adding these moved none */
+static void fast_cases(const char *model) {
+    for (int rep = 0; rep < 30; rep++) {
+        uint32_t n = 64 * (1 + rnd() % 20);
+        uint32_t T = 1 + rnd() % 20;
+        size_t xs = n + 32 * (rnd() % 2);
+        quant_case(T, n, 64, xs, rep % 3 ? 1.0f : 1e4f);
+    }
+    static const uint32_t ns[] = { 64, 128, 256, 640, 1024, 4096 };
+    for (int rep = 0; rep < 60; rep++) {
+        uint32_t n = ns[rnd() % 6];
+        uint32_t rows = 16 * (1 + rnd() % 24);
+        uint32_t T = rep % 4 == 0 ? 1 : 1 + rnd() % 37;
+        if (n == 4096 && rows > 64) rows = 64;
+        int add = rnd() % 2;
+        int bias = rnd() % 2;
+        gemm_q8_case("random", rows, n, T, 64, add, bias, NULL, NULL, NULL);
+    }
+    if (model)
+        model_cases(model, 64);
 }
 
 static void run(const char *model) {
@@ -528,8 +551,9 @@ static void run(const char *model) {
     stft_cases();
     resample_cases();
     if (model)
-        model_cases(model);
-    quant_tiny_case();      /* last: it draws from rnd() and moves no case before it */
+        model_cases(model, 32);
+    quant_tiny_case();      /* it draws from rnd() and moves no case before it */
+    fast_cases(model);
 }
 
 /* Each backend sees the same cases: the generator starts again for each.

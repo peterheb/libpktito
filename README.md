@@ -94,7 +94,8 @@ arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a lin
 a core by default). A recording longer than `--max-chunk` (30 s) is cut at
 its silences into chunks that long at most, each transcribed whole;
 `--stream`'s lines end at a pause of `--pause` (1000 ms). Both defaults are
-measured below.
+measured below. `--fast` trades a little of the transcript's nearness to
+float32's for up to 7% of the time (README, "Why int8").
 
 ## How close to NeMo
 
@@ -127,14 +128,15 @@ frames, and vadito holds those to onnxruntime's within 1.4e-5.
 
 And the bits are the same everywhere. `tests/data/test.v2.json` and
 `test.v3.json` are the transcripts `ref` writes for test.wav, every token and
-its time, and `make check-c` holds every backend on every machine to them
-byte for byte: so far `neon-dp` on an M4 Pro (Apple clang 21) and a Pi 5
-(gcc 14.2), `neon` on a Pi 3B+ (gcc 14.2) and the M4 Pro, `avx2` and
-`avx2-vnni` on a 12900HK (gcc 15.2) and on a Core 3 304 under Windows 11
-(MSYS2's gcc 16.2), `avx2-vnni`, `avx512-vnni` and `avx2` on a Ryzen 9
-9950X (gcc 15.2), `amx-int8` on a Sapphire Rapids Xeon (gcc 13.3), and
-`ref`; and the 304's Windows build, copied as it was, runs `avx512-vnni` on
-a Zen 4 and all three on the 9950X, the same bytes.
+its time (`test.v2.fast.json` and `test.v3.fast.json` in the fast mode), and
+`make check-c` holds every backend on every machine to them byte for byte: so
+far `neon-dp` on an M4 Pro (Apple clang 21) and a Pi 5 (gcc 14.2), `neon` on a
+Pi 3B+ (gcc 14.2) and the M4 Pro, `avx2` and `avx2-vnni` on a 12900HK (gcc
+15.2) and on a Core 3 304 under Windows 11 (MSYS2's gcc 16.2), `avx2-vnni`,
+`avx512-vnni` and `avx2` on a Ryzen 9 9950X (gcc 15.2), `amx-int8` on a
+Sapphire Rapids Xeon (gcc 13.3), and `ref`; and the 304's Windows build,
+copied as it was, runs `avx512-vnni` on a Zen 4 and all three on the 9950X,
+the same bytes.
 
 ## How fast
 
@@ -231,6 +233,19 @@ blocks of 32, and the decoder's and the joint's a row at a time, which costs
 nothing there. On v3 over FLEURS the same choice is 4.42% against float32's
 4.41%; 4-bit weights are 4.76% there, with 127 of 360 transcripts changed,
 which is why the files are int8.
+
+Blocks of 64 halve what the blocks cost - the convert and fused
+multiply-add each block's integer sum ends in, and the quantizer's maximum
+and divisions - for a little of that nearness, and are the fast mode's
+(`--fast`, `pk_asr_set_fast_mode`). Through `tests/wercheck.py`, v2 over
+LibriSpeech is 1.47% in it, 7 transcripts not float32's (4 at 32), and v3
+over FLEURS 4.43%, 49 (45); the WER between them and float32's 0.07% and
+0.50% (0.07% and 0.35%). On the boards measured a run in it is 3.9 to
+7.3% faster where the int8 product is a dot product (SDOT, VPDPBUSD) and
+1 to 3% with x86's VPMADDUBSW (avx2 forced on two of them); without
+dotprod (an A72, an A53) the tile takes blocks of 64 in C, and the mode
+is slower, 4.9% on a Pi 4 and 1.1% on a Pi 3 (backend/avx2/CLIMB.md,
+2026-10-29). The default stays the transcript nearest float32's.
 
 The attention's own three products stay float. Making them int8 as well -
 keys, positions and values rounded a row at a time like weights, queries and
@@ -397,6 +412,7 @@ a token (core/decoder.c). The transcendental functions are pktito's own
 
 pk_model *m = pk_model_load("models/parakeet-tdt-0.6b-v2.pkf", err, sizeof err);
 pk_asr *a = pk_asr_new(m, 0);                     /* 0: a thread a core */
+pk_asr_set_fast_mode(a, 1);                       /* optional: faster, "Why int8" */
 
 const pk_tok *t;
 long n = pk_asr_run(a, samples, n_samples, &t);   /* 16 kHz mono float */

@@ -236,6 +236,49 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
 #define PK_Q8_BLOCK_BYTES (192 * 1024)
 #endif
 
+/* 32 inputs from k on into a tile, g their weights: eight of the tile's
+ * PK_Q8_GROUPs at constant offsets, which gcc keeps the accumulators in
+ * place across (CLIMB.md, H2). The encoder's blocks are one of these, or
+ * two in the fast mode's blocks of 64 (CLIMB.md, 2026-10-28). */
+#define PK_Q8_BLOCK32(g, k)                    \
+    do {                                       \
+        PK_Q8_GROUP((g), (k));                 \
+        PK_Q8_GROUP((g) + 64, (k) + 4);        \
+        PK_Q8_GROUP((g) + 128, (k) + 8);       \
+        PK_Q8_GROUP((g) + 192, (k) + 12);      \
+        PK_Q8_GROUP((g) + 256, (k) + 16);      \
+        PK_Q8_GROUP((g) + 320, (k) + 20);      \
+        PK_Q8_GROUP((g) + 384, (k) + 24);      \
+        PK_Q8_GROUP((g) + 448, (k) + 28);      \
+    } while (0)
+
+/* Block b of a tile, g its weights: the encoder's 32 inputs unrolled, and
+ * with FAST the fast mode's 64 as two of them; any other size (the
+ * decoder's, a row a block) as a loop. FAST's tiles are functions of their
+ * own (q8_zmm64, k_gemm_q8_64), the default's code what it was before them:
+ * with the 64 beside the 32 in one tile, gcc 15 merged the two's last
+ * groups and the 32's loop jumped into the 64's for them, its product at
+ * 32 up to 5% slower on a 12900HK's P-core. In FAST's ymm tiles qb is the
+ * constant 64; FAST's zmm tile chooses by qb as the loop runs, because a
+ * zmm block loop with the one size in it and no branch, clang 21 made with
+ * the tile's column pointers on the stack: the fast mode 2.5% slower than
+ * the default on a Zen 5, where choosing makes it 4.9% faster. The ymm
+ * tiles' constant is the faster under both compilers on a 12900HK (by 1.0
+ * and 1.5 points of a run), and gcc 15's zmm tile would be faster with it
+ * too, by 2.4 (CLIMB.md, 2026-10-29). */
+#define PK_Q8_BLOCK(FAST, g, b)                                                   \
+    do {                                                                          \
+        if (qb == 32) {                                                           \
+            PK_Q8_BLOCK32((g) + (size_t)(b) * 32 * 16, (b) * 32);                 \
+        } else if (FAST && qb == 64) {                                            \
+            PK_Q8_BLOCK32((g) + (size_t)(b) * 64 * 16, (b) * 64);                 \
+            PK_Q8_BLOCK32((g) + (size_t)(b) * 64 * 16 + 32 * 16, (b) * 64 + 32);  \
+        } else {                                                                  \
+            for (uint32_t k = (b) * qb; k < ((b) + 1) * qb; k += 4)               \
+                PK_Q8_GROUP((g) + (size_t)k * 16, k);                             \
+        }                                                                         \
+    } while (0)
+
 #ifdef PK_AVX_VNNI
 
 /* VPDPBUSD takes one factor unsigned. Offsetting it by 128 (an XOR of its
@@ -305,7 +348,7 @@ static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws,
              const float *bias, const pk_act *a, uint32_t t0, int add,
              const uint8_t *xo, const __m512i *wsum, const int32_t *cs, const int XOFF,
-             const int NC) {
+             const int NC, const int FAST) {
     const uint32_t qb = a->qb, nb = n / qb;
     const __m512i off = _mm512_set1_epi8((char)0x80);
     __m512 f[12];
@@ -317,21 +360,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
     for (uint32_t b = 0; b < nb; b++) {
         __m512i s[12];
         for (int c = 0; c < NC; c++) s[c] = _mm512_setzero_si512();
-        if (qb == 32) {
-            const int8_t *g = w + (size_t)b * 32 * 16;
-            const uint32_t k = b * 32;
-            PK_Q8_GROUP(g, k);
-            PK_Q8_GROUP(g + 64, k + 4);
-            PK_Q8_GROUP(g + 128, k + 8);
-            PK_Q8_GROUP(g + 192, k + 12);
-            PK_Q8_GROUP(g + 256, k + 16);
-            PK_Q8_GROUP(g + 320, k + 20);
-            PK_Q8_GROUP(g + 384, k + 24);
-            PK_Q8_GROUP(g + 448, k + 28);
-        } else {
-            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4)
-                PK_Q8_GROUP(w + (size_t)k * 16, k);
-        }
+        PK_Q8_BLOCK(FAST, w, b);
         for (int c = 0; c < NC; c++) {
             const __m512i cv = XOFF ? wsum[b] : _mm512_set1_epi32(cs[(size_t)c * nb + b]);
             const __m512 d = _mm512_set1_ps(a->d[(size_t)(t0 + c) * nb + b]);
@@ -349,25 +378,25 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
 }
 
 /* the tiles of one panel over columns [c0, c1), PK_Q8_NC at a time */
-#define PK_Q8_TILE_N(N, XOFF, XO, WSUM, CS)                                              \
-    q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, N)
-#define PK_Q8_TILES(XOFF, XO, WSUM, CS)                                                  \
+#define PK_Q8_TILE_N(N, FAST, XOFF, XO, WSUM, CS)                                        \
+    q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, N, FAST)
+#define PK_Q8_TILES(FAST, XOFF, XO, WSUM, CS)                                            \
     do {                                                                                 \
         uint32_t t = c0;                                                                 \
         for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC)                                        \
-            PK_Q8_TILE_N(PK_Q8_NC, XOFF, XO, WSUM, CS);                                                      \
+            PK_Q8_TILE_N(PK_Q8_NC, FAST, XOFF, XO, WSUM, CS);                              \
         switch (c1 - t) {                                                                \
-        case 11: PK_Q8_TILE_N(11, XOFF, XO, WSUM, CS); break;                                                \
-        case 10: PK_Q8_TILE_N(10, XOFF, XO, WSUM, CS); break;                                                \
-        case 9: PK_Q8_TILE_N(9, XOFF, XO, WSUM, CS); break;                                                  \
-        case 8: PK_Q8_TILE_N(8, XOFF, XO, WSUM, CS); break;                                                  \
-        case 7: PK_Q8_TILE_N(7, XOFF, XO, WSUM, CS); break;                                                  \
-        case 6: PK_Q8_TILE_N(6, XOFF, XO, WSUM, CS); break;                                                  \
-        case 5: PK_Q8_TILE_N(5, XOFF, XO, WSUM, CS); break;                                                  \
-        case 4: PK_Q8_TILE_N(4, XOFF, XO, WSUM, CS); break;                                                  \
-        case 3: PK_Q8_TILE_N(3, XOFF, XO, WSUM, CS); break;                                                  \
-        case 2: PK_Q8_TILE_N(2, XOFF, XO, WSUM, CS); break;                                                  \
-        case 1: PK_Q8_TILE_N(1, XOFF, XO, WSUM, CS); break;                                                  \
+        case 11: PK_Q8_TILE_N(11, FAST, XOFF, XO, WSUM, CS); break;                        \
+        case 10: PK_Q8_TILE_N(10, FAST, XOFF, XO, WSUM, CS); break;                        \
+        case 9: PK_Q8_TILE_N(9, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 8: PK_Q8_TILE_N(8, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 7: PK_Q8_TILE_N(7, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 6: PK_Q8_TILE_N(6, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 5: PK_Q8_TILE_N(5, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 4: PK_Q8_TILE_N(4, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 3: PK_Q8_TILE_N(3, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 2: PK_Q8_TILE_N(2, FAST, XOFF, XO, WSUM, CS); break;                          \
+        case 1: PK_Q8_TILE_N(1, FAST, XOFF, XO, WSUM, CS); break;                          \
         default: break;                                                                  \
         }                                                                                \
     } while (0)
@@ -385,8 +414,9 @@ static __attribute__((noinline)) uint8_t *zmm_xoff(void) {
     return xoff;
 }
 
-static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                   uint32_t rows, const pk_act *a, int add) {
+static inline __attribute__((always_inline))
+void q8_zmm_with(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                 uint32_t rows, const pk_act *a, int add, const int FAST) {
     const uint32_t n = a->n, nb = n / a->qb;
     if (a->T < PK_Q8_XOFF) {
         int32_t cs[PK_Q8_XOFF * PK_MAX_BLOCKS];
@@ -396,7 +426,7 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
             const int8_t *wp = w + (size_t)r * n;
             float *o = out + r;
             const float *b = bias ? bias + r : NULL;
-            PK_Q8_TILES(0, NULL, NULL, cs + (size_t)(t - c0) * nb);
+            PK_Q8_TILES(FAST, 0, NULL, NULL, cs + (size_t)(t - c0) * nb);
         }
         return;
     }
@@ -422,9 +452,24 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
                     s = _mm512_dpbusd_epi32(s, one, _mm512_loadu_si512((const void *)(wp + (size_t)k * 16)));
                 wsum[blk] = _mm512_slli_epi32(s, 7);
             }
-            PK_Q8_TILES(1, xoff + (size_t)(t - c0) * n, wsum, NULL);
+            PK_Q8_TILES(FAST, 1, xoff + (size_t)(t - c0) * n, wsum, NULL);
         }
     }
+}
+
+/* the fast mode's blocks of 64 (PK_Q8_BLOCK) */
+static __attribute__((noinline))
+void q8_zmm64(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+              uint32_t rows, const pk_act *a, int add) {
+    q8_zmm_with(out, os, w, ws, bias, rows, a, add, 1);
+}
+
+static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                   uint32_t rows, const pk_act *a, int add) {
+    if (a->qb == 64)
+        q8_zmm64(out, os, w, ws, bias, rows, a, add);
+    else
+        q8_zmm_with(out, os, w, ws, bias, rows, a, add, 0);
 }
 
 
@@ -644,8 +689,8 @@ static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws,
              const float *bias, const pk_act *a, uint32_t t0, int add,
              const uint8_t *xo, const __m256i *wsum, const int32_t *cs, const int XOFF,
-             const int NC) {
-    const uint32_t qb = a->qb, nb = n / qb;
+             const int NC, const int FAST) {
+    const uint32_t qb = FAST ? 64 : a->qb, nb = n / qb;
     const __m256i off = _mm256_set1_epi8((char)0x80);
     __m256 f0[3], f1[3];
     const uint8_t *x[3];
@@ -656,23 +701,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
     for (uint32_t b = 0; b < nb; b++) {
         __m256i s0[3], s1[3];
         for (int c = 0; c < NC; c++) s0[c] = s1[c] = _mm256_setzero_si256();
-        if (qb == 32) {
-            /* the encoder's blocks: eight groups at constant offsets, which
-             * gcc keeps the accumulators in place across (H2) */
-            const int8_t *g = w + (size_t)b * 32 * 16;
-            const uint32_t k = b * 32;
-            PK_Q8_GROUP(g, k);
-            PK_Q8_GROUP(g + 64, k + 4);
-            PK_Q8_GROUP(g + 128, k + 8);
-            PK_Q8_GROUP(g + 192, k + 12);
-            PK_Q8_GROUP(g + 256, k + 16);
-            PK_Q8_GROUP(g + 320, k + 20);
-            PK_Q8_GROUP(g + 384, k + 24);
-            PK_Q8_GROUP(g + 448, k + 28);
-        } else {
-            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4)
-                PK_Q8_GROUP(w + (size_t)k * 16, k);
-        }
+        PK_Q8_BLOCK(FAST, w, b);
         for (int c = 0; c < NC; c++) {
             __m256i c0v, c1v;
             if (XOFF) {
@@ -704,16 +733,17 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
 }
 
 /* the tiles of one panel over columns [c0, c1), three at a time */
-#define PK_Q8_TILES(XOFF, XO, WSUM, CS)                                             \
+#define PK_Q8_TILES(FAST, XOFF, XO, WSUM, CS)                                       \
     do {                                                                            \
         uint32_t t = c0;                                                            \
         for (; t + 3 <= c1; t += 3)                                                 \
-            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 3);     \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 3, FAST); \
         if (c1 - t == 2)                                                            \
-            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 2);     \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 2, FAST); \
         else if (c1 - t == 1)                                                       \
-            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 1);     \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 1, FAST); \
     } while (0)
+
 
 /* The offset copy, taken as q8_zmm's is and for its reason: gcc would make
  * 4 calls to __tls_get_addr here in libpktito.so, and taken once, its
@@ -724,8 +754,9 @@ static __attribute__((noinline)) uint8_t *ymm_xoff(void) {
     return xoff;
 }
 
-static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                      uint32_t rows, const pk_act *a, int add) {
+static inline __attribute__((always_inline))
+void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                    uint32_t rows, const pk_act *a, int add, const int FAST) {
     const uint32_t n = a->n, nb = n / a->qb;
     if (a->T < PK_Q8_XOFF) {
         int32_t cs[PK_Q8_XOFF * PK_MAX_BLOCKS];
@@ -735,7 +766,7 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
             const int8_t *wp = w + (size_t)r * n;
             float *o = out + r;
             const float *b = bias ? bias + r : NULL;
-            PK_Q8_TILES(0, NULL, NULL, cs + (size_t)(t - c0) * nb);
+            PK_Q8_TILES(FAST, 0, NULL, NULL, cs + (size_t)(t - c0) * nb);
         }
         return;
     }
@@ -764,9 +795,24 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
                 wsum[2 * blk] = _mm256_slli_epi32(s0, 7);
                 wsum[2 * blk + 1] = _mm256_slli_epi32(s1, 7);
             }
-            PK_Q8_TILES(1, xoff + (size_t)(t - c0) * n, wsum, NULL);
+            PK_Q8_TILES(FAST, 1, xoff + (size_t)(t - c0) * n, wsum, NULL);
         }
     }
+}
+
+/* the fast mode's blocks of 64 (PK_Q8_BLOCK) */
+static __attribute__((noinline))
+void k_gemm_q8_64(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                  uint32_t rows, const pk_act *a, int add) {
+    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 1);
+}
+
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
+    if (a->qb == 64)
+        k_gemm_q8_64(out, os, w, ws, bias, rows, a, add);
+    else
+        k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 0);
 }
 
 #endif /* __AVX512F__ */
@@ -776,7 +822,12 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
 /* one group of four inputs into the tile: g the half panel's 32 weight
  * bytes, k the group's first input. |w| once for every column, then each
  * column's x sign(w), so that VPMADDUBSW multiplies |w| by it: w x, with
- * both factors at most 127 and a pair at most 2 * 127^2 (CLIMB.md, H3). */
+ * both factors at most 127 and a pair at most 2 * 127^2 (CLIMB.md, H3).
+ * The empty asm holds each column's sum in its register, a chain of adds:
+ * without it gcc 11 to 15 kept every group's product on the stack and
+ * summed a block's at its end, 40 stack references in a block of 32 and
+ * 104 in one of 64, where clang has a chain and none (CLIMB.md,
+ * 2026-10-28). The sums are int32, the same bits in any order. */
 #define PK_Q8_GROUP(g, k)                                                          \
     do {                                                                           \
         const __m256i wv = _mm256_loadu_si256((const __m256i *)(const void *)(g)); \
@@ -785,6 +836,7 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
             const __m256i xb = _mm256_set1_epi32(load32(x[c] + (k)));              \
             const __m256i p = _mm256_maddubs_epi16(wa, _mm256_sign_epi8(xb, wv));  \
             s[c] = _mm256_add_epi32(s[c], _mm256_madd_epi16(p, ones));             \
+            __asm__("" : "+x"(s[c]));                                              \
         }                                                                          \
     } while (0)
 
@@ -793,8 +845,9 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
  * fused multiply-add, as ref's chain. */
 static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, const float *ws,
-             const float *bias, const pk_act *a, uint32_t t0, int add, const int NC) {
-    const uint32_t qb = a->qb, nb = n / qb;
+             const float *bias, const pk_act *a, uint32_t t0, int add, const int NC,
+             const int FAST) {
+    const uint32_t qb = FAST ? 64 : a->qb, nb = n / qb;
     __m256 f[4];
     for (int c = 0; c < NC; c++) f[c] = _mm256_setzero_ps();
     const int8_t *x[4];
@@ -804,23 +857,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
     for (uint32_t b = 0; b < nb; b++) {
         __m256i s[4];
         for (int c = 0; c < NC; c++) s[c] = _mm256_setzero_si256();
-        if (qb == 32) {
-            /* the encoder's blocks: eight groups at constant offsets, which
-             * gcc keeps the accumulators in place across (H2, H3) */
-            const int8_t *g = wh + (size_t)b * 32 * 16;
-            const uint32_t k = b * 32;
-            PK_Q8_GROUP(g, k);
-            PK_Q8_GROUP(g + 64, k + 4);
-            PK_Q8_GROUP(g + 128, k + 8);
-            PK_Q8_GROUP(g + 192, k + 12);
-            PK_Q8_GROUP(g + 256, k + 16);
-            PK_Q8_GROUP(g + 320, k + 20);
-            PK_Q8_GROUP(g + 384, k + 24);
-            PK_Q8_GROUP(g + 448, k + 28);
-        } else {
-            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 4)
-                PK_Q8_GROUP(wh + (size_t)k * 16, k);
-        }
+        PK_Q8_BLOCK(FAST, wh, b);
         for (int c = 0; c < NC; c++) {
             __m256 d = _mm256_set1_ps(a->d[(size_t)(t0 + c) * nb + b]);
             f[c] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[c]), d, f[c]);
@@ -838,8 +875,9 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
 
 /* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
  * four columns at a time across the half. */
-static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                      uint32_t rows, const pk_act *a, int add) {
+static inline __attribute__((always_inline))
+void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                    uint32_t rows, const pk_act *a, int add, const int FAST) {
     const uint32_t n = a->n;
     uint32_t cb = PK_Q8_BLOCK_BYTES / n;
     cb = cb < 4 ? 4 : cb & ~3u;
@@ -851,16 +889,31 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
             const float *b = bias ? bias + r : NULL;
             for (uint32_t h = 0; h < 2; h++) {
                 uint32_t t = c0;
-                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4);
+                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4, FAST);
                 switch (c1 - t) {
-                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3); break;
-                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2); break;
-                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1); break;
+                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3, FAST); break;
+                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2, FAST); break;
+                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1, FAST); break;
                 default: break;
                 }
             }
         }
     }
+}
+
+/* the fast mode's blocks of 64 (PK_Q8_BLOCK) */
+static __attribute__((noinline))
+void k_gemm_q8_64(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                  uint32_t rows, const pk_act *a, int add) {
+    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 1);
+}
+
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
+    if (a->qb == 64)
+        k_gemm_q8_64(out, os, w, ws, bias, rows, a, add);
+    else
+        k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 0);
 }
 
 #endif

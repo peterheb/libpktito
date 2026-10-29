@@ -86,6 +86,8 @@ static const char *usage =
     "  -m, --model FILE      a .pkf (default $PKTITO_MODEL, then the one .pkf in models/\n"
     "                        here or beside the program)\n"
     "  -t, --threads N       threads (default: one a core)\n"
+    "      --fast            the encoder's activations in blocks of 64, not 32: up to 7%\n"
+    "                        faster, WER level, a few more transcripts not float32's\n"
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
     "                        a longer recording is cut at its silences\n"
     "      --json            chunks as JSON: start, end, text, every word's and every\n"
@@ -106,7 +108,7 @@ enum { SUBS_SRT = 1, SUBS_VTT = 2 };
 typedef struct {
     const char *cmd, *in, *model;
     const char **ins;                /* every input file; in is the first */
-    int nin, threads, json, subs, verbose, stream;   /* subs: SUBS_SRT or SUBS_VTT */
+    int nin, threads, json, subs, verbose, stream, fast;   /* subs: SUBS_SRT or SUBS_VTT */
     double max_chunk, pause_ms;
 } opts;
 
@@ -161,6 +163,7 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--srt")) o->subs = SUBS_SRT;
         else if (!strcmp(a, "--vtt")) o->subs = SUBS_VTT;
         else if (!strcmp(a, "--stream")) o->stream = 1;
+        else if (!strcmp(a, "--fast")) o->fast = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
         else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")
@@ -218,6 +221,15 @@ static pk_model *load_model(const char *flag, const char *argv0) {
     if (!m)
         die("%s", err);
     return m;
+}
+
+/* A transcriber on -t's threads, in --fast's mode */
+static pk_asr *asr_new(const opts *o, const pk_model *m) {
+    pk_asr *a = pk_asr_new(m, o->threads);
+    if (!a)
+        die("out of memory");
+    pk_asr_set_fast_mode(a, o->fast);
+    return a;
 }
 
 /* The whole file as 16 kHz mono float */
@@ -330,19 +342,20 @@ static void json_str(const char *s) {
     putchar('"');
 }
 
-/* --json's "meta": the model, the audio's length and its language, the same
- * on every machine and every run, so that a transcript compares byte for
- * byte (as check-c compares test.wav's); with -v, also what the -v line on
- * stderr says of the run. top: the whole run's, with the model and the
- * machine, or else one file's of several; a language for a file's, or for
- * the run's of one file (lang NULL: none found). */
+/* --json's "meta": the model (and "fast", with --fast), the audio's length
+ * and its language, the same on every machine and every run, so that a
+ * transcript compares byte for byte (as check-c compares test.wav's); with
+ * -v, also what the -v line on stderr says of the run. top: the whole
+ * run's, with the model and the machine, or else one file's of several; a
+ * language for a file's, or for the run's of one file (lang NULL: none
+ * found). */
 static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top, double audio_s,
                       double vad_s, double asr_s, int with_lang, const char *lang) {
     printf("{");
     if (top) {
         printf("\"model\": ");
         json_str(pk_model_name(m));
-        printf(", ");
+        printf(o->fast ? ", \"fast\": true, " : ", ");
     }
     printf("\"audio\": %.3f", audio_s);
     if (with_lang) {
@@ -573,9 +586,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
 }
 
 static int transcribe(const opts *o, pk_model *m) {
-    pk_asr *a = pk_asr_new(m, o->threads);
-    if (!a)
-        die("out of memory");
+    pk_asr *a = asr_new(o, m);
     double audio_s = 0, vad_s = 0, asr_s = 0;
     int many = o->nin > 1;
     if (o->json)
@@ -593,8 +604,8 @@ static int transcribe(const opts *o, pk_model *m) {
     }
     if (o->verbose)
         fprintf(stderr, "pktito-c: %.1f s of audio: VAD %.2f s, transcription %.2f s (%.1fx real "
-                "time), %s, %d threads\n", audio_s, vad_s, asr_s, audio_s / (asr_s + vad_s),
-                pk_backend(), pk_asr_threads(a));
+                "time), %s, %d threads%s\n", audio_s, vad_s, asr_s, audio_s / (asr_s + vad_s),
+                pk_backend(), pk_asr_threads(a), o->fast ? ", fast mode" : "");
     pk_asr_free(a);
     return 0;
 }
@@ -620,7 +631,7 @@ static int stream(const opts *o, pk_model *m) {
     if (info.rate != (uint32_t)rate && !(rs = pk_resampler_new(info.rate, (uint32_t)rate)))
         die("%s: cannot resample from %u Hz", o->in, (unsigned)info.rate);
     pk_vad *v = pk_vad_new(m);
-    pk_asr *a = pk_asr_new(m, o->threads);
+    pk_asr *a = asr_new(o, m);
     pk_seg_params sp;
     pk_seg_defaults(&sp);
     sp.min_silence_ms = o->pause_ms;
@@ -640,7 +651,7 @@ static int stream(const opts *o, pk_model *m) {
         rsout = malloc(room * sizeof *rsout);
     }
     char *text = malloc(1 << 16);
-    if (!v || !a || !buf || !probs || !in || (rs && !rsout) || !text)
+    if (!v || !buf || !probs || !in || (rs && !rsout) || !text)
         die("out of memory");
     int64_t base = 0, start = -1, frame_at = 0;
     double fs = pk_model_frame_seconds(m);
@@ -808,9 +819,7 @@ static int bench(const opts *o, pk_model *m) {
     uint32_t from;
     const double rs_s = bench_resample(o->in, rate, &from);
     float *x = read_audio(o->in, rate, &n, o);
-    pk_asr *a = pk_asr_new(m, o->threads);
-    if (!a)
-        die("out of memory");
+    pk_asr *a = asr_new(o, m);
     size_t nc;
     double vad_s;
     pk_seg *c = chunks_of(m, x, n, o->max_chunk, &nc, &vad_s);
@@ -836,6 +845,8 @@ static int bench(const opts *o, pk_model *m) {
 #endif
     printf("model     %s\n", pk_model_name(m));
     printf("backend   %s, %d threads\n", pk_backend(), pk_asr_threads(a));
+    if (o->fast)
+        printf("mode      fast: the encoder's activations in blocks of 64\n");
     printf("compiler  %s\n", pk_compiler());
     printf("audio     %.1f s in %zu chunk%s, %ld tokens\n", audio, nc, nc == 1 ? "" : "s", ntok);
     printf("best of 5 %.3f s  %.1fx real time  (VAD %.3f s more)\n", best, audio / best, vad_s);

@@ -24,11 +24,11 @@
  * frame than it counts and masks it; core/mel.c does not make it.)
  *
  * Every matrix product is pk_k_gemm_q8, int8 weights against activations
- * quantized in blocks of 32; the attention's products are float, on
- * pk_k_gemm_f32 with their operands laid out as its panels. Each pass is
- * split over the pool by rows, heads or blocks of frames, and no output
- * element depends on how: a transcript is the same bits on any number of
- * threads.
+ * quantized in blocks of 32 (of 64 in the caller's fast mode); the
+ * attention's products are float, on pk_k_gemm_f32 with their operands
+ * laid out as its panels. Each pass is split over the pool by rows, heads
+ * or blocks of frames, and no output element depends on how: a transcript
+ * is the same bits on any number of threads.
  */
 #include "asr.h"
 #include "kernels.h"
@@ -38,7 +38,13 @@
 #include <math.h>
 #include <string.h>
 
-#define QB 32              /* the encoder's activation blocks (README, "Why int8") */
+/* The encoder's activation blocks for an input of n: 32 (README, "Why
+ * int8"), or 64 in the caller's fast mode where n is whole blocks of 64,
+ * which every input of Parakeet's is and the tiny model's 32 subsampling
+ * channels are not (pk_asr_set_fast_mode; backend/avx2/CLIMB.md,
+ * 2026-10-28). The slices and items that quantize part of an input are
+ * 64 or 256 of its rows, whole blocks of either. */
+static uint32_t qb(const pk_asr *a, uint32_t n) { return a->qb64 && n % 64 == 0 ? 64 : 32; }
 
 static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static uint32_t up16(uint32_t x) { return (x + 15) & ~15u; }
@@ -168,9 +174,9 @@ static void norm(pk_asr *a, float *out, const float *x, uint32_t T, const float 
 }
 
 /* T columns of n inputs in the encoder's blocks, as act's shape */
-static pk_act *shape(pk_act *act, uint32_t T, uint32_t n) {
+static pk_act *shape(const pk_asr *a, pk_act *act, uint32_t T, uint32_t n) {
     act->n = n;
-    act->qb = QB;
+    act->qb = qb(a, n);
     act->T = T;
     return act;
 }
@@ -204,26 +210,26 @@ static void normq_item(void *arg, int i, int th) {
 /* a->act for the T frames of n floats at x, normalized by w and b */
 static void normq(pk_asr *a, const float *x, uint32_t T, uint32_t n, const float *w, const float *b) {
     normq_job j = { a, x, w, b, T };
-    shape(&a->act, T, n);
+    shape(a, &a->act, T, n);
     pk_par(a, normq_item, &j, (int)((T + 15) / 16));
 }
 
 /* The feed-forward's hidden activations SiLU'd and quantized by the items
  * of its up product, each over its own tile a frame at a time, while the
  * tile is in its core's cache: a slice of 64 or 256 of the hidden's rows
- * is whole blocks of 32. As a pass of their own after the product they
- * read every frame across all the slices, lines that every thread had
- * written, and on the 9950X at 16 threads, half of those in the other
- * CCD's caches, the pass's jobs took 76 us where sixteen threads' share
- * of one thread's was 16. Made by the items, with the attention's panels
- * and the convolution module's quantize (dw_item), a 16-thread run there
- * is 3.9 to 6.1% faster and the GB10's, on ten X925s in two clusters,
- * 7.6%; a Pi 5's 1%, and the other boards' and the 9950X's at one to
- * eight threads level (backend/avx2/CLIMB.md, 2026-10-28). A frame
- * goes through a row of thread scratch so that the tile is only read:
- * SiLU in place dirtied again the lines a Pi 5's 512 KB of L2 had already
- * written back, and its run took 1.3% longer than with the pass, an 8 GB
- * Pi 5's 4.6% (the same entry). */
+ * is whole blocks, of 32 or of 64. As a pass of their own after the
+ * product they read every frame across all the slices, lines that every
+ * thread had written, and on the 9950X at 16 threads, half of those in
+ * the other CCD's caches, the pass's jobs took 76 us where sixteen
+ * threads' share of one thread's was 16. Made by the items, with the
+ * attention's panels and the convolution module's quantize (dw_item), a
+ * 16-thread run there is 3.9 to 6.1% faster and the GB10's, on ten X925s
+ * in two clusters, 7.6%; a Pi 5's 1%, and the other boards' and the
+ * 9950X's at one to eight threads level (backend/avx2/CLIMB.md,
+ * 2026-10-28). A frame goes through a row of thread scratch so that the
+ * tile is only read: SiLU in place dirtied again the lines a Pi 5's 512
+ * KB of L2 had already written back, and its run took 1.3% longer than
+ * with the pass, an 8 GB Pi 5's 4.6% (the same entry). */
 typedef struct { pk_asr *a; pk_act *hid; } siluq_job;
 
 static void siluq_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th) {
@@ -248,8 +254,9 @@ static void glu_item(void *arg, int i, int th) {
 typedef struct { float *out; const float *x; const pk_layer *L; pk_act *act; uint32_t T, D, K; } dw_job;
 
 /* 64 channels over every frame, and their int8 for pw2 while they are in
- * this core's cache: a frame's 64 are two whole blocks (backend/avx2/
- * CLIMB.md, 2026-10-28, the passes between the products). */
+ * this core's cache: a frame's 64 are whole blocks, two of 32 or one of
+ * 64 (backend/avx2/CLIMB.md, 2026-10-28, the passes between the
+ * products). */
 static void dw_item(void *arg, int i, int th) {
     (void)th;
     dw_job *j = arg;
@@ -301,7 +308,7 @@ static void sub_item(void *arg, int item, int th) {
     const uint32_t C = m->sub_channels, F0 = m->n_mels, F1 = F0 / 2, F2 = F0 / 4, F3 = F0 / 8;
     const uint32_t b0 = (uint32_t)item * PK_SUB_BLOCK, b1 = min32(b0 + PK_SUB_BLOCK, j->T3);
     rows_win s1 = { w->s1, (size_t)F1 * C, 0, 0 }, s3 = { w->s3, (size_t)F2 * C, 0, 0 };
-    pk_act act = { w->aq, w->ad, C, QB, F2 };
+    pk_act act = { w->aq, w->ad, C, qb(a, C), F2 };
 
     for (uint32_t t = b0; t < b1; t++) {
         slide(&s3, t ? 2 * t - 1 : 0);
@@ -482,7 +489,7 @@ static void att_item(void *arg, int item, int th) {
 static void ff(pk_asr *a, uint32_t T, const float *nw, const float *nb, const pk_q8 *up,
                const pk_q8 *down) {
     const uint32_t D = a->m->d_model, F = a->m->ff_dim;
-    siluq_job sj = { a, shape(&a->hid, T, F) };
+    siluq_job sj = { a, shape(a, &a->hid, T, F) };
     PROF(PK_P_QUANT, normq(a, a->x, T, D, nw, nb));
     PROF(PK_P_FF, gemm_then(a, a->u, F, up, NULL, &a->act, 0, siluq_tile, &sj);
                   pk_gemm(a, a->x, D, down, NULL, &a->hid, 1));     /* the 0.5 is in down */
@@ -506,13 +513,13 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
                    gemm_then(a, a->p, D, &L->pos, NULL, &a->ape, 0, panels_tile, &pj));
     att_job aj = { a, L, T, Tp, Pp };
     PROF(PK_P_ATT, pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
-    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, QB));
+    PROF(PK_P_QUANT, pk_quantize(a, &a->act, a->o, D, T, D, qb(a, D)));
     PROF(PK_P_ATTO, pk_gemm(a, a->x, D, &L->o, NULL, &a->act, 1));
 
     PROF(PK_P_QUANT, normq(a, a->x, T, D, L->conv_nw, L->conv_nb));
     PROF(PK_P_CONV, pk_gemm(a, a->u, 2 * D, &L->pw1, NULL, &a->act, 0));
     glu_job gj = { a->h, a->u, T, D };
-    dw_job dj = { a->o, a->h, L, shape(&a->act, T, D), T, D, m->conv_kernel };
+    dw_job dj = { a->o, a->h, L, shape(a, &a->act, T, D), T, D, m->conv_kernel };
     PROF(PK_P_DW, pk_par(a, glu_item, &gj, (int)((T + 15) / 16));
                   pk_par(a, dw_item, &dj, (int)((D + 63) / 64)));
     PROF(PK_P_CONV, pk_gemm(a, a->x, D, &L->pw2, NULL, &a->act, 1));
@@ -588,12 +595,12 @@ uint32_t pk_encode(pk_asr *a, uint32_t T0) {
         return 0;
     sub_job sj = { a, T0, T1, T2, T3 };
     PROF(PK_P_SUB, pk_par(a, sub_item, &sj, (int)((T3 + PK_SUB_BLOCK - 1) / PK_SUB_BLOCK));
-                   pk_quantize(a, &a->act, a->s5, (size_t)F3 * C, T3, F3 * C, QB);
+                   pk_quantize(a, &a->act, a->s5, (size_t)F3 * C, T3, F3 * C, qb(a, F3 * C));
                    pk_gemm(a, a->x, D, &m->sub_out, m->out_b, &a->act, 0));
 
     pos_job pj = { a, T3 };
     PROF(PK_P_POS, pk_par(a, pos_item, &pj, (int)((2 * T3 - 1 + 15) / 16));
-                   pk_quantize(a, &a->ape, a->pe, D, 2 * T3 - 1, D, QB));
+                   pk_quantize(a, &a->ape, a->pe, D, 2 * T3 - 1, D, qb(a, D)));
 
     layers(a, T3);
     return T3;

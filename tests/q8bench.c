@@ -7,9 +7,10 @@
  * core/encoder.c's pk_gemm does (64), so a per-call cost shows.
  * Runs pk_k_gemm_q8 on the encoder's three shapes - a feed-forward's two
  * (4096 x 1024 and 1024 x 4096) and the attention's (1024 x 1024) - at T
- * columns (750: a minute of audio) with the encoder's blocks of 32, and
- * the decoder's (2560 x 640, one column, one block) on random weights and
- * activations, and prints each shape's best time of REPS and its GMAC/s.
+ * columns (750: a minute of audio) with the encoder's blocks of 32 and
+ * the fast mode's of 64, and the decoder's (2560 x 640, one column, one
+ * block) on random weights and activations, and prints each shape's best
+ * time of REPS and its GMAC/s.
  * Divide by the core's clock under load (perf stat, turbostat) for MAC a
  * cycle. backend/avx2/CLIMB.md's kernel rows come from here.
  */
@@ -78,8 +79,11 @@ int main(int argc, char **argv) {
     printf("q8bench: %s, one thread, %s\n", pk_k_name(),
            g_slice ? "a call a slice of rows, as pk_gemm calls it" : "one call a matrix");
     run("feed-forward up", 4096, 1024, T, 32, reps);
+    run("feed-forward up", 4096, 1024, T, 64, reps);
     run("feed-forward down", 1024, 4096, T, 32, reps);
+    run("feed-forward down", 1024, 4096, T, 64, reps);
     run("attention q", 1024, 1024, T, 32, reps);
+    run("attention q", 1024, 1024, T, 64, reps);
     run("decoder lstm (T 1)", 2560, 640, 1, 640, reps * 200);
     return 0;
 }

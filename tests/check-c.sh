@@ -24,7 +24,8 @@ run ./tests/chunkcheck
 ./pktito-c -m $TINY --json tests/pkfcheck.wav > tests/pkfcheck.json \
   && ./pktito-c -m $TINY --srt tests/pkfcheck.wav > /dev/null \
   && ./pktito-c -m $TINY tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
-  && echo "pktito-c: the tiny model through the CLI, chunked, three ways" \
+  && ./pktito-c -m $TINY --fast tests/pkfcheck.wav > /dev/null \
+  && echo "pktito-c: the tiny model through the CLI, chunked, four ways" \
   || { echo "pktito-c: FAIL on the tiny model"; exit 1; }
 d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/ñ.wav" \
   && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
@@ -40,6 +41,9 @@ for v in v2 v3; do f=models/parakeet-tdt-0.6b-$v.pkf
   ./pktito-c --json -m $f tests/data/test.wav | cmp -s - tests/data/test.$v.json \
     && echo "test.wav: $v transcript is ref's, every token and time" \
     || { echo "test.wav: FAIL - $v transcript differs from tests/data/test.$v.json"; exit 1; }
+  ./pktito-c --fast --json -m $f tests/data/test.wav | cmp -s - tests/data/test.$v.fast.json \
+    && echo "test.wav: $v transcript in the fast mode is ref's" \
+    || { echo "test.wav: FAIL - $v --fast transcript differs from tests/data/test.$v.fast.json"; exit 1; }
 done
 ./examples/transcribe "$MODEL" tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/example.out
 ./pktito-c -m "$MODEL" tests/data/test.wav | cmp -s - tests/example.out \
