@@ -1173,3 +1173,38 @@ activations across a vector for each; the finish is the C tile's
 operations on the same values (ref's bits). Nothing to take here: the 10
 to 20 cycles a schedule from a model of the core might have found are
 not in this loop's instruction mix.
+
+## 2026-10-28 - the ARMv8.0 loop at blocks of 64, for the fast mode (hypothesis)
+
+The fast mode (backend/avx2/CLIMB.md, 2026-10-28) quantizes the
+encoder's activations in blocks of 64, which the loop above does not
+take: the ARMv8.0 tile runs its C there, which the same entry measured
+4 to 8% slower on an A72 than the loop at 32 (gcc 14), and 0 to 2% on an
+A53, where the C tile itself is 8 to 10% and 4 to 5% faster at 64 than
+at 32 - its finish (ADDP, SCVTF, a scale and FMLA for each column) taken
+half as often. The loop's own finish is about 18 of the A72's 154.6
+cycles a block (the probe above).
+
+The hypothesis: q8_blocks3_qb64, the loop at blocks of 64, as two halves
+that are each the block of 32's twelve units. The first half's units
+3-11 as now; then the second half's units 0-2 without a finish, their
+adds SADALP into the sums the first half left, where a block's first
+step has SADDLP; its units 3-11, unit 3's adds SADALP too; and the next
+block's units 0-2 with the finish, as now. The weights' and the
+activations' pointers step 512 and 32 bytes a half, so each half's
+offsets are the block of 32's (an LDP's offset reaches 1008, and a block
+of 64's next weights would be at 1024). A row's sum at the finish is 64
+products of at most 127 x 127, 1,032,256, under the 2^24 that SCVTF
+takes exactly, and an int16 sum is still two products: ref's bits. The
+loop's segments become macros that the block of 32's loop is written in
+too, its instructions the same bytes (objdump).
+
+Predicted: gemmbench at blocks of 64 against 32, the loop at each, 5 to
+7% faster on the A72 (half the finish's 18 cycles) and 3 to 5% on the
+A53; a whole run in the fast mode against the default 3 to 5% faster on
+a Pi 4 and 2 to 4% on a Pi 3, under gcc 14 (the boards' own, tuned) and
+clang 21 (cross-built, static, tuned for the core), and the default's
+time level with its build before. Kept if the fast mode is faster than
+the default by more than the spread on both boards under both
+compilers, kcheck gives ref's bits on both, on a Pi 5's neon and on the
+M4 Pro's, and the block of 32's loop is the same bytes.
