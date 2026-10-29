@@ -95,6 +95,19 @@ void pk_joint_frames(pk_asr *a, uint32_t Te, float *f);
  * them (pk_pool_aside), each product whole. */
 long pk_decode(pk_asr *a, uint32_t Te, const float *f, int split);
 
+/* pk_asr_run_chunks with a hook that can stop it: each(arg, i, toks,
+ * count, spare) has chunk i's tokens and returns nonzero to stop there
+ * (which the call returns). spare is the joint buffer chunk i used, free
+ * until each returns, while the other holds chunk i + 1's encoder output:
+ * pk_retry_run may use it then, and only it (core/transcribe.c). */
+typedef int (*pk_each_fn)(void *arg, size_t i, const pk_tok *toks, long count, float *spare);
+int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
+                       pk_each_fn each, void *arg);
+
+/* pk_asr_run on n samples no longer than the longest chunk of the run in
+ * progress, its joint half in spare: a->toks, the count, or -1. */
+long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare);
+
 /* Encoder frames T0 feature frames make: three halvings, each rounding up. */
 static inline uint32_t pk_enc_frames(uint32_t T0) {
     uint32_t t = T0;

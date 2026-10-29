@@ -2,11 +2,13 @@
 its transcripts compare with another run's, float32's from
 tools/quantcheck.py or another build's.
 
-  wercheck.py PKTITO MODEL.pkf CORPUS_DIR... [--against RUN.json] [--save OUT.json]
+  wercheck.py PKTITO MODEL.pkf CORPUS_DIR... [--against RUN.json] [--save OUT.json] [--retry]
 
 A corpus directory is tools/corpus.py's: WAVs and a refs.tsv. Each
 recording is transcribed whole (--max-chunk past any of them), which is
-what NeMo does with a file. --against takes quantcheck's JSON (its "f32"
+what NeMo does with a file, and with --no-retry, so that each transcript
+is NeMo's (pk_asr_run's); --retry measures pk_asr_transcribe's path as
+pktito-c runs it by default instead. --against takes quantcheck's JSON (its "f32"
 run) or a --save of this script, and reports the recordings whose
 transcript differs and the WER between the two runs.
 """
@@ -29,6 +31,7 @@ def main():
     ap.add_argument("--save")
     ap.add_argument("--threads", type=int, default=0)
     ap.add_argument("--max-chunk", default="3600", help="pktito's --max-chunk (default: whole recordings)")
+    ap.add_argument("--retry", action="store_true", help="hear dropped speech again, as pktito-c does by default")
     a = ap.parse_args()
 
     files, refs = [], {}
@@ -40,7 +43,7 @@ def main():
                     path = os.path.join(d, name)
                     files.append(path)
                     refs[path] = text
-    cmd = [a.pktito, "-m", a.model, "--max-chunk", a.max_chunk]
+    cmd = [a.pktito, "-m", a.model, "--max-chunk", a.max_chunk] + ([] if a.retry else ["--no-retry"])
     if a.threads:
         cmd += ["-t", str(a.threads)]
     out = {}
@@ -53,8 +56,8 @@ def main():
     if missing:
         sys.exit("no transcript for %s" % missing[:3])
     e, n = wer.wer([(refs[p], out[p]) for p in files])
-    print("%s, --max-chunk %s: %d recordings, WER %.2f%% (%d/%d)" % (
-        os.path.basename(a.model), a.max_chunk, len(files), 100 * e / n, e, n))
+    print("%s, --max-chunk %s%s: %d recordings, WER %.2f%% (%d/%d)" % (
+        os.path.basename(a.model), a.max_chunk, ", retry" if a.retry else "", len(files), 100 * e / n, e, n))
     if a.against:
         with open(a.against, encoding="utf-8") as f:
             other = json.load(f)

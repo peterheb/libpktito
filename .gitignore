@@ -16,6 +16,7 @@
 /tests/capcheck
 /tests/langcheck
 /tests/chunkcheck
+/tests/transcheck
 /tests/fftcheck
 /examples/transcribe
 __pycache__/

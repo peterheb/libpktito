@@ -115,7 +115,7 @@ endif
 
 INC := -Icore -Ibackend
 LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/decoder.c \
-           core/tokens.c core/asr.c core/vad.c core/segment.c core/wav.c core/resample.c core/captions.c \
+           core/tokens.c core/asr.c core/transcribe.c core/vad.c core/segment.c core/wav.c core/resample.c core/captions.c \
            core/language.c
 BACK_OBJ := $(foreach b,$(BACKENDS) ref,backend/$(b)/kernels.o) backend/kernels.o
 LIB_OBJ := $(LIB_SRC:.c=.o) $(BACK_OBJ)
@@ -190,7 +190,7 @@ models/%.pkf:
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
 TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck \
-         tests/pathcheck
+         tests/pathcheck tests/transcheck
 BENCHES := tests/q8bench tests/gemmbench tests/spinbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
@@ -203,6 +203,9 @@ tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/chunkcheck: tests/chunkcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/chunkcheck.c $(LIB_OBJ) $(LDLIBS)
+# transcheck includes core/transcribe.c itself, for its static parts
+tests/transcheck: tests/transcheck.c core/transcribe.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/transcheck.c $(filter-out core/transcribe.o,$(LIB_OBJ)) $(LDLIBS)
 tests/pathcheck: tests/pathcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pathcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/wavcheck: tests/wavcheck.c core/wav.o core/os.o

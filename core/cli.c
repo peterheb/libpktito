@@ -6,12 +6,13 @@
  *   pktito-c bench talk.wav             how fast this machine transcribes it
  *   pktito-c info                       the model file: where it came from
  *
- * What it does with a file is what NeMo's model.transcribe() does with one:
- * read it (mean of the channels; another rate is brought to 16 kHz) and
- * transcribe the whole of it at once. A recording longer than --max-chunk
- * is first cut at its silences, which Silero's VAD finds, into chunks no
- * longer than that, each transcribed as a recording of its own, and its
- * silence is left out (pk_chunks in pktito.h).
+ * A file is read (mean of the channels; another rate is brought to 16 kHz)
+ * and transcribed by pk_asr_transcribe, the library's high-level path: a
+ * recording that fits in --max-chunk is heard whole, as NeMo's
+ * model.transcribe() hears a file, a longer one is cut at its silences,
+ * which Silero's VAD finds, its silence left out, and speech the model
+ * wrote no word for is heard again (README, "Transcribing a recording").
+ * --no-retry leaves that out: each chunk NeMo's transcript of it.
  */
 #include "pktito.h"
 #include "asr.h"
@@ -90,6 +91,8 @@ static const char *usage =
     "                        faster, WER level, a few more transcripts not float32's\n"
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
     "                        a longer recording is cut at its silences\n"
+    "      --no-retry        each chunk as NeMo transcribes it: speech the model\n"
+    "                        wrote no word for is not heard again\n"
     "      --json            chunks as JSON: start, end, text, every word's and every\n"
     "                        token's time; and meta, the model, the audio's length and\n"
     "                        its language\n"
@@ -108,7 +111,7 @@ enum { SUBS_SRT = 1, SUBS_VTT = 2 };
 typedef struct {
     const char *cmd, *in, *model;
     const char **ins;                /* every input file; in is the first */
-    int nin, threads, json, subs, verbose, stream, fast;   /* subs: SUBS_SRT or SUBS_VTT */
+    int nin, threads, json, subs, verbose, stream, fast, no_retry;   /* subs: SUBS_SRT or SUBS_VTT */
     double max_chunk, pause_ms;
 } opts;
 
@@ -164,6 +167,7 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--vtt")) o->subs = SUBS_VTT;
         else if (!strcmp(a, "--stream")) o->stream = 1;
         else if (!strcmp(a, "--fast")) o->fast = 1;
+        else if (!strcmp(a, "--no-retry")) o->no_retry = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
         else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")
@@ -350,7 +354,7 @@ static void json_str(const char *s) {
  * language for a file's, or for the run's of one file (lang NULL: none
  * found). */
 static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top, double audio_s,
-                      double vad_s, double asr_s, int with_lang, const char *lang) {
+                      double asr_s, int with_lang, const char *lang) {
     printf("{");
     if (top) {
         printf("\"model\": ");
@@ -366,9 +370,9 @@ static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top
             printf("null");
     }
     if (o->verbose) {
-        printf(", \"vad\": %.3f, \"transcription\": %.3f", vad_s, asr_s);
+        printf(", \"transcription\": %.3f", asr_s);   /* the VAD's time with it */
         if (top) {
-            printf(", \"speed\": %.1f, \"version\": ", asr_s + vad_s > 0 ? audio_s / (asr_s + vad_s) : 0.0);
+            printf(", \"speed\": %.1f, \"version\": ", asr_s > 0 ? audio_s / asr_s : 0.0);
             json_str(PKTITO_VERSION);
             printf(", \"backend\": ");
             json_str(pk_backend());
@@ -471,7 +475,6 @@ static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
 typedef struct {
     const opts *o;
     const pk_model *m;
-    const pk_seg *c;
     int many, rate;
     double fs, printing;
     char *text;
@@ -479,9 +482,12 @@ typedef struct {
     capwords words;
 } chunk_out;
 
-/* One chunk's tokens, printed as -o asks */
-static void print_chunk(void *arg, size_t i, const pk_tok *t, long nt) {
+/* One chunk's tokens, printed as -o asks (pk_asr_transcribe's fn) */
+static int print_chunk(void *arg, const pk_chunk_out *ch) {
     chunk_out *p = arg;
+    const size_t i = ch->i;
+    const pk_tok *t = ch->toks;
+    const long nt = ch->count;
     const opts *o = p->o;
     const pk_model *m = p->m;
     const double fs = p->fs, t0 = pk_os_now();
@@ -489,9 +495,12 @@ static void print_chunk(void *arg, size_t i, const pk_tok *t, long nt) {
     while ((len = pk_text(m, t, (size_t)nt, p->text, p->cap)) >= p->cap)
         if (!(p->text = realloc(p->text, p->cap *= 2)))
             die("out of memory");
-    double start = (double)p->c[i].start / p->rate, end = (double)p->c[i].end / p->rate;
+    double start = (double)ch->at.start / p->rate, end = (double)ch->at.end / p->rate;
     if (o->json) {
-        printf("%s\n {\"start\": %.3f, \"end\": %.3f, \"text\": ", i ? "," : "", start, end);
+        printf("%s\n {\"start\": %.3f, \"end\": %.3f, ", i ? "," : "", start, end);
+        if (ch->retried)    /* stretches heard again (pk_asr_transcribe) */
+            printf("\"retried\": %d, ", ch->retried);
+        printf("\"text\": ");
         json_str(p->text);
         pk_word *wd = malloc(((size_t)nt ? (size_t)nt : 1) * sizeof *wd);
         if (!wd)
@@ -538,19 +547,17 @@ static void print_chunk(void *arg, size_t i, const pk_tok *t, long nt) {
     }
     fflush(stdout);
     p->printing += pk_os_now() - t0;
+    return 0;
 }
 
 /* One file through the transcriber: its chunks, printed as -o asks. With
  * several files a line each, the file's name, a tab and its chunks' text. */
 static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, int many,
-                            double *audio_s, double *vad_total, double *asr_total, const char **lang) {
+                            double *audio_s, double *asr_total, const char **lang) {
     size_t n;
     const int rate = pk_model_rate(m);
     float *x = read_audio(path, rate, &n, o);
-    size_t nc;
-    double vad_s;
-    pk_seg *c = chunks_of(m, x, n, o->max_chunk, &nc, &vad_s);
-    chunk_out out = { o, m, c, many, rate, pk_model_frame_seconds(m), 0, malloc(1 << 16), 1 << 16, { 0 } };
+    chunk_out out = { o, m, many, rate, pk_model_frame_seconds(m), 0, malloc(1 << 16), 1 << 16, { 0 } };
     if (!out.text)
         die("out of memory");
     if (many && !o->json)
@@ -560,8 +567,12 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         json_str(path);
         printf(", \"chunks\": [");
     }
+    pk_transcribe_opts to;
+    pk_transcribe_defaults(&to);
+    to.max_chunk_s = o->max_chunk;
+    to.retry = !o->no_retry;
     const double t0 = pk_os_now();
-    if (pk_asr_run_chunks(a, x, c, nc, print_chunk, &out))
+    if (pk_asr_transcribe(a, x, n, &to, print_chunk, &out) < 0)
         die("out of memory");
     const double asr_s = pk_os_now() - t0 - out.printing;
     *asr_total += asr_s;
@@ -569,7 +580,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         *lang = file_language(m, &out.words);
     if (o->json && many) {
         printf("\n], \"meta\": ");
-        json_meta(o, m, a, 0, (double)n / rate, vad_s, asr_s, 1, *lang);
+        json_meta(o, m, a, 0, (double)n / rate, asr_s, 1, *lang);
         putchar('}');
     } else if (many)
         putchar('\n');
@@ -579,15 +590,13 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         cap_print(&out.words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en") ? 1 : -1, (int64_t)n * 1000 / rate);
     }
     *audio_s += (double)n / rate;
-    *vad_total += vad_s;
     free(out.text);
-    free(c);
     free(x);
 }
 
 static int transcribe(const opts *o, pk_model *m) {
     pk_asr *a = asr_new(o, m);
-    double audio_s = 0, vad_s = 0, asr_s = 0;
+    double audio_s = 0, asr_s = 0;
     int many = o->nin > 1;
     if (o->json)
         printf(many ? "{\"files\": [" : "{\"chunks\": [");
@@ -595,16 +604,16 @@ static int transcribe(const opts *o, pk_model *m) {
     for (int i = 0; i < o->nin; i++) {
         if (o->json && many)
             printf(i ? ",\n" : "\n");
-        transcribe_file(o, o->ins[i], m, a, many, &audio_s, &vad_s, &asr_s, &lang);
+        transcribe_file(o, o->ins[i], m, a, many, &audio_s, &asr_s, &lang);
     }
     if (o->json) {
         printf("\n],\n \"meta\": ");
-        json_meta(o, m, a, 1, audio_s, vad_s, asr_s, !many, lang);
+        json_meta(o, m, a, 1, audio_s, asr_s, !many, lang);
         printf("}\n");
     }
     if (o->verbose)
-        fprintf(stderr, "pktito-c: %.1f s of audio: VAD %.2f s, transcription %.2f s (%.1fx real "
-                "time), %s, %d threads%s\n", audio_s, vad_s, asr_s, audio_s / (asr_s + vad_s),
+        fprintf(stderr, "pktito-c: %.1f s of audio: transcribed in %.2f s with its VAD (%.1fx "
+                "real time), %s, %d threads%s\n", audio_s, asr_s, asr_s > 0 ? audio_s / asr_s : 0.0,
                 pk_backend(), pk_asr_threads(a), o->fast ? ", fast mode" : "");
     pk_asr_free(a);
     return 0;

@@ -16,7 +16,12 @@ allows.
    timestamps; the engine's int8 numerics were chosen by measurement against
    float32 (README, "Why int8") and every backend computes the same bits as
    `ref` on every machine. A change that moves a transcript off that, or a
-   bit between backends, is a bug, whatever it buys.
+   bit between backends, is a bug, whatever it buys. This holds the low
+   level (`pk_asr_run` and the blocks beside it). The high level,
+   `pk_asr_transcribe`, adds processing on top - its retry of speech the
+   model dropped - that leaves NeMo's transcript on purpose, measured and
+   documented (README, "Transcribing a recording"), and off with
+   `--no-retry`; it never changes what the low level computes.
 2. **Can a learner follow it?** The tree reads top down: core/encoder.c and
    core/decoder.c are the model, core/mel.c the features, backend/ref the
    arithmetic. Code outside the tuned backends is written for a reader first,

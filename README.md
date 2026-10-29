@@ -92,7 +92,9 @@ arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a lin
 
 `-m` picks the model when `models/` holds both, `-t` the thread count (one
 a core by default). A recording longer than `--max-chunk` (30 s) is cut at
-its silences into chunks that long at most, each transcribed whole;
+its silences into chunks that long at most, each transcribed whole, and
+speech the model wrote no word for is heard again; `--no-retry` leaves that
+out, for NeMo's transcript of each chunk ("Transcribing a recording").
 `--stream`'s lines end at a pause of `--pause` (1000 ms). Both defaults are
 measured below. `--fast` trades a little of the transcript's nearness to
 float32's for up to 7% of the time (README, "Why int8").
@@ -259,6 +261,126 @@ add up to the same int32 in any order, so SDOT, SMULL, VPMADDUBSW and
 VPDPBUSD each take them their own way, and only the one fused multiply-add a
 block that scales the sum is fixed (backend/kernels.h).
 
+## Transcribing a recording
+
+The library has two ways in, a low level and a high one.
+
+**The low level** is `pk_asr_run`: samples in, tokens with their times out,
+all of the samples through the encoder at once. Its transcript is NeMo's
+transcript of exactly those samples, bit for bit, and it does nothing else -
+transcript = f(x). Beside it are the blocks pktito builds everything else
+from, each as plain: `pk_vad_probs` and `pk_segments` (Silero's VAD and its
+speech segments), `pk_chunks` (a recording cut into chunks), and
+`pk_asr_run_chunks` (chunks transcribed, each chunk's decoder beside the
+next one's encoder). A caller who wants NeMo's behaviour, or processing of
+their own, builds from these; examples/transcribe.c is a page of it.
+
+**The high level** is `pk_asr_transcribe`: a recording of any length in, each
+chunk's tokens out as soon as the chunk is done, with everything pktito
+does for a long recording done for you. `pktito-c` transcribes with it. It
+does, in order:
+
+1. **Finds the speech.** Silero's VAD gives a probability of speech every
+   32 ms, and `pk_segments` turns them into segments as Silero's
+   `get_speech_timestamps` does, a segment longer than a chunk split at
+   its longest pause.
+2. **Cuts the recording into chunks** of at most 30 s (`max_chunk_s`,
+   `--max-chunk`). A recording that fits is one chunk, heard whole, as
+   NeMo hears a file. A longer one is cut half way into the silences
+   between segments, at most a second into each, and the rest of the
+   silence is left out. 30 s is where the error rate is as low as whole
+   recordings' and the encoder's cost a fraction of theirs ("Long
+   recordings").
+3. **Keeps what lies between the speech.** Silero hears voices, not words,
+   so singing and speech over music are not speech to it. What lies between
+   the speech chunks is transcribed too, in pieces of at most a chunk, but
+   not a silent piece, nor one under 3 s, of which the model makes words
+   out of anything ("Between the speech").
+4. **Transcribes each chunk** as `pk_asr_run` would, the same bits, the
+   search over one chunk running beside the next chunk's encoder: 1.2 to
+   5.6% less time where there are more than four cores.
+5. **Hears dropped speech again.** A stretch of a chunk that Silero heard
+   speech in but the model wrote no word for is transcribed again on its
+   own (below). This is the one step where the high level leaves NeMo's
+   transcript, on purpose; `retry = 0` (`--no-retry`) leaves it out, and
+   each chunk is then `pk_asr_run`'s.
+6. **Hands each chunk to the caller** as it is done: its place in the
+   recording, its tokens, how many of its stretches were heard again, and
+   how far the run has got. The caller's function returns nonzero to stop
+   the run there.
+
+### When the model drops speech
+
+Parakeet now and then writes nothing for speech it plainly hears. Over the
+12 chapters of LibriVox's *Alice's Adventures in Wonderland* (AliceBench,
+3 hours), v2 gives nothing for the first 28 s of chapters 8 and 10, of the
+first chunk of chapters 2, 7, 9 and 12 keeps only LibriVox's announcement
+and drops the reader's name and the chapter's title after it, and loses
+chapter 1's "End of chapter one"; v3 drops chapter 5's closing chunk, chapter 1's closing credits
+and lines of chapters 4, 5 and 10. It is the model's failure, not
+pktito's: at every frame of chapter 10's first chunk the search visits,
+blank beats the next word (by 0.02 logits at the closest), and NeMo 3.0's
+own float32 transcription of chapter 8's first chunk is empty too. Heard
+again on its own, each of those stretches gives its words.
+
+So the high level hears a stretch again, once, when:
+
+- no word of the chunk covers it - before the first word, between two, or
+  after the last - and Silero heard at least 2 s of speech in it, or 1 s
+  where it follows the end of a sentence or ends the chunk. At 1 s inside a
+  sentence a FLEURS Polish recording's "km", said "kilometrów
+  kwadratowych", left a second after it that gave "metrów kwadratowych." a
+  second time; at 2 s between sentences AliceBench's chapter 1 lost "End
+  of chapter one", 1.6 s after "...finished off the cake.";
+- its speech is no more than 4 dB quieter than the recording's speech. What
+  the model drops is the voice the rest of the recording is in; a voice in
+  the background, which Silero hears as speech too, is quieter, and
+  hearing it again puts the background's words in. LibriSpeech recordings
+  with three other speakers mixed in at 10 dB SNR had stretches retried
+  down to -24 dB, and their WER went from 6.21% to 9.20% with every one
+  heard again, and to 6.02% with the 4 dB gate; at 5 dB SNR, 19.88%,
+  21.91% and 19.79%. AliceBench's dropped stretches lie -3.6 to +2.7 dB
+  from their chapters' speech. Pink noise and a telephone band draw no
+  retry, nor do two songs;
+- the stretches heard again so far are under a fifth of the recording, or
+  a chunk if that is more: music that Silero takes for speech gives no
+  words however it is cut, and costs at most a fifth more time.
+
+A chunk that gave no words at all is heard again in two halves, cut at its
+quietest 300 ms within its middle third, since whole it would give nothing
+again. A retry's tokens go in among the chunk's at their own times. In
+pktito's AliceBench run the retry gives v2 221 more words in 7 of the 12
+chapters and v3 57 in 4, and every chunk with nothing to retry is the same
+bits as `--no-retry`'s. On the sets the rest of this README measures - ls200
+(v2), the six FLEURS sets (v3), and the two LibriSpeech long-form sets
+with both models, 1,224 recordings in all - it hears nothing again, and
+every transcript and WER is as without it (`tests/wercheck.py --retry`,
+2026-10-29).
+
+The rules and their numbers were found in pktito-app, which shipped them
+first (2026-10-26), and are core/transcribe.c's now, with the same
+measurements in its comments.
+
+### How it got here
+
+- **2026-10-20**: recordings longer than a chunk cut at Silero's silences,
+  each chunk transcribed whole; 30 s chosen over 10 s to whole recordings
+  on 45 minutes of stitched LibriSpeech, then checked over every speaker of
+  test-clean, no chunk lost ("Long recordings").
+- **2026-10-22**: what lies between the speech transcribed too, after a
+  sung recording lost three quarters of its words; silent pieces and
+  pieces under 3 s left out, after the model made words of 27 of 28
+  one-second pieces of music ("Between the speech").
+- **2026-10-26**: the retry, in pktito-app, after AliceBench's chapters
+  came back without their openings; gated at 4 dB after recordings with
+  background speakers.
+- **2026-10-28**: each chunk's decoder beside the next chunk's encoder
+  (`pk_asr_run_chunks`), 1.2 to 5.6% faster on more than four cores.
+- **2026-10-29**: all of it one call, `pk_asr_transcribe`, with a way to
+  stop, so that a program gets what pktito-app does without writing it
+  again, and pktito-app the pipelined run it could not use while the retry
+  and its Stop button lived outside the library.
+
 ## Long recordings
 
 The encoder hears a recording whole - its attention is over every frame -
@@ -414,6 +536,15 @@ pk_model *m = pk_model_load("models/parakeet-tdt-0.6b-v2.pkf", err, sizeof err);
 pk_asr *a = pk_asr_new(m, 0);                     /* 0: a thread a core */
 pk_asr_set_fast_mode(a, 1);                       /* optional: faster, "Why int8" */
 
+/* the high level: a recording of any length, VAD, chunks and retries done */
+int show(void *arg, const pk_chunk_out *c) {      /* each chunk as it is done */
+    pk_text(m, c->toks, (size_t)c->count, text, sizeof text);
+    return stop_wanted;                           /* nonzero stops the run here */
+}
+pk_asr_transcribe(a, samples, n_samples, NULL, show, arg);   /* NULL: 30 s chunks, retry on */
+/* c->at.start / 16000. + c->toks[i].frame * pk_model_frame_seconds(m): when token i was heard */
+
+/* the low level: NeMo's transcript of exactly these samples */
 const pk_tok *t;
 long n = pk_asr_run(a, samples, n_samples, &t);   /* 16 kHz mono float */
 pk_text(m, t, (size_t)n, text, sizeof text);      /* NeMo's transcript */

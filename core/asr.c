@@ -195,8 +195,8 @@ static void search_aside(void *arg) {
  * and shares its memory with the search's reads, it gives back some of
  * that: all but 0.2 to 0.4% of it on a Pi 5's four cores, 0.6 to 0.7% on
  * a Pi 4's and 0.8% on a Pi 3's (backend/avx2/CLIMB.md, 2026-10-28). */
-int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
-                      void *arg) {
+int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
+                       pk_each_fn each, void *arg) {
     size_t most = 0;
     for (size_t i = 0; i < n; i++) {
         const size_t T0 = pk_mel_frames(a->m, (size_t)(c[i].end - c[i].start));
@@ -209,7 +209,7 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
     pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
     uint32_t Te = encode(a, x + c[0].start, (size_t)(c[0].end - c[0].start), a->fproj[0]);
     int rc = 0;
-    for (size_t i = 0; i < n && !rc; i++) {
+    for (size_t i = 0; i < n && rc == 0; i++) {
         const float *f = a->fproj[i % 2];
         long nt;
         if (i + 1 < n) {
@@ -225,10 +225,34 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
         if (nt < 0)
             rc = -1;
         else
-            fn(arg, i, a->toks, nt);
+            rc = each(arg, i, a->toks, nt, a->fproj[i % 2]);
     }
     pk_os_rethrottle(was);
     return rc;
+}
+
+/* pk_asr_run_chunks' fn, which cannot stop the run, as an each */
+typedef struct {
+    pk_chunk_fn fn;
+    void *arg;
+} plain_each;
+
+static int plain(void *arg, size_t i, const pk_tok *t, long nt, float *spare) {
+    (void)spare;
+    plain_each *p = arg;
+    p->fn(p->arg, i, t, nt);
+    return 0;
+}
+
+int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
+                      void *arg) {
+    plain_each p = { fn, arg };
+    return pk_run_chunks_with(a, x, c, n, plain, &p);
+}
+
+long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare) {
+    const uint32_t Te = encode(a, x, n, spare);
+    return pk_decode(a, Te, spare, 1);
 }
 
 const char *pk_backend(void) { return pk_k_name(); }
