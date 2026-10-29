@@ -2048,3 +2048,35 @@ The VPMADDUBSW tile's -6% under gcc is to be looked at before the
 commit. Kept if --fast is faster than the default by more than the
 spread on every board with a dotprod or a VNNI tile, under both
 compilers, and the default is level with 33c5e7c.
+
+## 2026-10-28 - the VPMADDUBSW tile's sums kept a chain under gcc (hypothesis)
+
+The fast mode's entry above found the avx2 tile 5 to 6% slower at blocks
+of 64 than at 32 under gcc 15, and 3 to 4% faster under clang 21. Its
+code (gcc -O3 -S, k_gemm_q8, the four-column tile's block): every
+group's VPMADDWD product goes to the stack and the block's 32 (64) are
+summed at its end as a tree, 40 stack references in a block of 32 and
+104 in a block of 64 - the same in gcc 11.4, 14.3 and 15.2, and with
+-fno-tree-reassoc - where clang keeps each column's sum a chain in a
+register and has 0 and 2. The sums are int32 and wrap, so every order
+gives the same bits, and gcc is free to pick its own; at 32 it costs
+gcc's tile, too: q8bench on a Zen 5 core, avx2, 120 GMAC/s under gcc 15
+against clang's 130 (the same entry's run).
+
+The hypothesis: an empty asm on each column's sum after each group
+(`__asm__("" : "+x"(s[c]))`), which leaves nothing in the instruction
+stream but makes the sum a value gcc has to hold in a register there,
+so that the block's adds stay the chain they are written as. In a
+scratch copy gcc 11, 14 and 15 then have no stack reference in any of
+the tile's blocks and 190 instructions in the four-column block of 32
+(from 209) and 382 in the block of 64 (from 429); clang's instructions
+are the ones it had. The bits are the same: kcheck. Predicted, avx2
+forced on the 9950X and on the 12900HK: q8bench under gcc 15 to within
+2% of clang's at 32 and at 64, clang's level; a whole run at the
+default threads, gcc's faster by the product's gain in the products'
+share of the run (make PROFILE=1), clang's level; and the fast mode
+then faster than the default under both. Kept if gcc's product and run
+move by more than the spread and clang's do not fall. The Zen 2 and
+Zen 3 instances, where clang 21's avx2 build was 4.5 to 5.2% ahead of
+gcc 11's (the release builds' entry, 2026-10-27), are the machines this
+is for, and are not measured here.
