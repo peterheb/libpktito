@@ -2253,3 +2253,47 @@ build under both compilers, as qb's, and --fast's time level; with avx2
 forced the default 0 to 0.5% faster. The 9950X runs the zmm tile, which
 this leaves as it is. Kept if the 12900HK's default moves by more than
 the spread under both compilers.
+
+## 2026-10-29 - the ymm tiles' blocks of 32 a constant in the default (result: kept)
+
+As the hypothesis has it: the ymm tiles take QB, 32, 64 or 0 (a->qb's,
+as a loop), and k_gemm_q8 picks k_gemm_q8_32, k_gemm_q8_64 or the
+default's for any other size; the zmm tile as it was. In the objects
+(objdump -d, the blocks of 8 or more products, addresses and jump
+targets taken out) the zmm tiles and the fast mode's ymm tiles are the
+kept build's instruction for instruction, under gcc 15 and clang 21. At
+32 gcc's tiles now finish each block in the block's own basic block,
+where the kept build's finished it in another: the VNNI tile's
+three-column block 149 and 157 instructions with 10 and 7 stack
+references, from 103 and 103 with none. clang's finished in the block
+already, and its three-column blocks are 153 and 185 instructions with 4
+and 34 stack references, from 130 and 135 with 3 and 3. kcheck's 1906
+cases give ref's bits on every backend of the 9950X and the 12900HK,
+under gcc 15.2 and clang 21.1.8 on the 9950X, and check-c passes on both
+(gcc 15.2); every test.wav transcript is ref's under each of the 9950X's
+backends, in both modes.
+
+The 12900HK (storage1), test.wav through v2, best of 5 at 14 threads, 6
+interleaved rounds, the order turned, against the kept build (de85e2a)
+under the same compiler, a round's change, median (range):
+
+| compiler | default: de85e2a | QB | change | --fast: de85e2a | QB | change |
+|---|---|---|---|---|---|---|
+| gcc 15.2 | 0.805 s | 0.7905 | -1.9% (-2.5 to -1.5) | 0.7485 | 0.7460 | -0.3% (-0.7 to +0.5) |
+| clang 21.1 | 0.799 | 0.789 | -1.2% (-1.7 to -0.8) | 0.7465 | 0.7460 | +0.1% (-0.1 to +0.5) |
+| gcc 15.2, avx2 forced | 1.460 | 1.461 | +0.1% (-0.3 to +0.3) | | | |
+| clang 21.1, avx2 forced | 1.4605 | 1.4535 | -0.5% (-0.6 to -0.2) | | | |
+
+As predicted: the default 1.2 to 1.9% faster under both compilers, the
+fast mode level, avx2 level to 0.5% faster. q8bench on a P-core, GMAC/s
+at 32 over the three shapes: gcc's 218.2, 208.4 and 219.9 against 218.8,
+207.9 and 219.8, level; clang's 221.2, 214.6 and 226.2 against 213.6,
+197.1 and 215.3, +3.6 to +8.9%. gcc's run gains where its P-core's
+product does not, the E-cores' presumably, as with the VPMADDUBSW tile's
+asm above. The fast tiles, the kept build's instruction for instruction
+at other addresses, ran 3.1 to 3.4% below the kept build's at 64 in
+gcc's q8bench and 0.3 to 5.4% above in clang's, where the fast mode's
+whole runs are level: the same instructions, so a few percent of one
+core's product here is presumably where the code lies. The 9950X runs
+the zmm tile, which this leaves as it was. Kept: the default moves by
+more than the spread under both compilers.

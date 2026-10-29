@@ -254,18 +254,19 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
 
 /* Block b of a tile, g its weights: the encoder's 32 inputs unrolled, and
  * with FAST the fast mode's 64 as two of them; any other size (the
- * decoder's, a row a block) as a loop. FAST's tiles are functions of their
- * own (q8_zmm64, k_gemm_q8_64), the default's code what it was before them:
- * with the 64 beside the 32 in one tile, gcc 15 merged the two's last
- * groups and the 32's loop jumped into the 64's for them, its product at
- * 32 up to 5% slower on a 12900HK's P-core. In FAST's ymm tiles qb is the
- * constant 64; FAST's zmm tile chooses by qb as the loop runs, because a
- * zmm block loop with the one size in it and no branch, clang 21 made with
- * the tile's column pointers on the stack: the fast mode 2.5% slower than
- * the default on a Zen 5, where choosing makes it 4.9% faster. The ymm
- * tiles' constant is the faster under both compilers on a 12900HK (by 1.0
- * and 1.5 points of a run), and gcc 15's zmm tile would be faster with it
- * too, by 2.4 (CLIMB.md, 2026-10-29). */
+ * decoder's, a row a block) as a loop. The fast mode's tiles are functions
+ * of their own: with the 64 beside the 32 in one tile, gcc 15 merged the
+ * two's last groups and the 32's loop jumped into the 64's for them, its
+ * product at 32 up to 5% slower on a 12900HK's P-core. The ymm tiles take
+ * the size as a constant, a function each for 32 and 64 (k_gemm_q8_32,
+ * k_gemm_q8_64): a run on the 12900HK 1.9% faster under gcc 15 and 1.2%
+ * under clang 21 than with the size chosen as the loop runs, and in the
+ * fast mode 1.0 and 1.5 points. The zmm tile chooses as the loop runs,
+ * because a zmm block loop with the one size in it and no branch, clang 21
+ * made with the tile's column pointers on the stack: at 32 a run 23.5%
+ * slower on a Zen 5, and at 64 the fast mode 2.5% slower than the default,
+ * where choosing makes it 4.9% faster. gcc 15's would be about 2 points
+ * faster with the constant at either size (CLIMB.md, 2026-10-29). */
 #define PK_Q8_BLOCK(FAST, g, b)                                                   \
     do {                                                                          \
         if (qb == 32) {                                                           \
@@ -689,8 +690,8 @@ static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws,
              const float *bias, const pk_act *a, uint32_t t0, int add,
              const uint8_t *xo, const __m256i *wsum, const int32_t *cs, const int XOFF,
-             const int NC, const int FAST) {
-    const uint32_t qb = FAST ? 64 : a->qb, nb = n / qb;
+             const int NC, const uint32_t QB) {
+    const uint32_t qb = QB ? QB : a->qb, nb = n / qb;
     const __m256i off = _mm256_set1_epi8((char)0x80);
     __m256 f0[3], f1[3];
     const uint8_t *x[3];
@@ -701,7 +702,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
     for (uint32_t b = 0; b < nb; b++) {
         __m256i s0[3], s1[3];
         for (int c = 0; c < NC; c++) s0[c] = s1[c] = _mm256_setzero_si256();
-        PK_Q8_BLOCK(FAST, w, b);
+        PK_Q8_BLOCK(QB == 64, w, b);
         for (int c = 0; c < NC; c++) {
             __m256i c0v, c1v;
             if (XOFF) {
@@ -733,15 +734,15 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
 }
 
 /* the tiles of one panel over columns [c0, c1), three at a time */
-#define PK_Q8_TILES(FAST, XOFF, XO, WSUM, CS)                                       \
+#define PK_Q8_TILES(QB, XOFF, XO, WSUM, CS)                                         \
     do {                                                                            \
         uint32_t t = c0;                                                            \
         for (; t + 3 <= c1; t += 3)                                                 \
-            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 3, FAST); \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 3, QB);   \
         if (c1 - t == 2)                                                            \
-            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 2, FAST); \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 2, QB);   \
         else if (c1 - t == 1)                                                       \
-            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 1, FAST); \
+            q8_tile(o, os, wp, n, ws + r, b, a, t, add, XO, WSUM, CS, XOFF, 1, QB);   \
     } while (0)
 
 
@@ -756,7 +757,7 @@ static __attribute__((noinline)) uint8_t *ymm_xoff(void) {
 
 static inline __attribute__((always_inline))
 void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                    uint32_t rows, const pk_act *a, int add, const int FAST) {
+                    uint32_t rows, const pk_act *a, int add, const uint32_t QB) {
     const uint32_t n = a->n, nb = n / a->qb;
     if (a->T < PK_Q8_XOFF) {
         int32_t cs[PK_Q8_XOFF * PK_MAX_BLOCKS];
@@ -766,7 +767,7 @@ void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, con
             const int8_t *wp = w + (size_t)r * n;
             float *o = out + r;
             const float *b = bias ? bias + r : NULL;
-            PK_Q8_TILES(FAST, 0, NULL, NULL, cs + (size_t)(t - c0) * nb);
+            PK_Q8_TILES(QB, 0, NULL, NULL, cs + (size_t)(t - c0) * nb);
         }
         return;
     }
@@ -795,21 +796,29 @@ void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, con
                 wsum[2 * blk] = _mm256_slli_epi32(s0, 7);
                 wsum[2 * blk + 1] = _mm256_slli_epi32(s1, 7);
             }
-            PK_Q8_TILES(FAST, 1, xoff + (size_t)(t - c0) * n, wsum, NULL);
+            PK_Q8_TILES(QB, 1, xoff + (size_t)(t - c0) * n, wsum, NULL);
         }
     }
 }
 
-/* the fast mode's blocks of 64 (PK_Q8_BLOCK) */
+/* the encoder's blocks of 32, and the fast mode's of 64 (PK_Q8_BLOCK) */
+static __attribute__((noinline))
+void k_gemm_q8_32(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                  uint32_t rows, const pk_act *a, int add) {
+    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 32);
+}
+
 static __attribute__((noinline))
 void k_gemm_q8_64(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                   uint32_t rows, const pk_act *a, int add) {
-    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 1);
+    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 64);
 }
 
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
-    if (a->qb == 64)
+    if (a->qb == 32)
+        k_gemm_q8_32(out, os, w, ws, bias, rows, a, add);
+    else if (a->qb == 64)
         k_gemm_q8_64(out, os, w, ws, bias, rows, a, add);
     else
         k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 0);
@@ -846,8 +855,8 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
 static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, const float *ws,
              const float *bias, const pk_act *a, uint32_t t0, int add, const int NC,
-             const int FAST) {
-    const uint32_t qb = FAST ? 64 : a->qb, nb = n / qb;
+             const uint32_t QB) {
+    const uint32_t qb = QB ? QB : a->qb, nb = n / qb;
     __m256 f[4];
     for (int c = 0; c < NC; c++) f[c] = _mm256_setzero_ps();
     const int8_t *x[4];
@@ -857,7 +866,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
     for (uint32_t b = 0; b < nb; b++) {
         __m256i s[4];
         for (int c = 0; c < NC; c++) s[c] = _mm256_setzero_si256();
-        PK_Q8_BLOCK(FAST, wh, b);
+        PK_Q8_BLOCK(QB == 64, wh, b);
         for (int c = 0; c < NC; c++) {
             __m256 d = _mm256_set1_ps(a->d[(size_t)(t0 + c) * nb + b]);
             f[c] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(s[c]), d, f[c]);
@@ -877,7 +886,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
  * four columns at a time across the half. */
 static inline __attribute__((always_inline))
 void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                    uint32_t rows, const pk_act *a, int add, const int FAST) {
+                    uint32_t rows, const pk_act *a, int add, const uint32_t QB) {
     const uint32_t n = a->n;
     uint32_t cb = PK_Q8_BLOCK_BYTES / n;
     cb = cb < 4 ? 4 : cb & ~3u;
@@ -889,11 +898,11 @@ void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, con
             const float *b = bias ? bias + r : NULL;
             for (uint32_t h = 0; h < 2; h++) {
                 uint32_t t = c0;
-                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4, FAST);
+                for (; t + 4 <= c1; t += 4) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 4, QB);
                 switch (c1 - t) {
-                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3, FAST); break;
-                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2, FAST); break;
-                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1, FAST); break;
+                case 3: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 3, QB); break;
+                case 2: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 2, QB); break;
+                case 1: q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, 1, QB); break;
                 default: break;
                 }
             }
@@ -901,16 +910,24 @@ void k_gemm_q8_with(float *out, size_t os, const int8_t *w, const float *ws, con
     }
 }
 
-/* the fast mode's blocks of 64 (PK_Q8_BLOCK) */
+/* the encoder's blocks of 32, and the fast mode's of 64 (PK_Q8_BLOCK) */
+static __attribute__((noinline))
+void k_gemm_q8_32(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                  uint32_t rows, const pk_act *a, int add) {
+    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 32);
+}
+
 static __attribute__((noinline))
 void k_gemm_q8_64(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                   uint32_t rows, const pk_act *a, int add) {
-    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 1);
+    k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 64);
 }
 
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
-    if (a->qb == 64)
+    if (a->qb == 32)
+        k_gemm_q8_32(out, os, w, ws, bias, rows, a, add);
+    else if (a->qb == 64)
         k_gemm_q8_64(out, os, w, ws, bias, rows, a, add);
     else
         k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 0);
