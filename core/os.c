@@ -522,16 +522,27 @@ static int cpu_has(const char *f) {
     return 0;
 }
 
-#else /* macOS on Apple silicon, whose every core has the dot product; elsewhere
-         no feature can be asked for, and ref and neon need none */
+#elif defined(__aarch64__) && defined(__APPLE__)
+
+/* Every Mac's chip has the dot product, but not every iPhone's and iPad's:
+ * Apple's clang defines __ARM_FEATURE_DOTPROD for -mcpu=apple-a13 and not
+ * for apple-a12, and iPadOS 26 still runs on A12 iPads. The system names
+ * each feature it has in hw.optional.arm (1 on the M4 Pro); one that does
+ * not name it gets neon. */
+static int cpu_has(const char *f) {
+    if (!strcmp(f, "asimddp")) {
+        int has = 0;
+        size_t len = sizeof has;
+        return sysctlbyname("hw.optional.arm.FEAT_DotProd", &has, &len, NULL, 0) == 0 && has;
+    }
+    return 0;
+}
+
+#else /* elsewhere no feature can be asked for, and ref and neon need none */
 
 static int cpu_has(const char *f) {
-#if defined(__aarch64__) && defined(__APPLE__)
-    return !strcmp(f, "asimddp");
-#else
     (void)f;
     return 0;
-#endif
 }
 
 #endif
