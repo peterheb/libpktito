@@ -648,16 +648,21 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
  * instruction where SDOT by lane does 16, and issued as often as SDOT on
  * the GB10's X925 and A725 (backend/neon-dp/CLIMB.md, 2026-11-02). Its
  * weight operand is two rows of 8 inputs, where the file holds a row's
- * inputs four at a time, 64 bytes apart: each half panel is put in
- * SMMLA's order once a call (mm_copy, below), and every 4-column tile of
- * the call's columns reads the copy.
+ * inputs four at a time, 64 bytes apart: a call's first 4-column tile of
+ * each half panel puts its weights in SMMLA's order as it multiplies and
+ * stores them, a copy that the call's other 4-column tiles read. Against
+ * a pass of its own to make the copy before the tiles, a ten-thread run is
+ * 1.5 to 2.5% faster, and on q8bench a call of 8 to 12 columns 13 to 25%
+ * (CLIMB.md, 2026-11-02).
  *
  * A k-step is 8 inputs: B_j for row pair j (rows 2j, 2j+1 of the half
- * panel), two LDPs of the copy; A_p for column pair p (columns 2p, 2p+1),
- * from the two columns' 16 bytes ZIPped at 64 bits, which make A for two
- * k-steps; and an SMMLA of each A_p by each B_j into m[p][j], v16 + 4p + j,
- * whose lanes are [c r, c r+1, c+1 r, c+1 r+1] for c = 2p, r = 2j. Even
- * k-steps take B in v0-v3 and A in v8, v9, odd ones v4-v7 and v10, v11.
+ * panel), two LDPs of the copy (in the first tile, of the file's order,
+ * then ZIPs and two STPs into the copy); A_p for column pair p (columns
+ * 2p, 2p+1), from the two columns' 16 bytes ZIPped at 64 bits, which make
+ * A for two k-steps; and an SMMLA of each A_p by each B_j into m[p][j],
+ * v16 + 4p + j, whose lanes are [c r, c r+1, c+1 r, c+1 r+1] for c = 2p,
+ * r = 2j. Even k-steps take B in v0-v3 and A in v8, v9, odd ones v4-v7 and
+ * v10, v11.
  *
  * A block's sums start at M = 0x4B400000 (v12), copied into each
  * accumulator by a MOVPRFX that the X925 fuses into the SMMLA after it,
@@ -686,6 +691,20 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
     "ldp q" b0 ", q" b1 ", [%[g]], #32\n\t"                                   \
     "ldp q" b2 ", q" b3 ", [%[g]], #32\n\t"
 
+/* B for a k-step from the file's order, and into the copy at c: the half
+ * panel's group of 4 inputs (its rows 0-3, then 4-7, 16 bytes apart) and
+ * the next group, 64 bytes on; ZIP1 and ZIP2 at 32 bits of a vector of the
+ * one with the same of the other make two rows of 8 inputs each */
+#define MM_LDBF(b0, b1, b2, b3)                                               \
+    "ldp q" b0 ", q" b2 ", [%[g]], #64\n\t"                                   \
+    "ldp q13, q14, [%[g]], #64\n\t"                                           \
+    "zip2 v" b1 ".4s, v" b0 ".4s, v13.4s\n\t"                                 \
+    "zip1 v" b0 ".4s, v" b0 ".4s, v13.4s\n\t"                                 \
+    "zip2 v" b3 ".4s, v" b2 ".4s, v14.4s\n\t"                                 \
+    "zip1 v" b2 ".4s, v" b2 ".4s, v14.4s\n\t"                                 \
+    "stp q" b0 ", q" b1 ", [%[c]], #32\n\t"                                   \
+    "stp q" b2 ", q" b3 ", [%[c]], #32\n\t"
+
 /* 16 bytes of columns xa and xb, ZIPped at 64 bits into A for an even
  * k-step (ae) and the odd one after it (ao) */
 #define MM_LDA(xa, xb, ae, ao)                                                \
@@ -704,14 +723,15 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
     MLA("20", a1, b0) MLA("21", a1, b1) MLA("22", a1, b2) MLA("23", a1, b3)
 
 /* 16 inputs, two k-steps; FIRST is the even one's SMMLA, MM_MLA0 in a
- * block's first 16 */
-#define MM_16(FIRST)                                                          \
+ * block's first 16, and LDB the k-steps' loads of B */
+#define MM_16(FIRST, LDB)                                                     \
     MM_LDA("x0", "x1", "8", "10") MM_LDA("x2", "x3", "9", "11")               \
-    MM_LDB("0", "1", "2", "3") MM_STEP(FIRST, "8", "9", "0", "1", "2", "3")   \
-    MM_LDB("4", "5", "6", "7") MM_STEP(MM_MLA, "10", "11", "4", "5", "6", "7")
+    LDB("0", "1", "2", "3") MM_STEP(FIRST, "8", "9", "0", "1", "2", "3")      \
+    LDB("4", "5", "6", "7") MM_STEP(MM_MLA, "10", "11", "4", "5", "6", "7")
 
-/* a block's finish: its scales into v13 (columns 0, 1) and v14 (2, 3), its
- * sums made floats, and each added to its floats times its scale */
+/* a block's finish: its scales into v13 (columns 0, 1) and v14 (2, 3),
+ * which MM_LDBF borrowed, its sums made floats, and each added to its
+ * floats times its scale */
 #define MM_SUB(m) "fsub v" m ".4s, v" m ".4s, v12.4s\n\t"
 #define MM_FMA(f, m, d) "fmla v" f ".4s, v" m ".4s, v" d ".4s\n\t"
 #define MM_FINISH                                                             \
@@ -734,8 +754,9 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
 #define MM_ALIGN
 #endif
 
-/* nb blocks, each BLOCK and its finish, from g (the copy), x[c] and d[c],
- * into out (the floats in SMMLA's order) */
+/* nb blocks, each BLOCK and its finish, from g (the copy, or the file's
+ * order with the copy written at c), x[c] and d[c], into out (the floats
+ * in SMMLA's order) */
 #define MM_LOOP(BLOCK)                                                                   \
     __asm__ volatile(                                                                    \
         ".arch_extension sve\n\t"                                                        \
@@ -753,33 +774,41 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
         "b.ne 1b\n\t"                                                                    \
         "st1 {v24.4s, v25.4s, v26.4s, v27.4s}, [%[o]], #64\n\t"                          \
         "st1 {v28.4s, v29.4s, v30.4s, v31.4s}, [%[o]]\n\t"                               \
-        : [g] "+r"(g), [x0] "+r"(x0), [x1] "+r"(x1), [x2] "+r"(x2), [x3] "+r"(x3),        \
-          [d0] "+r"(d0), [d1] "+r"(d1), [d2] "+r"(d2), [d3] "+r"(d3), [nb] "+r"(nb),     \
-          [o] "+r"(o), [m] "=&r"(m)                                                      \
+        : [g] "+r"(g), [c] "+r"(c), [x0] "+r"(x0), [x1] "+r"(x1), [x2] "+r"(x2),          \
+          [x3] "+r"(x3), [d0] "+r"(d0), [d1] "+r"(d1), [d2] "+r"(d2), [d3] "+r"(d3),     \
+          [nb] "+r"(nb), [o] "+r"(o), [m] "=&r"(m)                                       \
         :                                                                                \
         : "cc", "memory", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9",    \
           "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20",   \
           "v21", "v22", "v23", "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31")
 
-/* nb blocks of qb (32 or 64) from g (the half panel's copy), x[c] (each
- * column's int8 activations) and d[c] (its scales), into f. The loop at
- * 64 is a string of 4.3 KB, past the 4095 characters C11 requires a
- * compiler to take, as the ARMv8.0 loops' are. */
+/* nb blocks of qb (32 or 64) from g, x[c] (each column's int8
+ * activations) and d[c] (its scales), into f: g the half panel's copy, or
+ * with c its weights in the file's order (block 0's first group), the
+ * copy made at c as they are read. The loops at 64 are strings of 4.3 and
+ * 6 KB, past the 4095 characters C11 requires a compiler to take, as the
+ * ARMv8.0 loops' are. */
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Woverlength-strings"
 #endif
 static inline __attribute__((always_inline))
-void q8_mm4(float32x4_t f[4][2], const int8_t *g, const int8_t *const *x, const float *const *d,
-            uint32_t nb, uint32_t qb) {
+void q8_mm4(float32x4_t f[4][2], const int8_t *g, int8_t *c, const int8_t *const *x,
+            const float *const *d, uint32_t nb, uint32_t qb) {
     const int8_t *x0 = x[0], *x1 = x[1], *x2 = x[2], *x3 = x[3];
     const float *d0 = d[0], *d1 = d[1], *d2 = d[2], *d3 = d[3];
     float out[32], *o = out;
     uint32_t m;
-    if (qb == 32)
-        MM_LOOP(MM_16(MM_MLA0) MM_16(MM_MLA));
+    if (c && qb == 32)
+        MM_LOOP(MM_16(MM_MLA0, MM_LDBF) MM_16(MM_MLA, MM_LDBF));
+    else if (c)
+        MM_LOOP(MM_16(MM_MLA0, MM_LDBF) MM_16(MM_MLA, MM_LDBF) MM_16(MM_MLA, MM_LDBF)
+                MM_16(MM_MLA, MM_LDBF));
+    else if (qb == 32)
+        MM_LOOP(MM_16(MM_MLA0, MM_LDB) MM_16(MM_MLA, MM_LDB));
     else
-        MM_LOOP(MM_16(MM_MLA0) MM_16(MM_MLA) MM_16(MM_MLA) MM_16(MM_MLA));
+        MM_LOOP(MM_16(MM_MLA0, MM_LDB) MM_16(MM_MLA, MM_LDB) MM_16(MM_MLA, MM_LDB)
+                MM_16(MM_MLA, MM_LDB));
     /* m[p][2e] holds rows 4e, 4e+1 of columns 2p and 2p+1, m[p][2e+1] rows
      * 4e+2, 4e+3: their low halves are column 2p's, their high 2p+1's */
     for (int p = 0; p < 2; p++)
@@ -803,24 +832,8 @@ void q8_mm4(float32x4_t f[4][2], const int8_t *g, const int8_t *const *x, const 
 #undef MM_MLA0
 #undef MM_MLA
 #undef MM_LDA
+#undef MM_LDBF
 #undef MM_LDB
-
-/* The half panel at g (rows 4h to 4h+7 of a panel: a group of 4 inputs every
- * 64 bytes, its rows 0-3 at g and 4-7 at g + 16) into dst in SMMLA's order:
- * for each 8 inputs (groups k/4 and k/4 + 1), B_0 to B_3, each row's 8
- * inputs together - ZIP1 and ZIP2 at 32 bits of a vector of one group with
- * the same of the next. 8.1 cycles a block of 32 inputs on the X925, 0.65
- * of the SMMLA loop's (CLIMB.md, 2026-11-02). */
-static void mm_copy(int8_t *dst, const int8_t *g, uint32_t n) {
-    for (uint32_t k = 0; k < n; k += 8, g += 128, dst += 64) {
-        int32x4_t a = vreinterpretq_s32_s8(vld1q_s8(g)), b = vreinterpretq_s32_s8(vld1q_s8(g + 16));
-        int32x4_t c = vreinterpretq_s32_s8(vld1q_s8(g + 64)), e = vreinterpretq_s32_s8(vld1q_s8(g + 80));
-        vst1q_s8(dst, vreinterpretq_s8_s32(vzip1q_s32(a, c)));
-        vst1q_s8(dst + 16, vreinterpretq_s8_s32(vzip2q_s32(a, c)));
-        vst1q_s8(dst + 32, vreinterpretq_s8_s32(vzip1q_s32(b, e)));
-        vst1q_s8(dst + 48, vreinterpretq_s8_s32(vzip2q_s32(b, e)));
-    }
-}
 
 /* A thread's copy, 8 rows of the widest input (core/model.c holds every
  * matrix to PK_MAX_BLOCKS of 32), its address taken once a call from a
@@ -832,13 +845,13 @@ static __attribute__((noinline)) int8_t *mm_buf(void) {
     return buf;
 }
 
-/* Columns a call's block must have for its half panels to be copied, the
- * copy's cost shared by the tiles that read it. q8bench on one X925 against
- * neon-dp's SDOT tile, a call of all T columns (CLIMB.md, 2026-11-02,
- * neon-sve's result): at T 8 -7 to +8% (the ff down product's 32 KB half
- * panels lose, the 8 KB ones gain), at 12 +8 to +20%, at 60 +34 to +55%.
- * Fewer than 8 stay on SDOT. */
-#define PK_Q8_MM_COLS 8
+/* Columns a call's block must have for its 4-column tiles to run SMMLA:
+ * the first of each half panel, from the file's order, takes the X925
+ * 15.4 cycles a block of 32 in L1 to SDOT's 19.3, the A725 37.1 to 41.8,
+ * so one tile is enough: at 4 columns q8bench on one X925 has it 9 to 16%
+ * over SDOT on the ff up and attention q products, and -1 and +4% on ff
+ * down at blocks of 32 and 64 (CLIMB.md, 2026-11-02). */
+#define PK_Q8_MM_COLS 4
 #endif
 
 /* Blocks [b0, b1) of the product, for NC columns from t0. A tile that
@@ -848,11 +861,12 @@ static __attribute__((noinline)) int8_t *mm_buf(void) {
  * leaves them there unless it is the last - the same chain of fused
  * multiply-adds, in the same order, stored and reloaded exactly. part is
  * NC columns of 8 floats. mm, on neon-sve, is the half panel's copy in
- * SMMLA's order (q8_cols), for a 4-column tile that takes every block. */
+ * SMMLA's order (q8_cols), for a 4-column tile that takes every block: the
+ * tile makes it if make is set, and reads it if not. */
 static inline __attribute__((always_inline))
 void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
              const float *ws, const float *bias, const pk_act *a, uint32_t t0, int add,
-             uint32_t b0, uint32_t b1, float *part, int first, int last, const int8_t *mm,
+             uint32_t b0, uint32_t b1, float *part, int first, int last, int8_t *mm, int make,
              const int NC) {
     const uint32_t qb = a->qb, nb = n / qb;
     float32x4_t f[4][2];
@@ -870,11 +884,15 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
     if (NC == 4 && mm) {
         const float *d[4];
         for (int c = 0; c < 4; c++) d[c] = a->d + (size_t)(t0 + c) * nb;
-        q8_mm4(f, mm, x, d, nb, qb);
+        if (make)
+            q8_mm4(f, w + 16 * h, mm, x, d, nb, qb);
+        else
+            q8_mm4(f, mm, NULL, x, d, nb, qb);
         b0 = b1;
     }
 #else
     (void)mm;
+    (void)make;
 #endif
 #ifdef PK_NEON_DOTPROD
     if (NC == 4 && qb == 32 && first && b1 > b0) {
@@ -1011,8 +1029,8 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
      * -Warray-bounds from reasoning about a null one */
     float none[4 * 8];
 #ifdef PK_NEON_SVE
-    /* the half panels in SMMLA's order for a block of enough columns, its
-     * 4-column tiles on them */
+    /* a half panel's copy in SMMLA's order for a block of enough columns,
+     * its 4-column tiles on it */
     int8_t *mm = NULL;
     if (c1 - c0 >= PK_Q8_MM_COLS && (a->qb == 32 || a->qb == 64) && first && last)
         mm = mm_buf();
@@ -1025,19 +1043,19 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
             /* this half panel's partial sums: 8 floats a column of the block */
             float *ph = part ? part + ((size_t)(r / 8 + h / 2) * cb) * 8 : NULL;
             uint32_t t = c0;
-#define Q8_TILE(NC, MM) q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, b0, b1, \
-                                ph ? ph + (size_t)(t - c0) * 8 : none, first, last, MM, NC)
+#define Q8_TILE(NC, MM, MAKE)                                                           \
+    q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, b0, b1,                              \
+            ph ? ph + (size_t)(t - c0) * 8 : none, first, last, MM, MAKE, NC)
 #ifdef PK_NEON_SVE
-            if (mm) {
-                mm_copy(mm, wp + 16 * h, n);
-                for (; t + 4 <= c1; t += 4) Q8_TILE(4, mm);
-            }
+            /* the first tile makes the copy, the rest read it */
+            if (mm)
+                for (int make = 1; t + 4 <= c1; t += 4, make = 0) Q8_TILE(4, mm, make);
 #endif
-            for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC) Q8_TILE(PK_Q8_NC, NULL);
+            for (; t + PK_Q8_NC <= c1; t += PK_Q8_NC) Q8_TILE(PK_Q8_NC, NULL, 0);
             switch (c1 - t) {
-            case 3: Q8_TILE(3, NULL); break;
-            case 2: Q8_TILE(2, NULL); break;
-            case 1: Q8_TILE(1, NULL); break;
+            case 3: Q8_TILE(3, NULL, 0); break;
+            case 2: Q8_TILE(2, NULL, 0); break;
+            case 1: Q8_TILE(1, NULL, 0); break;
             default: break;
             }
 #undef Q8_TILE

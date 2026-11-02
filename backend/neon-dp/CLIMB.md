@@ -1958,3 +1958,78 @@ level to 1% faster; the fast mode as the default. q8bench on one X925:
 level at T 256, the T 8 down product's loss (-6.8% at blocks of 32) gone,
 and T 4 10 to 20% over SDOT. Kept if the default moves past its spread
 under both compilers and one thread does not lose.
+
+## 2026-11-02 - neon-sve: each half panel's first tile makes the copy as it multiplies (result: kept, on the short recording)
+
+Built as the hypothesis has it: MM_LDBF loads a k-step's B in the file's
+order (two LDPs), ZIPs it and stores it into the copy (two STPs); q8_mm4
+takes the copy's address and runs that loop for each half panel's first
+4-column tile, the call's other 4-column tiles reading the copy; mm_copy
+is gone, and PK_Q8_MM_COLS is 4. kcheck, 1906 cases, ref's bits on
+neon-sve, neon-dp and neon on spark-a80d under gcc 13.3 and clang 18.1,
+and check-c passes under both. Two mutations each fail kcheck: the copy's
+second STP with its two registers swapped, so that only the tiles after
+the first are wrong (cases at T 8 to 26), and a ZIP1 of the wrong group
+(cases from T 6).
+
+q8bench on one X925 (gcc), GMAC/s against the commit before (4e6a9c5),
+whose T 4 is SDOT's tile, at blocks of 32 / 64:
+
+| T | ff up | ff down | attention q |
+|---|---|---|---|
+| 4 | +14.1 / +11.8% | -1.2 / +3.9% | +8.6 / +15.6% |
+| 8 | +18.3 / +20.5% | +25.0 / +23.4% | +20.0 / +21.8% |
+| 12 | +13.3 / +15.2% | +18.5 / +17.7% | +13.1 / +15.7% |
+| 60 | +2.6 / +3.4% | +3.5 / +2.1% | +2.5 / +2.7% |
+| 256 | -0.6 / +0.8% | +0.4 / -1.6% | +0.3 / +1.4% |
+
+At T 8 the down product, -6.8% against neon-dp before, is now 15.6% over
+it (205.3 GMAC/s to 177.6).
+
+`pktito-c bench`, best of 5, interleaved rounds as before, against
+4e6a9c5; rounds where the vLLM worker took more than twice its median CPU
+ticks are dropped (two rounds at the default, where it was serving and
+both builds took twenty threads, and two one-thread runs). spark-9eba has
+no clang. The clip is test.wav's first 1.5 s (24000 samples, "And says,
+How do I get to Dublin?", 9 tokens):
+
+| run | board, compiler | rounds | 4e6a9c5 | the first tile's copy | change, median (range) | faster in |
+|---|---|---|---|---|---|---|
+| test.wav, default (ten X925s) | spark-a80d, gcc 13.3 | 10 | 0.323-0.332 s | 0.318-0.327 s | -2.3% (-3.9 to +1.2) | 9 |
+| | spark-a80d, clang 18.1 | 18 | 0.320-0.334 s | 0.315-0.326 s | -2.5% (-4.0 to +0.3) | 17 |
+| | spark-9eba, gcc 13.3 | 8 | 0.326-0.336 s | 0.322-0.333 s | -0.8% (-2.7 to +0.6) | 6 |
+| test.wav --fast, default | spark-9eba, gcc 13.3 | 8 | 0.305-0.319 s | 0.299-0.311 s | -2.7% (-3.5 to +0.7) | 7 |
+| | spark-a80d, clang 18.1 | 8 | 0.304-0.310 s | 0.296-0.304 s | -1.8% (-3.3 to -0.7) | 8 |
+| test.wav, one X925 | spark-a80d, gcc 13.3 | 4 | 2.281-2.291 s | 2.283-2.295 s | +0.0% (-0.1 to +0.4) | 2 |
+| | spark-a80d, clang 18.1 | 6 | 2.237-2.256 s | 2.237-2.248 s | -0.0% (-0.6 to +0.1) | 3 |
+| the clip, one X925 | spark-a80d, gcc 13.3 | 4 | 0.078 s | 0.076-0.077 s | -2.6% (-2.6 to -1.3) | 4 |
+| | spark-9eba, gcc 13.3 | 4 | 0.077-0.078 s | 0.075-0.076 s | -1.9% (-2.6 to -1.3) | 4 |
+| | spark-a80d, clang 18.1 | 8 | 0.077-0.078 s | 0.075 s | -2.6% (-3.8 to -2.6) | 8 |
+
+The clip at the default threads is not in the table: both builds took
+twenty threads there and ran 21 to 36 ms, the bench's millisecond as
+wide as any change.
+
+Predicted 0.305-0.315 s at the default; it is 0.315-0.333, 1 to 2.5%
+faster in the median and faster in 32 of 36 rounds, but within its
+spread (about 3%) on both boards and under both compilers. The
+hypothesis asked for the default past its spread, and it is not. One
+thread on test.wav is level, as predicted. Where a call has few columns
+the change is past its spread: 2 to 2.6% on the 1.5 s clip at one thread,
+every round on both boards under both compilers, and 13 to 25% on
+q8bench's calls of 8 to 12 columns. So the copy's own pass was the
+smaller part of the 12% the entry above put on it. The rest, about 9%
+to the build that never copies (0.291-0.297 s on spark-9eba, a PROFILE
+build, whose 4-column tiles read no weights at all), is as far as these
+builds tell the first tile's reading of the weights from beyond L1, five
+times a product at ten threads, which the SDOT tile pays too and no form
+of the copy avoids. Fewer, longer column calls would read each panel
+fewer times: a question for pk_gemm's split, which every backend shares,
+not taken up here.
+
+Kept: it is faster or level on every bench here, by more than its spread
+where a call has few columns (a recording of a few seconds, or a
+product's last call at ten threads), and MM_LDBF's eight instructions
+take the place of mm_copy's loop. The default's 1 to 2.5% alone would
+not have kept it; whoever weighs it differently can take it back to
+4e6a9c5 with nothing else changing.
