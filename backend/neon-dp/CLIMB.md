@@ -2033,3 +2033,19 @@ product's last call at ten threads), and MM_LDBF's eight instructions
 take the place of mm_copy's loop. The default's 1 to 2.5% alone would
 not have kept it; whoever weighs it differently can take it back to
 4e6a9c5 with nothing else changing.
+
+## 2026-11-02 - neon-sve as it stands against neon-dp, end to end (a measurement)
+
+6381086's code against d2c70f0 (main, neon-dp picked), spark-a80d,
+test.wav through v2, best of 5, four interleaved rounds, the vLLM worker
+idle; both builds' default kept the ten X925s in every run:
+
+| run | compiler | d2c70f0 | 6381086 | change, median (range) |
+|---|---|---|---|---|
+| default | gcc 13.3 | 0.388-0.398 s | 0.320-0.324 s | -17.5% (-19.4 to -17.1) |
+| | clang 18.1 | 0.385-0.390 s | 0.316-0.324 s | -17.0% (-18.6 to -16.8) |
+| one X925 | gcc 13.3 | 2.992-2.999 s | 2.288-2.292 s | -23.6% (-23.6 to -23.5) |
+| | clang 18.1 | 2.952-2.955 s | 2.239-2.249 s | -24.0% (-24.2 to -23.9) |
+
+A minute of speech in 0.32 s at the default, 187 times real time, where
+neon-dp takes 0.39, 154 times.
