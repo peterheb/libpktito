@@ -47,7 +47,7 @@ for v in v2 v3; do f=models/parakeet-tdt-0.6b-$v.pkf
     || { echo "test.wav: FAIL - $v --fast transcript differs from tests/data/test.$v.fast.json"; exit 1; }
 done
 ./examples/transcribe "$MODEL" tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/example.out
-./pktito-c -m "$MODEL" tests/data/test.wav | cmp -s - tests/example.out \
-  && echo "examples/transcribe: the CLI's transcript, through the library alone" \
+./pktito-c --no-context --no-retry -m "$MODEL" tests/data/test.wav | cmp -s - tests/example.out \
+  && echo "examples/transcribe: the CLI's transcript without the context and the retry, through the library alone" \
   || { echo "examples/transcribe: FAIL - not the CLI's transcript"; exit 1; }
 rm -f tests/example.out

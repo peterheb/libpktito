@@ -92,9 +92,10 @@ arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a lin
 
 `-m` picks the model when `models/` holds both, `-t` the thread count (one
 a core by default). A recording longer than `--max-chunk` (30 s) is cut at
-its silences into chunks that long at most, each transcribed whole, and
-speech the model wrote no word for is heard again; `--no-retry` leaves that
-out, for NeMo's transcript of each chunk ("Transcribing a recording").
+its silences into chunks that long at most, each transcribed whole, a cut in
+mid-sentence heard past, and speech the model wrote no word for heard again;
+`--no-context --no-retry` leaves those out, for NeMo's transcript of each
+chunk ("Transcribing a recording").
 `--stream`'s lines end at a pause of `--pause` (1000 ms). Both defaults are
 measured below. `--fast` trades a little of the transcript's nearness to
 float32's for up to 7% of the time (README, "Why int8").
@@ -290,7 +291,9 @@ does, in order:
    between segments, at most a second into each, and the rest of the
    silence is left out. 30 s is where the error rate is as low as whole
    recordings' and the encoder's cost a fraction of theirs ("Long
-   recordings").
+   recordings"). A chunk whose cut falls in a silence under a second is
+   heard with 2 s of the recording past it, room left in the chunk for that
+   ("Where chunks meet").
 3. **Keeps what lies between the speech.** Silero hears voices, not words,
    so singing and speech over music are not speech to it. What lies between
    the speech chunks is transcribed too, in pieces of at most a chunk, but
@@ -298,16 +301,81 @@ does, in order:
    out of anything ("Between the speech").
 4. **Transcribes each chunk** as `pk_asr_run` would, the same bits, the
    search over one chunk running beside the next chunk's encoder: 1.2 to
-   5.6% less time where there are more than four cores.
+   5.6% less time where there are more than four cores. Of a chunk heard
+   past its cut it keeps the words that start before the cut, and the next
+   chunk opens with that chunk's copies of its first words, up to where the
+   two agree.
 5. **Hears dropped speech again.** A stretch of a chunk that Silero heard
    speech in but the model wrote no word for is transcribed again on its
-   own (below). This is the one step where the high level leaves NeMo's
-   transcript, on purpose; `retry = 0` (`--no-retry`) leaves it out, and
-   each chunk is then `pk_asr_run`'s.
+   own (below). This and the context are where the high level leaves
+   NeMo's transcript, on purpose; `context = 0` and `retry = 0`
+   (`--no-context`, `--no-retry`) leave them out, and each chunk is then
+   `pk_asr_run`'s.
 6. **Hands each chunk to the caller** as it is done: its place in the
    recording, its tokens, how many of its stretches were heard again, and
    how far the run has got. The caller's function returns nonzero to stop
    the run there.
+
+### Where chunks meet
+
+The model writes a chunk as one utterance, so a cut in mid-sentence gets a
+period, and the chunk after it a capital. At 30 s, of the cuts in long40
+(LibriSpeech test-clean, 40 recordings, 2.6 hours) that line up with the
+whole recording's transcript (`--max-chunk 3600`), v3 ended a sentence at
+7% where that transcript goes on, v2 at 10%; in 26 English recordings of
+court arguments, interviews and press conferences (89 minutes), v3 at 19%
+and v2 at 37%.
+
+So a chunk whose cut falls in a silence under a second is heard with 2 s of
+the recording past the cut, and keeps the words that start before it: the
+model has heard the sentence go on. The next chunk opens where the cut is,
+and its first words, heard at the head of its window, have a copy in the
+last chunk's, heard with what came before them. Up to the first of its
+first four words that agrees with one of those - the same letters, case
+and punctuation aside, starting within 4 encoder frames - the chunk opens
+with the last chunk's words, and that word has the last chunk's letters
+where the two differ in case alone. That takes out the capital, and a word
+the cut fell beside that the next chunk wrote again ("again, there | There
+was no") or in part ("reve" for "grieve").
+
+| | long40, v3 | long40, v2 | 26 talks, v3 | 26 talks, v2 |
+|---|---|---|---|---|
+| false sentence ends at a cut | 22 → 10 (3%) | 30 → 11 (3%) | 36 → 7 (4%) | 70 → 2 (1%) |
+| false capitals after one | 22 → 4 | 23 → 10 | 37 → 5 | 80 → 2 |
+| sentence ends lost at one | 5 → 2 | 7 → 8 | 5 → 4 | 1 → 5 |
+| WER | 2.27% → 2.19% | 1.89% → 1.95% | | |
+| chunks | 350 → 368 | 350 → 368 | 226 → 239 | 226 → 239 |
+
+The cost is the audio heard twice, 5.1% more on long40 and 7.3% on the
+talks, and the chunks, which leave room for it. The false ends left are at
+pauses: their median on the talks is 2 to 3 s, where none is heard past.
+WER moves as it does when any cut moves - per recording, by up to six
+errors either way, words the model spells either way ("colour", "color")
+as its windows move. Without the retry 2 of
+long40's 368 chunks dropped speech with v3 (68 words, WER 2.54%) and 1 with
+v2 (53); the retry hears it again.
+
+What did not work, on the same recordings (v3 unless named, no retry):
+
+- **2 s heard before the cut too**, so that the next chunk opens in the
+  sentence: 1 false capital, but a window that opens inside speech, not in
+  the silence a chunk opens in, makes the model drop it - 22 of 386 chunks
+  lost 771 words (WER 5.65%). With those edges at the quietest 100 ms
+  within half a second of 2 s, 18 chunks lost 571.
+- **The search carried over the cut** in the last chunk's state, so that
+  it knows the sentence is under way: the model then writes nothing for
+  the first seconds of a window, in 102 of 350 chunks with no context
+  heard and in 210 of 386 with 2 s each side.
+- **Whole speech segments either side of the cut**, so that every window
+  opens and ends in a silence, with the cuts moved as in the next item: no
+  speech dropped, but those within 6 s took v2's false ends on the talks
+  only from 37% to 19%, for 17% more audio, and those within 10 s to 3%,
+  for 92% more.
+- **Cutting at the longest silence** in the 8 s before a chunk is full:
+  fewer cuts in mid-sentence on read speech (46% to 17%), none fewer on the
+  talks, and no fewer false ends.
+- **1 s past the cut**: v2 kept 15 false ends on long40 and 7 on the talks.
+  3 s did no better than 2, for 7.3% and 11.4% more audio.
 
 ### When the model drops speech
 
@@ -380,6 +448,10 @@ measurements in its comments.
   stop, so that a program gets what pktito-app does without writing it
   again, and pktito-app the pipelined run it could not use while the retry
   and its Stop button lived outside the library.
+- **2026-11-01**: a cut in a short silence heard 2 s past, and the seam,
+  after pktito-app's transcripts broke a sentence at every cut: false
+  sentence ends on 26 talks from 19% of cuts to 4% (v3) and 37% to 1% (v2)
+  ("Where chunks meet").
 
 ## Long recordings
 

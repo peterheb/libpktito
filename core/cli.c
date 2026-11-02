@@ -10,9 +10,10 @@
  * and transcribed by pk_asr_transcribe, the library's high-level path: a
  * recording that fits in --max-chunk is heard whole, as NeMo's
  * model.transcribe() hears a file, a longer one is cut at its silences,
- * which Silero's VAD finds, its silence left out, and speech the model
- * wrote no word for is heard again (README, "Transcribing a recording").
- * --no-retry leaves that out: each chunk NeMo's transcript of it.
+ * which Silero's VAD finds, its silence left out, a cut in mid-sentence
+ * heard past, and speech the model wrote no word for heard again (README,
+ * "Transcribing a recording"). --no-context and --no-retry leave those
+ * out: each chunk NeMo's transcript of it.
  */
 #include "pktito.h"
 #include "asr.h"
@@ -91,8 +92,9 @@ static const char *usage =
     "                        faster, WER level, a few more transcripts not float32's\n"
     "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
     "                        a longer recording is cut at its silences\n"
-    "      --no-retry        each chunk as NeMo transcribes it: speech the model\n"
-    "                        wrote no word for is not heard again\n"
+    "      --no-retry        speech the model wrote no word for is not heard again\n"
+    "      --no-context      a cut in mid-sentence is not heard past; with --no-retry,\n"
+    "                        each chunk as NeMo transcribes it\n"
     "      --json            chunks as JSON: start, end, text, every word's and every\n"
     "                        token's time; and meta, the model, the audio's length and\n"
     "                        its language\n"
@@ -111,7 +113,7 @@ enum { SUBS_SRT = 1, SUBS_VTT = 2 };
 typedef struct {
     const char *cmd, *in, *model;
     const char **ins;                /* every input file; in is the first */
-    int nin, threads, json, subs, verbose, stream, fast, no_retry;   /* subs: SUBS_SRT or SUBS_VTT */
+    int nin, threads, json, subs, verbose, stream, fast, no_retry, no_context;   /* subs: SUBS_SRT or SUBS_VTT */
     double max_chunk, pause_ms;
 } opts;
 
@@ -168,6 +170,7 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--stream")) o->stream = 1;
         else if (!strcmp(a, "--fast")) o->fast = 1;
         else if (!strcmp(a, "--no-retry")) o->no_retry = 1;
+        else if (!strcmp(a, "--no-context")) o->no_context = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
         else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")
@@ -571,6 +574,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     pk_transcribe_defaults(&to);
     to.max_chunk_s = o->max_chunk;
     to.retry = !o->no_retry;
+    to.context = !o->no_context;
     const double t0 = pk_os_now();
     if (pk_asr_transcribe(a, x, n, &to, print_chunk, &out) < 0)
         die("out of memory");

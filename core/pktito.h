@@ -174,6 +174,7 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
 typedef struct {
     double max_chunk_s;         /* 30: the most the encoder hears at once (README, "Long recordings") */
     int    retry;               /* 1: speech the model wrote nothing for heard again */
+    int    context;             /* 1: a cut in mid-sentence heard with the speech past it */
 } pk_transcribe_opts;
 
 void pk_transcribe_defaults(pk_transcribe_opts *o);

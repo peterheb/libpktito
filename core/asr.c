@@ -313,7 +313,8 @@ static int silent(const float *x, int64_t n) {
  * max_len, all of a length, but those shorter than PK_GAP_MIN or silent.
  * Silero cannot say where a gap's words are, so its cuts fall where they
  * fall. */
-static void put_gap(const float *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out, size_t *k) {
+static void put_gap(const float *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out, pk_seg *win,
+                    size_t *k) {
     if (b <= a)
         return;
     int64_t m = (b - a + max_len - 1) / max_len;
@@ -322,15 +323,24 @@ static void put_gap(const float *x, int64_t a, int64_t b, int64_t max_len, pk_se
         if (pb - pa >= PK_GAP_MIN && !silent(x + pa, pb - pa)) {
             out[*k].start = pa;
             out[*k].end = pb;
+            if (win)
+                win[*k] = out[*k];
             (*k)++;
         }
     }
 }
 
 size_t pk_chunks(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len, pk_seg *out) {
+    return pk_chunks_past(x, s, n, total, max_len, 0, 0, out, NULL);
+}
+
+size_t pk_chunks_past(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len,
+                      int64_t ctx, int64_t pause, pk_seg *out, pk_seg *win) {
     if (total <= max_len && n) {
         out[0].start = 0;
         out[0].end = total;
+        if (win)
+            win[0] = out[0];
         return 1;
     }
     size_t k = 0;
@@ -339,26 +349,39 @@ size_t pk_chunks(const float *x, const pk_seg *s, size_t n, int64_t total, int64
         /* the chunk opens half way into the silence before segment i */
         int64_t gap0 = i ? s[i].start - s[i - 1].end : s[i].start;
         int64_t lead = s[i].start - (gap0 / 2 < PK_CHUNK_PAD ? gap0 / 2 : PK_CHUNK_PAD);
-        size_t j = i;
-        int64_t trail = 0;
-        for (; j < n; j++) {
+        /* and ends with the last segment that fits, with what it hears
+         * past that one's cut: ctx where the silence after it is short */
+        size_t last = i;
+        int64_t trail = 0, past = 0;
+        for (size_t j = i; j < n; j++) {
             int64_t gap = j + 1 < n ? s[j + 1].start - s[j].end : total - s[j].end;
             int64_t t = s[j].end + (gap / 2 < PK_CHUNK_PAD ? gap / 2 : PK_CHUNK_PAD);
             if (j > i && t - lead > max_len)
                 break;
-            trail = t;
+            int64_t pj = j + 1 < n && gap < pause ? (total - t < ctx ? total - t : ctx) : 0;
+            if (j == i || t - lead + pj <= max_len) {
+                last = j;
+                trail = t;
+                past = pj;
+            }
         }
         if (trail - lead > max_len) {           /* one segment, too long with its silence */
             lead = s[i].end - max_len > lead ? s[i].end - max_len : lead;
             trail = lead + max_len < trail ? lead + max_len : trail;
         }
-        put_gap(x, done, lead, max_len, out, &k);
+        if (trail - lead + past > max_len)      /* no room for it */
+            past = 0;
+        put_gap(x, done, lead, max_len, out, win, &k);
         out[k].start = lead;
         out[k].end = trail;
+        if (win) {
+            win[k] = out[k];
+            win[k].end += past;
+        }
         k++;
         done = trail;
-        i = j > i ? j : i + 1;
+        i = last + 1;
     }
-    put_gap(x, done, total, max_len, out, &k);
+    put_gap(x, done, total, max_len, out, win, &k);
     return k;
 }

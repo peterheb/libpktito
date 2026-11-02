@@ -108,6 +108,13 @@ int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
  * progress, its joint half in spare: a->toks, the count, or -1. */
 long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare);
 
+/* pk_chunks, with what each chunk is heard in (core/transcribe.c): win[k]
+ * is out[k] and, where out[k]'s cut falls in a silence shorter than pause,
+ * ctx of the recording past it, room left for that in its max_len. With
+ * ctx 0, out is pk_chunks', and win NULL is allowed. */
+size_t pk_chunks_past(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len,
+                      int64_t ctx, int64_t pause, pk_seg *out, pk_seg *win);
+
 /* Encoder frames T0 feature frames make: three halvings, each rounding up. */
 static inline uint32_t pk_enc_frames(uint32_t T0) {
     uint32_t t = T0;

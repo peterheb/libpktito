@@ -17,16 +17,23 @@
  *            shorter than 3 s
  *   short    a recording that fits in max_len is one chunk, the whole of it,
  *            if it has speech, and a gap if it has none
+ *   past     pk_chunks_past with no context is pk_chunks; with 2 s, each
+ *            chunk is heard in itself and, past a cut in a silence under a
+ *            second, 2 s more or to the recording's end, in no more than
+ *            max_len where the chunk leaves room, and every segment is
+ *            still in one chunk
  *
  * The numbers - 3 s, 1e-5 over 32 ms, a sample that is not finite read as
  * 0 - are the README's ("Long recordings") and pktito.h's.
  */
 #include "pktito.h"
+#include "asr.h"
 
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define RATE    16000
 #define GAP_MIN (3 * RATE)
@@ -129,6 +136,56 @@ static void gaps_are_pieces(const float *x, const pk_seg *s, size_t n, int64_t t
              (long long)c[k].end);
 }
 
+/* pk_chunks_past over x, against pk_chunks' c0 */
+static void past_case(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len,
+                      const pk_seg *c0, size_t n0, const char *what) {
+    const int64_t ctx = 2 * RATE, pause = RATE;
+    size_t room = 2 * n + 2 + (size_t)(total / max_len);
+    pk_seg *c = malloc(room * sizeof *c), *w = malloc(room * sizeof *w);
+    size_t nc = pk_chunks_past(x, s, n, total, max_len, 0, pause, c, w);
+    cases++;
+    if (nc != n0 || memcmp(c, c0, nc * sizeof *c) || memcmp(w, c0, nc * sizeof *w))
+        FAIL("%s: with no context, not pk_chunks' chunks", what);
+    nc = pk_chunks_past(x, s, n, total, max_len, ctx, pause, c, w);
+    cases++;
+    if (nc > room)
+        FAIL("%s: %zu chunks past, room for %zu", what, nc, room);
+    for (size_t i = 0; i < nc && i < room; i++) {
+        cases++;
+        if (c[i].start < (i ? c[i - 1].end : 0) || c[i].end > total || c[i].end <= c[i].start
+            || w[i].start != c[i].start || w[i].end < c[i].end || w[i].end > total
+            || (total > max_len && w[i].end - w[i].start > max_len)) {
+            FAIL("%s: chunk %zu, %lld..%lld, heard in %lld..%lld", what, i, (long long)c[i].start,
+                 (long long)c[i].end, (long long)w[i].start, (long long)w[i].end);
+            continue;
+        }
+        /* the silence the cut falls in, after the chunk's last segment */
+        int64_t gap = INT64_MAX;
+        if (holds_speech(c[i], s, n)) {
+            size_t j = 0;
+            while (j < n && s[j].end <= c[i].end)
+                j++;
+            if (j > 0 && j < n)
+                gap = s[j].start - s[j - 1].end;
+        }
+        const int64_t want = gap < pause ? (total - c[i].end < ctx ? total - c[i].end : ctx) : 0;
+        cases++;
+        if (w[i].end - c[i].end != want && !(w[i].end == c[i].end && c[i].end - c[i].start + want > max_len))
+            FAIL("%s: chunk %zu heard %lld past its cut, not %lld", what, i, (long long)(w[i].end - c[i].end),
+                 (long long)want);
+    }
+    for (size_t i = 0; i < n; i++) {
+        size_t in = 0;
+        for (size_t j = 0; j < nc; j++)
+            in += s[i].start >= c[j].start && s[i].end <= c[j].end;
+        cases++;
+        if (in != 1)
+            FAIL("%s: past, segment %zu is in %zu chunks", what, i, in);
+    }
+    free(c);
+    free(w);
+}
+
 /* the three recordings a layout is heard over, LONGEST samples each:
  * silence, a tone, and the tone by turns with silence (layout_case's) */
 static float *quiet, *loud, *mixed;
@@ -201,6 +258,10 @@ static void layout_case(int it) {
     /* gaps */
     gaps_are_pieces(loud, s, n, total, max_len, cl, nl, what);
     gaps_are_pieces(mixed, s, n, total, max_len, cm, nm, what);
+
+    /* past */
+    past_case(quiet, s, n, total, max_len, cq, nq, what);
+    past_case(mixed, s, n, total, max_len, cm, nm, what);
 
     /* cover: over audible audio, nothing of 3 s or more left out */
     int64_t end = 0;
