@@ -356,7 +356,25 @@ WER moves as it does when any cut moves - per recording, by up to six
 errors either way, words the model spells either way ("colour", "color")
 as its windows move. Without the retry 2 of
 long40's 368 chunks dropped speech with v3 (68 words, WER 2.54%) and 1 with
-v2 (53); the retry hears it again.
+v2 (53); the retry hears it again. On AliceBench v2 drops three phrases
+from windows heard past their cut, phrases that chunks without context
+keep (the chunks of 2026-10-31, and `--no-context`'s): "said the Cat"
+(chapter 6), "it was Bill, the lizard" (11) and "And how many hours a day
+did you do lessons?" (9). v3 drops none. Each drop depends on where its
+window ends, not on whether the window goes past the cut. With the window
+ending 0, 0.25, 0.5 and so on up to 3 s past the cut, chapters 6 and 9
+lose theirs at 2 s alone, and chapter 11 at 6 of the 12 ends. The retry
+hears chapter 9's again. The other two are under the speech it needs: 1 s
+after a sentence ends, 2 s inside one.
+
+A cut can fall inside the last chunk's last word, which that chunk keeps,
+since the word starts before the cut. The next chunk may open with the
+same word again: if it has the same letters and starts before the last
+chunk's copy ends, it goes ("talking familiarly | Familiarly with them" in
+AliceBench's chapter 3, "Lewis Carroll. | Carroll." in chapter 10, v2).
+The retry does not hear again what the last chunk's words cover of the next
+chunk's head; in chapter 3 it had put back "Familiarly with the" after
+the seam took it out.
 
 A chunk ends at the last pause that fits, which makes as few chunks as
 those pauses allow. At Silero's 160 ms, conversation goes 10 to 21 s
@@ -431,30 +449,59 @@ So the high level hears a stretch again, once, when:
   kwadratowych", left a second after it that gave "metrów kwadratowych." a
   second time; at 2 s between sentences AliceBench's chapter 1 lost "End
   of chapter one", 1.6 s after "...finished off the cake.";
-- its speech is no more than 4 dB quieter than the recording's speech. What
-  the model drops is the voice the rest of the recording is in; a voice in
-  the background, which Silero hears as speech too, is quieter, and
-  hearing it again puts the background's words in. LibriSpeech recordings
-  with three other speakers mixed in at 10 dB SNR had stretches retried
-  down to -24 dB, and their WER went from 6.21% to 9.20% with every one
-  heard again, and to 6.02% with the 4 dB gate; at 5 dB SNR, 19.88%,
-  21.91% and 19.79%. AliceBench's dropped stretches lie -3.6 to +2.7 dB
-  from their chapters' speech. Pink noise and a telephone band draw no
-  retry, nor do two songs;
-- the stretches heard again so far are under a fifth of the recording, or
-  a chunk if that is more: music that Silero takes for speech gives no
-  words however it is cut, and costs at most a fifth more time.
+- its speech is no more than 4 dB quieter than the recording's speech, or
+  3 dB quieter than its chunk's (below). What the model drops is the voice
+  the rest of the recording is in; a voice in the background, which Silero
+  hears as speech too, is quieter, and hearing it again puts the
+  background's words in. AliceBench's dropped stretches lie -3.6 to +2.7
+  dB from their chapters' speech. The exception is chapter 9's "And how
+  many hours a day did you do lessons?" (v2), in a passage read softly:
+  4.9 dB under the chapter's speech, 1.8 dB under its chunk's. Pink noise
+  and a telephone band draw no retry, nor do two songs;
+- the stretches heard again for nothing so far are under a fifth of the
+  recording, or a chunk if that is more: music that Silero takes for
+  speech gives no words however it is cut, and costs at most a fifth more
+  time. A stretch that gives words costs none of it, since it is speech
+  the model dropped. When every stretch was charged, long40's 1320-122612
+  (134 s, v3, chunks cut at Silero's own pauses into 30.72 s) left its
+  second dropped stretch, 49 words, unheard after its first. A stretch is
+  heard again at most once, so the retries hear at most the recording
+  over again, whatever they give.
+
+The level's test was set in pktito-app on LibriSpeech recordings with
+three other speakers mixed in. At 10 dB SNR stretches were retried down
+to -24 dB, and WER went from 6.21% to 9.20% with every one heard again,
+and to 6.02% at 4 dB; at 5 dB SNR, 19.88%, 21.91% and 19.79%. Mixed again
+from long40, each of its first 24 recordings with the next three
+speakers looped to its length, WER is:
+
+| | v2, 10 dB | v2, 5 dB | v3, 10 dB | v3, 5 dB |
+|---|---|---|---|---|
+| no retry | 3.82% | 12.05% | 14.35% | 31.48% |
+| every stretch heard again | 5.48% | 15.60% | 10.57% | 24.29% |
+| 4 dB under the recording's | 3.86% | 13.60% | 8.11% | 22.62% |
+| or 4 dB under its chunk's | 3.91% | 13.91% | 8.04% | 22.75% |
+| or 3 dB under its chunk's | 3.86% | 13.62% | 7.99% | 22.62% |
+
+Under the babble, v3 drops much of the reader's speech, and the retry
+hears it again. v2 drops less, and at 5 dB the retry costs it 1.55 points
+in the background's words. A chunk's own speech at 3 dB takes back
+chapter 9's line and leaves the mixes as they were. At 4 dB it lets in
+more of the background.
 
 A chunk that gave no words at all is heard again in two halves, cut at its
 quietest 300 ms within its middle third, since whole it would give nothing
 again. A retry's tokens go in among the chunk's at their own times. In
-pktito's AliceBench run the retry gives v2 221 more words in 7 of the 12
-chapters and v3 57 in 4, and every chunk with nothing to retry is the same
-bits as `--no-retry`'s. On the sets the rest of this README measures - ls200
-(v2), the six FLEURS sets (v3), and the two LibriSpeech long-form sets
-with both models, 1,224 recordings in all - it hears nothing again, and
-every transcript and WER is as without it (`tests/wercheck.py --retry`,
-2026-10-29).
+pktito's AliceBench run (2026-11-02) the retry gives v2 177 more words in
+5 of the 12 chapters and v3 181 in 6, WER against the book's text from
+2.55% to 2.18% and from 3.00% to 2.46%, and every chunk with nothing to
+retry is the same bits as `--no-retry`'s. On the sets the rest of this
+README measures - ls200 (v2), the six FLEURS sets (v3), and the two
+LibriSpeech long-form sets with both models, 1,224 recordings in all - it
+heard nothing again in the chunks of 2026-10-29, and every transcript and
+WER was as without it (`tests/wercheck.py --retry`). When chunks are heard
+past their cuts, a few of long40's and long300's drop speech, which the
+retry hears again ("Where chunks meet").
 
 The rules and their numbers were found in pktito-app, which shipped them
 first (2026-10-26), and are core/transcribe.c's now, with the same
@@ -486,6 +533,12 @@ measurements in its comments.
 - **2026-11-02**: chunks cut at pauses of 64 ms and 30.72 s long, for the
   Neural Engine's windows: 4% fewer chunks on read speech, 9% on the talks,
   WER and false ends at the cuts about level ("Where chunks meet").
+- **2026-11-02**: after pktito-app's AliceBench run, three fixes:
+  - the word a cut fell in is no longer written twice;
+  - the retry no longer hears again what the last chunk's words cover;
+  - a stretch in a passage read softly is heard again, against its chunk's
+    speech.
+  The retry's budget is now charged only for stretches that give nothing.
 
 ## Long recordings
 

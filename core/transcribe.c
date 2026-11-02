@@ -55,9 +55,15 @@
  * missed; the corpus (ls200, long40 and long300 with both models, six FLEURS
  * sets) is otherwise as at 2 s. */
 #define RETRY_BREAK_S 1.0
-/* At most this share of the recording heard again, or one chunk if that is
- * more: music that Silero takes for speech gives no words however it is
- * cut, and then costs at most a fifth more time. */
+/* At most this share of the recording heard again for nothing, or one
+ * chunk if that is more: music that Silero takes for speech gives no words
+ * however it is cut, and then costs at most a fifth more time. A stretch
+ * that gives words costs none of it, being speech the model dropped: a
+ * recording of 134 s (long40's 1320-122612, v3, cut at Silero's own pauses
+ * into 30.72 s chunks) dropped 15 s and then 17 s, the first left 15.8 s of
+ * its 30.72, and the second, 49 words, was not heard again. Each stretch
+ * is heard again once at most, so the retries hear at most the recording
+ * over again, whatever they give. */
 #define RETRY_SHARE 0.2
 /* Only speech no more than 4 dB quieter than the recording's speech is
  * heard again: what the model dropped is the voice the rest of the
@@ -71,6 +77,16 @@
  * songs. 10^(-4/10), so that the test is on mean powers and no logarithm,
  * libm's or ours, decides a transcript. */
 #define RETRY_LEVEL 0.39810717055349725
+/* Or no more than 3 dB quieter than its chunk's speech, for a passage read
+ * softly: AliceBench's chapter 9 (v2) dropped "And how many hours a day did
+ * you do lessons?", 4.9 dB under the chapter's speech and 1.8 dB under its
+ * chunk's. long40's first 24 recordings with the next three speakers'
+ * looped in at 10 and 5 dB SNR (2026-11-02), WER without the chunk's test,
+ * with it at 3 dB and at 4 dB: v2 3.86%, 3.86%, 3.91% and 13.60%, 13.62%,
+ * 13.91%; v3 8.11%, 7.99%, 8.04% and 22.62%, 22.62%, 22.75%. A stretch of
+ * a chunk that gave no words has no chunk's speech of its own to go by.
+ * 10^(-3/10). */
+#define RETRY_NEAR 0.5011872336272722
 
 /* The pause a chunk may be cut in, as Silero's min_silence_ms for the
  * segments the chunks are cut between: two of its 32 ms frames, 64 ms.
@@ -113,7 +129,14 @@
  * chunk's words, and that one has its letters as the last chunk wrote them
  * where the two differ in case alone. Two words agree where their letters
  * do, case and punctuation aside, and they start within SEAM_FRAMES
- * encoder frames of each other. */
+ * encoder frames of each other. And where the cut fell in the last chunk's
+ * last word, which it kept since the word starts before the cut, the chunk
+ * opening with that word again, before the last chunk's copy ends, loses
+ * its own ("talking familiarly | Familiarly with them" in AliceBench's
+ * chapter 3, "Lewis Carroll. | Carroll." in chapter 10, v2). What the last
+ * chunk's words cover of the chunk's head, that word or the words the seam
+ * took, is not heard again by the retry: heard, it put "Familiarly with
+ * the" back. */
 #define SEAM_WORDS  4
 #define SEAM_KEEP   6
 #define SEAM_FRAMES 4
@@ -195,6 +218,11 @@ typedef struct {
     pk_tok seam[SEAM_TOKS];
     int64_t seam_at[SEAM_TOKS];
     int seam_word[SEAM_KEEP + 1], nseam;
+    /* the last chunk's last word before its cut where the word runs past
+     * it: its tokens, and the sample it ends at */
+    pk_tok tail[SEAM_TOKS];
+    int ntail;
+    int64_t tail_end;
 } run;
 
 static int grow(void **p, size_t *cap, size_t need, size_t size) {
@@ -224,9 +252,11 @@ static int ends_sentence(run *r, const pk_tok *t, const pk_word *w) {
     return len && strchr(".?!", r->text[len - 1]) != NULL;
 }
 
-/* Chunk i's stretches to hear again, into r->st, charged to the budget:
- * their count, or -1 if memory runs out. */
-static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt) {
+/* Chunk i's stretches to hear again, into r->st, none in its first head
+ * frames, which the last chunk's words cover: their count, or -1 if memory
+ * runs out. Each is charged to the budget as it is heard, if it gives
+ * nothing. */
+static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_t head) {
     const pk_model *m = r->a->m;
     const int rate = pk_model_rate(m);
     const int64_t spf = llround(pk_model_frame_seconds(m) * rate);
@@ -236,17 +266,20 @@ static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt) {
         int64_t heard;
         const double e = power(r->x, r->sp, r->ns, ch->start, ch->end, &heard);
         const int64_t len = ch->end - ch->start;
-        if (heard < at_break || e < r->floor * (double)heard || len > r->budget)
+        if (heard < at_break || e < r->floor * (double)heard)
             return 0;
-        r->budget -= len;
         const int64_t mid = (int64_t)quietest(r->x + ch->start, (size_t)len, rate) / spf;
-        r->st[0][0] = 0, r->st[0][1] = (int32_t)mid;
+        r->st[0][0] = (int32_t)(head < mid ? head : mid), r->st[0][1] = (int32_t)mid;
         r->st[1][0] = (int32_t)mid, r->st[1][1] = (int32_t)frames;
         return 2;
     }
     size_t nw = pk_words(m, t, (size_t)nt, r->w);
+    int64_t near;           /* the chunk's speech, for a passage read softly */
+    const double ce = power(r->x, r->sp, r->ns, ch->start, ch->end, &near);
+    const double floor = near && ce / (double)near * RETRY_NEAR < r->floor ? ce / (double)near * RETRY_NEAR
+                                                                           : r->floor;
     long k = 0;
-    int64_t at = 0;
+    int64_t at = head;
     int after_break = 1;        /* a chunk's start follows a break */
     for (size_t j = 0; j <= nw; j++) {
         const int64_t f0 = at, f1 = j < nw ? r->w[j].start : frames;
@@ -256,8 +289,7 @@ static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt) {
             const int64_t enough = after_break || f1 == frames ? at_break : inside;
             int64_t heard;
             const double e = power(r->x, r->sp, r->ns, s0, s1, &heard);
-            if (s1 - s0 <= r->budget && heard >= enough && e >= r->floor * (double)heard) {
-                r->budget -= s1 - s0;
+            if (heard >= enough && e >= floor * (double)heard) {
                 r->st[k][0] = (int32_t)f0, r->st[k][1] = (int32_t)f1;
                 k++;
             }
@@ -350,7 +382,7 @@ static void put(run *r, const pk_seg *ch, size_t k, int q0, int qn, int64_t spf)
 
 /* The seam (above) on the chunk's n tokens in r->t, which has room for
  * SEAM_TOKS more: its new count */
-static size_t seam(run *r, const pk_seg *ch, size_t n) {
+static size_t seam(run *r, const pk_seg *ch, size_t n, int64_t *head) {
     const pk_model *m = r->a->m;
     const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
     const size_t nw = pk_words(m, r->t, n, r->w);
@@ -376,6 +408,8 @@ static size_t seam(run *r, const pk_seg *ch, size_t n) {
                 put(r, ch, k0, q0, qa, spf);
             }
             /* and the last chunk's words before it, for this one's */
+            if (*head < r->w[j].start)
+                *head = r->w[j].start;
             memmove(r->t + q0, r->t + k0, (n - k0) * sizeof *r->t);
             n = n - k0 + (size_t)q0;
             put(r, ch, 0, 0, q0, spf);
@@ -383,6 +417,23 @@ static size_t seam(run *r, const pk_seg *ch, size_t n) {
         }
     }
     return n;
+}
+
+/* This chunk without its first word where that is the last chunk's last
+ * word again, the one the cut fell in, starting before the last chunk's
+ * copy ends; the tokens left */
+static size_t repeat(run *r, const pk_seg *ch, size_t n) {
+    const pk_model *m = r->a->m;
+    const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
+    if (!pk_words(m, r->t, n, r->w))
+        return n;
+    const pk_word *w = &r->w[0];
+    if (ch->start + (int64_t)w->start * spf >= r->tail_end
+        || !same_letters(m, r->t + w->tok, w->ntok, r->tail, r->ntail, 0))
+        return n;
+    const size_t drop = (size_t)(w->tok + w->ntok);
+    memmove(r->t, r->t + drop, (n - drop) * sizeof *r->t);
+    return n - drop;
 }
 
 static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) {
@@ -402,6 +453,7 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
     pk_tok next[SEAM_TOKS];
     int64_t next_at[SEAM_TOKS];
     int next_word[SEAM_KEEP + 1] = { 0 }, nnext = 0;
+    const pk_word *last = NULL;
     size_t n = 0;
     if (wn->end == ch->end) {
         if (nt)
@@ -414,6 +466,7 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
             if (ch->start + (int64_t)w->start * spf < ch->end) {
                 memcpy(r->t + n, toks + w->tok, (size_t)w->ntok * sizeof *toks);
                 n += (size_t)w->ntok;
+                last = w;
             } else if (nnext < SEAM_KEEP && next_word[nnext] + w->ntok <= SEAM_TOKS) {
                 for (int32_t q = 0; q < w->ntok; q++) {
                     next[next_word[nnext] + q] = toks[w->tok + q];
@@ -424,24 +477,44 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
             }
         }
     }
+    /* the last word kept, for the next chunk, where it runs past the cut */
+    pk_tok tail[SEAM_TOKS];
+    int ntail = 0;
+    int64_t tail_end = 0;
+    if (last && ch->start + (int64_t)last->end * spf > ch->end && last->ntok <= SEAM_TOKS) {
+        memcpy(tail, toks + last->tok, (size_t)last->ntok * sizeof *toks);
+        ntail = last->ntok;
+        tail_end = ch->start + (int64_t)last->end * spf;
+    }
+    int64_t head = 0;           /* frames the last chunk's words cover */
+    if (r->ntail) {
+        if (n)
+            n = repeat(r, ch, n);
+        head = (r->tail_end - ch->start + spf - 1) / spf;
+    }
     if (r->nseam && n)
-        n = seam(r, ch, n);
+        n = seam(r, ch, n, &head);
     r->nseam = nnext;
     memcpy(r->seam, next, (size_t)next_word[nnext] * sizeof *next);
     memcpy(r->seam_at, next_at, (size_t)next_word[nnext] * sizeof *next_at);
     memcpy(r->seam_word, next_word, sizeof next_word);
-    const long nst = r->retry ? stretches(r, ch, r->t, (long)n) : 0;
+    r->ntail = ntail;
+    memcpy(r->tail, tail, (size_t)ntail * sizeof *tail);
+    r->tail_end = tail_end;
+    const long nst = r->retry ? stretches(r, ch, r->t, (long)n, head) : 0;
     if (nst < 0)
         return -1;
     int retried = 0;
     for (long k = 0; k < nst; k++) {
         const int64_t s0 = ch->start + r->st[k][0] * spf;
         const int64_t s1 = ch->start + r->st[k][1] * spf < ch->end ? ch->start + r->st[k][1] * spf : ch->end;
-        if (s1 <= s0)
+        if (s1 <= s0 || s1 - s0 > r->budget)
             continue;
         const long more = pk_retry_run(r->a, r->x + s0, (size_t)(s1 - s0), spare);
         if (more < 0 || grow((void **)&r->t, &r->tcap, n + (size_t)more, sizeof *r->t))
             return -1;
+        if (more == 0)
+            r->budget -= s1 - s0;
         for (long q = 0; q < more; q++) {
             r->t[n] = r->a->toks[q];
             r->t[n++].frame += r->st[k][0];

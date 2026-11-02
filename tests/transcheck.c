@@ -3,7 +3,8 @@
  * chunk is pk_asr_run_chunks' (which is pk_asr_run's), token for token;
  * with them every word starts in its own chunk; fn returning nonzero stops
  * the run there; the retry's own parts as pktito-app's transcribe.rs tested
- * them, where they came from; and the seam's, on tokens built for it.
+ * them, where they came from; and the seam's and the retry level's, on
+ * tokens and samples built for them.
  * Includes core/transcribe.c, for its static parts. */
 #include "../core/transcribe.c"
 #include "wav.h"
@@ -236,22 +237,66 @@ int main(int argc, char **argv) {
             sr.t[0] = (pk_tok){ The, 0, 1 };
             sr.t[1] = (pk_tok){ was, 3, 1 };
             sr.t[2] = (pk_tok){ no, 5, 1 };
-            size_t k = seam(&sr, &ch, 3);
+            int64_t head = 0;
+            size_t k = seam(&sr, &ch, 3, &head);
             CHECK(k == 2 && sr.t[0].id == was && sr.t[1].id == no, "seam: the word written twice goes");
+            CHECK(head == 3, "seam: the retry kept off the head the last chunk's words cover");
             /* the last chunk heard "the no", this one "The no" */
             sr.seam[0] = (pk_tok){ the, 0, 1 };
             sr.seam_at[0] = ch.start;
             sr.seam_at[1] = ch.start + 3 * spf;
             sr.t[0] = (pk_tok){ The, 1, 1 };
             sr.t[1] = (pk_tok){ no, 3, 1 };
-            k = seam(&sr, &ch, 2);
+            k = seam(&sr, &ch, 2, &head);
             CHECK(k == 2 && sr.t[0].id == the && sr.t[0].frame == 0 && sr.t[1].id == no,
                   "seam: the first word's case as the last chunk wrote it");
             /* this one's words start apart from the last chunk's */
             sr.t[0] = (pk_tok){ The, 20, 1 };
             sr.t[1] = (pk_tok){ was, 22, 1 };
-            k = seam(&sr, &ch, 2);
+            k = seam(&sr, &ch, 2, &head);
             CHECK(k == 2 && sr.t[0].id == The && sr.t[1].id == was, "seam: words that start apart as they are");
+            /* the cut fell in the last chunk's last word, "the", which ends
+             * 4 frames into this chunk; this one opens "The no" */
+            sr.ntail = 1;
+            sr.tail[0] = (pk_tok){ the, 0, 1 };
+            sr.tail_end = ch.start + 4 * spf;
+            sr.t[0] = (pk_tok){ The, 1, 1 };
+            sr.t[1] = (pk_tok){ no, 3, 1 };
+            k = repeat(&sr, &ch, 2);
+            CHECK(k == 1 && sr.t[0].id == no, "seam: the word the cut fell in, written again, goes");
+            sr.t[0] = (pk_tok){ The, 5, 1 };
+            sr.t[1] = (pk_tok){ no, 7, 1 };
+            k = repeat(&sr, &ch, 2);
+            CHECK(k == 2 && sr.t[0].id == The, "seam: that word starting after the last chunk's copy stays");
+            sr.t[0] = (pk_tok){ was, 1, 1 };
+            k = repeat(&sr, &ch, 2);
+            CHECK(k == 2 && sr.t[0].id == was, "seam: another word there stays");
+            /* the retry's level: speech between two words in a chunk 6 dB
+             * under the recording's, 0.6 dB under the chunk's and then 4.5 */
+            const pk_seg speech = { ch.start, ch.start + 250 * spf };
+            float *xs = malloc((size_t)ch.end * sizeof *xs);
+            sr.st = malloc(8 * sizeof *sr.st);
+            sr.text = malloc(sr.textcap = 256);
+            const float level[2] = { 0.09f, 0.05f };
+            for (int q = 0; q < 2 && xs && sr.st && sr.text; q++) {
+                for (int64_t j = 0; j < ch.end; j++) {
+                    const int64_t f = (j - ch.start) / spf;
+                    xs[j] = j < ch.start || f >= 250 ? 0 : f >= 100 && f < 200 ? level[q] : 0.1f;
+                }
+                sr.x = xs, sr.sp = &speech, sr.ns = 1;
+                sr.floor = 0.04 * RETRY_LEVEL;
+                sr.t[0] = (pk_tok){ the, 0, 100 };
+                sr.t[1] = (pk_tok){ no, 200, 50 };
+                const long ns = stretches(&sr, &ch, sr.t, 2, 0);
+                if (q == 0)
+                    CHECK(ns == 1 && sr.st[0][0] == 100 && sr.st[0][1] == 200,
+                          "retry: speech near its chunk's, under the recording's, heard again");
+                else
+                    CHECK(ns == 0, "retry: speech under its chunk's too, not");
+            }
+            free(xs);
+            free(sr.st);
+            free(sr.text);
         }
         free(sr.t);
         free(sr.w);
