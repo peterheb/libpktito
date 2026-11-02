@@ -1788,3 +1788,145 @@ on one X925 (taskset -c 5, -t 1), where they are 84% of 2.995 s, 20 to
 and check-c are ref's bits on the GB10 under gcc 13.3 and clang 18.1 and
 the bench moves past its spread under both, at the default threads and at
 one.
+
+## 2026-11-02 - neon-sve: the int8 product on SMMLA, each half panel's weights put in its order a call at a time (result: kept)
+
+Built as the hypothesis has it. backend/neon-sve/kernels.c includes
+backend/neon's with PK_NEON_DOTPROD and PK_NEON_SVE; there q8_mm4 is the
+probe's loop (A by ZIP, MOVPRFX of M and an FSUB, each block's scales into
+vectors in the loop) at blocks of 32 and 64, mm_copy the copy, and the
+column block 1 MB (not measured against other sizes). core/os.c learns
+sve, i8mm and svei8mm from the auxiliary vector; the Makefile builds
+neon-sve where the compiler's assembler takes a MOVPRFX and SVE's SMMLA
+(its probe is those two instructions), and backend/kernels.c puts it
+first.
+
+Bits: kcheck, 1906 cases, ref's bits on neon-sve, neon-dp and neon on
+spark-a80d under gcc 13.3 and clang 18.1, and check-c passes under both:
+test.wav's v2 and v3 transcripts ref's, every token and time, in the
+default and the fast mode, neon-sve picked. Two mutations of the loop
+each fail kcheck: the last FMLA given columns 0 and 1's scales (cases at
+blocks of 32, n 32 to 4096, T 8 to 26), and the loop at 64 a pair of
+k-steps short (cases at blocks of 64, n 64 to 256). The neon and neon-dp
+objects are the parent's bytes (gcc 15.2's cross build, compared by
+objdump); the tree builds with llvm-mingw's clang 23.1 for Windows on ARM
+(neon-sve built there, never picked: core/os.c answers no for sve) and
+with NDK r30's clang for Android.
+
+q8bench on one X925 (taskset -c 5), T 256 in 64-row slices, GMAC/s:
+
+| product | qb | gcc 13.3, neon-dp | neon-sve | clang 18.1, neon-dp | neon-sve |
+|---|---|---|---|---|---|
+| ff up 4096 x 1024 | 32 | 207.0 | 292.1 | 207.8 | 296.1 |
+| | 64 | 223.8 | 333.9 | 228.6 | 331.9 |
+| ff down 1024 x 4096 | 32 | 193.9 | 289.5 | 193.9 | 291.4 |
+| | 64 | 200.3 | 329.6 | 201.0 | 332.9 |
+| attention q 1024 x 1024 | 32 | 209.2 | 295.7 | 210.2 | 300.3 |
+| | 64 | 226.3 | 333.9 | 231.2 | 342.0 |
+
+On one A725 (CPU 0, gcc): ff up 65.4 to 88.9 at 32 and 71.2 to 103.7 at
+64, ff down 65.4 to 91.7 and 71.5 to 109.2, attention q 64.8 to 88.9 and
+71.1 to 106.0. Predicted 290-315 at 32 and 340-370 at 64 on the X925, 85
+to 90 on the A725: in range at 32, 2 to 3% short at 64, the A725 above.
+
+By columns, q8bench on one X925 (gcc), a call of all T columns,
+neon-sve's GMAC/s against neon-dp's, at blocks of 32 / 64:
+
+| T | ff up | ff down | attention q |
+|---|---|---|---|
+| 4 | +0.6 / +0.2% | +3.0 / -0.2% | -0.7 / +0.8% |
+| 8 | -0.2 / +3.3% | -6.8 / -4.1% | +5.7 / +8.3% |
+| 12 | +11.1 / +16.3% | +7.6 / +13.8% | +15.2 / +20.1% |
+| 16 | +18.9 / +24.2% | +16.8 / +24.3% | +21.4 / +27.7% |
+| 24 | +26.2 / +31.9% | +28.7 / +37.8% | +28.7 / +36.5% |
+| 60 | +34.0 / +41.6% | +42.9 / +54.9% | +35.4 / +42.6% |
+| 128 | +39.7 / +46.2% | +49.5 / +64.6% | +40.3 / +47.3% |
+| 256 | +41.1 / +47.7% | +47.4 / +64.5% | +41.2 / +48.4% |
+
+At T 4 both run SDOT (fewer than PK_Q8_MM_COLS, 8). At 8 two tiles share
+the copy, and the down product's 32 KB half panels lose where the 8 KB
+ones gain; from 12 every product gains. pk_gemm's calls have all T
+columns below 96, and above it 48 or more but for a product's last call,
+which on test.wav's chunks is 10 at ten threads: 8 to 11 columns is a
+recording under a second or such a last call.
+
+`pktito-c bench` on spark-a80d, test.wav through v2, best of 5,
+interleaved rounds with the order reversed every other round, against the
+parent (d2c70f0) built the same way; the vLLM worker idle throughout,
+about 3% of one core in every run of both builds (its CPU ticks, logged
+for each). The paired change within each round, its median and range:
+
+| run | compiler | base | neon-sve | change |
+|---|---|---|---|---|
+| default (ten X925s), 6 rounds | gcc 13.3 | 0.383-0.392 s | 0.324-0.332 s | -15.4% (-17.1 to -14.0) |
+| | clang 18.1 | 0.380-0.392 s, and 0.489 | 0.319-0.329 s | -16.8% (-32.9 to -13.9) |
+| one X925 (taskset -c 5, -t 1), 6 rounds | gcc 13.3 | 2.990-2.994 s | 2.276-2.293 s | -23.7% (-24.0 to -23.3) |
+| | clang 18.1 | 2.953-2.958 s | 2.238-2.257 s | -24.1% (-24.3 to -23.6) |
+| --fast, default, 4 rounds | gcc 13.3 | 0.372-0.387 s | 0.303-0.311 s | -19.4% (-21.1 to -18.3) |
+| | clang 18.1 | 0.370-0.376 s | 0.300-0.307 s | -19.1% (-20.0 to -17.0) |
+| --fast, one X925, 4 rounds | gcc 13.3 | 2.844-2.851 s | 2.082-2.101 s | -26.7% (-26.8 to -26.2) |
+| | clang 18.1 | 2.791-2.794 s | 2.042-2.055 s | -26.7% (-26.8 to -26.4) |
+| -t 20, 4 rounds | gcc 13.3 | 0.506-0.519 s | 0.445-0.468 s | -11.2% (-13.1 to -7.7) |
+| | clang 18.1 | 0.496-0.509 s | 0.442-0.457 s | -11.5% (-12.5 to -7.9) |
+| one A725 (taskset -c 0, -t 1), 3 rounds | gcc 13.3 | 9.153-9.163 s | 7.274-7.280 s | -20.6% (-20.6 to -20.5) |
+
+The base's 0.489 under clang is a run whose race took the twenty threads;
+neon-sve kept the ten in all twelve default runs, and the fast mode both
+builds in all sixteen. In every row the two builds' ranges are apart by
+more than either's spread (that 0.489 aside), under both compilers. gcc
+and clang are within 2% of each other on either build (the loop is the
+same bytes; the rest is each compiler's C). Predicted 15 to 22% at the
+default and 20 to 28% on one X925: the default at the bottom of its
+range, one thread in the middle of its.
+
+Where it went, `make PROFILE=1` (gcc), three interleaved runs of each,
+the median ms a run:
+
+| stage | default, base | neon-sve | | one X925, base | neon-sve | |
+|---|---|---|---|---|---|---|
+| feed-forward | 191.3 | 155.7 | -18.6% | 1661.1 | 1211.2 | -27.1% |
+| q k v pos | 64.9 | 52.0 | -19.9% | 478.9 | 344.3 | -28.1% |
+| conv pw1 pw2 | 34.1 | 27.0 | -20.8% | 282.4 | 202.9 | -28.2% |
+| attention out | 12.4 | 10.1 | -18.5% | 95.1 | 69.0 | -27.4% |
+| subsampling | 10.8 | 10.1 | -6.5% | 79.8 | 70.6 | -11.5% |
+| decoder | 5.1 | 3.7 | | 33.8 | 33.9 | |
+| the rest | 91.7 | 87.2 | | 363.7 | 363.8 | |
+| sum | 410.3 | 345.8 | -15.7% | 2994.8 | 2295.7 | -23.3% |
+
+(the rest: mel, positions, layer norms, quantize, attention, glu and
+depthwise, none of them changed; at ten threads they move by the pool's
+timing.) The four int8 stages fall 27.4% on one X925, a little under
+q8bench's 29 to 33% at 256 columns, and 19.1% at ten threads.
+
+The difference is the copy. At ten threads pk_gemm cuts a chunk's frames
+(about 250 of test.wav's) into five calls of columns (48 to 60, a last
+one fewer), and each call copies every half panel: five copies a product
+where one thread makes one. The hypothesis put the copy at 4% of a call
+at ten threads from its 8.1 cycles a block in L1. On spark-9eba, `make PROFILE=1` (gcc),
+four interleaved rounds at the default, best of 5:
+
+| build | best of 5 | the int8 stages, median ms |
+|---|---|---|
+| neon-sve | 0.331-0.337 s | 249.5 |
+| the copy made once a thread and never again (wrong sums: every 4-column tile reads a stale buffer, and none reads the weights) | 0.291-0.297 s | 215.7 |
+| a prefetch of the next panel's 16 rows (PRFM PLDL2KEEP, all of them before the panel's first tile) | 0.328-0.336 s | |
+| a prefetch 2 KB ahead in the copy (PLDL1STRM) | 0.330-0.337 s | |
+
+So the copy, with the read of the weights from memory it makes, costs
+12% of a ten-thread run, three times its cost in L1, and neither prefetch
+took it back. The copy reads a half panel 2.4 times as fast as the SDOT
+tile it replaces (8.1 cycles a block against 19.3) and has no work of its
+own to overlap the misses with, where the SDOT tile's first pass over the
+half panel computes as it reads. Why the prefetches did not help is not
+measured, and both were crude: the first issues up to 1024 PRFMs at once,
+more than a core holds in flight, and the second runs about 30 cycles
+ahead of its loads, short of a miss to DRAM.
+
+Kept: neon-sve is first in the order, picked where Linux reports sve,
+i8mm and svei8mm. Unmeasured, and where it is picked: Neoverse V1 (its
+SVE 256 bits: the loop's MOVPRFX and first SMMLA then work on 256, the
+upper half zeros), V2, V3 and N2 (c7g, c8g and c9g, Cobalt 100, Axion),
+and Android's cores with SVE and I8MM where the kernel reports them, such
+as the RG477V's Dimensity 8300 (A715 and A510). Apple's M cores and
+Snapdragon X's Oryon have no SVE and keep neon-dp; Windows on ARM and
+macOS answer no for sve.

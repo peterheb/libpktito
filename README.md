@@ -23,7 +23,7 @@ same bits on every machine.
 | | |
 |---|---|
 | models | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints |
-| backends | `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `amx-int8` (AMX's tiles: Sapphire and Granite Rapids), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
+| backends | `neon-sve` (SVE and I8MM's SMMLA: the GB10's X925 and A725), `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `amx-int8` (AMX's tiles: Sapphire and Granite Rapids), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
 | numerics | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8") |
 | what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles |
 | audio | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; AIFF and AIFF-C: PCM 8 to 32 bits either byte order, float 32/64, A-law, mu-law; any channel count; any rate, brought to 16 kHz |
@@ -38,10 +38,11 @@ make BACKEND=ref              # scalar C alone, for anything
 ```
 
 A build holds every backend of its family that the compiler can make
-(neon-dp and neon on AArch64; amx-int8, avx512-vnni, avx2-vnni and avx2
-on x86-64) and the CPU picks the first it can run, so a binary copied to
-another machine of the family runs there at that machine's best: one
-built on an Alder Lake runs on a Zen 4, one built on a Pi 5 on a Pi 3.
+(neon-sve, neon-dp and neon on AArch64; amx-int8, avx512-vnni, avx2-vnni
+and avx2 on x86-64) and the CPU picks the first it can run, so a binary
+copied to another machine of the family runs there at that machine's
+best: one built on an Alder Lake runs on a Zen 4, one built on a Pi 5 on
+a Pi 3.
 `PKTITO_KERNELS=neon ./pktito-c ...` runs a given one of them, to compare.
 
 On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
@@ -138,7 +139,8 @@ And the bits are the same everywhere. `tests/data/test.v2.json` and
 `test.v3.json` are the transcripts `ref` writes for test.wav, every token and
 its time (`test.v2.fast.json` and `test.v3.fast.json` in the fast mode), and
 `make check-c` holds every backend on every machine to them byte for byte: so
-far `neon-dp` on an M4 Pro (Apple clang 21) and a Pi 5 (gcc 14.2), `neon` on a
+far `neon-sve` on a DGX Spark's GB10 (gcc 13.3 and clang 18.1), `neon-dp` on
+an M4 Pro (Apple clang 21) and a Pi 5 (gcc 14.2), `neon` on a
 Pi 3B+ (gcc 14.2) and the M4 Pro, `avx2` and `avx2-vnni` on a 12900HK (gcc
 15.2) and on a Core 3 304 under Windows 11 (MSYS2's gcc 16.2), `avx2-vnni`,
 `avx512-vnni` and `avx2` on a Ryzen 9 9950X (gcc 15.2), `amx-int8` on a
@@ -836,8 +838,9 @@ core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              (captions.c), the math (vmath.h), the pool (pool.c), the CLI
              (cli.c)
 backend/     the seam (kernels.h, and kernels.c, which picks the backend that
-             runs) and ref/, neon/ (and neon-dp/), avx2/ (and avx2-vnni/,
-             avx512-vnni/, amx-int8/); a CLIMB.md beside each tuned backend
+             runs) and ref/, neon/ (and neon-dp/, neon-sve/), avx2/ (and
+             avx2-vnni/, avx512-vnni/, amx-int8/); a CLIMB.md beside each
+             tuned backend
 tools/       the converter, the float64 reference, the corpora, the
              quantization experiment
 tests/       the C checks, the Python ones, and test.wav with its golden files

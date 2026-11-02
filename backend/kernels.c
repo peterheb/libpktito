@@ -19,6 +19,11 @@
 #include <string.h>
 
 const pk_kernels *const pk_kernels_built[] = {
+/* neon-sve first: on the GB10 15 to 16% faster than neon-dp at its ten
+ * X925s, 24% on one (backend/neon-dp/CLIMB.md, 2026-11-02) */
+#ifdef PK_HAVE_neon_sve
+    &pk_kernels_neon_sve,
+#endif
 #ifdef PK_HAVE_neon_dp
     &pk_kernels_neon_dp,
 #endif

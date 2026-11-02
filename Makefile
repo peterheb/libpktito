@@ -1,11 +1,13 @@
 # pktito
 #
 #   make                          ./pktito-c for this machine's family, every backend in it:
-#                                 neon-dp and neon on AArch64; amx-int8, avx512-vnni, avx2-vnni
-#                                 and avx2 on x86-64; and ref. The CPU picks one when it runs.
+#                                 neon-sve, neon-dp and neon on AArch64; amx-int8, avx512-vnni,
+#                                 avx2-vnni and avx2 on x86-64; and ref. The CPU picks one
+#                                 when it runs.
 #   make BACKEND=<name>           that backend alone, with ref:
 #                                 neon     ARMv8.0 NEON: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
 #                                 neon-dp  ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
+#                                 neon-sve     and SVE + I8MM's SMMLA: the GB10 (X925, A725)
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
 #                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
@@ -31,17 +33,17 @@
 CC ?= cc
 
 # The backends. A build holds every one of the machine's family that the
-# compiler can make - neon-dp and neon on AArch64; amx-int8, avx512-vnni,
-# avx2-vnni and avx2 on x86-64 - each compiled with its own instruction
-# set, and ref; the rest of the tree takes the family's baseline. Which runs
-# is the CPU's to say, at run time (backend/kernels.c), so one binary serves
-# its family: built on an Alder Lake it runs on a Zen 4, built on a Pi 5 on
-# a Pi 3.
+# compiler can make - neon-sve, neon-dp and neon on AArch64; amx-int8,
+# avx512-vnni, avx2-vnni and avx2 on x86-64 - each compiled with its own
+# instruction set, and ref; the rest of the tree takes the family's
+# baseline. Which runs is the CPU's to say, at run time
+# (backend/kernels.c), so one binary serves its family: built on an Alder
+# Lake it runs on a Zen 4, built on a Pi 5 on a Pi 3.
 # BACKEND=<name> builds that one alone, with ref.
 UNAME_M := $(shell uname -m)
 UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
-  FAMILY := neon-dp neon
+  FAMILY := neon-sve neon-dp neon
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
   FAMILY := amx-int8 avx512-vnni avx2-vnni avx2
 endif
@@ -63,12 +65,20 @@ ifeq ($(UNAME_S),Darwin)
 else
   ISA_neon-dp := -march=armv8.2-a+dotprod $(TUNE)
 endif
+# neon-sve is neon-dp's C with an int8 loop of assembly that asks for SVE
+# and I8MM itself (backend/neon/kernels.c, q8_mm4), so it takes neon-dp's
+# flags: no compiler puts SVE into its other kernels. Its probe is that
+# loop's kind of instruction, which an assembler older than I8MM (binutils
+# 2.34) cannot take; such a build goes without it.
+ISA_neon-sve := $(ISA_neon-dp)
 ISA_avx2 := -mavx2 -mfma
 ISA_avx2-vnni := -mavx2 -mfma -mavxvnni
 ISA_avx512-vnni := -mavx2 -mfma -mavx512f -mavx512vnni -mavx512vl
 ISA_amx-int8 := $(ISA_avx512-vnni) -mamx-tile -mamx-int8
 
-can_build = $(shell echo 'int x;' | $(CC) $(ISA_$(1)) -x c -c -o /dev/null - 2>/dev/null && echo $(1))
+PROBE := int x;
+PROBE_neon-sve := void f(void) { __asm__(".arch_extension sve\n.arch_extension i8mm\nmovprfx z0, z1\nsmmla z0.s, z1.b, z2.b"); }
+can_build = $(shell printf '%s\n' '$(or $(PROBE_$(1)),$(PROBE))' | $(CC) $(ISA_$(1)) -x c -c -o /dev/null - 2>/dev/null && echo $(1))
 BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(call can_build,$(b)))))
 
 # -ffp-contract=off is not a style choice. Every backend computes ref's bits

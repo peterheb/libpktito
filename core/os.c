@@ -501,13 +501,33 @@ static int cpu_has(const char *f) {
 
 #elif defined(__aarch64__) && defined(__linux__)
 #include <sys/auxv.h>
+/* the kernel's bits (arch/arm64/include/uapi/asm/hwcap.h), for a C library
+ * whose headers are older than the feature */
+#ifndef AT_HWCAP2
+#define AT_HWCAP2 26
+#endif
 #ifndef HWCAP_ASIMDDP
 #define HWCAP_ASIMDDP (1 << 20)
+#endif
+#ifndef HWCAP_SVE
+#define HWCAP_SVE (1 << 22)
+#endif
+#ifndef HWCAP2_SVEI8MM
+#define HWCAP2_SVEI8MM (1 << 9)
+#endif
+#ifndef HWCAP2_I8MM
+#define HWCAP2_I8MM (1 << 13)
 #endif
 
 static int cpu_has(const char *f) {
     if (!strcmp(f, "asimddp"))
         return (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
+    if (!strcmp(f, "sve"))
+        return (getauxval(AT_HWCAP) & HWCAP_SVE) != 0;
+    if (!strcmp(f, "i8mm"))
+        return (getauxval(AT_HWCAP2) & HWCAP2_I8MM) != 0;
+    if (!strcmp(f, "svei8mm"))
+        return (getauxval(AT_HWCAP2) & HWCAP2_SVEI8MM) != 0;
     return 0;
 }
 
