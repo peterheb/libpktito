@@ -2565,3 +2565,46 @@ these fit. The entry above's 30 MB a lane was the Ultra's footprint;
 pktito.h and the README now give about 45 MB.
 
 Not measured yet: the phones.
+
+## 2026-11-02 - Silero's encoder over the transcriber's threads (hypothesis)
+
+pk_asr_transcribe runs the VAD over the whole recording before its first
+chunk, on the calling thread alone, while the transcriber's pool waits.
+With the lanes it is a larger share of a run than it was. bench's "VAD
+more" was 0.010 s against the 9950X's 0.195 s on test.wav (5%), and
+0.018 s against the M4 Pro's 0.410 s (4%).
+
+Measured on the 12900HK with a scratch harness (vadsplit, not in the
+tree: core/vad.c's block() timed in its two halves, best of 5), over
+AliceBench's chapter 1 (640.5 s):
+
+| core | pk_vad_probs | front-end | recurrence |
+|---|---|---|---|
+| P-core (CPU 0) | 0.148 s (4,327x) | 0.1055 s | 0.0425 s (29%) |
+| E-core (CPU 16) | 0.325 s (1,974x) | 0.239 s | 0.085 s (26%) |
+
+The front-end is the STFT, the four convolutions and the gates' input
+half; the recurrence is the hidden half, the cell and the head. The two
+halves together gave pk_vad_probs's bits.
+
+The front-end of a block of 32 frames needs nothing from the block
+before it but that block's last 64 samples. So the pool can take a
+recording's blocks a run at a time, and the calling thread the
+recurrence over each run after it. The probabilities stay the same bits:
+the same blocks, the same calls on each, only their order between blocks
+changed.
+
+Expected: the VAD at 0.29 + 0.71/threads of its time, so 2.1 times as
+fast on 4 threads, 2.9 on 14 and 3.2 on 36. A recording would gain by
+the VAD's share, 1 to 5%: least on the 12900HK, whose VAD is 1.7% of a
+run, most on the Ultra and the 9950X.
+
+Memory: each thread its own block's activations, about 250 KB, and each
+run's gates, two blocks a thread at 64 KB each. That is about 380 KB a
+thread, which the transcriber keeps with its VAD.
+
+Kept if:
+- The probabilities and the transcripts are the bytes they were: check-c's
+  test.probs.txt, and the corpus's AliceBench, long40 and talks.
+- bench's VAD figure falls on the 9950X, a Pi 5 and an Apple board.
+- No recording slows on the Pi 5.
