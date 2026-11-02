@@ -71,6 +71,9 @@ struct pk_asr {
     int lanes;
     pk_asr **lane;
     pk_pool *drive;
+    /* pk_asr_transcribe's VAD, made the first time it runs and kept, with
+     * a block's activations for each of the pool's threads */
+    pk_vad *vad;
 
     size_t cap;                      /* feature frames the buffers below hold */
     void  *mem;
@@ -125,6 +128,13 @@ int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
 /* pk_asr_run on n samples no longer than the longest chunk of the run in
  * progress, its joint half in spare: a->toks, the count, or -1. */
 long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare);
+
+/* pk_vad_probs with Silero's encoder over the pool's active threads, a run
+ * of blocks at a time, and the LSTM on the calling thread after each run:
+ * the same bits, since a block's encoder needs only its own samples and the
+ * 64 before them (core/vad.c). pk_vad_probs itself where the pool is one
+ * thread, or the threads' memory cannot be had. */
+void pk_vad_probs_on(pk_vad *v, pk_pool *pool, const float *x, size_t n, float *probs);
 
 /* pk_chunks, with what each chunk is heard in (core/transcribe.c): win[k]
  * is out[k] and, where out[k]'s cut falls in a silence shorter than pause,

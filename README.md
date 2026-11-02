@@ -79,7 +79,8 @@ some 25 to 90 MB besides at the default chunking, more threads taking more:
 recording run several chunks at once (below, "How fast") takes about 45
 MB more for each chunk beyond the first: AliceBench's longest chapter
 peaked at 762 MB a chunk at a time on a 9950X's 16 threads, 896 MB four
-at once. A 512 MB board (a Pi
+at once. The VAD's encoder keeps 0.85 MB a thread besides, 3.4 MB on a
+Pi's four (below, "Transcribing a recording"). A 512 MB board (a Pi
 Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 4-bit would cost. Then:
 
@@ -324,6 +325,10 @@ does, in order:
    its longest pause. Silero ends a segment at a pause of 160 ms (its
    `min_silence_ms`, 100, is five frames); the chunks are cut between the
    same segments ended at 64 ms, two frames, and the retry goes by Silero's.
+   Silero's encoder, which a frame computes from its own samples, runs
+   over the transcriber's threads, and only its LSTM on one: the same
+   probabilities, 1.9 times as fast on a 9950X's 16 threads and a Pi 5's
+   4, 2.9 on an M5 Ultra's 36 (backend/avx2/CLIMB.md, 2026-11-02).
 2. **Cuts the recording into chunks** of at most 30.72 s (`max_chunk_s`,
    `--max-chunk`). A recording that fits is one chunk, heard whole, as
    NeMo hears a file. A longer one is cut at the last pause that fits, half
@@ -580,6 +585,10 @@ measurements in its comments.
   (`pk_asr_run_chunks`), after pktito-mac's profile had an M5 Ultra's CPU
   path keeping 21 of its 36 cores busy: twice as fast there, a fifth on a
   9950X, the same bits ("How fast").
+- **2026-11-02**: Silero's encoder over the transcriber's threads, its LSTM
+  alone on one: the VAD 1.9 to 2.9 times as fast, a recording 2% faster on
+  a 9950X and 6% on an M5 Ultra, the same bits ("Transcribing a
+  recording").
 
 ## Long recordings
 
@@ -642,7 +651,7 @@ gap's words are kept as they come.
 
 A recording that fits in a chunk is one chunk if it has speech and a gap if
 it has none, so the VAD runs on it too: 8 ms of the 0.25 s a 30 s recording
-takes on the M4 Pro. Speech is cut as it was, and recordings of it barely
+took on the M4 Pro with the VAD on one thread. Speech is cut as it was, and recordings of it barely
 change: no recording of the LibriSpeech sets above has a gap to transcribe,
 and 4.67 hours of conversational recordings gained 13 pieces, 84 s and one word
 between their speech chunks ("Seven.", v2), not one of which changed. The

@@ -2608,3 +2608,79 @@ Kept if:
   test.probs.txt, and the corpus's AliceBench, long40 and talks.
 - bench's VAD figure falls on the 9950X, a Pi 5 and an Apple board.
 - No recording slows on the Pi 5.
+
+## 2026-11-02 - Silero's encoder over the transcriber's threads (result: kept)
+
+Built as the hypothesis has it, in core/vad.c:
+- pk_vad_probs_on runs block()'s encode half over the pool, PK_VAD_RUN
+  blocks a thread a run, and step() over each run on the calling thread.
+- pk_asr_transcribe keeps its VAD in the transcriber, with a stream's
+  activations for each of the pool's threads.
+- bench's VAD figure comes from the same call.
+
+The bits:
+- transcheck's new case: the recording four times over and a call after
+  it, every probability pk_vad_probs's. Two broken contexts fail it.
+- check-c: test.probs.txt and the transcripts.
+- The corpus's 156 transcripts (AliceBench, long40, the talks, both
+  models) are the bytes of d2c70f0's.
+- check-tsan is clean.
+
+The VAD alone, over AliceBench's chapter 1 (640.5 s), from a scratch
+harness (vadpool: pk_vad_probs against pk_vad_probs_on, interleaved,
+best of 5):
+
+| board | threads | one thread | over the pool | |
+|---|---|---|---|---|
+| M5 Ultra | 36 | 0.156 s | 0.053 s | 2.93x |
+| 12900HK | 14 | 0.148 | 0.066 | 2.24x |
+| 9950X | 16 | 0.088 | 0.047 | 1.87x |
+| Pi 5 | 4 | 0.610 | 0.317 | 1.93x |
+
+This falls short of the hypothesis's 2.9 at 14 threads. The recurrence
+is 44% of the VAD on the 9950X (vadsplit there: 0.039 s of 0.090),
+against the 12900HK's 29%. And each run ends with the pool parked while
+the calling thread runs the recurrence.
+
+The run length, in blocks a thread:
+- 12900HK: 2, 4 and 8 took 0.082, 0.075 and 0.066 s.
+- 9950X: 2 took 0.053 s and 8 took 0.047.
+- Pi 5: 0.314 s at 2 and 0.317 at 8, a run of 8 filling its L3.
+
+So the runs are 8 blocks a thread.
+
+End to end, against lanes (d148a53), through the v2 model, -v's time,
+interleaved, the faster:
+
+| board | set | lanes | vad-pool | change | each round's |
+|---|---|---|---|---|---|
+| M5 Ultra, 36 | AliceBench | 26.32 s (407.7x) | 24.74 (433.8x) | 1.06x | 1.06, 1.06, 1.07 |
+| | 26 talks | 14.29 (375.2x) | 13.40 (400.1x) | 1.07x | 1.07, 1.07, 1.07 |
+| 9950X, 16, gcc 15.2 | 6 chapters | 14.04 (310.1x) | 13.77 (316.1x) | 1.02x | 1.02, 1.03, 1.02, 1.02, 1.02 |
+| | long40, half | 15.33 (297.7x) | 15.10 (302.2x) | 1.02x | 1.02, 1.02, 1.02, 1.01, 1.01 |
+| 12900HK, 14, runs of 2 | 6 chapters | 58.92 (73.9x) | 58.85 (74.0x) | 1.00x | 1.00, 1.01, 1.00 |
+| Pi 5, 4, runs of 2 | chapters 1 and 11 | 91.65 (13.7x) | 91.25 (13.8x) | 1.00x | 1.01, 1.01, 1.00 |
+
+bench's VAD figure on test.wav:
+
+| board | lanes | vad-pool |
+|---|---|---|
+| Ultra | 0.015 to 0.016 s | 0.006 |
+| 9950X | 0.010 to 0.011 | 0.007 |
+| 12900HK | 0.016 to 0.019 | 0.010 to 0.011 |
+| Pi 5 | 0.059 | 0.031 |
+
+bench's best of 5, which times no VAD, was level on the 9950X, the
+12900HK and the Pi 5. On the Ultra, over 6 alternated pairs, it ran
+0.180 to 0.206 s on lanes and 0.185 to 0.197 on vad-pool, lanes the
+faster in 4. That is within the 0.180 to 0.213 that lanes alone ran over
+the day, and is not explained.
+
+Memory: the transcriber keeps, with its VAD, a stream's activations for
+each thread (330 KB) and a run's gates (512 KB a thread at 8 blocks).
+That is 3.4 MB at 4 threads, 13 MB at 16 and 30 MB at 36.
+
+Kept: the bits are unchanged. The VAD ran 1.9 to 2.9 times as fast
+wherever it was timed. Recordings ran 1.5 to 2% faster on the 9950X and
+6% on the Ultra, and level on the 12900HK and the Pi 5, where the VAD is
+under 2% of a run.

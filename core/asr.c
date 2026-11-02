@@ -148,6 +148,7 @@ void pk_asr_free(pk_asr *a) {
     for (int j = 1; a->lane && j < a->lanes; j++)
         pk_asr_free(a->lane[j]);
     free(a->lane);
+    pk_vad_free(a->vad);
     pk_pool_free(a->pool);
     free(a->tws);
     free(a->mem);

@@ -298,8 +298,9 @@ static float *read_audio(const char *path, int rate, size_t *n, const opts *o) {
 
 /* The recording's chunks (pk_chunks): the whole of it when it fits and has
  * speech, else its speech cut at its silences, and what lies between that
- * is neither silent nor too short to hear. */
-static pk_seg *chunks_of(const pk_model *m, const float *x, size_t n, double max_chunk,
+ * is neither silent nor too short to hear. The VAD runs on a's threads, as
+ * pk_asr_transcribe's does. */
+static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const float *x, size_t n, double max_chunk,
                          size_t *nchunks, double *vad_s) {
     const int rate = pk_model_rate(m);
     const int64_t max_len = (int64_t)(max_chunk * rate);
@@ -318,7 +319,7 @@ static pk_seg *chunks_of(const pk_model *m, const float *x, size_t n, double max
     if (!pad || !probs || !v)
         die("out of memory");
     memcpy(pad, x, n * sizeof *x);
-    pk_vad_probs(v, pad, frames, probs);
+    pk_vad_probs_on(v, a->pool, pad, frames, probs);
     pk_vad_free(v);
     free(pad);
     /* segments no longer than a chunk less the padding Silero puts round them */
@@ -837,7 +838,7 @@ static int bench(const opts *o, pk_model *m) {
     pk_asr *a = asr_new(o, m);
     size_t nc;
     double vad_s;
-    pk_seg *c = chunks_of(m, x, n, o->max_chunk, &nc, &vad_s);
+    pk_seg *c = chunks_of(a, m, x, n, o->max_chunk, &nc, &vad_s);
     double best = 1e30;
     long ntok = 0;
     for (int rep = 0; rep < 5; rep++) {

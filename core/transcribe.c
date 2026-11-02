@@ -2,9 +2,10 @@
  * whole of the processing pktito does for one - the high-level path, beside
  * pk_asr_run's transcript = f(x). In order:
  *
- *   1. Silero's VAD over the recording (pk_vad_probs), and its speech
- *      segments (pk_segments), none longer than a chunk: Silero's own for
- *      the retry, and the same cut at shorter pauses for the chunks;
+ *   1. Silero's VAD over the recording (pk_vad_probs_on, its encoder over
+ *      the transcriber's threads), and its speech segments (pk_segments),
+ *      none longer than a chunk: Silero's own for the retry, and the same
+ *      cut at shorter pauses for the chunks;
  *   2. the chunks (pk_chunks): the whole recording if it fits, else its
  *      speech cut at the last pause that fits, and the pieces of what lies
  *      between;
@@ -551,13 +552,16 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
     float *probs = malloc(frames * sizeof *probs);
     pk_seg *sp = malloc((2 * frames + 1) * sizeof *sp), *cut = malloc((2 * frames + 1) * sizeof *cut);
     pk_seg *c = NULL, *win = NULL;
-    pk_vad *v = pk_vad_new(m);
+    if (!a->vad)
+        a->vad = pk_vad_new(m);
+    pk_vad *v = a->vad;
     run r = { 0 };
     if (!probs || !sp || !cut || !v || max_len < rate)
         goto out;
 
     /* 1. the speech, its last frame padded with silence */
-    pk_vad_probs(v, x, whole, probs);
+    pk_vad_reset(v);
+    pk_vad_probs_on(v, a->pool, x, whole, probs);
     if (whole < frames) {
         float last[PK_VAD_SAMPLES] = { 0 };
         memcpy(last, x + whole * PK_VAD_SAMPLES, (n - whole * PK_VAD_SAMPLES) * sizeof *x);
@@ -605,7 +609,6 @@ out:
     free(r.w);
     free(r.st);
     free(r.text);
-    pk_vad_free(v);
     free(probs);
     free(sp);
     free(cut);

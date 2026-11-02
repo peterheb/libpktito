@@ -3,10 +3,10 @@
  * chunk is pk_asr_run_chunks' (which is pk_asr_run's), token for token;
  * with them every word starts in its own chunk; fn returning nonzero stops
  * the run there; two lanes give one lane's chunks, in the fast mode too;
- * the retry's own parts as
- * pktito-app's transcribe.rs tested them, where they came from; and the
- * seam's and the retry level's, on tokens and samples built for them.
- * Includes core/transcribe.c, for its static parts. */
+ * the VAD over a pool gives one thread's probabilities; the retry's own
+ * parts as pktito-app's transcribe.rs tested them, where they came from;
+ * and the seam's and the retry level's, on tokens and samples built for
+ * them. Includes core/transcribe.c, for its static parts. */
 #include "../core/transcribe.c"
 #include "wav.h"
 
@@ -250,6 +250,32 @@ int main(int argc, char **argv) {
         free(x4);
     }
 
+    /* Silero's encoder over a pool (core/vad.c, pk_vad_probs_on): the
+     * recording four times over, cut to a block and a frame past a run, so
+     * that runs follow runs and the last block is one frame, then a second
+     * call that carries the stream on. Every probability pk_vad_probs's. */
+    {
+        const size_t f1 = 4 * (n / PK_VAD_SAMPLES) / 32 * 32 + 1, f2 = 77;
+        float *xs = calloc((f1 + f2) * PK_VAD_SAMPLES, sizeof *xs);
+        float *p1 = malloc((f1 + f2) * sizeof *p1), *p2 = malloc((f1 + f2) * sizeof *p2);
+        pk_vad *s = pk_vad_new(m), *t = pk_vad_new(m);
+        pk_pool *pool = pk_pool_new(8);
+        CHECK(xs && p1 && p2 && s && t && pool, "VAD over a pool: made");
+        if (xs && p1 && p2 && s && t && pool) {
+            for (size_t i = 0; i < (f1 + f2) * PK_VAD_SAMPLES; i++)
+                xs[i] = x[i % n];
+            pk_vad_probs(s, xs, f1, p1);
+            pk_vad_probs(s, xs + f1 * PK_VAD_SAMPLES, f2, p1 + f1);
+            pk_vad_probs_on(t, pool, xs, f1, p2);
+            pk_vad_probs_on(t, pool, xs + f1 * PK_VAD_SAMPLES, f2, p2 + f1);
+            CHECK(!memcmp(p1, p2, (f1 + f2) * sizeof *p1),
+                  "VAD over a pool: every probability one thread's, bit for bit");
+        }
+        pk_pool_free(pool);
+        pk_vad_free(s), pk_vad_free(t);
+        free(xs), free(p1), free(p2);
+    }
+
     /* the seam, on tokens built for it: a word the cut fell beside written
      * twice, a capital, and words that start apart */
     {
@@ -354,8 +380,8 @@ int main(int argc, char **argv) {
     CHECK(pk_asr_transcribe(a, x, 0, NULL, on_out, &r) == 0 && r.n == 0, "no samples: no chunks");
 
     if (!fails)
-        printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, the retry's and the "
-               "seam's parts: ok\n", lo.n);
+        printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, a pool's VAD one "
+               "thread's, the retry's and the seam's parts: ok\n", lo.n);
     forget(&hi), forget(&lo);
     pk_asr_free(a);
     pk_model_free(m);
