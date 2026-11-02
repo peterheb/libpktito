@@ -2049,3 +2049,66 @@ idle; both builds' default kept the ten X925s in every run:
 
 A minute of speech in 0.32 s at the default, 187 times real time, where
 neon-dp takes 0.39, 154 times.
+
+## 2026-11-02 - neon-sve on Graviton2 to 5 (a measurement, pktito-windows's)
+
+The cores the entries above left unmeasured: EC2 c6g, c7g, c8g and c9g
+at .4xlarge, 16 cores each, Ubuntu 24.04 and kernel 7.0, gcc 13.3 and
+clang 18.1. The runs were pktito-windows's, one script an instance
+(graviton-sve.sh), with nothing else on the instance. 6381086's code
+(646de79) was run against its parent d2c70f0, with neon-dp picked. The
+bench was test.wav through v2, best of 5, rotated a place each round, 6
+rounds at the default threads and 4 on one core (taskset -c 1, -t 1).
+
+The bits:
+- kcheck, 1906 cases, gives ref's bits on neon-sve, neon-dp and neon
+  under both compilers on c7g, c8g and c9g, and on neon-dp and neon on
+  c6g. There neon-sve is skipped: "this CPU has no i8mm".
+- check-c passes on all four under both compilers.
+- On c7g, Graviton3 (Neoverse V1, SVE at 256 bits), both hold at 256 bits
+  and again with the length set to 128 (PR_SVE_SET_VL, inherited across
+  exec). That is the first run of the loop at a length above 128 bits:
+  its first SMMLA into each accumulator is SVE's, at the machine's
+  length.
+
+The change against d2c70f0, median (range). Every SVE row is faster in
+every round:
+
+| instance | core, SVE | run | gcc 13.3 | clang 18.1 |
+|---|---|---|---|---|
+| c6g, Graviton2 | Neoverse N1, none | default | +0.1% (+0.0 to +0.1) | +0.1% (-0.1 to +0.1) |
+| | | one core | +0.0% (-0.1 to +0.0) | -0.1% (-0.1 to -0.0) |
+| c7g, Graviton3 | Neoverse V1, 256 bits | default | -11.7% (-11.9 to -11.6) | -12.0% (-12.1 to -11.8) |
+| | | one core | -11.9% (-12.1 to -11.8) | -12.0% (-12.1 to -11.5) |
+| | at 128 bits | default | -15.6% (-15.9 to -15.6) | -15.9% (-16.2 to -15.7) |
+| | | one core | -13.6% (-13.8 to -13.5) | -13.7% (-13.7 to -13.6) |
+| c8g, Graviton4 | Neoverse V2, 128 bits | default | -12.7% (-12.8 to -12.6) | -12.5% (-12.7 to -12.5) |
+| | | one core | -17.2% (-17.3 to -16.9) | -17.6% (-17.7 to -17.6) |
+| c9g, Graviton5 | Neoverse V3, 128 bits | default | -13.3% (-13.6 to -13.3) | -14.0% (-14.0 to -13.7) |
+| | | one core | -15.8% (-15.9 to -15.6) | -15.6% (-15.7 to -15.6) |
+
+c6g is the control: both builds run neon-dp there. The fastest of each,
+under clang:
+- c7g: 0.617 -> 0.543 s at the default, and 0.518 at 128 bits. On one
+  core, 7.015 -> 6.171 s, and 6.054 at 128 bits.
+- c8g: 0.479 -> 0.419 s at the default. On one core, 5.624 -> 4.630 s.
+- c9g: 0.335 -> 0.289 s at the default. On one core, 4.555 -> 3.842 s.
+
+gcc's times are within 1.7% of clang's, and the two compilers' changes
+within 0.7 points of each other.
+
+At 256 bits c7g is 4.5% slower than at 128 at the default, and 2% slower
+on one core, in every round under both compilers. Where that goes is not
+measured. The loop's SVE instructions, MOVPRFX and the first SMMLA into
+each accumulator, are the only ones whose work grows with the length,
+though the upper half is zeros. A loop with no SVE instruction would
+run at 128 bits whatever the length. Setting the length is not the
+library's to do: it belongs to the caller's thread, which runs a share
+of every job.
+
+So neon-sve is faster wherever it is picked, on every SVE core measured
+so far: the GB10's X925 and A725, and Neoverse V1, V2 and V3. Not yet
+measured: N2 (Cobalt 100), and Android's cores where the kernel reports
+SVE. None of the four Android devices at hand reports it: the S24 Ultra
+(whose kernel hides its cores' SVE2), the S25 Ultra and the Googlebook
+(Oryon), and a moto g7.
