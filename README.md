@@ -234,10 +234,13 @@ four), 2026-11-02
 | Ryzen 9 9950X, 16, gcc 15.2 | 259x -> 316x | 254x -> 304x | 256x -> 298x | 289x -> 308x |
 | Ryzen 9 9950X, 16, clang 21.1 | 266x -> 328x | 260x -> 317x | 263x -> 312x | 296x -> 320x |
 | GB10, 20 (10 X925 + 10 A725), gcc 13.3 | 141x -> 182x | 136x -> 175x | | |
+| Galaxy S24 Ultra, 8 (Snapdragon 8 Gen 3), NDK clang 21 | 29x -> 31x | | | 37x -> 42x |
+| Galaxy S25 Ultra, 8 (Snapdragon 8 Elite), NDK clang 21 | 37x -> 41x | | | 49x -> 54x |
 
 The 9950X's, the 12900HK's and the GB10's AliceBench is six of the
 twelve chapters, the 9950X's and the 12900HK's long40 half of the 40, the
-GB10's talks 13 of the 26. The GB10
+GB10's talks 13 of the 26. The phones' AliceBench is chapter 1 alone, on
+AC, the best of four rounds 180 s apart, lanes faster in every one. The GB10
 ran a chunk at a time on its ten X925s, which beat all twenty there; as
 lanes of their own, its A725s add their share. A Pi's four threads run a
 chunk at a time, as before: on a Pi 5 two lanes of two threads

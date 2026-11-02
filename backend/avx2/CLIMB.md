@@ -2684,3 +2684,61 @@ Kept: the bits are unchanged. The VAD ran 1.9 to 2.9 times as fast
 wherever it was timed. Recordings ran 1.5 to 2% faster on the 9950X and
 6% on the Ultra, and level on the 12900HK and the Pi 5, where the VAD is
 under 2% of a run.
+
+## 2026-11-02 - the lanes and Silero's pool on two phones, and the pool on the Neural Engine path (result)
+
+The phones, from android-9950x's runs: a Galaxy S24 Ultra (SM8650,
+Snapdragon 8 Gen 3) and a Galaxy S25 Ultra (SM8750, Snapdragon 8 Elite),
+on AC. Both ran 8 threads of neon-dp, built with NDK r30's clang 21. The
+lanes build was this branch's before its fast-mode fix, which is d148a53's
+code in the default mode.
+
+AliceBench's chapter 1 alone (640.5 s), through the v2 model, against a
+chunk at a time (d2c70f0). There were 4 rounds, the order turned each
+round, with 180 s of rest before each run:
+
+| phone | a chunk at a time | lanes | change | each round's |
+|---|---|---|---|---|
+| S24 Ultra | 22.04 s (29.1x) | 20.65 (31.0x) | 1.07x | 1.11, 1.09, 1.06, 1.07 |
+| S25 Ultra | 17.52 (36.6x) | 15.78 (40.6x) | 1.11x | 1.12, 1.14, 1.13, 1.11 |
+
+- The hottest CPU zone was at 38 to 47 C when each run started, except
+  the S25's first, which started at 54 C. In its round 3 both runs started
+  under 40 C, and lanes was 1.13x there.
+- bench on test.wav, best of 5, in the order chunk / lanes / lanes /
+  chunk, 30 s apart. The faster of each pair: S24 1.624 -> 1.443 s
+  (1.13x), S25 1.236 -> 1.104 s (1.12x).
+- The second lane raised VmHWM by 42 MB on the S24 and 39 MB on the S25.
+- The 16 transcripts were the same bytes on both phones.
+
+Silero's pool on the same phones, against lanes (d148a53):
+- The VAD alone (the vadpool harness over chapter 1, best of 5
+  interleaved), with the same bits on both: S24 0.224 -> 0.162 s (1.38x),
+  S25 0.166 -> 0.097 s (1.71x).
+- bench, in the order lanes / pool / pool / lanes, 30 s apart.
+  - S24: 1.422 and 1.460 s against 1.443 and 1.449.
+  - S25: 1.122 and 1.269 against 1.145 and 1.096. Its 1.269 started at
+    55 C, against 48 C for the first run.
+  - Level on both. Its VAD figure went from 0.028-0.032 s to 0.025-0.026
+    on the S24, and from 0.033-0.041 to 0.020-0.022 on the S25.
+
+The Neural Engine path, from pktito-mac's runs: the ane branch against
+its merge with this branch. These are wall times, the best of 3
+interleaved rounds, and every transcript was the same bytes in every
+round. The VAD had been 10 to 16% of a run on this path.
+
+| Mac | set | before | with the pool | change |
+|---|---|---|---|---|
+| M5 Ultra | AliceBench | 652.7x | 729.0x | 1.12x |
+| | 26 talks | 534.0x | 585.3x | 1.10x |
+| M4 Pro, in use (load 2 to 3) | AliceBench | 29.93 s (358.6x) | 28.29 (379.3x) | 1.06x |
+| | 26 talks | 17.08 (313.9x) | 16.25 (330.0x) | 1.05x |
+
+By pktito-mac's estimate, the VAD that is left is 7 to 9% of a run on
+the Ultra and 5 to 7% on the M4 Pro. On the M4 Pro, the Neural Engine's
+own calls take about 26 of the 28.3 s.
+
+So, on both phones the lanes were faster in every round, by 1.06 to
+1.14x, for 39 to 42 MB. The pool made the VAD 1.4 and 1.7 times as fast
+there, and runs were level end to end. On the Neural Engine path it made
+runs 1.05 to 1.06x as fast on the M4 Pro and 1.10 to 1.12x on the Ultra.
