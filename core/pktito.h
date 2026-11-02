@@ -155,14 +155,15 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
  * the low-level one, transcript = f(x), NeMo's to the bit. In order:
  * Silero's VAD and its speech segments (pk_vad_probs, pk_segments); the
  * chunks of at most max_chunk_s (pk_chunks: the whole recording if it fits,
- * else its speech cut at its silences, and what lies between); each chunk
+ * else its speech cut at the last pause that fits, and what lies between),
+ * a cut in mid-sentence heard with the speech past it (context); each chunk
  * transcribed, its search beside the next chunk's encoder
  * (pk_asr_run_chunks); and, with retry, each stretch of a chunk that Silero
  * heard speech in but the model wrote no word for, transcribed again on its
  * own - where the model drops speech, as NeMo's own float32 transcription
  * does, a whole chunk of it at times (core/transcribe.c; README,
  * "Transcribing a recording", has why and the measurements). Without
- * retry each chunk is pk_asr_run's transcript of it.
+ * the context and the retry each chunk is pk_asr_run's transcript of it.
  *
  * fn(arg, out) has each chunk in order as soon as it is done, on the
  * calling thread, its tokens' frames counted from the chunk's start and
@@ -172,7 +173,7 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
  * transcriber's working memory, which is the longest chunk's, the call
  * holds about 2% of the recording's own size. */
 typedef struct {
-    double max_chunk_s;         /* 30: the most the encoder hears at once (README, "Long recordings") */
+    double max_chunk_s;         /* 30.72: the most the encoder hears at once (README, "Long recordings") */
     int    retry;               /* 1: speech the model wrote nothing for heard again */
     int    context;             /* 1: a cut in mid-sentence heard with the speech past it */
 } pk_transcribe_opts;

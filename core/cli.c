@@ -90,7 +90,7 @@ static const char *usage =
     "  -t, --threads N       threads (default: one a core)\n"
     "      --fast            the encoder's activations in blocks of 64, not 32: up to 7%\n"
     "                        faster, WER level, a few more transcripts not float32's\n"
-    "      --max-chunk S     longest stretch transcribed at once, in seconds (30);\n"
+    "      --max-chunk S     longest stretch transcribed at once, in seconds (30.72);\n"
     "                        a longer recording is cut at its silences\n"
     "      --no-retry        speech the model wrote no word for is not heard again\n"
     "      --no-context      a cut in mid-sentence is not heard past; with --no-retry,\n"
@@ -151,7 +151,9 @@ static double num(const char *flag, const char *s, double lo, double hi) {
 static void parse(int argc, char **argv, opts *o) {
     memset(o, 0, sizeof *o);
     o->cmd = "text";
-    o->max_chunk = 30;
+    pk_transcribe_opts d;
+    pk_transcribe_defaults(&d);
+    o->max_chunk = d.max_chunk_s;
     o->pause_ms = 1000;
     o->ins = calloc((size_t)argc, sizeof *o->ins);
     if (!o->ins)

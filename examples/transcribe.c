@@ -62,8 +62,9 @@ int main(int argc, char **argv) {
     if (!x)
         return 1;
 
-    /* Silero's speech segments, then chunks of at most 30 s cut between
-     * them, the silence left out; a recording that fits is one chunk */
+    /* Silero's speech segments, ended at a pause of 64 ms, then chunks of
+     * at most 30.72 s cut between them, the silence left out; a recording
+     * that fits is one chunk. ./pktito-c cuts so (core/transcribe.c) */
     size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
     float *padded = calloc(frames * PK_VAD_SAMPLES, sizeof *padded);
     float *probs = malloc(frames * sizeof *probs);
@@ -73,10 +74,12 @@ int main(int argc, char **argv) {
     pk_vad_probs(v, padded, frames, probs);
     pk_seg_params sp;
     pk_seg_defaults(&sp);
-    sp.max_speech_s = 30 - 0.06 - 0.1;  /* a segment and Silero's 30 ms pads fit in 30 s, as ./pktito-c has it */
+    sp.min_silence_ms = 32;              /* two of Silero's 32 ms frames */
+    sp.max_speech_s = 30.72 - 0.06 - 0.1;  /* a segment and Silero's 30 ms pads fit in a chunk */
+    const int64_t max_len = (int64_t)(30.72 * rate);
     size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
-    pk_seg *chunk = malloc((2 * ns + 2 + n / (30 * (size_t)rate)) * sizeof *chunk);
-    size_t nc = pk_chunks(x, seg, ns, (int64_t)n, 30 * (int64_t)rate, chunk);
+    pk_seg *chunk = malloc((2 * ns + 2 + (size_t)(n / max_len)) * sizeof *chunk);
+    size_t nc = pk_chunks(x, seg, ns, (int64_t)n, max_len, chunk);
 
     /* each chunk through the transcriber, as NeMo would hear it as a file */
     pk_asr *a = pk_asr_new(m, 0);

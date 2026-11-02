@@ -3,9 +3,11 @@
  * pk_asr_run's transcript = f(x). In order:
  *
  *   1. Silero's VAD over the recording (pk_vad_probs), and its speech
- *      segments (pk_segments), none longer than a chunk;
+ *      segments (pk_segments), none longer than a chunk: Silero's own for
+ *      the retry, and the same cut at shorter pauses for the chunks;
  *   2. the chunks (pk_chunks): the whole recording if it fits, else its
- *      speech cut at the silences, and the pieces of what lies between;
+ *      speech cut at the last pause that fits, and the pieces of what lies
+ *      between;
  *      a chunk whose cut falls in a short silence is heard with the speech
  *      past it too (the context below);
  *   3. each chunk through the encoder and the search, the search beside the
@@ -70,6 +72,21 @@
  * libm's or ours, decides a transcript. */
 #define RETRY_LEVEL 0.39810717055349725
 
+/* The pause a chunk may be cut in, as Silero's min_silence_ms for the
+ * segments the chunks are cut between: two of its 32 ms frames, 64 ms.
+ * Its own 100 ms takes five, 160 ms, and stays for the speech the retry
+ * hears. A chunk ends at the last such pause that fits, so a segment
+ * longer than the room left ends it early, and conversation goes 10 to
+ * 21 s without 160 ms: 52 of the 26 talks' 239 chunks (README, "Where
+ * chunks meet") ended under 20 s. At 64 ms, with 30.72 s chunks, the talks
+ * take 217 chunks and long40 354, where they took 239 and 368; their false
+ * sentence ends at a cut, v3 and v2, 7 and 2 to 5 and 2, and 10 and 11 to
+ * 11 and 14; long40's WER 2.19% and 1.95% to 2.12% and 1.99%, which moves
+ * as it does when any cut moves. Cut at the longest pause instead, planned
+ * over the whole recording for as few chunks, more cuts fell where no
+ * context is heard: the talks' false ends 7 and 2 to 9 and 5. */
+#define CUT_SILENCE_MS 32
+
 /* A chunk is heard whole, and the model ends it as it would an utterance:
  * a cut in mid-sentence gets a period, and the chunk after it a capital.
  * So a chunk whose cut falls in a silence shorter than CONTEXT_PAUSE_S is
@@ -103,7 +120,11 @@
 #define SEAM_TOKS   64          /* tokens kept of those words, at most */
 
 void pk_transcribe_defaults(pk_transcribe_opts *o) {
-    o->max_chunk_s = 30;
+    /* 3072 mel frames, 384 encoder frames: the length the Neural Engine's
+     * encoder is built for, which pads a shorter chunk to it - at 30 s,
+     * every window was at least 2.3% padding. 30.72 s alone took long40
+     * from 368 chunks to 359 and the talks from 239 to 235. */
+    o->max_chunk_s = 30.72;
     o->retry = 1;
     o->context = 1;
 }
@@ -455,10 +476,11 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
     const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, whole = n / PK_VAD_SAMPLES;
     int rc = -1;
     float *probs = malloc(frames * sizeof *probs);
-    pk_seg *sp = malloc((2 * frames + 1) * sizeof *sp), *c = NULL, *win = NULL;
+    pk_seg *sp = malloc((2 * frames + 1) * sizeof *sp), *cut = malloc((2 * frames + 1) * sizeof *cut);
+    pk_seg *c = NULL, *win = NULL;
     pk_vad *v = pk_vad_new(m);
     run r = { 0 };
-    if (!probs || !sp || !v || max_len < rate)
+    if (!probs || !sp || !cut || !v || max_len < rate)
         goto out;
 
     /* 1. the speech, its last frame padded with silence */
@@ -477,12 +499,14 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
         ctx = 0;
     p.max_speech_s = o->max_chunk_s - (double)ctx / rate - 2 * p.speech_pad_ms / 1000 - 0.1;
     const size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &p, sp, 2 * frames + 1);
+    p.min_silence_ms = CUT_SILENCE_MS;
+    const size_t nk = pk_segments(probs, frames, rate, (int64_t)n, &p, cut, 2 * frames + 1);
 
     /* 2. the chunks, and what each is heard in */
-    const size_t cap = 2 * ns + 2 + n / (size_t)max_len;
+    const size_t cap = 2 * nk + 2 + n / (size_t)max_len;
     if (!(c = malloc(cap * sizeof *c)) || !(win = malloc(cap * sizeof *win)))
         goto out;
-    const size_t nc = pk_chunks_past(x, sp, ns, (int64_t)n, max_len, ctx,
+    const size_t nc = pk_chunks_past(x, cut, nk, (int64_t)n, max_len, ctx,
                                      (int64_t)(CONTEXT_PAUSE_S * rate), c, win);
 
     /* 3 to 5 */
@@ -511,6 +535,7 @@ out:
     pk_vad_free(v);
     free(probs);
     free(sp);
+    free(cut);
     free(c);
     free(win);
     return rc;

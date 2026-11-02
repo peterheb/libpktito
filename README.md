@@ -91,8 +91,8 @@ arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a lin
 ```
 
 `-m` picks the model when `models/` holds both, `-t` the thread count (one
-a core by default). A recording longer than `--max-chunk` (30 s) is cut at
-its silences into chunks that long at most, each transcribed whole, a cut in
+a core by default). A recording longer than `--max-chunk` (30.72 s) is cut at
+its pauses into chunks that long at most, each transcribed whole, a cut in
 mid-sentence heard past, and speech the model wrote no word for heard again;
 `--no-context --no-retry` leaves those out, for NeMo's transcript of each
 chunk ("Transcribing a recording").
@@ -148,7 +148,7 @@ the same bytes.
 thread count and the fastest backend its CPU can run; the rows under it
 force another backend (`PKTITO_KERNELS`) or one thread. Seconds, and how
 many times real time, for the minute whole (`--max-chunk 60`, 750 encoder
-frames) and in the default 30 s chunks:
+frames) and in 30 s chunks, the default then:
 
 | | compiler | backend | threads | whole | in 30 s chunks |
 |---|---|---|---|---|---|
@@ -284,16 +284,19 @@ does, in order:
 1. **Finds the speech.** Silero's VAD gives a probability of speech every
    32 ms, and `pk_segments` turns them into segments as Silero's
    `get_speech_timestamps` does, a segment longer than a chunk split at
-   its longest pause.
-2. **Cuts the recording into chunks** of at most 30 s (`max_chunk_s`,
+   its longest pause. Silero ends a segment at a pause of 160 ms (its
+   `min_silence_ms`, 100, is five frames); the chunks are cut between the
+   same segments ended at 64 ms, two frames, and the retry goes by Silero's.
+2. **Cuts the recording into chunks** of at most 30.72 s (`max_chunk_s`,
    `--max-chunk`). A recording that fits is one chunk, heard whole, as
-   NeMo hears a file. A longer one is cut half way into the silences
-   between segments, at most a second into each, and the rest of the
+   NeMo hears a file. A longer one is cut at the last pause that fits, half
+   way into it and at most a second into a long one, and the rest of the
    silence is left out. 30 s is where the error rate is as low as whole
    recordings' and the encoder's cost a fraction of theirs ("Long
-   recordings"). A chunk whose cut falls in a silence under a second is
-   heard with 2 s of the recording past it, room left in the chunk for that
-   ("Where chunks meet").
+   recordings"), and 30.72 s is 3072 mel frames, the length the Neural
+   Engine's encoder is built for. A chunk whose cut falls in a silence under
+   a second is heard with 2 s of the recording past it, room left in the
+   chunk for that ("Where chunks meet").
 3. **Keeps what lies between the speech.** Silero hears voices, not words,
    so singing and speech over music are not speech to it. What lies between
    the speech chunks is transcribed too, in pieces of at most a chunk, but
@@ -355,6 +358,28 @@ as its windows move. Without the retry 2 of
 long40's 368 chunks dropped speech with v3 (68 words, WER 2.54%) and 1 with
 v2 (53); the retry hears it again.
 
+A chunk ends at the last pause that fits, which makes as few chunks as
+those pauses allow. At Silero's 160 ms, conversation goes 10 to 21 s
+without one, and a segment longer than the room left ended its chunk
+early: 52 of the talks' 239 chunks ended under 20 s. So the chunks are cut
+at pauses of 64 ms, and are 30.72 s at most, the Neural Engine encoder's
+length, which pads a shorter chunk to it: at 30 s every window was at least
+2.3% padding. A window there costs the same however much it holds, so the
+chunks are most of its time. A CPU's work is the audio heard, and that is
+about the same: on long40 4.9% of it heard twice, where it was 5.1%.
+
+| from 160 ms and 30 s | long40, v3 | long40, v2 | 26 talks, v3 | 26 talks, v2 |
+|---|---|---|---|---|
+| chunks | 368 → 354 | 368 → 354 | 239 → 217 | 239 → 217 |
+| false sentence ends at a cut | 10 → 11 | 11 → 14 | 7 → 5 | 2 → 2 |
+| false capitals after one | 4 → 6 | 10 → 13 | 5 → 3 | 2 → 1 |
+| WER | 2.19% → 2.12% | 1.95% → 1.99% | | |
+
+Each part on its own, long40's chunks and the talks': 64 ms 364 and 223,
+96 ms 366 and 231, 192 ms 371 and 243, 288 ms 373 and 250; 30.72 s 359 and
+235. The fewest that could hold the words, cut anywhere between two and
+with no silence or context in a chunk, are 333 and 193.
+
 What did not work, on the same recordings (v3 unless named, no retry):
 
 - **2 s heard before the cut too**, so that the next chunk opens in the
@@ -376,6 +401,12 @@ What did not work, on the same recordings (v3 unless named, no retry):
   talks, and no fewer false ends.
 - **1 s past the cut**: v2 kept 15 false ends on long40 and 7 on the talks.
   3 s did no better than 2, for 7.3% and 11.4% more audio.
+- **Cutting at the longest pause**, the cuts planned over the whole
+  recording for as few chunks as the last pause makes (both models, the
+  retry on): the talks' false ends 7 to 9 (v3) and 2 to 5 (v2), for more
+  cuts in a pause over a second, where none is heard past.
+- **The last pause of a segment longer than a chunk**, not Silero's
+  longest: 2 of the talks' 239 chunks fewer, none of long40's.
 
 ### When the model drops speech
 
@@ -452,15 +483,18 @@ measurements in its comments.
   after pktito-app's transcripts broke a sentence at every cut: false
   sentence ends on 26 talks from 19% of cuts to 4% (v3) and 37% to 1% (v2)
   ("Where chunks meet").
+- **2026-11-02**: chunks cut at pauses of 64 ms and 30.72 s long, for the
+  Neural Engine's windows: 4% fewer chunks on read speech, 9% on the talks,
+  WER and false ends at the cuts about level ("Where chunks meet").
 
 ## Long recordings
 
 The encoder hears a recording whole - its attention is over every frame -
 so its work grows with the square of the length and its memory with the
-length. pktito cuts anything longer than `--max-chunk` at its silences: Silero's
+length. pktito cuts anything longer than `--max-chunk` at its pauses: Silero's
 VAD finds the speech, segments longer than a chunk are split at their
-longest pause, and each cut falls half way into the silence between two
-segments, at most a second into it. Over 12 LibriSpeech chapters stitched
+longest pause, and each cut falls half way into the last pause of 64 ms that
+fits, at most a second into it. Over 12 LibriSpeech chapters stitched
 into recordings of 1.5 to 5 minutes (`tools/corpus.py longform`, 45 minutes,
 7,098 words):
 
@@ -613,7 +647,7 @@ int show(void *arg, const pk_chunk_out *c) {      /* each chunk as it is done */
     pk_text(m, c->toks, (size_t)c->count, text, sizeof text);
     return stop_wanted;                           /* nonzero stops the run here */
 }
-pk_asr_transcribe(a, samples, n_samples, NULL, show, arg);   /* NULL: 30 s chunks, retry on */
+pk_asr_transcribe(a, samples, n_samples, NULL, show, arg);   /* NULL: the defaults, 30.72 s chunks */
 /* c->at.start / 16000. + c->toks[i].frame * pk_model_frame_seconds(m): when token i was heard */
 
 /* the low level: NeMo's transcript of exactly these samples */

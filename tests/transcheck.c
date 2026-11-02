@@ -144,7 +144,9 @@ int main(int argc, char **argv) {
     o.context = 0;
     CHECK(pk_asr_transcribe(a, x, n, &o, on_out, &hi) == 0, "no retry: runs to the end");
     {
-        /* the chunks as ./pktito-c cut them before the call: the same steps */
+        /* the chunks by the call's own steps: segments ended at a pause of
+         * 64 ms (core/transcribe.c's CUT_SILENCE_MS), chunks of at most
+         * max_chunk_s cut between them */
         const int rate = pk_model_rate(m);
         size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
         float *pad = calloc(frames * PK_VAD_SAMPLES, sizeof *pad), *probs = malloc(frames * sizeof *probs);
@@ -154,10 +156,12 @@ int main(int argc, char **argv) {
         pk_vad_probs(v, pad, frames, probs);
         pk_seg_params sp;
         pk_seg_defaults(&sp);
-        sp.max_speech_s = 30 - 2 * sp.speech_pad_ms / 1000 - 0.1;
+        sp.min_silence_ms = 32;
+        sp.max_speech_s = o.max_chunk_s - 2 * sp.speech_pad_ms / 1000 - 0.1;
+        const int64_t max_len = (int64_t)(o.max_chunk_s * rate);
         size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
-        pk_seg *c = malloc((2 * ns + 2 + n / (30 * (size_t)rate)) * sizeof *c);
-        size_t nc = pk_chunks(x, seg, ns, (int64_t)n, 30 * (int64_t)rate, c);
+        pk_seg *c = malloc((2 * ns + 2 + (size_t)((int64_t)n / max_len)) * sizeof *c);
+        size_t nc = pk_chunks(x, seg, ns, (int64_t)n, max_len, c);
         plain_arg p = { &lo, c };
         CHECK(pk_asr_run_chunks(a, x, c, nc, on_plain, &p) == 0, "pk_asr_run_chunks runs");
         CHECK(nc > 1, "the recording is more than one chunk");
