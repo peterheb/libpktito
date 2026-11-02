@@ -295,7 +295,9 @@ check-sanitize:
 	ASAN_OPTIONS=detect_leaks=0 ./tests/wavcheck-san tests/wavcheck.tmp
 
 # The thread pool and every pass split over it, under ThreadSanitizer: a
-# transcription and a stream on six threads, which must report nothing.
+# transcription and a stream on six threads, and a transcription in chunks
+# of 4 s on eight, two lanes of them at once (core/asr.c, run_lanes), which
+# must report nothing.
 TSAN := -O1 -g -fsanitize=thread -std=c11 -ffp-contract=off $(PLATFLAGS) $(INC)
 check-tsan:
 	$(foreach b,$(BACKENDS) ref,$(CC) $(TSAN) $(ISA_$(b)) -c backend/$(b)/kernels.c -o tests/tsan-$(b).o &&) true
@@ -303,10 +305,11 @@ check-tsan:
 	  $(foreach b,$(BACKENDS) ref,tests/tsan-$(b).o) $(LDLIBS)
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 -m $(MODEL) tests/data/test.wav > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 --stream -m $(MODEL) tests/data/test.wav > /dev/null
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 -m $(MODEL) tests/data/test.wav > /dev/null
 	@# and on the default threads, which on a chip of two kinds of core switch
 	@# between every core and the fast kind as the first recording is timed
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -m $(MODEL) tests/data/test.wav > /dev/null
-	@echo "check-tsan: no race on six threads, nor on the default"
+	@echo "check-tsan: no race on six threads, on two lanes of four, nor on the default"
 
 check-math: tests/mathcheck
 	./tests/mathcheck --all

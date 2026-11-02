@@ -2297,3 +2297,271 @@ whole runs are level: the same instructions, so a few percent of one
 core's product here is presumably where the code lies. The 9950X runs
 the zmm tile, which this leaves as it was. Kept: the default moves by
 more than the spread under both compilers.
+
+## 2026-11-02 - a recording's chunks several at once, each on its share of the threads (hypothesis)
+
+pk_asr_run_chunks takes a recording's chunks one at a time, each on every
+thread, its search beside the next one's encoder (above, 2026-10-28). A
+chunk keeps few of many threads busy: each pass is a job over the pool, a
+layer a dozen of them back to back, and every job waits for its slowest
+item. pktito-mac timed pk_asr_transcribe's steps against the process's CPU
+time over AliceBench's chapters (d2c70f0, the v2 model; ane-inflight's
+tools/ane/CLIMB.md, "Where a run's time goes now, by machine"): the M5
+Ultra's CPU path had 20.8 of its 36 cores busy, 22 during the encoder,
+the M4 Pro 9.5 of 12, a Pi 5 3.9 of 4.
+
+What running several chunks at once would give, measured first as
+processes. K pktito-c processes (d2c70f0) ran at once, each `-t T` over
+the same recording: the first 300 s of AliceBench's chapter 1, 11 chunks
+of 20.8 to 28.7 s, through v2 at its defaults. Each process timed its own
+transcription (-v, its model's load left out); the rate is K x 300 s over
+the slowest. Best of 3 interleaved rounds after an untimed run (2 for
+the 9950X's second set and the Ultra's last five), within the spread
+shown:
+
+| board | K x T | x real time | spread | of one transcriber on every core |
+|---|---|---|---|---|
+| 9950X (16 cores), gcc 15.2 | 1 x 16 | 254.2 | 0.8% | 1.00 |
+| | 2 x 8 | 283.0 | 1.4% | 1.11 |
+| | 3 x 5 | 309.3 | 0.4% | 1.22 |
+| | 4 x 4 | 336.1 | 1.1% | 1.32 |
+| | 5 x 3 | 324.0 | 1.3% | 1.27 |
+| | 8 x 2 | 344.3 | 1.1% | 1.35 |
+| | 16 x 1 | 370.4 | 1.2% | 1.46 |
+| | 4 x 8 (SMT) | 358.2 | 1.8% | 1.41 |
+| | 16 x 2 (SMT) | 395.4 | 0.9% | 1.56 |
+| M5 Ultra (12 + 24 cores), Apple clang 21 | 1 x 36 | 194.8 | 1.3% | 1.00 |
+| | 1 x 24 | 202.7 | 0.0% | 1.04 |
+| | 1 x 12 | 175.4 | 0.0% | 0.90 |
+| | 2 x 6 | 195.4 | 0.0% | 1.00 |
+| | 2 x 18 | 352.9 | 2.3% | 1.81 |
+| | 3 x 12 | 411.0 | 0.5% | 2.11 |
+| | 4 x 9 | 451.1 | 0.4% | 2.32 |
+| | 6 x 6 | 477.5 | 0.5% | 2.45 |
+| | 9 x 4 | 473.7 | 0.4% | 2.43 |
+| | 12 x 3 | 499.3 | 0.8% | 2.56 |
+| | 36 x 1 | 524.0 | 1.6% | 2.69 |
+| Pi 5 (pi5c, 4 cores), gcc 12.2 | 1 x 4 | 14.42 | 0.7% | 1.00 |
+| | 2 x 2 | 14.49 | 0.6% | 1.00 |
+| | 4 x 1 | 13.08 | 1.8% | 0.91 |
+| | 3 x 1 | 11.74 | 1.3% | 0.81 |
+| Pi 4 (Pi 400, 4 cores), gcc 14.2; 4 x 1 and 3 x 1 of 2 rounds | 1 x 4 | 2.869 | 0.8% | 1.00 |
+| | 2 x 2 | 2.787 | 0.9% | 0.97 |
+| | 4 x 1 | 2.761 | 0.5% | 0.96 |
+| | 3 x 1 | 2.221 | 0.2% | 0.77 |
+
+v3 on the 9950X has the same shape: 250.0, 280.4, 328.8 and 365.0 at 1 x
+16, 2 x 8, 4 x 4 and 16 x 1. On the Ultra two lanes of six threads, a
+third of its cores, transcribe as fast as one transcriber on all 36; on
+the 9950X four lanes of four give a third more; the Pis have nothing to
+gain, and lose 4 to 9% at a thread a lane. A process each holds its own
+copy of the weights, where lanes in one process would share them.
+
+The hypothesis: pk_asr_run_chunks, and pk_asr_transcribe through it,
+runs a recording's chunks on up to threads / 4 lanes at once (16 at
+most), a lane for each four threads, so that a Pi keeps one. Each lane is
+a transcriber of its own, the model shared: its pool on its share of the
+threads (the remainder to the first lanes), its working memory, its
+decoder. Each takes the next chunk as it finishes one and runs its
+search after its encoder, on its own threads: at four threads a chunk is
+about three times as long as at 16 (0.327 s against 0.107 above) and its
+search no longer, so the search's one-thread stretches idle the lane's
+other threads for about a percent of its run. The calling thread runs
+lane 0, the transcriber itself, and gives each its chunks in order between
+its own chunks, the rest once every lane is done; a retry
+(core/transcribe.c) runs on lane 0 there, so fn and the retries stay on
+the calling thread. The lanes are made the first time a run needs them,
+lane j with the most threads any run gives it, and kept with the
+transcriber. A run of one lane is the loop above, unchanged, the fast
+kind's race included; a run of several suspends the race, whose timings
+the other lanes would muddle. A PROFILE=1 build keeps one lane, its stage
+times taken on one thread.
+
+How many lanes a run takes: a lane's gain is the board's, and a run's
+last round, where lanes with nothing left wait for the others, costs it
+some of it. So a run takes, of one to the most, the count whose
+schedule ends first: the chunks dealt in order to the lane free first, as
+the lanes take them, each its length times a lane's time with K at once,
+which is the 9950X's above (1.11, 1.22, 1.32, 1.35 and 1.46 times one
+transcriber's rate at 2, 3, 4, 8 and 16 lanes, between them by a straight
+line), the least gain measured, so that a run takes lanes only where they
+pay on the board that gains least. By lengths, not counts: test.wav's
+chunks are 28.6, 28.0 and 3.2 s, and three lanes would wait for the first
+on a third of the threads.
+
+No bits change: a chunk's encoder and search are pk_asr_run's on any
+threads (pool.h), they read their own chunk's samples alone, and fn has
+the chunks in the order it had them, so pk_asr_transcribe's seams and
+retries see what they saw.
+
+Expected, simulating each recording's run from the process table above
+(each chunk its length times a lane's per-second time with K lanes at
+once, dealt as the lanes take them, and Silero's share of a run from
+pktito-mac's figures added), over d2c70f0's chunks of the corpora, in x
+real time; the simulation's one-lane rate, from the 300 s excerpt, sits
+under the chapters' measured one:
+
+| board | set | one lane | the rule | each recording's best K, by the board's own times |
+|---|---|---|---|---|
+| 9950X | AliceBench | 245.9 | 308.3 | 308.3 |
+| | talks | 245.9 | 295.9 | 295.9 |
+| | long40 | 245.9 | 284.6 | 284.6 |
+| | test.wav | 245.9 | 262.1 | 262.1 |
+| M5 Ultra | AliceBench | 185.9 | 401.9 | 407.1 |
+| | talks | 185.9 | 383.2 | 386.3 |
+| | long40 | 185.9 | 378.1 | 384.5 |
+| | test.wav | 185.9 | 312.6 | 312.6 |
+
+So: on the 9950X a fifth faster on the chapters, a sixth on the talks and
+long40, test.wav 6.6%; on the Ultra twice as fast throughout, test.wav 1.7
+times; the Pis as they were. A floor of four chunks a lane in place of
+the schedule simulates 265.5x and 260.6x for the 9950X's talks and
+long40, and 310.1x and 277.9x for the Ultra's, test.wav one lane on both.
+
+Risks: memory, a lane's working memory each, about 30 MB at 30.72 s, so
+the Ultra's nine lanes hold 270 MB more; threads, sum(floor(threads / (j
++ 1))) over the lanes, which on the Ultra is 101 and 8 for the lanes'
+drivers, asleep when no run needs them; a chunk's own time, several
+times longer, so fn has its first chunk later; and chips of two kinds of
+core, whose default runs only the fast kind where the race keeps it (the
+GB10's X925s), where every lane would run all of them.
+
+Kept if AliceBench's chapters, the talks and long40 transcribe faster on
+the 9950X, under gcc and clang, and on the Ultra, by more than the
+run-to-run spread, with no board slower by more than its spread: the
+GB10's chapters, and test.wav's bench on the 9950X and the Ultra. The bits
+checked: every corpus's transcripts (AliceBench, long40, the talks, both
+models) the bytes of d2c70f0's at forced lane counts and at the rule's,
+make check-c on the 9950X and the Ultra, and make check-tsan with a run
+of lanes.
+
+## 2026-11-02 - a recording's chunks several at once (result: kept)
+
+Built as above: core/asr.c's lanes and lanes_for's schedule. For the forced
+counts below, an experiment-only copy took its most lanes from the
+environment.
+
+The bits, on the 9950X: every transcript of AliceBench's 12 chapters,
+long40 and the talks through both models, 156 in all, is the bytes of
+d2c70f0's (its JSON, the run's meta left out) at 2, 3, 5 and 9 lanes
+forced with one chunk a lane at least, and at the rule's own counts.
+make check-c passes on the 9950X (gcc 15.2) and on the M5 Ultra (Apple
+clang 21); make check-tsan is clean with its new run, test.wav in chunks of
+4 s on two lanes of four threads; transcheck's new case has test.wav four
+times over in chunks of 10 s through two lanes and through one, every
+chunk's tokens the same, fn's in order, and a stop after three chunks the
+same.
+
+M5 Ultra, v2, each run one process over the set and timed by -v, 2
+interleaved rounds with the order turned, the faster (the rounds within
+1.4%, but d2c70f0's long40, 9.5% apart, where its race between every core
+and the fast kind came out differently from round to round); test.wav's
+`bench` in chunks best of 5 in 3 rounds:
+
+| set | d2c70f0 | lanes | change | lanes, 6 at most |
+|---|---|---|---|---|
+| AliceBench, 12 chapters, 10,732 s | 53.39 s (201.0x) | 26.35 (407.3x) | 2.03x | 26.50 (405.0x) |
+| the talks, 26, 5,362 s | 28.36 (189.1x) | 14.28 (375.5x) | 1.99x | 14.11 (380.0x) |
+| long40, 9,252 s | 47.46 (194.9x) | 23.99 (385.7x) | 1.98x | 24.27 (381.2x) |
+| test.wav, `bench` | 0.320 (187.7x) | 0.180 (334.1x) | 1.78x | |
+
+As predicted, twice as fast, test.wav 1.8 times; six lanes at most level
+with the nine the rule allows. The floor of four chunks a lane, built
+first in place of the schedule, two rounds the same way: AliceBench
+26.32 s (407.7x), the talks 18.15 s (295.4x) on two lanes each; a floor
+of two chunks a lane, four lanes at most, gave the talks 14.26 s
+(376.0x), what the schedule gives them.
+
+The 9950X in its quiet window, the 6 chapters 1, 2, 5, 6, 11 and 12 (4,353
+s), the talks, and long40's even half by chunk count (20 recordings of 3
+to 12 chunks, 4,564 s); 2 interleaved rounds, within 0.7%; test.wav's
+bench in 4:
+
+| compiler | set | d2c70f0 | lanes | change |
+|---|---|---|---|---|
+| gcc 15.2 | 6 chapters | 16.81 s (259.0x) | 13.78 (315.9x) | 1.22x |
+| | the talks | 21.08 (254.4x) | 17.64 (304.0x) | 1.20x |
+| | long40, half | 17.82 (256.1x) | 15.31 (298.1x) | 1.16x |
+| | test.wav, `bench` | 0.208 (288.8x) | 0.195 (307.7x) | 1.07x |
+| clang 21.1 | 6 chapters | 16.38 (265.8x) | 13.28 (327.8x) | 1.23x |
+| | the talks | 20.61 (260.2x) | 16.90 (317.3x) | 1.22x |
+| | long40, half | 17.35 (263.0x) | 14.64 (311.7x) | 1.19x |
+| | test.wav, `bench` | 0.203 (295.6x) | 0.188 (319.8x) | 1.08x |
+
+The simulation's 1.25, 1.20, 1.16 and 1.07 under gcc.
+
+The GB10 (spark-b327, gcc 13.3, its vLLM worker resident), the 6 chapters
+and 13 of the talks (2,664 s), 2 rounds, the faster (within 2.3%), the
+threads -v reports:
+
+| set | d2c70f0: its race keeps the ten X925s | lanes: 20 threads, five lanes at most | lanes, `-t 10` | lanes, `-t 10` on the X925s (taskset) |
+|---|---|---|---|---|
+| 6 chapters | 30.91 s (140.8x) | 23.90 (182.1x) | 29.93 (145.4x) | 29.86 (145.8x) |
+| 13 talks | 19.54 (136.3x) | 15.27 (174.5x) | 18.73 (142.2x) | 18.65 (142.9x) |
+
+The A725s, which hold up every job of a transcriber that spans them, add
+their share as lanes of their own: 1.29 and 1.28 times the race's ten
+X925s. On ten threads two lanes gain 3 to 5%, wherever the ten run.
+
+Memory, the Ultra's AliceBench chapter 10 (1,368 s, 48 chunks, nine
+lanes), macOS's /usr/bin/time -l: peak footprint 157 MB a chunk at a
+time, 400 MB on the lanes; maximum resident 782 and 1,025 MB. 243 MB for
+eight lanes more, 30 MB each.
+
+Kept: every board of 8 threads or more faster by more than its spread,
+under both compilers on the 9950X, the GB10's two kinds of core
+included, and the Pis on one lane, their path the one-at-a-time loop as
+it was. Not measured: the M4 Pro (busy), the 12900HK, and phones of two
+or three kinds of core in eight, whose app should time a chapter at
+d2c70f0 against the lanes before it takes them.
+
+## 2026-11-02 - the lanes on the M4 Pro and the 12900HK, and a lane's memory (result)
+
+The M4 Pro (Mac16,11: 8 performance cores and 4 efficiency cores, Apple
+clang 21.0.0), at its default 12 threads, so three lanes at most. Peter's
+Chrome and the Claude app were open (load 2.4 before the run). The sets
+were AliceBench's 12 chapters and the 26 talks, through the v2 model,
+one process a set, in 3 interleaved rounds with the order turned. The
+bench is best of five, twice each.
+
+| set | d2c70f0 | lanes | change | each round's |
+|---|---|---|---|---|
+| AliceBench | 89.17 s (120.3x) | 81.87 (131.1x) | 1.09x | 1.03, 1.06, 1.10 |
+| 26 talks | 42.96 (124.8x) | 41.20 (130.1x) | 1.04x | 1.05, 1.01, 1.04 |
+| test.wav, `bench` | 0.422 (142.3x) | 0.410 (146.4x) | 1.03x | |
+
+The lanes were faster in every round of both sets, but by less than on
+the other boards of many threads. The spread between rounds, the Mac
+being in use, was 6% (d2c70f0's AliceBench ran 113.6x to 120.3x).
+
+The 12900HK (6 P-cores, 8 E-cores, gcc 15.2.0, idle), at its default 14
+threads, so three lanes at most. The sets were the 9950X's 6 chapters and
+half of long40, in 3 interleaved rounds with the order turned. The bench
+is best of five, twice each.
+
+| set | d2c70f0 | lanes | change | each round's |
+|---|---|---|---|---|
+| 6 chapters | 62.03 s (70.2x) | 58.39 (74.6x) | 1.06x | 1.07, 1.04, 1.06 |
+| long40, half | 65.12 (70.1x) | 62.10 (73.5x) | 1.05x | 1.05, 1.03, 1.05 |
+| test.wav, `bench` | 0.780 (76.9x) | 0.725 (82.8x) | 1.08x | |
+
+The lanes were faster in every round here too. The M4 Pro and the
+12900HK, whose cores are of two kinds and whose default already runs on
+all of them, gain least: 4 to 9%, against 16 to 23% on the 9950X.
+
+Memory:
+- M4 Pro, chapter 10, /usr/bin/time -l: peak footprint 140 MB a chunk
+  at a time and 220 MB on three lanes; maximum resident 765 and 845 MB.
+  That is 40 MB a lane.
+- 12900HK, chapter 11, GNU time's maximum resident: 714 and 801 MB on
+  three lanes, 44 MB a lane.
+- 9950X, chapter 10, 16 threads, GNU time's maximum resident: 761.5, 808.0, 851.9
+  and 896.1 MB with the lanes held to one through four (a scratch
+  build's override of the count), d2c70f0 761.8. That is 44 to 47 MB a
+  lane, for lanes of 8, 5 and 4 threads.
+
+reserve() carves 41.5 MB at 30.72 s for v2, plus 0.6 MB a thread, which
+these fit. The entry above's 30 MB a lane was the Ultra's footprint;
+pktito.h and the README now give about 45 MB.
+
+Not measured yet: the phones.

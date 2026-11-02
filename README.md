@@ -75,7 +75,11 @@ Copy a `.pkf` to a board beside the binary; the board needs no Python, and
 memory for the file (it is mapped, and the page cache is its one copy) and
 some 25 to 90 MB besides at the default chunking, more threads taking more:
 652 MB at its peak on a Pi 3B+ with v2, 651 MB on a Pi 5, 663 MB on a
-12900HK at 14 threads, 711 MB on an M4 Pro at 12. A 512 MB board (a Pi
+12900HK at 14 threads, 711 MB on an M4 Pro at 12, a chunk at a time. A
+recording run several chunks at once (below, "How fast") takes about 45
+MB more for each chunk beyond the first: AliceBench's longest chapter
+peaked at 762 MB a chunk at a time on a 9950X's 16 threads, 896 MB four
+at once. A 512 MB board (a Pi
 Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 4-bit would cost. Then:
 
@@ -209,6 +213,38 @@ pass); an M4 Pro in 0.50 s on its eight performance cores and 0.49 s on
 all 12. backend/*/CLIMB.md has every measurement the kernels and the
 defaults rest on.
 
+A recording of several chunks keeps more of many threads busy taken
+several chunks at a time: one transcription's passes each wait for their
+slowest item, and on a chip of many cores they wait more than they work.
+On 8 threads or more `pk_asr_run_chunks` runs up to a chunk for each four
+threads at once, each on its share of them, as many as the chunks'
+lengths say end the recording soonest, and gives them to its caller in
+order; the transcript is the same bits. Against a chunk at a time
+(d2c70f0), through the v2 model, best of two interleaved rounds (the M4
+Pro's and the 12900HK's three; the bench's best of five, in two to
+four), 2026-11-02
+(backend/avx2/CLIMB.md):
+
+| | AliceBench | 26 talks | long40 | test.wav, `bench` in chunks |
+|---|---|---|---|---|
+| M5 Ultra, 36 threads, Apple clang 21 | 201x -> 407x | 189x -> 376x | 195x -> 386x | 188x -> 334x |
+| M4 Pro, 12 (8 P + 4 E), Apple clang 21 | 120x -> 131x | 125x -> 130x | | 142x -> 146x |
+| i9-12900HK, 14 (6 P + 8 E), gcc 15.2 | 70x -> 75x | | 70x -> 74x | 77x -> 83x |
+| Ryzen 9 9950X, 16, gcc 15.2 | 259x -> 316x | 254x -> 304x | 256x -> 298x | 289x -> 308x |
+| Ryzen 9 9950X, 16, clang 21.1 | 266x -> 328x | 260x -> 317x | 263x -> 312x | 296x -> 320x |
+| GB10, 20 (10 X925 + 10 A725), gcc 13.3 | 141x -> 182x | 136x -> 175x | | |
+
+The 9950X's, the 12900HK's and the GB10's AliceBench is six of the
+twelve chapters, the 9950X's and the 12900HK's long40 half of the 40, the
+GB10's talks 13 of the 26. The GB10
+ran a chunk at a time on its ten X925s, which beat all twenty there; as
+lanes of their own, its A725s add their share. A Pi's four threads run a
+chunk at a time, as before: on a Pi 5 two lanes of two threads
+transcribed at one lane's rate and four of one 9% slower, on a Pi 4 3%
+and 4% slower. The bench table at the top of this section is from
+before: its chunked column now runs two lanes on 8 threads or more, and
+one on the Pis.
+
 ## Why int8
 
 A 0.6B model in float32 is 2.5 GB, and a Pi 3 has 0.9 GB. `tools/quantcheck.py`
@@ -273,7 +309,8 @@ transcript = f(x). Beside it are the blocks pktito builds everything else
 from, each as plain: `pk_vad_probs` and `pk_segments` (Silero's VAD and its
 speech segments), `pk_chunks` (a recording cut into chunks), and
 `pk_asr_run_chunks` (chunks transcribed, each chunk's decoder beside the
-next one's encoder). A caller who wants NeMo's behaviour, or processing of
+next one's encoder, several chunks at once where there are threads for
+it). A caller who wants NeMo's behaviour, or processing of
 their own, builds from these; examples/transcribe.c is a page of it.
 
 **The high level** is `pk_asr_transcribe`: a recording of any length in, each
@@ -539,6 +576,10 @@ measurements in its comments.
   - a stretch in a passage read softly is heard again, against its chunk's
     speech.
   The retry's budget is now charged only for stretches that give nothing.
+- **2026-11-02**: a recording's chunks several at once on 8 threads or more
+  (`pk_asr_run_chunks`), after pktito-mac's profile had an M5 Ultra's CPU
+  path keeping 21 of its 36 cores busy: twice as fast there, a fifth on a
+  9950X, the same bits ("How fast").
 
 ## Long recordings
 

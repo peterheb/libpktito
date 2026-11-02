@@ -10,6 +10,7 @@
 #include "os.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -89,7 +90,8 @@ static int reserve(pk_asr *a, size_t T0) {
     return 0;
 }
 
-pk_asr *pk_asr_new(const pk_model *m, int threads) {
+/* A transcriber of one lane: pk_asr_new's, and each of its other lanes */
+static pk_asr *transcriber(const pk_model *m, int threads) {
     if (!m)
         return NULL;
     pk_asr *a = calloc(1, sizeof *a);
@@ -121,6 +123,20 @@ pk_asr *pk_asr_new(const pk_model *m, int threads) {
     return a;
 }
 
+pk_asr *pk_asr_new(const pk_model *m, int threads) {
+    pk_asr *a = transcriber(m, threads);
+#ifndef PK_PROFILE                       /* whose stage times are one thread's */
+    if (a && a->nth / PK_LANE_THREADS > 1) {
+        a->lanes = a->nth / PK_LANE_THREADS < PK_LANES_MAX ? a->nth / PK_LANE_THREADS : PK_LANES_MAX;
+        if (!(a->lane = calloc((size_t)a->lanes, sizeof *a->lane))) {
+            pk_asr_free(a);
+            return NULL;
+        }
+    }
+#endif
+    return a;
+}
+
 int pk_asr_threads(const pk_asr *a) { return a->wide; }
 
 void pk_asr_set_fast_mode(pk_asr *a, int on) { a->qb64 = on != 0; }
@@ -128,6 +144,10 @@ void pk_asr_set_fast_mode(pk_asr *a, int on) { a->qb64 = on != 0; }
 void pk_asr_free(pk_asr *a) {
     if (!a)
         return;
+    pk_pool_free(a->drive);
+    for (int j = 1; a->lane && j < a->lanes; j++)
+        pk_asr_free(a->lane[j]);
+    free(a->lane);
     pk_pool_free(a->pool);
     free(a->tws);
     free(a->mem);
@@ -172,6 +192,182 @@ long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks) {
     return nt;
 }
 
+/* ----------------------------------------------------------------- lanes --- */
+
+/* Lane j's threads of a transcriber's nth, in a run of k lanes */
+static int share(int nth, int j, int k) { return nth / k + (j < nth % k); }
+
+/* A lane's time for a chunk when k run at once, against one transcriber's
+ * on every thread: k over the gain in rate that k lanes of 16 / k threads
+ * gave a 9950X over 300 s of AliceBench, as processes, at k = 2, 3, 4, 8
+ * and 16 (backend/avx2/CLIMB.md, 2026-11-02), between them by a straight
+ * line. The least gain of the boards of 8 threads or more measured, where
+ * an M5 Ultra's lanes gave 1.81 to 2.69 times its one transcriber's rate,
+ * so that a run takes lanes only where they pay on the board that gains
+ * least. */
+static double lane_time(int k) {
+    static const int at[] = { 1, 2, 3, 4, 8, 16 };
+    static const double gain[] = { 1.00, 1.11, 1.22, 1.32, 1.35, 1.46 };
+    int i = 1;
+    while (i < 5 && at[i] < k)
+        i++;
+    const double g = gain[i - 1] + (gain[i] - gain[i - 1]) * (k - at[i - 1]) / (at[i] - at[i - 1]);
+    return k / g;
+}
+
+/* The lanes a run of n chunks takes, of one to a->lanes: the count whose
+ * run ends first, the chunks dealt in order to the lane free first, as
+ * lane_job takes them, each taking its length times lane_time. One lane
+ * where no count beats it. A recording's last chunk is often short, so
+ * it counts lengths, not chunks: test.wav's three chunks, 28.6, 28.0 and
+ * 3.2 s, take two lanes, where three would wait on the first chunk at a
+ * third of the threads. */
+static int lanes_for(const pk_asr *a, const pk_seg *c, size_t n) {
+    int best = 1;
+    double soonest = 0;
+    for (int k = 1; k <= a->lanes && (size_t)k <= n; k++) {
+        double ends[PK_LANES_MAX] = { 0 }, end = 0;     /* when each lane is free */
+        for (size_t i = 0; i < n; i++) {
+            int j = 0;
+            for (int q = 1; q < k; q++)
+                j = ends[q] < ends[j] ? q : j;
+            ends[j] += (double)(c[i].end - c[i].start) * lane_time(k);
+            end = ends[j] > end ? ends[j] : end;
+        }
+        if (k == 1 || end < soonest)
+            best = k, soonest = end;
+    }
+    return best;
+}
+
+typedef struct {
+    pk_asr *a;                       /* lane 0, the caller's */
+    const float *x;
+    const pk_seg *c;
+    size_t n;
+    _Atomic size_t next;             /* the next chunk a lane takes */
+    _Atomic int stop;                /* each stopped the run, or a lane ran out of memory */
+    _Atomic int failed;              /* the latter */
+    _Atomic int *done;               /* chunk i's tokens are toks[i], count[i] of them */
+    pk_tok **toks;
+    long *count;
+    size_t given;                    /* chunks each has had: the calling thread's */
+    int rc;                          /* each's last word: the calling thread's */
+    pk_each_fn each;
+    void *arg;
+} lanes_run;
+
+/* each for the chunks done since the last, in order, on the calling
+ * thread between lane 0's chunks, where lane 0's second joint buffer is
+ * free for a retry */
+static void give(lanes_run *r) {
+    while (r->rc == 0 && r->given < r->n
+           && atomic_load_explicit(&r->done[r->given], memory_order_acquire)) {
+        const size_t i = r->given++;
+        r->rc = r->each(r->arg, i, r->toks[i], r->count[i], r->a->fproj[1]);
+        free(r->toks[i]);
+        r->toks[i] = NULL;
+    }
+    if (r->rc)
+        atomic_store_explicit(&r->stop, 1, memory_order_relaxed);
+}
+
+/* Lane `thread`'s part of a run: the next chunk while there is one, its
+ * encoder and then its search on the lane's threads, and its tokens kept
+ * for each. Thread 0 is the caller's, and its lane is the transcriber. */
+static void lane_job(void *arg, int item, int thread) {
+    (void)item;
+    lanes_run *r = arg;
+    pk_asr *l = thread ? r->a->lane[thread] : r->a;
+    while (!atomic_load_explicit(&r->stop, memory_order_relaxed)) {
+        const size_t i = atomic_fetch_add_explicit(&r->next, 1, memory_order_relaxed);
+        if (i >= r->n)
+            break;
+        const uint32_t Te = encode(l, r->x + r->c[i].start, (size_t)(r->c[i].end - r->c[i].start),
+                                   l->fproj[0]);
+        const long nt = pk_decode(l, Te, l->fproj[0], 1);
+        pk_tok *t = nt > 0 ? malloc((size_t)nt * sizeof *t) : NULL;
+        if (nt < 0 || (nt > 0 && !t)) {
+            free(t);
+            atomic_store_explicit(&r->failed, 1, memory_order_relaxed);
+            atomic_store_explicit(&r->stop, 1, memory_order_relaxed);
+            break;
+        }
+        if (nt)
+            memcpy(t, l->toks, (size_t)nt * sizeof *t);
+        r->toks[i] = t;
+        r->count[i] = nt;
+        atomic_store_explicit(&r->done[i], 1, memory_order_release);
+        if (thread == 0)
+            give(r);
+    }
+}
+
+/* How many of k lanes a run can have, each with the memory for chunks of
+ * `most` feature frames: lane j > 0 is made the first time a run needs
+ * it, with the most threads a run gives it, and kept. Fewer where memory
+ * or a thread cannot be had, down to one: the loop below. */
+static int lanes_ready(pk_asr *a, int k, size_t most) {
+    if (!a->drive && !(a->drive = pk_pool_new(a->lanes)))
+        return 1;
+    for (int j = 1; j < k; j++) {
+        if (!a->lane[j]) {
+            int w = 1;
+            for (int q = j + 1; q <= a->lanes; q++)
+                w = share(a->nth, j, q) > w ? share(a->nth, j, q) : w;
+            a->lane[j] = transcriber(a->m, w);
+        }
+        if (!a->lane[j] || reserve(a->lane[j], most))
+            return j;
+    }
+    return k;
+}
+
+/* pk_run_chunks_with's chunks on k lanes at once, lane j on its share of
+ * the transcriber's threads. The encoder's race between every core and
+ * the fast kind waits for a run of one lane, whose timing the other lanes
+ * would muddle. */
+static int run_lanes(pk_asr *a, const float *x, const pk_seg *c, size_t n, int k, pk_each_fn each,
+                     void *arg) {
+    lanes_run r = { .a = a, .x = x, .c = c, .n = n, .each = each, .arg = arg };
+    r.done = malloc(n * sizeof *r.done);
+    r.toks = calloc(n, sizeof *r.toks);
+    r.count = calloc(n, sizeof *r.count);
+    if (!r.done || !r.toks || !r.count) {
+        free(r.done), free(r.toks), free(r.count);
+        return -1;
+    }
+    for (size_t i = 0; i < n; i++)
+        atomic_init(&r.done[i], 0);
+    atomic_init(&r.next, 0);
+    atomic_init(&r.stop, 0);
+    atomic_init(&r.failed, 0);
+
+    const int wide = a->wide, tune = a->tune;
+    for (int j = 0; j < k; j++) {
+        pk_asr *l = j ? a->lane[j] : a;
+        l->wide = share(a->nth, j, k);
+        l->qb64 = a->qb64;                     /* the caller's mode, in every lane */
+        pk_pool_set_active(l->pool, l->wide);
+    }
+    a->tune = 0;
+    pk_os_throttle was = pk_os_unthrottle();  /* this thread runs lane 0 */
+    pk_pool_set_active(a->drive, k);
+    pk_pool_run(a->drive, lane_job, &r, k);
+    a->wide = wide;
+    a->tune = tune;
+    pk_pool_set_active(a->pool, a->wide);
+    give(&r);                                  /* what the other lanes did last */
+    pk_os_rethrottle(was);
+    const int rc = r.rc ? r.rc : atomic_load_explicit(&r.failed, memory_order_relaxed) ? -1 : 0;
+    for (size_t i = 0; i < n; i++)
+        free(r.toks[i]);
+    free(r.done), free(r.toks), free(r.count);
+    return rc;
+}
+
+/* ---------------------------------------------------------- one at a time --- */
+
 /* A chunk's search, for the pool's last thread */
 typedef struct {
     pk_asr *a;
@@ -206,6 +402,9 @@ int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
         return -1;
     if (n == 0)
         return 0;
+    int k = lanes_for(a, c, n);
+    if (k > 1 && (k = lanes_ready(a, k, most)) > 1)
+        return run_lanes(a, x, c, n, k, each, arg);
     pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
     uint32_t Te = encode(a, x + c[0].start, (size_t)(c[0].end - c[0].start), a->fproj[0]);
     int rc = 0;

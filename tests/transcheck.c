@@ -2,9 +2,10 @@
  * low-level one it is made of. Without the context and the retry every
  * chunk is pk_asr_run_chunks' (which is pk_asr_run's), token for token;
  * with them every word starts in its own chunk; fn returning nonzero stops
- * the run there; the retry's own parts as pktito-app's transcribe.rs tested
- * them, where they came from; and the seam's and the retry level's, on
- * tokens and samples built for them.
+ * the run there; two lanes give one lane's chunks, in the fast mode too;
+ * the retry's own parts as
+ * pktito-app's transcribe.rs tested them, where they came from; and the
+ * seam's and the retry level's, on tokens and samples built for them.
  * Includes core/transcribe.c, for its static parts. */
 #include "../core/transcribe.c"
 #include "wav.h"
@@ -207,6 +208,48 @@ int main(int argc, char **argv) {
         r.stop_after = 0;
     }
 
+    /* several chunks at once (core/asr.c, run_lanes): the recording four
+     * times over in chunks of at most 10 s, through a transcriber of one
+     * lane (4 threads) and one of two (8 threads; a lane for each four, and
+     * four chunks a lane at least), with the context and the retry: every
+     * chunk the same tokens, fn's in order, and a stop the same */
+    {
+        float *x4 = malloc(4 * n * sizeof *x4);
+        pk_asr *one = pk_asr_new(m, 4), *two = pk_asr_new(m, 8);
+        seen s1 = { 0 }, s2 = { 0 };
+        pk_transcribe_opts o4;
+        pk_transcribe_defaults(&o4);
+        o4.max_chunk_s = 10;
+        CHECK(x4 && one && two, "lanes: two transcribers");
+        if (x4 && one && two) {
+            for (int k = 0; k < 4; k++)
+                memcpy(x4 + (size_t)k * n, x, n * sizeof *x);
+            CHECK(one->lanes <= 1 && two->lanes == 2, "lanes: one for each four threads");
+            CHECK(pk_asr_transcribe(one, x4, 4 * n, &o4, on_out, &s1) == 0 && s1.n >= 8,
+                  "lanes: one lane runs to the end, in 8 chunks or more");
+            CHECK(pk_asr_transcribe(two, x4, 4 * n, &o4, on_out, &s2) == 0, "lanes: two run to the end");
+            CHECK(same(&s1, &s2), "lanes: every chunk one lane's, token for token, in order");
+            forget(&s2);
+            s2.stop_after = 3;
+            CHECK(pk_asr_transcribe(two, x4, 4 * n, &o4, on_out, &s2) == 1 && s2.n == 3,
+                  "lanes: stopped after three chunks");
+            int first = s2.n == 3;
+            for (size_t i = 0; first && i < 3; i++)
+                first = s2.nt[i] == s1.nt[i] && !memcmp(s2.t[i], s1.t[i], (size_t)s1.nt[i] * sizeof *s1.t[i]);
+            CHECK(first, "lanes: stopped, its three chunks the same");
+            /* the fast mode, asked for after two's second lane was made */
+            forget(&s1), forget(&s2);
+            s2.stop_after = 0;
+            pk_asr_set_fast_mode(one, 1), pk_asr_set_fast_mode(two, 1);
+            CHECK(pk_asr_transcribe(one, x4, 4 * n, &o4, on_out, &s1) == 0
+                      && pk_asr_transcribe(two, x4, 4 * n, &o4, on_out, &s2) == 0 && same(&s1, &s2),
+                  "lanes: the fast mode in every lane, every chunk one lane's");
+        }
+        forget(&s1), forget(&s2);
+        pk_asr_free(one), pk_asr_free(two);
+        free(x4);
+    }
+
     /* the seam, on tokens built for it: a word the cut fell beside written
      * twice, a capital, and words that start apart */
     {
@@ -311,7 +354,8 @@ int main(int argc, char **argv) {
     CHECK(pk_asr_transcribe(a, x, 0, NULL, on_out, &r) == 0 && r.n == 0, "no samples: no chunks");
 
     if (!fails)
-        printf("transcheck: %zu chunks the low-level path's, a stop, the retry's and the seam's parts: ok\n", lo.n);
+        printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, the retry's and the "
+               "seam's parts: ok\n", lo.n);
     forget(&hi), forget(&lo);
     pk_asr_free(a);
     pk_model_free(m);

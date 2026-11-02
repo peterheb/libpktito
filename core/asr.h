@@ -18,6 +18,16 @@
  * fast kind (core/encoder.c, layers): the second */
 #define PK_TUNE_AT 2
 
+/* A chunk keeps few of many threads busy: each pass is a job over the
+ * pool, and each job waits for its slowest item. Several transcriptions
+ * at once, each on its share of the threads, keep more of them busy; but
+ * a Pi 5's four cores gave its one transcriber's rate as two of two
+ * threads and 0.91 of it as four of one (backend/avx2/CLIMB.md,
+ * 2026-11-02). So a lane for each PK_LANE_THREADS threads, PK_LANES_MAX
+ * at most (core/asr.c, run_lanes). */
+#define PK_LANE_THREADS 4
+#define PK_LANES_MAX    16
+
 /* make PROFILE=1: wall time in each stage of a transcription, read on the
  * calling thread around whole passes, never inside a kernel, and printed by
  * `pktito-c bench`. */
@@ -54,6 +64,13 @@ struct pk_asr {
     /* The caller's fast mode (pk_asr_set_fast_mode): the encoder's
      * activations in blocks of 64 where an input allows, not 32 */
     int qb64;
+    /* A recording's chunks several at once (core/asr.c, run_lanes): at
+     * most `lanes`, lane j > 0 a transcriber of its own on this one's
+     * model, made the first time a run needs it, lane 0 this one; `drive`
+     * the threads that run them, one a lane. */
+    int lanes;
+    pk_asr **lane;
+    pk_pool *drive;
 
     size_t cap;                      /* feature frames the buffers below hold */
     void  *mem;
@@ -96,9 +113,10 @@ void pk_joint_frames(pk_asr *a, uint32_t Te, float *f);
 long pk_decode(pk_asr *a, uint32_t Te, const float *f, int split);
 
 /* pk_asr_run_chunks with a hook that can stop it: each(arg, i, toks,
- * count, spare) has chunk i's tokens and returns nonzero to stop there
- * (which the call returns). spare is the joint buffer chunk i used, free
- * until each returns, while the other holds chunk i + 1's encoder output:
+ * count, spare) has chunk i's tokens, on the calling thread, and returns
+ * nonzero to stop there (which the call returns). spare is a joint buffer
+ * of a's free until each returns, the one chunk i used where one chunk
+ * runs at a time, while the other holds chunk i + 1's encoder output:
  * pk_retry_run may use it then, and only it (core/transcribe.c). */
 typedef int (*pk_each_fn)(void *arg, size_t i, const pk_tok *toks, long count, float *spare);
 int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
