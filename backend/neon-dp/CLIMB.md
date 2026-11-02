@@ -1627,3 +1627,164 @@ block's chains overlap, and two chains a sum would take it back at the
 same bits. Then the SME2 variant, and a place to pack the activations: a
 call takes a slice of rows and every column, so packing in the kernel
 would pack them again for each slice.
+
+## 2026-11-02 - SVE on the GB10's cores: its vector length and its instructions' rates (a measurement)
+
+Nothing in the tree uses SVE. The GB10's cores have it: /proc/cpuinfo on
+spark-a80d lists sve, sve2, svei8mm, svebf16 and i8mm on all twenty. Its
+vector length is 16 bytes on both kinds, by PR_SVE_GET_VL and by RDVL on
+CPU 5 (an X925) and CPU 0 (an A725), so SVE is NEON's width there, and
+anything it gives must come from its instructions' forms or rates.
+
+The probe (svrate, kept with the session's notes, not in the tree): each
+instruction in C independent chains, the chains interleaved and unrolled
+to at least 96 instructions a loop, pinned to one core, best of 7; the
+clock from a chain of dependent adds, 3.889 GHz on the X925 and 2.800 on
+the A725 (the performance governor, the vLLM worker idle). Ubuntu 24.04,
+kernel 7.0.0-1019-nvidia; the loops are assembly, the same bytes under gcc
+13.3 and clang 18.1. Cycles an instruction, one chain (the latency) and
+the best rate a cycle:
+
+| instruction | X925, 1 chain | 8 | 16 | best a cycle | A725, 1 chain | best a cycle |
+|---|---|---|---|---|---|---|
+| SDOT by element; SVE SDOT indexed; SDOT vector, both | 1.06 | 0.27 | 0.19 | 5.16 | 1.00 | 2.00 |
+| SMMLA, NEON and SVE | 1.06 | 0.27 | 0.19 | 5.16 | 1.00 | 2.00 |
+| FMLA by element or vector; SVE FMLA indexed or predicated | 2.00 | 0.25 | 0.20 | 5.16 | 2.00 | 2.00 |
+| SCVTF, NEON and SVE | 4.00 | 0.62 | 0.51 | 2.00 | 4.00 | 0.50 |
+| FSUB, FADD, ZIP1 (NEON and SVE), ADD, ADDP | 2.00 | 0.25 | 0.19 | 5.16 | 2.00 | 2.00 |
+| MOVI #0, MOV, SVE DUP of #0 | | | | 5.16 | | 2.00 (MOVI #0: 4.00) |
+| LDR q, d or s, LD1R; SVE LD1B, LD1W, LD1RQB, LD1RW, LDR z | | | | 4.00 | | 2.7 to 3.0 |
+| LDP q | | | | 2.00 | | 1.00 |
+| SVE gather, LD1W of 4 words / LD1D of 2 | | | | 0.72 / 1.00 | | 0.27 / 0.41 |
+
+Every SVE form runs at its NEON form's rate, to the third figure, on both
+cores. The SDOT chain's 1.06 cycles is the accumulator forwarded within a
+pipe; eight chains reach 3.66 a cycle and sixteen 5.16, and the 4-column
+SDOT tile has eight accumulators. The A725 takes MOVI #0 for nothing, any
+other immediate at a pipe's cost.
+
+Mixed into sixteen SDOT chains on the X925, cycles a SDOT (0.19 alone):
+eight MOVI, MOV, FMLA, ZIP1 or FSUB beside them 0.29, each a slot of the
+pipes'; eight SCVTF 0.46, each 0.54 cycles, 2.7 slots; eight LDR q (or
+four LDP q, or eight SVE LD1B) 0.17 to 0.18, the SDOTs then at 5.6 to 5.8
+a cycle; eight LD1 {.d}[1] 0.25; four gathers 0.36. On the A725 (0.50
+alone): FMLA, ZIP1, FSUB or MOV 0.75; SCVTF 1.00, two slots; MOVI #0 0.50.
+
+What SVE has that NEON lacks and these cores run for less is MOVPRFX: a
+copy fused into the destructive instruction after it, which makes SDOT,
+SMMLA and FMLA constructive. Cycles a pair, sixteen independent pairs of
+a register's start and one instruction into it:
+
+| pair | X925 | A725 |
+|---|---|---|
+| MOVI #0 + SDOT | 0.39 | 0.50 |
+| MOVPRFX + SDOT (indexed) | 0.20 | 1.00 |
+| MOVPRFX + SMMLA | 0.20 | 0.50 |
+| MOV + SMMLA | 0.39 | 1.00 |
+| MOVPRFX + FMLA (indexed) | 0.20 | 1.00 |
+
+The X925 fuses MOVPRFX with all three; the A725 with SMMLA alone, and
+there a MOVI #0 is free anyway. A gather costs four to seven contiguous
+loads, and predication has no tails to take here: every kernel's widths
+are multiples of 16. So at 128 bits SVE's arithmetic is NEON's, and of
+its forms only MOVPRFX could pay, a slot a block for each accumulator
+started. The two other things the table shows are NEON's: SCVTF costs the
+X925 as much as 2.7 SDOTs, and its eight chains hold the SDOT tile below
+its sixteen's rate.
+
+## 2026-11-02 - the int8 tile's block loop in L1: SDOT, and SMMLA with its weights in SMMLA's order (a probe)
+
+The 2026-10-24 entry left open what weights already in SMMLA's order
+could buy over SDOT, with the ZIPs out of the loop. The probe (qk, kept
+with the session's notes): the tile's block loop, 8 rows by 4 columns,
+written out as assembly by a generator in each form below, on one
+L1-resident buffer (1024 inputs: the half panel's 8 KB, the columns' 1 KB
+each), every output checked bit for bit against ref's chain (acc =
+fmaf((float)s, d, acc)) before it is timed; three processes on each core,
+within 0.3%. Cycles a 1024 multiply-adds (a block of 32 inputs):
+
+| loop | X925 | A725 |
+|---|---|---|
+| the tree's SDOT loop (q8_blocks4_qb32) | 19.29-19.33 | 41.77-41.85 |
+| the same, MOVI and SCVTF as a MOV of M and an FSUB (below) | 19.05 | 44.18 |
+| the same, MOVI and SCVTF as MOVPRFX of M and an FSUB | 17.52-17.54 | 46.25-46.29 |
+| SMMLA, weights in its order, A by ZIP; MOVI and SCVTF | 12.88 | 31.88 |
+| the same; MOVPRFX of M and FSUB | 12.15-12.16 | 30.06-30.07 |
+| SMMLA, A by LDR d and LD1 {.d}[1]; MOVI and SCVTF | 14.11-14.15 | 33.31-33.32 |
+| the same; MOV of M and FSUB | 14.40-14.42 | 33.65 |
+| the same; MOVPRFX of M and FSUB | 13.15-13.19 | 30.45 |
+| A by ZIP, MOVPRFX; each block's scales into vectors in the loop | 12.51-12.52 | 30.12-30.14 |
+| the same, the weights ZIPped in the loop from the file's order | 15.38-15.43 | 37.13-37.15 |
+| the same as the last but one at blocks of 64 (the fast mode) | 10.77-10.78 | 25.11-25.12 |
+| the same, MOVI and SCVTF | 11.15-11.18 | 26.35-26.37 |
+| the half panel's weights put in SMMLA's order, a block's 256 bytes | 8.11 | 12.42 |
+
+The SDOT loop's 19.3 cycles in L1 is q8bench's at T 256 in 64-row slices
+(207-210 GMAC/s on one X925 under gcc 13.3 and clang 18.1, 19.1 cycles):
+the product is bound by its instructions, not its memory. At about 5.2
+slots a cycle they come to 19.5 cycles: 64 SDOTs, 8 MOVIs, 8 SCVTFs at 2.7
+and 8 FMLAs.
+
+The SMMLA loop: a k-step of 8 inputs is four row pairs' B (two LDPs),
+each two columns' A from their 16 bytes ZIPped at 64 bits (one ZIP a
+k-step and pair), and 8 SMMLAs into accumulators m[p][j], [c r, c r+1,
+c+1 r, c+1 r+1]: 32 SMMLAs a block where SDOT takes 64. A block's sums
+start at M = 0x4B400000 (MOVPRFX, the first SMMLA into each), so that a
+sum s is held as M + s, which as a float is 12582912 + s exactly while |s|
+< 2^22 (a block of 64 inputs is at most 64 x 127 x 128 = 1,040,384); an
+FSUB of 12582912.0f leaves s exactly, the float SCVTF would give, +0.0 for
+0. Then one FMLA by a vector of the block's scales, [d_c d_c d_c+1
+d_c+1], two LD1Rs and a ZIP1 a pair: each lane is one output's ref chain,
+and the floats are taken apart into columns once, at the tile's end. Of
+the 1.54 times, MOVPRFX is 5 to 6% (12.88 to 12.15, 31.88 to 30.06), the
+conversion without it a little worse than SCVTF (its MOV costs the slot
+MOVPRFX saves), and the rest SMMLA on weights in its order: in the
+file's order, ZIPped in the loop, the tile keeps 1.26x on the X925 and
+1.13x on the A725, the earlier tile's ZIPs and SCVTFs having taken the
+rest. A's ZIP beats LDR d and LD1 {.d}[1] on both cores.
+
+## 2026-11-02 - neon-sve: the int8 product on SMMLA, each half panel's weights put in its order a call at a time (hypothesis)
+
+A third variant of backend/neon, backend/neon-sve: neon-dp's code, and
+its 4-column tile at blocks of 32 or 64 inputs on the SMMLA loop of the
+probe above. Each half panel's weights are put in SMMLA's order once a
+call (a thread's buffer, 8 rows of up to 16384 inputs, 128 KB), and every
+4-column tile of the call's columns runs the loop from that copy; tiles of
+1 to 3 columns, other block sizes (the decoder's) and calls of fewer than
+8 columns keep neon-dp's SDOT tile. The copy is per half panel and column
+block, so the variant's column block is 1 MB, a call's columns at any
+thread count here (at ten threads pk_gemm's calls are 64 rows by about 60
+columns; at one, 256 rows by 250): each half panel is copied once a call,
+0.65 of a tile's time on the X925, about 4% of a call at ten threads and
+1% at one. The model file is read as it is, its pages the page cache's.
+
+Its needs are asimddp, sve, i8mm and svei8mm (HWCAP_SVE, HWCAP2_I8MM and
+HWCAP2_SVEI8MM; core/os.c learns them on Linux, and elsewhere answers no,
+so neon-dp runs). SVE is what the loop's MOVPRFX uses, and it is also
+where SMMLA is known to issue as SDOT does: the cores without it, Apple's
+M cores (no SVE outside streaming mode) and Snapdragon X's Oryon, issue
+SMMLA at half SDOT's rate (2026-10-24 and 2026-10-25 above), and the
+variant passes them by a feature they lack. Its C is compiled as
+neon-dp's, with neon-dp's flags; the loop's assembly asks for SVE and
+I8MM itself (.arch_extension), so that no other kernel's code differs
+from neon-dp's by a compiler's choice to use SVE, and the bench compares
+the int8 product alone. Its first SMMLA into each accumulator is SVE's
+(after MOVPRFX), the rest NEON's: at any vector length the low 128 bits
+are the sums, since NEON's writes zero what is above them. Measured at
+128 bits only.
+
+Bits: the integer sums are exact in any order, the conversion is exact,
+and each lane's FMLA is the fused multiply-add of ref's chain, block
+after block. tests/kcheck holds it on the GB10 under both compilers.
+
+Predict, on one X925 (q8bench, T 256, 64-row slices): blocks of 32 from
+207-210 GMAC/s to 290-315 under both compilers, blocks of 64 from 224-231
+to 340-370; on an A725, 65 to 85-90. `pktito-c bench`, test.wav through
+v2, best of 5: at the default (the ten X925s), where `make PROFILE=1` puts
+the int8 products at 74% of 0.386 s (feed-forward 46.8%, q k v pos 15.8%,
+conv 8.3%, attention out 3.1%), the run 15 to 22% faster, 0.30 to 0.33 s;
+on one X925 (taskset -c 5, -t 1), where they are 84% of 2.995 s, 20 to
+28% faster, 2.15 to 2.4 s; the fast mode by about as much. Kept if kcheck
+and check-c are ref's bits on the GB10 under gcc 13.3 and clang 18.1 and
+the bench moves past its spread under both, at the default threads and at
+one.
