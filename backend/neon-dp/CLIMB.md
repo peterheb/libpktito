@@ -1930,3 +1930,31 @@ and Android's cores with SVE and I8MM where the kernel reports them, such
 as the RG477V's Dimensity 8300 (A715 and A510). Apple's M cores and
 Snapdragon X's Oryon have no SVE and keep neon-dp; Windows on ARM and
 macOS answer no for sve.
+
+## 2026-11-02 - neon-sve: each half panel's first tile makes the copy as it multiplies (hypothesis)
+
+The entry above leaves 12% of a ten-thread run in the copy: a pass over
+each half panel's weights with nothing to overlap its misses, five times
+a product at ten threads. The probe's loop that ZIPs B in from the
+file's order (15.4 cycles a block on the X925, 37.1 on the A725, against
+SDOT's 19.3 and 41.8) is the SDOT tile's shape again, a first pass that
+computes as it reads: so let each half panel's first 4-column tile run
+that loop and store each k-step's four B vectors into the copy (two STPs
+a k-step), and the call's other tiles read the copy as now. mm_copy goes.
+The copy is then written at the first tile's pace and read from L1, and
+its separate pass, the 8.1 cycles a block and the burst of misses, goes
+with it. A tile from the file's order costs a fifth less than SDOT's in
+L1, so a call of 4 to 7 columns gains too: PK_Q8_MM_COLS falls to 4.
+
+Bits: the loop's sums and floats are the same operations on the same
+bytes in the same order (the ZIPs only move them), so the same bits;
+kcheck on the GB10 under both compilers, with a mutation of the new
+loads.
+
+Predict, test.wav through v2, best of 5: at the default (ten X925s), half
+to two thirds of the copy's 12% back, 0.324-0.332 s to 0.305-0.315 under
+both compilers; on one X925, where a call's 62 tiles share one copy,
+level to 1% faster; the fast mode as the default. q8bench on one X925:
+level at T 256, the T 8 down product's loss (-6.8% at blocks of 32) gone,
+and T 4 10 to 20% over SDOT. Kept if the default moves past its spread
+under both compilers and one thread does not lose.
