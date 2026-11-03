@@ -2112,3 +2112,35 @@ measured: N2 (Cobalt 100), and Android's cores where the kernel reports
 SVE. None of the four Android devices at hand reports it: the S24 Ultra
 (whose kernel hides its cores' SVE2), the S25 Ultra and the Googlebook
 (Oryon), and a moto g7.
+
+## 2026-11-03 - neon-sve against neon-dp with the lanes (a measurement)
+
+sve-climb rebased onto main's 7012b87 (the lanes and Silero's pool):
+aae1fdf's code on spark-a80d, test.wav through v2, best of 5, at the
+default, which for test.wav is two lanes of 10 on all 20 cores. neon-sve
+as picked and neon-dp by PKTITO_KERNELS ran back to back in each of 6
+rounds, with the vLLM worker idle (16 to 18 of its CPU ticks a pair of
+runs):
+
+| compiler | neon-dp | neon-sve | change, median (range) |
+|---|---|---|---|
+| gcc 13.3 | 0.348-0.356 s | 0.307-0.312 s | -12.4% (-13.5 to -11.5) |
+| clang 18.1 | 0.346-0.352 s | 0.301-0.306 s | -12.7% (-14.0 to -12.1) |
+
+Before the lanes (2026-11-02 above, the ten X925s) it was 0.388-0.398
+against 0.320-0.324 s under gcc, -17.5%. Across the two sittings the
+lanes took neon-dp's run from 0.39 to 0.35 s and neon-sve's from 0.32 to
+0.31, so the margin narrowed from 17% to 12 to 13%.
+
+Seen in passing, not paired with the rows above: on the ten X925s alone
+(`taskset -c 5-9,15-19`, `-t 10`, two lanes of 5), neon-sve ran test.wav in
+0.284-0.300 s, under the default's 0.307-0.312, and neon-dp in
+0.354-0.369, over its 0.348-0.356. With neon-sve's product, the A725s'
+share of the lanes may cost more than it gives on a minute of speech. That
+is a question for the lanes' choice of threads, not measured here.
+
+kcheck (1906 cases) gives ref's bits and check-c passes on spark-a80d
+under gcc 13.3 and clang 18.1 (neon-sve, neon-dp and neon), on the M4 Pro
+under Apple clang 21 (neon-dp and neon; neon-sve skipped), on the Pi 5
+(gcc 14.2, the same) and on the Pi 3B+ (gcc 14.2, neon; the other two
+skipped).
