@@ -91,23 +91,15 @@ typedef struct {
     const float *bias;
     const pk_act *act;
     int add;
-    uint32_t step, whole, cstep, cc;
+    uint32_t step, rb, cstep;
     tile_fn then;
     void *then_arg;
 } gemm_job;
 
-/* Item i: slice i with every column while i < whole, then the slices left
- * over in cc chunks of columns each, a slice's chunks one after another */
 static void gemm_item(void *arg, int i, int th) {
     gemm_job *j = arg;
-    uint32_t s = (uint32_t)i, c0 = 0, nc = j->act->T;
-    if (s >= j->whole) {
-        const uint32_t k = s - j->whole;
-        s = j->whole + k / j->cc;
-        c0 = k % j->cc * j->cstep;
-        nc = min32(j->cstep, j->act->T - c0);
-    }
-    uint32_t r0 = s * j->step, nr = min32(j->step, j->w->rows - r0);
+    uint32_t r0 = ((uint32_t)i % j->rb) * j->step, nr = min32(j->step, j->w->rows - r0);
+    uint32_t c0 = ((uint32_t)i / j->rb) * j->cstep, nc = min32(j->cstep, j->act->T - c0);
     pk_act sub = *j->act;
     sub.q += (size_t)c0 * sub.n;
     sub.d += (size_t)c0 * (sub.n / sub.qb);
@@ -125,29 +117,22 @@ static void gemm_item(void *arg, int i, int th) {
  * its columns and its panels' sums, a quarter as often, +3 to 7% at one
  * and two threads on the 9950X, a c7i and a c8i (CLIMB.md there, pk_gemm's
  * step), where with fewer the last round's idle share costs more (one
- * round of 16 at 16 threads: -1.5%). The slices go whole, every column,
- * for as many full rounds as they make, and only the ones left over are
- * cut into chunks of columns, when that fills the pool's last round: a
- * 1024-row matrix is 16 slices, which six threads take in three rounds
- * with the last a third idle, and as 12 whole and 4 in three chunks, in two
- * rounds and two of a third (H5 there cut every slice). Each chunk's call
- * reads its slice's weights again, which cutting every slice made 4.8
- * reads of each weight a chunk at ten threads (CLIMB.md there,
- * 2026-11-03); a slice's chunks are dealt together, so that they run at
- * once and share their reads through the cache. A chunk is whole tiles of
- * 3 and 4 columns, and at least 48 columns, so that a call's per-call work
- * - the backend's copy of its columns, its panels' sums - stays a few
- * percent of it. Every output is still one call's, so the bits do not
- * depend on the split. Each item then hands its tile to then, if there is
- * one. */
+ * round of 16 at 16 threads: -1.5%). And the columns in chunks
+ * when that fills the pool's last round: a 1024-row matrix is 16 slices,
+ * which six threads take in three rounds with the last a third idle, and in
+ * three chunks of columns 48 items, eight whole rounds (H5 there). A chunk
+ * is whole tiles of 3 and 4 columns, and at least 48 columns, so that a
+ * call's per-call work - the backend's copy of its columns, its panels'
+ * sums - stays a few percent of it. Every output is still one call's, so
+ * the bits do not depend on the split. Each item then hands its tile to
+ * then, if there is one. */
 static void gemm_then(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
                       const pk_act *act, int add, tile_fn then, void *then_arg) {
     const uint32_t nth = (uint32_t)pk_pool_active(a->pool);
     const uint32_t step = w->rows / 256 >= 2 * nth ? 256 : 64, rb = (w->rows + step - 1) / step;
-    const uint32_t whole = rb / nth * nth, left = rb - whole;
     uint32_t best = 1, best_idle = UINT32_MAX, best_all = 1;
-    for (uint32_t cc = 1; left && cc <= 8 && (cc == 1 || act->T / cc >= 48); cc++) {
-        uint32_t items = left * cc, all = (items + nth - 1) / nth * nth;
+    for (uint32_t cc = 1; cc <= 8 && (cc == 1 || act->T / cc >= 48); cc++) {
+        uint32_t items = rb * cc, all = (items + nth - 1) / nth * nth;
         /* the idle share of the last round, compared as fractions */
         if ((uint64_t)(all - items) * best_all < (uint64_t)best_idle * all) {
             best = cc;
@@ -158,8 +143,8 @@ static void gemm_then(pk_asr *a, float *out, size_t os, const pk_q8 *w, const fl
     uint32_t cstep = (act->T + best - 1) / best;
     cstep = best > 1 ? (cstep + 11) / 12 * 12 : act->T;
     uint32_t cc = cstep ? (act->T + cstep - 1) / cstep : 1;
-    gemm_job j = { out, os, w, bias, act, add, step, whole, cstep ? cstep : 1, cc, then, then_arg };
-    pk_par(a, gemm_item, &j, (int)(whole + left * cc));
+    gemm_job j = { out, os, w, bias, act, add, step, rb, cstep ? cstep : 1, then, then_arg };
+    pk_par(a, gemm_item, &j, (int)(rb * cc));
 }
 
 void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,

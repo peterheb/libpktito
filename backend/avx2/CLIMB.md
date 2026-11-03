@@ -2803,3 +2803,57 @@ bytes of activations through its core's cache, 1.5 MB at T 357, where a
 fifth of a slice did. Runs at 4, 8 and 16 threads already do this. Kept if
 the GB10 moves past its spread under both compilers and no board measured
 falls by more than its spread.
+
+## 2026-11-03 - pk_gemm's slices whole for every full round, the rest cut by columns (result: rejected)
+
+Built as the hypothesis has it, cbc296b; this entry's commit takes it out.
+Bits: check-c passes on the 9950X, on the GB10 under gcc 13.3 and clang
+18.1, and on the 12900HK under gcc 15.2; on the 9950X test.wav's v2 and v3
+transcripts are ref's in both modes at `-t` 3, 5, 6, 7, 9 to 15, 20 and 24.
+
+`pktito-c bench` through v2, best of 5, interleaved rounds against the
+parent (7b030af), the order reversed every other round; the change's
+median and range, and the rounds it was faster in:
+
+| board | lanes | run | change | faster in |
+|---|---|---|---|---|
+| GB10 (spark-a80d), its 20 cores | two of 10, test.wav | neon-sve, gcc 13.3 | +6.1% (+4.6 to +7.8) | 0 of 6 |
+| | | neon-sve, clang 18.1 | +7.3% (+5.6 to +9.3) | 0 of 6 |
+| | | neon-dp, gcc | +5.9% (+4.5 to +7.2) | 0 of 6 |
+| | | neon-dp, clang | +5.5% (+4.6 to +9.0) | 0 of 6 |
+| GB10, its ten X925s alone (taskset, `-t 10`) | two of 5, test.wav | neon-sve, gcc | -2.2% (-3.7 to +0.0) | 5 of 6 |
+| | | neon-dp, gcc | -2.4% (-3.1 to -1.7) | 6 of 6 |
+| 9950X, 16 threads | 6, 5 and 5, 88 s of chapter 1 | avx512-vnni, gcc 15.2 | -3.4% (-6.7 to -1.9) | 6 of 6 |
+| | | clang 21.1 | -4.6% (-6.5 to -2.0) | 6 of 6 |
+| | two of 8, test.wav (the same items) | gcc | -1.7% (-5.4 to +3.6) | 2 of 4 |
+| | | clang | +1.3% (-3.1 to +2.1) | 1 of 4 |
+| 12900HK, 14 threads | two of 7, test.wav | avx2-vnni, gcc 15.2 | -1.2% (-4.8 to -0.6) | 6 of 6 |
+| | | avx2 | +6.9% (-1.5 to +9.8) | 1 of 6 |
+| | 115 s of chapter 1 (4 chunks) | avx2-vnni | +0.4% (-3.0 to +7.0) | 2 of 4 |
+| | | avx2 | +7.7% (+5.8 to +9.8) | 0 of 4 |
+
+The GB10's rounds on the 115 s clip are left out: its vLLM worker served
+through them (1500 to 2000 of its CPU ticks a pair of runs, against 16 to
+18 in test.wav's), and both builds spread by up to 40%.
+
+Where a lane's threads are all on one kind of core - the 9950X, the
+GB10's X925s alone - the change is faster in every round or all but one,
+by 2 to 5%, as predicted, and the 9950X's control rows are level. Where
+they land on two kinds - the GB10's default, whose lanes run on all 20
+cores, X925s and A725s - it is 6 to 7% slower in every round, on either
+backend, under either compiler. The replica dealt its items to equal
+threads. A whole slice is five chunks' work, and when an A725, about a
+third of an X925's speed at the product (q8bench, backend/neon-dp/CLIMB.md,
+2026-10-24), takes one late, the X925s wait on it, where they would have
+taken a share of its five chunks. The 12900HK, P and E cores, is level on
+avx2-vnni and 7 to 8% slower with the avx2 tile, whose call copies its
+columns (H1): a whole slice copies T of them where a chunk copied a fifth,
+which these rows do not separate from its cores' two kinds.
+
+Rejected: the GB10 falls past its spread under both compilers. Not run,
+the GB10 having settled the rule: the M4 Pro (P and E cores, test.wav's
+lanes of 6), the N1X, and the Pis, whose items it does not change. What
+the rows leave open: the rule only where every core is one kind, as on the
+9950X and most servers (the cores a lane's threads run on being the
+scheduler's, not the engine's), and whether the avx2 tile's loss is its
+copy or the E cores.
