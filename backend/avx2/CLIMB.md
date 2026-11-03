@@ -2742,3 +2742,64 @@ So, on both phones the lanes were faster in every round, by 1.06 to
 1.14x, for 39 to 42 MB. The pool made the VAD 1.4 and 1.7 times as fast
 there, and runs were level end to end. On the Neural Engine path it made
 runs 1.05 to 1.06x as fast on the M4 Pro and 1.10 to 1.12x on the Ultra.
+
+## 2026-11-03 - pk_gemm's slices whole for every full round, the rest cut by columns (hypothesis)
+
+pk_gemm cuts a product's columns into chunks wherever its slices leave the
+pool's last round short (H5, above): every slice in c chunks, and each
+chunk's call streams the slice's weights, so every weight is read c times
+a chunk. The bits do not depend on the split. The reads do.
+
+When it happens: at 1, 2, 4, 8 and 16 threads a lane the slices make whole
+rounds and c is 1. At 5, 6, 7, 9, 10, 12, 14 and 20 threads c is 3 to 7.
+With the lanes (2026-11-02: a lane for every 4 threads, nth / k threads
+each), runs take those counts on:
+- the GB10 (20 cores): two lanes of 10 for test.wav, 7, 7 and 6 in three,
+  5 in four;
+- the 12900HK (14): 7 a lane in two, 5, 5 and 4 in three, 6 or 14 alone;
+- the M4 Pro (12): 6 a lane in two, test.wav's;
+- the 9950X and a 16-vCPU Graviton: 6, 5 and 5 in three lanes.
+
+A replica of gemm_then's rule (Python; the items dealt in order to the
+first thread free; T 357, test.wav's 28.6 s chunk) reads every weight 4.8
+times a chunk at 5, 10 and 20 threads (at 10, 2.8 GB of reads for the
+encoder's 576 MB), 2.9 at 6 and 12, 5.3 at 9, and 5.8 at 7 and 14.
+
+What a read costs is bounded on one board. On the GB10 with neon-sve at
+ten threads, a build whose tiles read no weights at all ran about 9%
+faster (backend/neon-dp/CLIMB.md, 2026-11-02). That was 4.8 reads, one of
+which no split avoids: about 2% of a run a read.
+
+The change: the slices dealt whole, every column, for as many full rounds
+as they make, and only the slices left over cut by columns, into the count
+whose last round is least idle (H5's choice, made over those slices
+alone). The leftover chunks are dealt a slice at a time, so that one
+slice's chunks run at once and its later reads come from the cache the
+cores share. At ten threads a 1024-row product is then 10 whole slices
+and 6 in 5 chunks, 40 reads of a slice where it was 80. The feed-forward's
+up product is 60 whole and 4 in 5 chunks, 80 where it was 320. In the
+replica a weight is read 1.2 times at 5 threads, 1.5 at 6, 1.3 at 7, 1.9
+at 10, 1.4 at 12, 1.5 at 14 and 3.4 at 20, and the rounds are as full as
+today's within a point, except at 14 threads with 20 s chunks, two points
+behind. At 1, 2, 4, 8 and 16 threads the items are today's, in today's
+order.
+
+Bits: every output is still one call's. check-c on each board measured,
+and on the 9950X `-t` 5 to 14 against test.wav's transcripts too, since
+its 16 threads take none of the new path.
+
+Predict, test.wav through v2, best of 5, interleaved against the parent:
+- the GB10 at its default (two lanes of ten): neon-sve 2 to 5% faster
+  (three reads fewer at under 2% each, the first read, from memory,
+  costing more than the rest), neon-dp 1 to 3%, under gcc and clang;
+- a four-chunk recording on the GB10 (four lanes of 5): about as much;
+- the 12900HK (avx2-vnni, lanes of 7) and the M4 Pro (lanes of 6): 1 to
+  3%;
+- level where the threads a lane divide the slices, whose items are
+  today's: the Pis, and the 9950X at 16 threads in one lane.
+
+The risk: a whole slice of the feed-forward's down product reads T x 4096
+bytes of activations through its core's cache, 1.5 MB at T 357, where a
+fifth of a slice did. Runs at 4, 8 and 16 threads already do this. Kept if
+the GB10 moves past its spread under both compilers and no board measured
+falls by more than its spread.
