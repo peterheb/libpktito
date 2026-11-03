@@ -49,12 +49,12 @@ allows.
   where it is meant, and nowhere else. core/vmath.h's functions are the only
   transcendentals that reach a transcript; libm's `exp`, `log`, `sin` are not
   the same bits on every platform.
-- backend/neon serves neon and neon-dp, backend/avx2 serves avx2, avx2-vnni
-  and avx512-vnni (each variant a file that includes the first with a macro,
-  compiled with its own instruction set; backend/kernels.c picks among
-  them). Inside a family a variant replaces a kernel only where it measures
-  faster: the int8 product in each, and in the AVX-512 builds the float
-  kernels in zmm - each to ref's bits, like every kernel.
+- backend/neon serves neon, neon-dp and neon-sve, backend/avx2 serves avx2,
+  avx2-vnni and avx512-vnni (each variant a file that includes the first with
+  a macro, compiled with its own instruction set; backend/kernels.c picks
+  among them). Inside a family a variant replaces a kernel only where it
+  measures faster: the int8 product in each, and in the AVX-512 builds the
+  float kernels in zmm - each to ref's bits, like every kernel.
 - Comments explain *why* and carry the number that justified it, and say
   where the number came from (a CLIMB.md row, a check), because a bare
   figure goes stale when the code under it changes.
