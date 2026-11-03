@@ -827,7 +827,9 @@ through examples/transcribe:
 vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
 the detokenizer against sentencepiece, the state machines against Silero's
 Python, the resampler against torchaudio and the corpora's WER.
-tests/README.md has each check.
+tests/README.md has each check. A build copied to Windows without MSYS2,
+which has no make or sh, runs check-c's commands with `powershell -File
+tests\check-c.ps1`, given `-V2` and `-V3` for models kept outside models\.
 
 ## The tree
 

@@ -3,7 +3,8 @@
 # script so that a board without make runs the same ones: an Android device,
 # over adb (tests/adb.sh). Run from anywhere with the programs built; MODEL
 # is the model kcheck and the test.wav checks use. The first failure ends
-# the run, as it ends make's.
+# the run, as it ends make's. tests/check-c.ps1 has the same commands for
+# Windows without sh, and a check added here goes there too.
 cd "$(dirname "$0")/.." || exit 1
 MODEL=${MODEL:-models/parakeet-tdt-0.6b-v2.pkf}
 TINY=tests/data/tiny.pkf

@@ -254,7 +254,8 @@ benches: $(BENCHES)
 # computes the same ones (backend/kernels.h), and this is where a board
 # that does not would say so. A model file that is not there is
 # skipped, with a line. The commands are tests/check-c.sh, so that a board
-# without make, Android over adb, runs the same ones.
+# without make, Android over adb, runs the same ones, and tests/check-c.ps1
+# runs them on Windows without MSYS2.
 check-c: pktito-c $(TESTS) examples/transcribe
 	@MODEL=$(MODEL) sh tests/check-c.sh
 
