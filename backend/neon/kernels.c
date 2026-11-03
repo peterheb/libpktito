@@ -1605,8 +1605,10 @@ static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uin
 /* SVE for the loop's MOVPRFX, and as where SMMLA issues as SDOT does: the
  * cores with I8MM and no SVE, Apple's M cores and Snapdragon X's Oryon,
  * issue it at half SDOT's rate (backend/neon-dp/CLIMB.md, 2026-10-24 and
- * 2026-10-25), and pass this by */
-static const char *const needs[] = { "asimddp", "i8mm", "sve", "svei8mm", NULL };
+ * 2026-10-25), and pass this by. SVE is named first, so that the reason
+ * given for passing one by is the SVE it lacks, not an I8MM that its
+ * system is not asked about (macOS's, core/os.c) */
+static const char *const needs[] = { "asimddp", "sve", "i8mm", "svei8mm", NULL };
 const pk_kernels pk_kernels_neon_sve = {
     .id = "neon-sve",
     .name = "neon-sve (NEON, SVE and I8MM: SMMLA int8, fp32)",

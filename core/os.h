@@ -60,7 +60,7 @@ void pk_os_stdio(void);
 
 /* The first of the NULL-ended features (backend/kernels.h's pk_k_needs)
  * this CPU, or its operating system, cannot run; NULL if none. A feature
- * it has no way to ask about counts as there. */
+ * it has no way to ask about counts as one it lacks. */
 const char *pk_os_cpu_lacks(const char *const *needs);
 
 #endif /* PK_OS_H */
