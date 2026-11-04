@@ -1,11 +1,15 @@
 /* core/os.h on POSIX (Linux, macOS, the BSDs), on Windows 10 and later,
  * and the plain-C fallback.
  *
- * The cores: the physical cores of every kind, from Linux's sysfs topology,
- * macOS's sysctl or Windows' processor records (pk_os_cores says why).
+ * The cores: the physical cores of every kind that the process may run on,
+ * from Linux's sysfs topology and CPU mask, macOS's sysctl or Windows'
+ * processor records and affinity (pk_os_cores says why).
  * The paths: UTF-8, and on Windows widened to UTF-16 in one place
  * (widen) for every file the library opens.
  */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* sched_getaffinity and cpu_set_t, before any header */
+#endif
 #include "os.h"
 
 #include <errno.h>
@@ -33,6 +37,9 @@
 #ifdef __APPLE__
 #include <sys/sysctl.h>
 #endif
+#endif
+#ifdef __linux__
+#include <sched.h>
 #endif
 
 /* --------------------------------------------------------------- paths --- */
@@ -133,17 +140,42 @@ static long sysfs_long(long cpu, const char *what) {
     return v;
 }
 
-/* Whether cpu is the first of its core's hardware threads (the first number
- * in thread_siblings_list), so that each physical core counts once whatever
- * its IDs say. Distinct (package, core_id) pairs did that where a core_id is
- * its package's own, as on x86, but Linux numbers a device tree's cores from
- * 0 within each cluster, all in package 0 without a socket node
+/* The core cpu is a hardware thread of, named by its first thread (the first
+ * number in thread_siblings_list), so that each physical core counts once
+ * whatever its IDs say. Distinct (package, core_id) pairs did that where a
+ * core_id is its package's own, as on x86, but Linux numbers a device tree's
+ * cores from 0 within each cluster, all in package 0 without a socket node
  * (drivers/base/arch_topology.c, parse_cluster): Android 17 on a Snapdragon
  * X Elite, three clusters of four, gave 4 cores of 12, and test.wav took
  * 1.03 s on them against 0.68 s once counted (backend/neon-dp/CLIMB.md,
- * 2026-10-25). An offline CPU has no topology to read, and is not counted. */
-static int first_thread(long cpu) {
-    return sysfs_long(cpu, "topology/thread_siblings_list") == cpu;
+ * 2026-10-25). An offline CPU has no topology to read: -1. */
+static long core_of(long cpu) {
+    return sysfs_long(cpu, "topology/thread_siblings_list");
+}
+
+/* The physical cores the process may run on, each once, as one of its CPUs
+ * in cpu[] (at most max), and how many: a core with a thread in the
+ * process's CPU mask, which taskset, systemd's CPUAffinity= and a
+ * container's cpuset narrow, as Windows counts its affinity mask (cores(),
+ * below). Every core if the system will not say. */
+static int allowed_cores(long *cpu, int max) {
+    cpu_set_t mask;
+    int known = sched_getaffinity(0, sizeof mask, &mask) == 0;
+    long ncpu = sysconf(_SC_NPROCESSORS_CONF);
+    if (ncpu > 4096)
+        ncpu = 4096;
+    unsigned char seen[4096 / 8] = {0};         /* the cores counted, by name */
+    int n = 0;
+    for (long c = 0; c < ncpu && n < max; c++) {
+        if (known && (c >= CPU_SETSIZE || !CPU_ISSET(c, &mask)))
+            continue;
+        long core = core_of(c);
+        if (core < 0 || core >= 4096 || seen[core / 8] >> core % 8 & 1)
+            continue;
+        seen[core / 8] |= (unsigned char)(1u << core % 8);
+        cpu[n++] = c;
+    }
+    return n;
 }
 #endif
 
@@ -161,7 +193,9 @@ static int first_thread(long cpu) {
  * backend/neon-dp/CLIMB.md). The fast kind alone measured better on the
  * tree of two days before (CLIMB.md, "Threads"). A second thread on a core
  * (SMT) measured nothing (the 12900HK on 20: 0.91 to 0.93 s), so siblings
- * count once. */
+ * count once. Only the cores the process may run on count: under systemd's
+ * CPUAffinity=10 13-19 on a GB10, every core counted gave pktito-server 20
+ * threads for those 8 (spark-a80d, 2026-11-04). */
 int pk_os_cores(void) {
 #ifdef __APPLE__
     int phys = 0;
@@ -170,14 +204,14 @@ int pk_os_cores(void) {
         return phys;
 #endif
 #ifdef __linux__
-    long ncpu = sysconf(_SC_NPROCESSORS_CONF);
-    if (ncpu > 4096)
-        ncpu = 4096;
-    int cores = 0;
-    for (long c = 0; c < ncpu; c++)
-        cores += first_thread(c);
+    long cpu[1024];
+    int cores = allowed_cores(cpu, 1024);
     if (cores > 0)
         return cores;
+    /* no topology to read: the mask's CPUs, siblings and all */
+    cpu_set_t mask;
+    if (sched_getaffinity(0, sizeof mask, &mask) == 0 && CPU_COUNT(&mask) > 0)
+        return CPU_COUNT(&mask);
 #endif
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n < 1 ? 1 : (int)n;
@@ -191,25 +225,20 @@ int pk_os_fast_cores(void) {
         return perf;
 #endif
 #ifdef __linux__
-    /* each physical core once, as pk_os_cores counts them, with its speed */
-    long ncpu = sysconf(_SC_NPROCESSORS_CONF);
-    if (ncpu > 4096)
-        ncpu = 4096;
-    int nseen = 0;
-    long speed[1024], top = 0;
-    for (long c = 0; c < ncpu; c++) {
-        if (!first_thread(c) || nseen >= 1024)
-            continue;
-        long s = sysfs_long(c, "cpu_capacity");
+    /* the cores pk_os_cores counts, each with its speed */
+    long cpu[1024], speed[1024], top = 0;
+    int n = allowed_cores(cpu, 1024);
+    for (int i = 0; i < n; i++) {
+        long s = sysfs_long(cpu[i], "cpu_capacity");
         if (s < 0)
-            s = sysfs_long(c, "cpufreq/cpuinfo_max_freq");
+            s = sysfs_long(cpu[i], "cpufreq/cpuinfo_max_freq");
         if (s < 0)
             return pk_os_cores();               /* a core whose speed it does not say */
-        speed[nseen++] = s;
+        speed[i] = s;
         top = s > top ? s : top;
     }
     int fast = 0;
-    for (int i = 0; i < nseen; i++)
+    for (int i = 0; i < n; i++)
         fast += speed[i] * 10 >= top * 9;
     if (fast > 0)
         return fast;

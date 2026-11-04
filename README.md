@@ -207,7 +207,9 @@ A76 (about 81% of what its blocks' float work leaves), and at 47 of VNNI's
 64 on a 12900HK P-core (about 92%).
 
 The default thread count is one a physical core of every kind (a second
-thread on an SMT core adds nothing). A chip's slower cores take fewer of
+thread on an SMT core adds nothing), of those the process may run on: under
+`taskset`, systemd's `CPUAffinity=`, a container's CPU set or Windows'
+`start /affinity`, the ones they leave it. A chip's slower cores take fewer of
 each pass's items and still add their share: a Core 3 304, one P-core and
 four E-cores, runs the minute whole in 5.02 s on its P-core and 1.39 s on
 all five; a 12900HK in 0.96 s on its six P-cores and 0.91 s on all 14
