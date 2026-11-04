@@ -207,6 +207,50 @@ typedef int (*pk_transcribe_fn)(void *arg, const pk_chunk_out *c);
 int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o,
                       pk_transcribe_fn fn, void *arg);
 
+/* pk_asr_transcribe in steps, for a caller who runs the transcribing
+ * itself: on threads of its own, over several transcribers, with several
+ * recordings' chunks dealt among them, as a server's queue would.
+ * pk_steps_new runs the VAD and cuts the chunks, on a's threads, and the
+ * rest is jobs, each a stretch of x to hear: a chunk whole, or a stretch
+ * of one that the retry hears again. The caller hears a job with
+ * pk_asr_run on any transcriber of the same model and mode, on any thread,
+ * and hands its tokens back with pk_steps_put, the jobs in any order;
+ * pk_steps_take has each chunk in order once its job and its retries are
+ * in. They are the bits pk_asr_transcribe's fn has: pk_asr_run's are the
+ * same on every transcriber, and pk_asr_transcribe is these steps, its
+ * chunks heard as pk_asr_run_chunks hears them.
+ *
+ * pk_steps_job hands out the next job, a stretch the retry hears again
+ * before the next chunk, since a chunk waits for its retries. It returns
+ * 1, 0 when there is none to hand out now, or -1 if memory runs out. With
+ * every chunk handed out, the retry's stretches come as the chunks are
+ * taken: a chunk's once its tokens are in and the chunk before is taken,
+ * and one at a time, since each is heard only while the recording's
+ * budget for them lasts, which the last one's tokens decide
+ * (core/transcribe.c, RETRY_SHARE). pk_steps_put returns 0, or -1 if
+ * memory runs out or j is not a job of s's that is out. pk_steps_take
+ * returns 1 with the next chunk in *out, its tokens lasting until the next
+ * call on s; 0 while that chunk is not done; -1 if memory runs out. The
+ * run is over after pk_steps_chunks(s) of them, and ended by a job whose
+ * pk_asr_run fails. x must last as long as s, which belongs to one thread
+ * at a time, and holds what a pk_asr_transcribe call holds (above) and the
+ * tokens of chunks put and not yet taken. pk_steps_new returns NULL if
+ * memory runs out or max_chunk_s is under a second. */
+typedef struct pk_steps pk_steps;
+
+typedef struct {
+    size_t chunk;               /* the chunk it is for */
+    int    retry;               /* 0: the chunk whole; 1: a stretch of it heard again */
+    pk_seg at;                  /* the samples to hear, x[at.start, at.end) */
+} pk_job;
+
+pk_steps *pk_steps_new(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o);
+size_t    pk_steps_chunks(const pk_steps *s);
+int       pk_steps_job(pk_steps *s, pk_job *j);
+int       pk_steps_put(pk_steps *s, const pk_job *j, const pk_tok *toks, long count);
+int       pk_steps_take(pk_steps *s, pk_chunk_out *out);
+void      pk_steps_free(pk_steps *s);
+
 /* The text of n tokens, UTF-8 and NUL-terminated in out[cap]: SentencePiece's
  * decoding with NeMo's one change to it, the space before punctuation taken
  * away. Returns the text's length; if that is cap or more, out holds as much
@@ -275,6 +319,23 @@ void pk_seg_defaults(pk_seg_params *p);
  * if that is more than cap, out is unfinished. 2n + 1 is always enough. */
 size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
                    const pk_seg_params *p, pk_seg *out, size_t cap);
+
+/* Silero over a recording of any length, x[0, n), as pk_asr_transcribe
+ * runs it: the transcriber's own stream made new, its encoder over the
+ * transcriber's threads and its LSTM on the calling thread, and the last
+ * frame padded with silence. P(speech) for each 32 ms frame into probs,
+ * (n + 511) / 512 of them, the bits pk_vad_probs gives from a new stream,
+ * 1.9 times as fast as one thread on a 9950X's 16 and a Pi 5's 4, 2.9 on
+ * an M5 Ultra's 36 (backend/avx2/CLIMB.md, 2026-11-02). Returns their
+ * count, or -1 if memory runs out. */
+long pk_asr_vad(pk_asr *a, const float *x, size_t n, float *probs);
+
+/* The speech in x[0, n): pk_asr_vad's probabilities through pk_segments
+ * with p, Silero's defaults where p is NULL. Returns how many segments
+ * there are, out unfinished if that is more than cap (twice the frames
+ * plus one is always enough), or -1 if memory runs out. */
+long pk_asr_speech(pk_asr *a, const float *x, size_t n, const pk_seg_params *p, pk_seg *out,
+                   size_t cap);
 
 /* VADIterator: speech starts and ends as they happen. */
 typedef struct {

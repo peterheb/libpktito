@@ -314,14 +314,9 @@ static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const float *x, size_t n,
     }
     double t0 = pk_os_now();
     size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
-    float *pad = calloc(frames * PK_VAD_SAMPLES, sizeof *pad), *probs = malloc(frames * sizeof *probs);
-    pk_vad *v = pk_vad_new(m);
-    if (!pad || !probs || !v)
+    float *probs = malloc(frames * sizeof *probs);
+    if (!probs || pk_asr_vad(a, x, n, probs) < 0)
         die("out of memory");
-    memcpy(pad, x, n * sizeof *x);
-    pk_vad_probs_on(v, a->pool, pad, frames, probs);
-    pk_vad_free(v);
-    free(pad);
     /* segments no longer than a chunk less the padding Silero puts round them */
     pk_seg_params sp;
     pk_seg_defaults(&sp);
@@ -876,37 +871,31 @@ static int bench(const opts *o, pk_model *m) {
 
 /* Silero's per-frame probabilities over the whole file, as vadito prints
  * them, or get_speech_timestamps' segments from them with Silero's
- * defaults: the VAD inside the model file, on its own. */
+ * defaults: the VAD inside the model file, on its own, over -t's threads
+ * (pk_asr_vad, pk_asr_speech). */
 static int vad(const opts *o, pk_model *m) {
     size_t n;
     const int rate = pk_model_rate(m);
     float *x = read_audio(o->in, rate, &n, o);
-    size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
-    float *pad = calloc(frames * PK_VAD_SAMPLES + 1, sizeof *pad);
-    float *probs = malloc((frames + 1) * sizeof *probs);
-    pk_vad *v = pk_vad_new(m);
-    if (!pad || !probs || !v)
-        die("out of memory");
-    memcpy(pad, x, n * sizeof *x);              /* the last frame padded with zeros, as Silero does */
-    pk_vad_probs(v, pad, frames, probs);
+    pk_asr *a = asr_new(o, m);
+    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, cap = 2 * frames + 1;
     if (!strcmp(o->cmd, "probs")) {
+        float *probs = malloc((frames + 1) * sizeof *probs);
+        if (!probs || pk_asr_vad(a, x, n, probs) < 0)
+            die("out of memory");
         for (size_t f = 0; f < frames; f++)
             printf("%.3f %.9g\n", (double)f * PK_VAD_SAMPLES / rate, probs[f]);
+        free(probs);
     } else {
-        pk_seg_params sp;
-        pk_seg_defaults(&sp);
-        size_t cap = 2 * frames + 1;
         pk_seg *seg = malloc(cap * sizeof *seg);
-        if (!seg)
+        const long ns = seg ? pk_asr_speech(a, x, n, NULL, seg, cap) : -1;
+        if (ns < 0)
             die("out of memory");
-        size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, cap);
-        for (size_t i = 0; i < ns; i++)
+        for (long i = 0; i < ns; i++)
             printf("%.3f %.3f\n", (double)seg[i].start / rate, (double)seg[i].end / rate);
         free(seg);
     }
-    pk_vad_free(v);
-    free(probs);
-    free(pad);
+    pk_asr_free(a);
     free(x);
     return 0;
 }
