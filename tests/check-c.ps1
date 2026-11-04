@@ -1,7 +1,8 @@
 # tests/check-c.sh's commands for Windows without MSYS2, which has no make
 # or sh: a build made elsewhere and copied over (Windows' own tar.exe, from
 # Windows 10 1803, unpacks a tar of the tree). Run from anywhere with the
-# programs built,
+# programs built (make check-c's prerequisites: pktito-c, the Makefile's
+# TESTS and examples/transcribe, whose transcript is the last check),
 #
 #   powershell -File tests\check-c.ps1 [-V2 v2.pkf] [-V3 v3.pkf] [-Model m.pkf]
 #
