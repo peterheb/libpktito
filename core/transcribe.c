@@ -221,6 +221,7 @@ typedef struct pk_steps {
      * not, `retried` of them heard), or done and waiting to be taken */
     size_t at;
     enum { AWAIT, RETRYING, DONE } state;
+    int failed;                     /* a call returned -1: the run is over */
     long nst, k;
     int out, retried;
     pk_tok *t;                  /* the chunk's tokens, n of them, its retries' among them */
@@ -454,10 +455,9 @@ static size_t repeat(run *r, const pk_seg *ch, size_t n) {
     return n - drop;
 }
 
-/* Chunk at's tokens toks[0, nt), what it was heard in heard: into r->t the
- * words that start before its cut, through the seam with the chunk before,
- * and its stretches to hear again into r->st. 0, or -1 if memory runs
- * out. */
+/* Chunk at's tokens toks[0, nt): into r->t the words that start before its
+ * cut, through the seam with the chunk before, and its stretches to hear
+ * again into r->st. 0, or -1 if memory runs out. */
 static int take_chunk(run *r, const pk_tok *toks, long nt) {
     const pk_seg *ch = &r->c[r->at];
     const pk_model *m = r->m;
@@ -563,6 +563,13 @@ static void finish(run *r) {
     r->state = DONE;
 }
 
+/* -1, and the run over: a failed take_chunk may have freed a chunk's
+ * tokens or moved the seam, so no later call may go on from it */
+static int fail(run *r) {
+    r->failed = 1;
+    return -1;
+}
+
 /* The seam as far as it can go: chunk at taken once its tokens are in, its
  * stretches heard again one at a time, and done, and no further until it
  * is taken, its tokens being r->t. 0, or -1 if memory runs out. */
@@ -576,7 +583,7 @@ static int advance(run *r) {
             free(r->ct[r->at]);
             r->ct[r->at] = NULL;
             if (rc)
-                return -1;
+                return fail(r);
             r->state = RETRYING;
         }
         if (stretch(r, &at))
@@ -686,8 +693,13 @@ fail:
 
 size_t pk_steps_chunks(const pk_steps *r) { return r->nc; }
 
+/* Every chunk handed out at once, without its job: pk_asr_transcribe hears
+ * them all itself, through pk_run_chunks_with, and puts each as it would
+ * one pk_steps_job had handed out */
+static void hand_out_all(run *r) { r->given = r->nc; }
+
 int pk_steps_job(pk_steps *r, pk_job *j) {
-    if (advance(r))
+    if (r->failed || advance(r))
         return -1;
     if (r->at < r->nc && r->state == RETRYING && !r->out && stretch(r, &j->at)) {
         j->chunk = r->at;
@@ -705,13 +717,13 @@ int pk_steps_job(pk_steps *r, pk_job *j) {
 }
 
 int pk_steps_put(pk_steps *r, const pk_job *j, const pk_tok *toks, long count) {
-    if (count < 0)
-        return -1;
+    if (r->failed || count < 0)
+        return fail(r);
     if (j->retry) {
         pk_seg at;
-        if (!r->out || j->chunk != r->at || !stretch(r, &at)
-            || grow((void **)&r->t, &r->tcap, r->n + (size_t)count, sizeof *r->t))
-            return -1;
+        if (!r->out || j->chunk != r->at || !stretch(r, &at) || j->at.start != at.start
+            || j->at.end != at.end || grow((void **)&r->t, &r->tcap, r->n + (size_t)count, sizeof *r->t))
+            return fail(r);
         if (count == 0)
             r->budget -= at.end - at.start;
         for (long q = 0; q < count; q++) {
@@ -723,19 +735,25 @@ int pk_steps_put(pk_steps *r, const pk_job *j, const pk_tok *toks, long count) {
         r->out = 0;
     } else {
         const size_t i = j->chunk;
-        if (i >= r->given || i < r->at || r->cn[i] >= 0)     /* not out, or put before */
-            return -1;
-        if (count && !(r->ct[i] = malloc((size_t)count * sizeof *toks)))
-            return -1;
-        if (count)
-            memcpy(r->ct[i], toks, (size_t)count * sizeof *toks);
+        if (i >= r->given || i < r->at || r->cn[i] >= 0     /* not out, or put before */
+            || j->at.start != r->win[i].start || j->at.end != r->win[i].end)
+            return fail(r);
         r->cn[i] = count;
+        if (i == r->at) {           /* the chunk due: taken from toks, not kept */
+            if (take_chunk(r, toks, count))
+                return fail(r);
+            r->state = RETRYING;
+        } else if (count) {
+            if (!(r->ct[i] = malloc((size_t)count * sizeof *toks)))
+                return fail(r);
+            memcpy(r->ct[i], toks, (size_t)count * sizeof *toks);
+        }
     }
     return advance(r);
 }
 
 int pk_steps_take(pk_steps *r, pk_chunk_out *out) {
-    if (advance(r))
+    if (r->failed || advance(r))
         return -1;
     if (r->at >= r->nc || r->state != DONE)
         return 0;
@@ -799,7 +817,7 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
     run *r = pk_steps_new(a, x, n, o);
     if (!r)
         return -1;
-    r->given = r->nc;           /* every chunk out, for pk_run_chunks_with to hear */
+    hand_out_all(r);
     own w = { r, a, fn, arg };
     const int rc = pk_run_chunks_with(a, x, r->win, r->nc, each, &w);
     pk_steps_free(r);

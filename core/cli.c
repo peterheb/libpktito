@@ -313,25 +313,18 @@ static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const float *x, size_t n,
         return c;
     }
     double t0 = pk_os_now();
-    size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
-    float *probs = malloc(frames * sizeof *probs);
-    if (!probs || pk_asr_vad(a, x, n, probs) < 0)
-        die("out of memory");
     /* segments no longer than a chunk less the padding Silero puts round them */
     pk_seg_params sp;
     pk_seg_defaults(&sp);
     sp.max_speech_s = max_chunk - 2 * sp.speech_pad_ms / 1000 - 0.1;
-    size_t cap = 2 * frames + 1;
+    const size_t cap = 2 * ((n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES) + 1;
     pk_seg *seg = malloc(cap * sizeof *seg);
-    if (!seg)
-        die("out of memory");
-    size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, cap);
-    pk_seg *c = malloc((2 * ns + 2 + n / (size_t)max_len) * sizeof *c);
+    const long ns = seg ? pk_asr_speech(a, x, n, &sp, seg, cap) : -1;
+    pk_seg *c = ns < 0 ? NULL : malloc((2 * (size_t)ns + 2 + n / (size_t)max_len) * sizeof *c);
     if (!c)
         die("out of memory");
-    *nchunks = pk_chunks(x, seg, ns, (int64_t)n, max_len, c);
+    *nchunks = pk_chunks(x, seg, (size_t)ns, (int64_t)n, max_len, c);
     free(seg);
-    free(probs);
     *vad_s = pk_os_now() - t0;
     return c;
 }

@@ -374,7 +374,9 @@ int main(int argc, char **argv) {
     }
 
     /* pk_steps' edges: max_chunk_s under a second, no samples, and jobs
-     * that are not out - a chunk not handed out, one put twice, a retry */
+     * that are not out - a chunk not handed out, one put twice, a retry,
+     * a chunk's samples not its own - each refused, and every call after
+     * a refusal refused too */
     {
         pk_transcribe_opts oh;
         pk_transcribe_defaults(&oh);
@@ -388,16 +390,34 @@ int main(int argc, char **argv) {
         pk_steps_free(st);
         st = pk_steps_new(a, x, n, NULL);
         CHECK(st && pk_steps_job(st, &j) == 1 && j.chunk == 0 && !j.retry, "steps: chunk 0 first");
-        if (st && j.chunk == 0) {
-            const pk_tok *t;
-            const long nt = pk_asr_run(a, x + j.at.start, (size_t)(j.at.end - j.at.start), &t);
-            const pk_job later = { 1, 0, j.at }, again = { 0, 1, j.at };
-            CHECK(pk_steps_put(st, &later, t, nt) == -1, "steps: a chunk not handed out, refused");
-            CHECK(pk_steps_put(st, &j, t, nt) == 0 && pk_steps_put(st, &j, t, nt) == -1,
-                  "steps: a chunk put twice, refused the second time");
-            CHECK(pk_steps_put(st, &again, t, nt) == -1, "steps: a retry not handed out, refused");
-        }
         pk_steps_free(st);
+        const pk_tok *heard;
+        const long nt = pk_asr_run(a, x + j.at.start, (size_t)(j.at.end - j.at.start), &heard);
+        pk_tok *t = malloc(((size_t)(nt > 0 ? nt : 1)) * sizeof *t);     /* past the next call on a */
+        if (!t)
+            return 1;
+        if (nt > 0)
+            memcpy(t, heard, (size_t)nt * sizeof *t);
+        const pk_job later = { 1, 0, j.at }, again = { 0, 1, j.at },
+                     moved = { 0, 0, { j.at.start + 1, j.at.end } };
+        const struct { const pk_job *bad; int first; const char *what; } refused[] = {
+            { &later, 0, "steps: a chunk not handed out, refused, and every call after it" },
+            { &j, 1, "steps: a chunk put twice, refused the second time, and every call after it" },
+            { &again, 0, "steps: a retry not handed out, refused, and every call after it" },
+            { &moved, 0, "steps: a chunk's samples not its own, refused, and every call after it" },
+        };
+        for (size_t k = 0; k < sizeof refused / sizeof *refused; k++) {
+            pk_job h;
+            st = pk_steps_new(a, x, n, NULL);
+            int ok = st && pk_steps_job(st, &h) == 1 && h.chunk == 0;
+            if (ok && refused[k].first)
+                ok = pk_steps_put(st, &h, t, nt) == 0;
+            ok = ok && pk_steps_put(st, refused[k].bad, t, nt) == -1 && pk_steps_put(st, &h, t, nt) == -1
+                 && pk_steps_job(st, &h) == -1 && pk_steps_take(st, &c) == -1;
+            CHECK(ok, refused[k].what);
+            pk_steps_free(st);
+        }
+        free(t);
     }
 
     /* pk_asr_vad: Silero over the transcriber's threads, its last frame of

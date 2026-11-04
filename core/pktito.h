@@ -228,11 +228,12 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
  * and one at a time, since each is heard only while the recording's
  * budget for them lasts, which the last one's tokens decide
  * (core/transcribe.c, RETRY_SHARE). pk_steps_put returns 0, or -1 if
- * memory runs out or j is not a job of s's that is out. pk_steps_take
- * returns 1 with the next chunk in *out, its tokens lasting until the next
- * call on s; 0 while that chunk is not done; -1 if memory runs out. The
- * run is over after pk_steps_chunks(s) of them, and ended by a job whose
- * pk_asr_run fails. x must last as long as s, which belongs to one thread
+ * memory runs out, count is -1 (pk_asr_run failed), or j is not a job of
+ * s's that is out, as pk_steps_job handed it out. pk_steps_take returns 1
+ * with the next chunk in *out, its tokens lasting until the next call on
+ * s; 0 while that chunk is not done; -1 if memory runs out. The run is
+ * over after pk_steps_chunks(s) of them, or at any call's -1, after which
+ * every call on s returns -1 and s is for pk_steps_free alone. x must last as long as s, which belongs to one thread
  * at a time, and holds what a pk_asr_transcribe call holds (above) and the
  * tokens of chunks put and not yet taken. pk_steps_new returns NULL if
  * memory runs out or max_chunk_s is under a second. */

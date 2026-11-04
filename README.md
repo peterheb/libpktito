@@ -780,10 +780,12 @@ pk_text(m, t, (size_t)n, text, sizeof text);      /* NeMo's transcript */
 /* the high level in steps, for a caller who hears the chunks itself */
 pk_steps *s = pk_steps_new(a, samples, n_samples, NULL);     /* the VAD and the chunks */
 pk_job j;
+pk_chunk_out c;
 while (pk_steps_job(s, &j) == 1) {                /* any transcriber, any thread, any order */
     n = pk_asr_run(b, samples + j.at.start, (size_t)(j.at.end - j.at.start), &t);
-    pk_steps_put(s, &j, t, n);
-    while (pk_steps_take(s, &c) == 1)             /* the chunks in order, show's c */
+    if (pk_steps_put(s, &j, t, n) < 0)            /* -1: memory ran out, and the run is over */
+        break;
+    while (pk_steps_take(s, &c) == 1)             /* the chunks in order, as show has them */
         ;
 }
 pk_steps_free(s);
