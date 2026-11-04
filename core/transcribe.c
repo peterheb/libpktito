@@ -23,6 +23,13 @@
  * NeMo's transcript of it, bit for bit; the two are where this path leaves
  * it, on purpose. README, "Transcribing a recording", has why each step is
  * as it is and what it was measured on.
+ *
+ * pk_steps is the same steps one at a time, for a caller who hears steps 3
+ * and 4 itself: pk_steps_new is 1 and 2, and the rest is jobs, a chunk or a
+ * retry's stretch to hear, whose tokens come back in any order and go
+ * through the seam and the retry in order. pk_asr_transcribe runs those
+ * steps on its own, its chunks heard by pk_run_chunks_with and its
+ * retries on the calling thread.
  */
 #include "asr.h"
 
@@ -195,19 +202,30 @@ static size_t quietest(const float *x, size_t n, int rate) {
     return at_best;
 }
 
-/* One run's state, for each chunk as it comes */
-typedef struct {
-    pk_asr *a;
+/* One run's state, for each chunk as it comes: pk_steps */
+typedef struct pk_steps {
+    const pk_model *m;
     const float *x;
-    const pk_seg *c, *win, *sp;     /* the chunks, what each is heard in, the speech */
+    pk_seg *c, *win, *sp;       /* the chunks, what each is heard in, the speech */
     size_t nc, ns;
     int retry;
     int64_t budget, done, total;
     double floor;               /* mean power a stretch's speech must reach */
-    pk_transcribe_fn fn;
-    void *arg;
-    pk_tok *t;                  /* the chunk's tokens, its retries' among them */
-    size_t tcap;
+    /* the jobs: the chunks handed out, and chunk i's tokens as put, ct[i]
+     * and cn[i] of them (-1 until then), kept until the seam takes them */
+    size_t given;
+    pk_tok **ct;
+    long *cn;
+    /* the chunk the seam is at, those before it taken: waiting for its
+     * tokens, its stretches heard again (st[0, nst), the k-th next, out or
+     * not, `retried` of them heard), or done and waiting to be taken */
+    size_t at;
+    enum { AWAIT, RETRYING, DONE } state;
+    int failed;                     /* a call returned -1: the run is over */
+    long nst, k;
+    int out, retried;
+    pk_tok *t;                  /* the chunk's tokens, n of them, its retries' among them */
+    size_t n, tcap;
     pk_word *w;
     size_t wcap;
     int32_t (*st)[2];           /* the stretches to hear again, in frames */
@@ -242,7 +260,7 @@ static int grow(void **p, size_t *cap, size_t need, size_t size) {
 
 /* Whether a word's text ends a sentence */
 static int ends_sentence(run *r, const pk_tok *t, const pk_word *w) {
-    const pk_model *m = r->a->m;
+    const pk_model *m = r->m;
     size_t len;
     while ((len = pk_text(m, t + w->tok, (size_t)w->ntok, r->text, r->textcap)) >= r->textcap) {
         size_t cap = r->textcap;
@@ -258,7 +276,7 @@ static int ends_sentence(run *r, const pk_tok *t, const pk_word *w) {
  * runs out. Each is charged to the budget as it is heard, if it gives
  * nothing. */
 static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_t head) {
-    const pk_model *m = r->a->m;
+    const pk_model *m = r->m;
     const int rate = pk_model_rate(m);
     const int64_t spf = llround(pk_model_frame_seconds(m) * rate);
     const int64_t frames = (ch->end - ch->start + spf - 1) / spf;
@@ -384,7 +402,7 @@ static void put(run *r, const pk_seg *ch, size_t k, int q0, int qn, int64_t spf)
 /* The seam (above) on the chunk's n tokens in r->t, which has room for
  * SEAM_TOKS more: its new count */
 static size_t seam(run *r, const pk_seg *ch, size_t n, int64_t *head) {
-    const pk_model *m = r->a->m;
+    const pk_model *m = r->m;
     const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
     const size_t nw = pk_words(m, r->t, n, r->w);
     for (size_t j = 0; j < nw && j < SEAM_WORDS; j++) {
@@ -424,7 +442,7 @@ static size_t seam(run *r, const pk_seg *ch, size_t n, int64_t *head) {
  * word again, the one the cut fell in, starting before the last chunk's
  * copy ends; the tokens left */
 static size_t repeat(run *r, const pk_seg *ch, size_t n) {
-    const pk_model *m = r->a->m;
+    const pk_model *m = r->m;
     const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
     if (!pk_words(m, r->t, n, r->w))
         return n;
@@ -437,10 +455,12 @@ static size_t repeat(run *r, const pk_seg *ch, size_t n) {
     return n - drop;
 }
 
-static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) {
-    run *r = arg;
-    const pk_seg *ch = &r->c[i];
-    const pk_model *m = r->a->m;
+/* Chunk at's tokens toks[0, nt): into r->t the words that start before its
+ * cut, through the seam with the chunk before, and its stretches to hear
+ * again into r->st. 0, or -1 if memory runs out. */
+static int take_chunk(run *r, const pk_tok *toks, long nt) {
+    const pk_seg *ch = &r->c[r->at];
+    const pk_model *m = r->m;
     const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
     size_t stcap = r->stcap;
     if (grow((void **)&r->t, &r->tcap, (size_t)nt + 1 + SEAM_TOKS, sizeof *r->t)
@@ -450,7 +470,7 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
     r->stcap = stcap;
     /* of what the chunk was heard in, the words that start before its cut,
      * and the first SEAM_KEEP after it for the next chunk's seam */
-    const pk_seg *wn = &r->win[i];
+    const pk_seg *wn = &r->win[r->at];
     pk_tok next[SEAM_TOKS];
     int64_t next_at[SEAM_TOKS];
     int next_word[SEAM_KEEP + 1] = { 0 }, nnext = 0;
@@ -505,61 +525,81 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
     const long nst = r->retry ? stretches(r, ch, r->t, (long)n, head) : 0;
     if (nst < 0)
         return -1;
-    int retried = 0;
-    for (long k = 0; k < nst; k++) {
-        const int64_t s0 = ch->start + r->st[k][0] * spf;
-        const int64_t s1 = ch->start + r->st[k][1] * spf < ch->end ? ch->start + r->st[k][1] * spf : ch->end;
-        if (s1 <= s0 || s1 - s0 > r->budget)
-            continue;
-        const long more = pk_retry_run(r->a, r->x + s0, (size_t)(s1 - s0), spare);
-        if (more < 0 || grow((void **)&r->t, &r->tcap, n + (size_t)more, sizeof *r->t))
-            return -1;
-        if (more == 0)
-            r->budget -= s1 - s0;
-        for (long q = 0; q < more; q++) {
-            r->t[n] = r->a->toks[q];
-            r->t[n++].frame += r->st[k][0];
+    r->n = n;
+    r->nst = nst;
+    r->k = 0;
+    r->retried = 0;
+    return 0;
+}
+
+/* The k-th of chunk at's stretches to hear again, or the first after it
+ * whose length the budget still has: 1 with its samples in *at, or 0 when
+ * none is left */
+static int stretch(run *r, pk_seg *at) {
+    const pk_seg *ch = &r->c[r->at];
+    const int64_t spf = llround(pk_model_frame_seconds(r->m) * pk_model_rate(r->m));
+    for (; r->k < r->nst; r->k++) {
+        const int64_t s0 = ch->start + r->st[r->k][0] * spf;
+        const int64_t s1 = ch->start + r->st[r->k][1] * spf < ch->end ? ch->start + r->st[r->k][1] * spf : ch->end;
+        if (s1 > s0 && s1 - s0 <= r->budget) {
+            at->start = s0, at->end = s1;
+            return 1;
         }
-        retried++;
     }
-    /* in frame order, a chunk's own tokens before a retry's at the same frame */
-    for (size_t j = 1; j < n; j++) {
+    return 0;
+}
+
+/* Chunk at done: its tokens in frame order, its own before a retry's at
+ * the same frame */
+static void finish(run *r) {
+    for (size_t j = 1; j < r->n; j++) {
         const pk_tok v = r->t[j];
         size_t q = j;
         for (; q > 0 && r->t[q - 1].frame > v.frame; q--)
             r->t[q] = r->t[q - 1];
         r->t[q] = v;
     }
-    r->done += ch->end - ch->start;
-    const pk_chunk_out out = { i, r->nc, *ch, r->t, (long)n, retried, r->done, r->total };
-    return r->fn(r->arg, &out) ? 1 : 0;
+    r->done += r->c[r->at].end - r->c[r->at].start;
+    r->state = DONE;
 }
 
-int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o,
-                      pk_transcribe_fn fn, void *arg) {
-    pk_transcribe_opts def;
-    if (!o) {
-        pk_transcribe_defaults(&def);
-        o = &def;
+/* -1, and the run over: a failed take_chunk may have freed a chunk's
+ * tokens or moved the seam, so no later call may go on from it */
+static int fail(run *r) {
+    r->failed = 1;
+    return -1;
+}
+
+/* The seam as far as it can go: chunk at taken once its tokens are in, its
+ * stretches heard again one at a time, and done, and no further until it
+ * is taken, its tokens being r->t. 0, or -1 if memory runs out. */
+static int advance(run *r) {
+    pk_seg at;
+    while (r->at < r->nc && r->state != DONE && !r->out) {
+        if (r->state == AWAIT) {
+            if (r->cn[r->at] < 0)
+                return 0;
+            const int rc = take_chunk(r, r->ct[r->at], r->cn[r->at]);
+            free(r->ct[r->at]);
+            r->ct[r->at] = NULL;
+            if (rc)
+                return fail(r);
+            r->state = RETRYING;
+        }
+        if (stretch(r, &at))
+            return 0;           /* the k-th, to hand out */
+        finish(r);
     }
+    return 0;
+}
+
+long pk_asr_vad(pk_asr *a, const float *x, size_t n, float *probs) {
+    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, whole = n / PK_VAD_SAMPLES;
     if (n == 0)
         return 0;
-    const pk_model *m = a->m;
-    const int rate = pk_model_rate(m);
-    const int64_t max_len = (int64_t)(o->max_chunk_s * rate);
-    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, whole = n / PK_VAD_SAMPLES;
-    int rc = -1;
-    float *probs = malloc(frames * sizeof *probs);
-    pk_seg *sp = malloc((2 * frames + 1) * sizeof *sp), *cut = malloc((2 * frames + 1) * sizeof *cut);
-    pk_seg *c = NULL, *win = NULL;
-    if (!a->vad)
-        a->vad = pk_vad_new(m);
+    if (!a->vad && !(a->vad = pk_vad_new(a->m)))
+        return -1;
     pk_vad *v = a->vad;
-    run r = { 0 };
-    if (!probs || !sp || !cut || !v || max_len < rate)
-        goto out;
-
-    /* 1. the speech, its last frame padded with silence */
     pk_vad_reset(v);
     pk_vad_probs_on(v, a->pool, x, whole, probs);
     if (whole < frames) {
@@ -567,52 +607,219 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
         memcpy(last, x + whole * PK_VAD_SAMPLES, (n - whole * PK_VAD_SAMPLES) * sizeof *x);
         probs[whole] = pk_vad_prob(v, last);
     }
+    return (long)frames;
+}
+
+long pk_asr_speech(pk_asr *a, const float *x, size_t n, const pk_seg_params *p, pk_seg *out,
+                   size_t cap) {
+    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
+    pk_seg_params def;
+    if (!p) {
+        pk_seg_defaults(&def);
+        p = &def;
+    }
+    float *probs = malloc((frames + 1) * sizeof *probs);
+    const long rc = probs && pk_asr_vad(a, x, n, probs) >= 0
+                        ? (long)pk_segments(probs, frames, pk_model_rate(a->m), (int64_t)n, p, out, cap)
+                        : -1;
+    free(probs);
+    return rc;
+}
+
+pk_steps *pk_steps_new(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o) {
+    pk_transcribe_opts def;
+    if (!o) {
+        pk_transcribe_defaults(&def);
+        o = &def;
+    }
+    const pk_model *m = a->m;
+    const int rate = pk_model_rate(m);
+    const int64_t max_len = (int64_t)(o->max_chunk_s * rate);
+    if (max_len < rate)
+        return NULL;
+    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
+    run *r = calloc(1, sizeof *r);
+    float *probs = malloc((frames + 1) * sizeof *probs);
+    pk_seg *cut = malloc((2 * frames + 1) * sizeof *cut);
+    if (!r || !probs || !cut || !(r->sp = malloc((2 * frames + 1) * sizeof *r->sp))
+        || !(r->text = malloc(r->textcap = 256)) || pk_asr_vad(a, x, n, probs) < 0)
+        goto fail;
+    r->m = m;
+    r->x = x;
+    r->retry = o->retry;
+
+    /* 1. the speech: segments no longer than a chunk less the padding
+     * Silero puts round them and the context past its cut */
     pk_seg_params p;
     pk_seg_defaults(&p);
-    /* segments no longer than a chunk less the padding Silero puts round
-     * them and the context past its cut */
     int64_t ctx = o->context ? (int64_t)(CONTEXT_S * rate) : 0;
     if (max_len < CONTEXT_ROOM * ctx)
         ctx = 0;
     p.max_speech_s = o->max_chunk_s - (double)ctx / rate - 2 * p.speech_pad_ms / 1000 - 0.1;
-    const size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &p, sp, 2 * frames + 1);
+    r->ns = pk_segments(probs, frames, rate, (int64_t)n, &p, r->sp, 2 * frames + 1);
     p.min_silence_ms = CUT_SILENCE_MS;
     const size_t nk = pk_segments(probs, frames, rate, (int64_t)n, &p, cut, 2 * frames + 1);
 
     /* 2. the chunks, and what each is heard in */
     const size_t cap = 2 * nk + 2 + n / (size_t)max_len;
-    if (!(c = malloc(cap * sizeof *c)) || !(win = malloc(cap * sizeof *win)))
-        goto out;
-    const size_t nc = pk_chunks_past(x, cut, nk, (int64_t)n, max_len, ctx,
-                                     (int64_t)(CONTEXT_PAUSE_S * rate), c, win);
-
-    /* 3 to 5 */
-    r = (run){ .a = a, .x = x, .c = c, .win = win, .sp = sp, .nc = nc, .ns = ns,
-               .retry = o->retry, .fn = fn, .arg = arg };
+    if (!(r->c = malloc(cap * sizeof *r->c)) || !(r->win = malloc(cap * sizeof *r->win)))
+        goto fail;
+    r->nc = pk_chunks_past(x, cut, nk, (int64_t)n, max_len, ctx, (int64_t)(CONTEXT_PAUSE_S * rate),
+                           r->c, r->win);
+    if (!(r->ct = calloc(r->nc + 1, sizeof *r->ct)) || !(r->cn = malloc((r->nc + 1) * sizeof *r->cn)))
+        goto fail;
     double e = 0;
     int64_t heard = 0;
-    for (size_t i = 0; i < nc; i++) {
+    for (size_t i = 0; i < r->nc; i++) {
         int64_t h;
-        e += power(x, sp, ns, c[i].start, c[i].end, &h);
+        e += power(x, r->sp, r->ns, r->c[i].start, r->c[i].end, &h);
         heard += h;
-        r.total += c[i].end - c[i].start;
+        r->total += r->c[i].end - r->c[i].start;
+        r->cn[i] = -1;
     }
-    r.floor = heard ? e / (double)heard * RETRY_LEVEL : 0;
-    r.budget = (int64_t)((double)r.total * RETRY_SHARE);
-    if (r.budget < max_len)
-        r.budget = max_len;
-    if (!(r.text = malloc(r.textcap = 256)))
-        goto out;
-    rc = pk_run_chunks_with(a, x, win, nc, each, &r);
-out:
-    free(r.t);
-    free(r.w);
-    free(r.st);
-    free(r.text);
+    r->floor = heard ? e / (double)heard * RETRY_LEVEL : 0;
+    r->budget = (int64_t)((double)r->total * RETRY_SHARE);
+    if (r->budget < max_len)
+        r->budget = max_len;
     free(probs);
-    free(sp);
     free(cut);
-    free(c);
-    free(win);
+    return r;
+fail:
+    free(probs);
+    free(cut);
+    pk_steps_free(r);
+    return NULL;
+}
+
+size_t pk_steps_chunks(const pk_steps *r) { return r->nc; }
+
+/* Every chunk handed out at once, without its job: pk_asr_transcribe hears
+ * them all itself, through pk_run_chunks_with, and puts each as it would
+ * one pk_steps_job had handed out */
+static void hand_out_all(run *r) { r->given = r->nc; }
+
+int pk_steps_job(pk_steps *r, pk_job *j) {
+    if (r->failed || advance(r))
+        return -1;
+    if (r->at < r->nc && r->state == RETRYING && !r->out && stretch(r, &j->at)) {
+        j->chunk = r->at;
+        j->retry = 1;
+        r->out = 1;
+        return 1;
+    }
+    if (r->given < r->nc) {
+        j->chunk = r->given;
+        j->retry = 0;
+        j->at = r->win[r->given++];
+        return 1;
+    }
+    return 0;
+}
+
+int pk_steps_put(pk_steps *r, const pk_job *j, const pk_tok *toks, long count) {
+    if (r->failed || count < 0)
+        return fail(r);
+    if (j->retry) {
+        pk_seg at;
+        if (!r->out || j->chunk != r->at || !stretch(r, &at) || j->at.start != at.start
+            || j->at.end != at.end || grow((void **)&r->t, &r->tcap, r->n + (size_t)count, sizeof *r->t))
+            return fail(r);
+        if (count == 0)
+            r->budget -= at.end - at.start;
+        for (long q = 0; q < count; q++) {
+            r->t[r->n] = toks[q];
+            r->t[r->n++].frame += r->st[r->k][0];
+        }
+        r->retried++;
+        r->k++;
+        r->out = 0;
+    } else {
+        const size_t i = j->chunk;
+        if (i >= r->given || i < r->at || r->cn[i] >= 0     /* not out, or put before */
+            || j->at.start != r->win[i].start || j->at.end != r->win[i].end)
+            return fail(r);
+        r->cn[i] = count;
+        if (i == r->at) {           /* the chunk due: taken from toks, not kept */
+            if (take_chunk(r, toks, count))
+                return fail(r);
+            r->state = RETRYING;
+        } else if (count) {
+            if (!(r->ct[i] = malloc((size_t)count * sizeof *toks)))
+                return fail(r);
+            memcpy(r->ct[i], toks, (size_t)count * sizeof *toks);
+        }
+    }
+    return advance(r);
+}
+
+int pk_steps_take(pk_steps *r, pk_chunk_out *out) {
+    if (r->failed || advance(r))
+        return -1;
+    if (r->at >= r->nc || r->state != DONE)
+        return 0;
+    *out = (pk_chunk_out){ r->at, r->nc, r->c[r->at], r->t, (long)r->n, r->retried, r->done, r->total };
+    r->at++;
+    r->state = AWAIT;
+    return 1;
+}
+
+void pk_steps_free(pk_steps *r) {
+    if (!r)
+        return;
+    for (size_t i = 0; r->ct && i < r->nc; i++)
+        free(r->ct[i]);
+    free(r->ct);
+    free(r->cn);
+    free(r->c);
+    free(r->win);
+    free(r->sp);
+    free(r->t);
+    free(r->w);
+    free(r->st);
+    free(r->text);
+    free(r);
+}
+
+/* pk_asr_transcribe's own run of the steps: its chunks heard as
+ * pk_asr_run_chunks hears them (pk_run_chunks_with: each one's search
+ * beside the next one's encoder, several at once where there are threads
+ * for it), each chunk's retries on the calling thread in the joint buffer
+ * the chunk is done with, and fn for each chunk in order */
+typedef struct {
+    run *r;
+    pk_asr *a;
+    pk_transcribe_fn fn;
+    void *arg;
+} own;
+
+static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) {
+    own *w = arg;
+    const pk_job chunk = { i, 0, w->r->win[i] };
+    pk_job j;
+    pk_chunk_out out;
+    int rc;
+    if (pk_steps_put(w->r, &chunk, toks, nt))
+        return -1;
+    while ((rc = pk_steps_job(w->r, &j)) == 1) {    /* chunk i's retries: every chunk is out */
+        const long more = pk_retry_run(w->a, w->r->x + j.at.start, (size_t)(j.at.end - j.at.start), spare);
+        if (more < 0 || pk_steps_put(w->r, &j, w->a->toks, more))
+            return -1;
+    }
+    if (rc < 0 || pk_steps_take(w->r, &out) != 1)
+        return -1;
+    return w->fn(w->arg, &out) ? 1 : 0;
+}
+
+int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o,
+                      pk_transcribe_fn fn, void *arg) {
+    if (n == 0)
+        return 0;
+    run *r = pk_steps_new(a, x, n, o);
+    if (!r)
+        return -1;
+    hand_out_all(r);
+    own w = { r, a, fn, arg };
+    const int rc = pk_run_chunks_with(a, x, r->win, r->nc, each, &w);
+    pk_steps_free(r);
     return rc;
 }

@@ -368,6 +368,19 @@ does, in order:
    how far the run has got. The caller's function returns nonzero to stop
    the run there.
 
+**In steps**, `pk_steps` is the high level with the transcribing handed to
+the caller, for one who runs it on threads of their own: a server dealing
+several recordings' chunks among its workers. `pk_steps_new` finds the
+speech and cuts the chunks (1 to 3), and the rest is jobs, each a stretch
+to hear - a chunk whole, or a stretch the retry hears again - which the
+caller hears with `pk_asr_run` on any transcriber, in any order, and hands
+back with `pk_steps_put`. `pk_steps_take` has the chunks in order (4 to 6),
+the bits `pk_asr_transcribe` gives, which is the same steps with its own
+hearing of the jobs. The retry's stretches come one at a time, each heard
+only while the recording's budget for them lasts. The VAD on its own is
+`pk_asr_vad`, Silero's probabilities over a recording on the transcriber's
+threads, and `pk_asr_speech`, its speech segments.
+
 ### Where chunks meet
 
 The model writes a chunk as one utterance, so a cut in mid-sentence gets a
@@ -766,6 +779,20 @@ long n = pk_asr_run(a, samples, n_samples, &t);   /* 16 kHz mono float */
 pk_text(m, t, (size_t)n, text, sizeof text);      /* NeMo's transcript */
 /* t[i].frame * pk_model_frame_seconds(m) is when token i was heard */
 
+/* the high level in steps, for a caller who hears the chunks itself */
+pk_steps *s = pk_steps_new(a, samples, n_samples, NULL);     /* the VAD and the chunks */
+pk_job j;
+pk_chunk_out c;
+while (pk_steps_job(s, &j) == 1) {                /* any transcriber, any thread, any order */
+    n = pk_asr_run(b, samples + j.at.start, (size_t)(j.at.end - j.at.start), &t);
+    if (pk_steps_put(s, &j, t, n) < 0)            /* -1: memory ran out, and the run is over */
+        break;
+    while (pk_steps_take(s, &c) == 1)             /* the chunks in order, as show has them */
+        ;
+}
+pk_steps_free(s);
+
+long nsp = pk_asr_speech(a, samples, n_samples, NULL, seg, cap);  /* the speech; NULL: Silero's defaults */
 pk_vad *v = pk_vad_new(m);                        /* Silero VAD, as vadito has it */
 pk_vad_probs(v, frames, n_frames, probs);
 size_t ns = pk_segments(probs, n_frames, 16000, n_samples, &sp, seg, cap);

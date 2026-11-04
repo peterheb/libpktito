@@ -78,35 +78,27 @@ static char **utf8_args(int *argc, char **argv) {     /* argv is the UTF-8 alrea
 #define READ_FRAMES 16384
 
 static const char *usage =
-    "usage: pktito-c [options] FILE.wav...     the transcript (of several: a line each,\n"
-    "                                         the file's name, a tab and its text)\n"
-    "       pktito-c bench [options] FILE.wav  how fast this machine transcribes it\n"
-    "       pktito-c segments [options] FILE   Silero VAD's speech segments: start end\n"
-    "       pktito-c probs [options] FILE      every 32 ms frame: time and P(speech)\n"
-    "       pktito-c info [options]            what the model file says about itself\n"
-    "FILE is a WAV or an AIFF, or - for stdin.\n"
-    "  -m, --model FILE      a .pkf (default $PKTITO_MODEL, then the one .pkf in models/\n"
-    "                        here or beside the program)\n"
-    "  -t, --threads N       threads (default: one a core)\n"
-    "      --fast            the encoder's activations in blocks of 64, not 32: up to 7%\n"
-    "                        faster, WER level, a few more transcripts not float32's\n"
-    "      --max-chunk S     longest stretch transcribed at once, in seconds (30.72);\n"
-    "                        a longer recording is cut at its silences\n"
-    "      --no-retry        speech the model wrote no word for is not heard again\n"
-    "      --no-context      a cut in mid-sentence is not heard past; with --no-retry,\n"
-    "                        each chunk as NeMo transcribes it\n"
-    "      --json            chunks as JSON: start, end, text, every word's and every\n"
-    "                        token's time; and meta, the model, the audio's length and\n"
-    "                        its language\n"
-    "                        (and with -v, the run's times, backend and threads)\n"
-    "      --stream          read FILE as it arrives (a pipe, a microphone) and print\n"
-    "                        each stretch of speech as its pause ends it\n"
-    "      --pause MS        with --stream, the silence that ends a stretch (1000):\n"
-    "                        shorter is sooner and less accurate\n"
-    "      --srt, --vtt      subtitles, SRT or WebVTT: cues of one or two lines of 42\n"
-    "                        characters, cut where the words' pauses and punctuation\n"
-    "                        read best\n"
-    "  -v, --verbose         say what was read, how, and how long it took\n";
+    "usage: pktito-c [options] FILE...        transcribe\n"
+    "       pktito-c bench [options] FILE     time a transcription\n"
+    "       pktito-c segments [options] FILE  speech start and end times (s)\n"
+    "       pktito-c probs [options] FILE     speech probability of each 32 ms frame\n"
+    "       pktito-c info [options]           describe the model\n"
+    "FILE is WAV or AIFF, or - for stdin; several print a line each: name, tab, text.\n"
+    "\n"
+    "  -m, --model FILE    model (default: $PKTITO_MODEL, else the only .pkf in\n"
+    "                      ./models or in models/ beside pktito-c)\n"
+    "  -t, --threads N     threads (default: one per core)\n"
+    "      --fast          up to 7% faster; transcripts may differ slightly\n"
+    "      --max-chunk S   longest chunk, in seconds (30.72); longer audio is cut\n"
+    "                      at pauses\n"
+    "      --no-retry      don't retranscribe speech that gave no words\n"
+    "      --no-context    don't extend a cut made mid-sentence\n"
+    "                      (with --no-retry: each chunk exactly as NeMo has it)\n"
+    "      --json          chunks with word and token times, and metadata\n"
+    "      --srt, --vtt    subtitles\n"
+    "      --stream        transcribe FILE as it arrives, a line per pause\n"
+    "      --pause MS      with --stream, the pause that ends a line (1000)\n"
+    "  -v, --verbose       report the input and timings on stderr (and in --json)\n";
 
 enum { SUBS_SRT = 1, SUBS_VTT = 2 };
 
@@ -313,30 +305,18 @@ static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const float *x, size_t n,
         return c;
     }
     double t0 = pk_os_now();
-    size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
-    float *pad = calloc(frames * PK_VAD_SAMPLES, sizeof *pad), *probs = malloc(frames * sizeof *probs);
-    pk_vad *v = pk_vad_new(m);
-    if (!pad || !probs || !v)
-        die("out of memory");
-    memcpy(pad, x, n * sizeof *x);
-    pk_vad_probs_on(v, a->pool, pad, frames, probs);
-    pk_vad_free(v);
-    free(pad);
     /* segments no longer than a chunk less the padding Silero puts round them */
     pk_seg_params sp;
     pk_seg_defaults(&sp);
     sp.max_speech_s = max_chunk - 2 * sp.speech_pad_ms / 1000 - 0.1;
-    size_t cap = 2 * frames + 1;
+    const size_t cap = 2 * ((n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES) + 1;
     pk_seg *seg = malloc(cap * sizeof *seg);
-    if (!seg)
-        die("out of memory");
-    size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, cap);
-    pk_seg *c = malloc((2 * ns + 2 + n / (size_t)max_len) * sizeof *c);
+    const long ns = seg ? pk_asr_speech(a, x, n, &sp, seg, cap) : -1;
+    pk_seg *c = ns < 0 ? NULL : malloc((2 * (size_t)ns + 2 + n / (size_t)max_len) * sizeof *c);
     if (!c)
         die("out of memory");
-    *nchunks = pk_chunks(x, seg, ns, (int64_t)n, max_len, c);
+    *nchunks = pk_chunks(x, seg, (size_t)ns, (int64_t)n, max_len, c);
     free(seg);
-    free(probs);
     *vad_s = pk_os_now() - t0;
     return c;
 }
@@ -876,37 +856,31 @@ static int bench(const opts *o, pk_model *m) {
 
 /* Silero's per-frame probabilities over the whole file, as vadito prints
  * them, or get_speech_timestamps' segments from them with Silero's
- * defaults: the VAD inside the model file, on its own. */
+ * defaults: the VAD inside the model file, on its own, over -t's threads
+ * (pk_asr_vad, pk_asr_speech). */
 static int vad(const opts *o, pk_model *m) {
     size_t n;
     const int rate = pk_model_rate(m);
     float *x = read_audio(o->in, rate, &n, o);
-    size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
-    float *pad = calloc(frames * PK_VAD_SAMPLES + 1, sizeof *pad);
-    float *probs = malloc((frames + 1) * sizeof *probs);
-    pk_vad *v = pk_vad_new(m);
-    if (!pad || !probs || !v)
-        die("out of memory");
-    memcpy(pad, x, n * sizeof *x);              /* the last frame padded with zeros, as Silero does */
-    pk_vad_probs(v, pad, frames, probs);
+    pk_asr *a = asr_new(o, m);
+    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, cap = 2 * frames + 1;
     if (!strcmp(o->cmd, "probs")) {
+        float *probs = malloc((frames + 1) * sizeof *probs);
+        if (!probs || pk_asr_vad(a, x, n, probs) < 0)
+            die("out of memory");
         for (size_t f = 0; f < frames; f++)
             printf("%.3f %.9g\n", (double)f * PK_VAD_SAMPLES / rate, probs[f]);
+        free(probs);
     } else {
-        pk_seg_params sp;
-        pk_seg_defaults(&sp);
-        size_t cap = 2 * frames + 1;
         pk_seg *seg = malloc(cap * sizeof *seg);
-        if (!seg)
+        const long ns = seg ? pk_asr_speech(a, x, n, NULL, seg, cap) : -1;
+        if (ns < 0)
             die("out of memory");
-        size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, cap);
-        for (size_t i = 0; i < ns; i++)
+        for (long i = 0; i < ns; i++)
             printf("%.3f %.3f\n", (double)seg[i].start / rate, (double)seg[i].end / rate);
         free(seg);
     }
-    pk_vad_free(v);
-    free(probs);
-    free(pad);
+    pk_asr_free(a);
     free(x);
     return 0;
 }

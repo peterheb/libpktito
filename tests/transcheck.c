@@ -3,10 +3,14 @@
  * chunk is pk_asr_run_chunks' (which is pk_asr_run's), token for token;
  * with them every word starts in its own chunk; fn returning nonzero stops
  * the run there; two lanes give one lane's chunks, in the fast mode too;
- * the VAD over a pool gives one thread's probabilities; the retry's own
- * parts as pktito-app's transcribe.rs tested them, where they came from;
- * and the seam's and the retry level's, on tokens and samples built for
- * them. Includes core/transcribe.c, for its static parts. */
+ * the same in steps (pk_steps), its jobs heard out of order on other
+ * transcribers, gives pk_asr_transcribe's chunks, and a chunk put back
+ * empty its retries one at a time; the VAD over a pool gives one thread's
+ * probabilities, and pk_asr_vad and pk_asr_speech pk_vad_probs' and
+ * pk_segments'; the retry's own parts as pktito-app's transcribe.rs tested
+ * them, where they came from; and the seam's and the retry level's, on
+ * tokens and samples built for them. Includes core/transcribe.c, for its
+ * static parts. */
 #include "../core/transcribe.c"
 #include "wav.h"
 
@@ -21,6 +25,7 @@ typedef struct {
     pk_seg at[64];
     pk_tok *t[64];
     long nt[64];
+    int retried[64];            /* pk_chunk_out's, where it came from one */
     size_t stop_after;          /* stop after this many chunks; 0: never */
 } seen;
 
@@ -37,7 +42,76 @@ static void keep(seen *s, size_t i, pk_seg at, const pk_tok *t, long nt) {
 static int on_out(void *arg, const pk_chunk_out *c) {
     seen *s = arg;
     keep(s, c->i, c->at, c->toks, c->count);
+    if (c->i < 64)
+        s->retried[c->i] = c->retried;
     return s->stop_after && s->n == s->stop_after;
+}
+
+/* A run of pk_steps, as a caller with workers of its own runs it: every job
+ * there is handed out at once, and the last handed out heard first, on h[0]
+ * and h[1] by turns, each chunk taken into s as soon as it is done. With
+ * drop, chunk 0 is put back with no tokens, as where the model drops a
+ * chunk, and its retries' tokens are kept in want[0, *nwant), their frames
+ * from the chunk's start (spf samples a frame), and their stretches in
+ * got[0, *nst). *ok is whether the chunks were handed out once each in
+ * order, the retries one at a time for the chunk the seam is at, and the
+ * chunks taken in order. Returns 0, or -1 where a call failed or the run
+ * stalled, nothing out and nothing to hand out. */
+static int drive(pk_steps *st, pk_asr *h[2], const float *x, int64_t spf, seen *s, int drop,
+                 pk_tok *want, long *nwant, pk_seg *got, int *nst, int *ok) {
+    pk_job out[256];
+    size_t nout = 0, next = 0, taken = 0, turn = 0;
+    const size_t nc = pk_steps_chunks(st);
+    int retries_out = 0, rc = 0;
+    int64_t start0 = 0;         /* chunk 0's first sample, where its job starts */
+    *ok = 1;
+    *nwant = 0;
+    *nst = 0;
+    while (taken < nc) {
+        pk_job j;
+        while (nout < 256 && (rc = pk_steps_job(st, &j)) == 1) {
+            if (j.retry)
+                *ok &= ++retries_out == 1 && j.chunk == taken;
+            else
+                *ok &= j.chunk == next++;
+            out[nout++] = j;
+        }
+        if (rc < 0 || nout == 0)
+            return -1;
+        j = out[--nout];
+        const pk_tok *t;
+        long nt = pk_asr_run(h[turn++ % 2], x + j.at.start, (size_t)(j.at.end - j.at.start), &t);
+        if (nt < 0)
+            return -1;
+        if (!j.retry && j.chunk == 0) {
+            start0 = j.at.start;
+            if (drop)
+                nt = 0;
+        }
+        if (j.retry) {
+            retries_out--;
+            if (j.chunk == 0 && *nst < 8) {
+                got[(*nst)++] = j.at;
+                for (long q = 0; q < nt && *nwant < 4096; q++) {
+                    want[*nwant] = t[q];
+                    want[(*nwant)++].frame += (int32_t)((j.at.start - start0) / spf);
+                }
+            }
+        }
+        if (pk_steps_put(st, &j, t, nt))
+            return -1;
+        pk_chunk_out c;
+        while ((rc = pk_steps_take(st, &c)) == 1) {
+            *ok &= c.i == taken++ && c.n == nc;
+            keep(s, c.i, c.at, c.toks, c.count);
+            if (c.i < 64)
+                s->retried[c.i] = c.retried;
+        }
+        if (rc < 0)
+            return -1;
+    }
+    pk_job j;
+    return pk_steps_job(st, &j) == 0 && nout == 0 ? 0 : -1;
 }
 
 typedef struct {
@@ -250,6 +324,142 @@ int main(int argc, char **argv) {
         free(x4);
     }
 
+    /* the same in steps (pk_steps): the recording four times over in chunks
+     * of at most 10 s, with the context and the retry, the jobs handed out
+     * as they come and heard last first on transcribers of 3 and 5 threads,
+     * against pk_asr_transcribe on one of 4 - every chunk its tokens, as
+     * many retried, in order. Then test.wav whole with chunk 0 put back
+     * empty, as where the model drops a chunk: its two halves heard again
+     * (core/transcribe.c, stretches), one at a time, from the chunk's start
+     * to its end, and the chunk their tokens. */
+    {
+        const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
+        float *x4 = malloc(4 * n * sizeof *x4);
+        pk_asr *one = pk_asr_new(m, 4), *h[2] = { pk_asr_new(m, 3), pk_asr_new(m, 5) };
+        pk_tok *want = malloc(4096 * sizeof *want);
+        seen s1 = { 0 }, s2 = { 0 }, s3 = { 0 };
+        pk_transcribe_opts o4;
+        pk_transcribe_defaults(&o4);
+        o4.max_chunk_s = 10;
+        pk_seg got[8];
+        long nwant = 0;
+        int nst = 0, ok = 0;
+        CHECK(x4 && one && h[0] && h[1] && want, "steps: three transcribers");
+        if (x4 && one && h[0] && h[1] && want) {
+            for (int k = 0; k < 4; k++)
+                memcpy(x4 + (size_t)k * n, x, n * sizeof *x);
+            pk_steps *st = pk_steps_new(one, x4, 4 * n, &o4);
+            CHECK(pk_asr_transcribe(one, x4, 4 * n, &o4, on_out, &s1) == 0 && s1.n >= 8,
+                  "steps: pk_asr_transcribe runs to the end, in 8 chunks or more");
+            CHECK(st && drive(st, h, x4, spf, &s2, 0, want, &nwant, got, &nst, &ok) == 0 && ok,
+                  "steps: every chunk handed out once, in order, and taken in order");
+            CHECK(same(&s1, &s2) && !memcmp(s1.retried, s2.retried, sizeof s1.retried),
+                  "steps: every chunk pk_asr_transcribe's, token for token, as many retried");
+            pk_steps_free(st);
+
+            st = pk_steps_new(one, x, n, NULL);
+            CHECK(st && drive(st, h, x, spf, &s3, 1, want, &nwant, got, &nst, &ok) == 0 && ok,
+                  "steps, a chunk dropped: the jobs as before, its retries one at a time");
+            CHECK(s3.n > 1 && nst == 2 && s3.retried[0] == 2 && got[0].start == s3.at[0].start
+                      && got[0].end == got[1].start && got[1].end == s3.at[0].end,
+                  "steps, a chunk dropped: its two halves heard again, from its start to its end");
+            CHECK(nwant > 0 && s3.nt[0] == nwant && !memcmp(s3.t[0], want, (size_t)nwant * sizeof *want),
+                  "steps, a chunk dropped: the chunk its halves' tokens");
+            pk_steps_free(st);
+        }
+        forget(&s1), forget(&s2), forget(&s3);
+        pk_asr_free(one), pk_asr_free(h[0]), pk_asr_free(h[1]);
+        free(want);
+        free(x4);
+    }
+
+    /* pk_steps' edges: max_chunk_s under a second, no samples, and jobs
+     * that are not out - a chunk not handed out, one put twice, a retry,
+     * a chunk's samples not its own - each refused, and every call after
+     * a refusal refused too */
+    {
+        pk_transcribe_opts oh;
+        pk_transcribe_defaults(&oh);
+        oh.max_chunk_s = 0.5;
+        CHECK(pk_steps_new(a, x, n, &oh) == NULL, "steps: max_chunk_s under a second, none");
+        pk_steps *st = pk_steps_new(a, x, 0, NULL);
+        pk_job j;
+        pk_chunk_out c;
+        CHECK(st && pk_steps_chunks(st) == 0 && pk_steps_job(st, &j) == 0 && pk_steps_take(st, &c) == 0,
+              "steps: no samples, no jobs, no chunks");
+        pk_steps_free(st);
+        st = pk_steps_new(a, x, n, NULL);
+        CHECK(st && pk_steps_job(st, &j) == 1 && j.chunk == 0 && !j.retry, "steps: chunk 0 first");
+        pk_steps_free(st);
+        const pk_tok *heard;
+        const long nt = pk_asr_run(a, x + j.at.start, (size_t)(j.at.end - j.at.start), &heard);
+        pk_tok *t = malloc(((size_t)(nt > 0 ? nt : 1)) * sizeof *t);     /* past the next call on a */
+        if (!t)
+            return 1;
+        if (nt > 0)
+            memcpy(t, heard, (size_t)nt * sizeof *t);
+        const pk_job later = { 1, 0, j.at }, again = { 0, 1, j.at },
+                     moved = { 0, 0, { j.at.start + 1, j.at.end } };
+        const struct { const pk_job *bad; int first; const char *what; } refused[] = {
+            { &later, 0, "steps: a chunk not handed out, refused, and every call after it" },
+            { &j, 1, "steps: a chunk put twice, refused the second time, and every call after it" },
+            { &again, 0, "steps: a retry not handed out, refused, and every call after it" },
+            { &moved, 0, "steps: a chunk's samples not its own, refused, and every call after it" },
+        };
+        for (size_t k = 0; k < sizeof refused / sizeof *refused; k++) {
+            pk_job h;
+            st = pk_steps_new(a, x, n, NULL);
+            int ok = st && pk_steps_job(st, &h) == 1 && h.chunk == 0;
+            if (ok && refused[k].first)
+                ok = pk_steps_put(st, &h, t, nt) == 0;
+            ok = ok && pk_steps_put(st, refused[k].bad, t, nt) == -1 && pk_steps_put(st, &h, t, nt) == -1
+                 && pk_steps_job(st, &h) == -1 && pk_steps_take(st, &c) == -1;
+            CHECK(ok, refused[k].what);
+            pk_steps_free(st);
+        }
+        free(t);
+    }
+
+    /* pk_asr_vad: Silero over the transcriber's threads, its last frame of
+     * 300 samples padded with silence - pk_vad_probs' bits over a copy
+     * padded with zeros, twice over, its stream made new each time; and
+     * pk_asr_speech pk_segments' speech from them, Silero's or not */
+    {
+        const int rate = pk_model_rate(m);
+        const size_t nn = (n / PK_VAD_SAMPLES - 1) * PK_VAD_SAMPLES + 300;
+        const size_t frames = (nn + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, cap = 2 * frames + 1;
+        float *pad = calloc(frames * PK_VAD_SAMPLES, sizeof *pad);
+        float *p1 = malloc(frames * sizeof *p1), *p2 = malloc(frames * sizeof *p2);
+        pk_seg *g1 = malloc(cap * sizeof *g1), *g2 = malloc(cap * sizeof *g2);
+        pk_vad *v = pk_vad_new(m);
+        pk_asr *b = pk_asr_new(m, 6);
+        const int made = pad && p1 && p2 && g1 && g2 && v && b;
+        CHECK(made, "pk_asr_vad: made");
+        if (made) {
+            memcpy(pad, x, nn * sizeof *x);
+            pk_vad_probs(v, pad, frames, p1);
+            int ok = 1;
+            for (int k = 0; k < 2; k++)
+                ok &= pk_asr_vad(b, x, nn, p2) == (long)frames && !memcmp(p1, p2, frames * sizeof *p1);
+            CHECK(ok, "pk_asr_vad: every probability pk_vad_probs', twice, the last frame padded with silence");
+            pk_seg_params sp;
+            pk_seg_defaults(&sp);
+            for (int k = 0; k < 2; k++) {
+                const size_t ns = pk_segments(p1, frames, rate, (int64_t)nn, &sp, g1, cap);
+                const long ns2 = pk_asr_speech(b, x, nn, k ? &sp : NULL, g2, cap);
+                CHECK(ns > 1 && ns2 == (long)ns && !memcmp(g1, g2, ns * sizeof *g1),
+                      k ? "pk_asr_speech: pk_segments' speech, at 32 ms pauses"
+                        : "pk_asr_speech: pk_segments' speech, Silero's defaults");
+                sp.min_silence_ms = 32;
+            }
+            CHECK(pk_asr_vad(b, x, 0, p2) == 0 && pk_asr_speech(b, x, 0, NULL, g2, cap) == 0,
+                  "pk_asr_vad: no samples, no frames");
+        }
+        pk_asr_free(b);
+        pk_vad_free(v);
+        free(pad), free(p1), free(p2), free(g1), free(g2);
+    }
+
     /* Silero's encoder over a pool (core/vad.c, pk_vad_probs_on): the
      * recording four times over, cut to a block and a frame past a run, so
      * that runs follow runs and the last block is one frame, then a second
@@ -292,7 +502,7 @@ int main(int argc, char **argv) {
         const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
         const pk_seg ch = { 100 * spf, 400 * spf };
         run sr = { 0 };
-        sr.a = a;
+        sr.m = m;
         sr.t = malloc((8 + SEAM_TOKS) * sizeof *sr.t);
         sr.w = malloc(8 * sizeof *sr.w);
         if (The >= 0 && the >= 0 && was >= 0 && no >= 0 && sr.t && sr.w) {
@@ -342,7 +552,7 @@ int main(int argc, char **argv) {
             CHECK(k == 2 && sr.t[0].id == was, "seam: another word there stays");
             /* the retry's level: speech between two words in a chunk 6 dB
              * under the recording's, 0.6 dB under the chunk's and then 4.5 */
-            const pk_seg speech = { ch.start, ch.start + 250 * spf };
+            pk_seg speech = { ch.start, ch.start + 250 * spf };
             float *xs = malloc((size_t)ch.end * sizeof *xs);
             sr.st = malloc(8 * sizeof *sr.st);
             sr.text = malloc(sr.textcap = 256);
@@ -380,8 +590,9 @@ int main(int argc, char **argv) {
     CHECK(pk_asr_transcribe(a, x, 0, NULL, on_out, &r) == 0 && r.n == 0, "no samples: no chunks");
 
     if (!fails)
-        printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, a pool's VAD one "
-               "thread's, the retry's and the seam's parts: ok\n", lo.n);
+        printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, the steps "
+               "pk_asr_transcribe's, a pool's VAD one thread's, the retry's and the seam's parts: ok\n",
+               lo.n);
     forget(&hi), forget(&lo);
     pk_asr_free(a);
     pk_model_free(m);
