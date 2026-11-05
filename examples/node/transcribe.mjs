@@ -100,8 +100,9 @@ function main(argv) {
     const x = new Float32Array(n);
     blocks.reduce((at, b) => (x.set(b, at), at + b.length), 0);
 
-    // Silero's speech segments, then chunks of at most 30 s cut between
-    // them, the silence left out; a recording that fits is one chunk
+    // Silero's speech segments, ended at a pause of 64 ms, then chunks of
+    // at most 30.72 s cut between them, the silence left out; a recording
+    // that fits is one chunk. ./pktito-c cuts so (core/transcribe.c)
     const frames = Math.ceil(n / PK_VAD_SAMPLES);
     const padded = new Float32Array(frames * PK_VAD_SAMPLES);
     padded.set(x);
@@ -111,10 +112,12 @@ function main(argv) {
     pk.vad_probs(v, padded, frames, probs);
     const sp = {};
     pk.seg_defaults(sp);
-    sp.max_speech_s = 30 - 0.06 - 0.1;  // a segment and Silero's 30 ms pads fit in 30 s, as ./pktito-c has it
+    sp.min_silence_ms = 32;  // two of Silero's 32 ms frames
+    sp.max_speech_s = 30.72 - 0.06 - 0.1;  // a segment and Silero's 30 ms pads fit in a chunk
+    const maxLen = Math.trunc(30.72 * rate);
     const ns = pk.segments(probs, frames, rate, n, sp, seg, seg.length / 2);
-    const chunk = new BigInt64Array(2 * (2 * ns + 2 + Math.floor(n / (30 * rate))));
-    const nc = pk.chunks(x, seg, ns, n, 30 * rate, chunk);
+    const chunk = new BigInt64Array(2 * (2 * ns + 2 + Math.floor(n / maxLen)));
+    const nc = pk.chunks(x, seg, ns, n, maxLen, chunk);
 
     // each chunk through the transcriber, as NeMo would hear it as a file.
     // A call holds Node's thread until it returns, here as long as the

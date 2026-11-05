@@ -1,17 +1,20 @@
 #!/bin/sh
 # make check-ffi: each example whose language is here, built and run on
-# test.wav, its transcript held to ./pktito-c's as check-c holds
-# examples/transcribe's; one whose language is not here is skipped with a
-# line. Run from the top of the tree: examples/check.sh MODEL PYTHON
+# test.wav, its transcript held to ./pktito-c's without the context and the
+# retry, as check-c holds examples/transcribe's; one whose language is not
+# here is skipped with a line. Run from the top of the tree:
+# examples/check.sh MODEL PYTHON
 model=$1 python=$2 wav=tests/data/test.wav
-want=$(./pktito-c -m "$model" "$wav") || exit 1
+# the examples write a chunk a line, the CLI a sentence: the words held in order
+want=$(./pktito-c --no-context --no-retry -m "$model" "$wav") || exit 1
+want=$(printf '%s\n' "$want" | tr -s '\n' ' ')
 status=0
 
 # check NAME THROUGH COMMAND...: COMMAND MODEL WAV's text against the CLI's
 check() {
     name=$1 through=$2
     shift 2
-    if [ "$("$@" "$model" "$wav" | tr -d '\r' | cut -d' ' -f3-)" = "$want" ]; then
+    if [ "$("$@" "$model" "$wav" | tr -d '\r' | cut -d' ' -f3- | tr -s '\n' ' ')" = "$want" ]; then
         echo "examples/$name: the CLI's transcript, through $through"
     else
         echo "examples/$name: FAIL - not the CLI's transcript"

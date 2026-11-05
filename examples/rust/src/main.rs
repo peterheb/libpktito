@@ -142,8 +142,9 @@ fn main() -> ExitCode {
         pk_wav_close(w);
         let n = x.len();
 
-        // Silero's speech segments, then chunks of at most 30 s cut between
-        // them, the silence left out; a recording that fits is one chunk
+        // Silero's speech segments, ended at a pause of 64 ms, then chunks of
+        // at most 30.72 s cut between them, the silence left out; a recording
+        // that fits is one chunk. ./pktito-c cuts so (core/transcribe.c)
         let frames = n.div_ceil(PK_VAD_SAMPLES);
         let mut padded = x.clone();
         padded.resize(frames * PK_VAD_SAMPLES, 0.0);
@@ -153,10 +154,12 @@ fn main() -> ExitCode {
         pk_vad_probs(v, padded.as_ptr(), frames, probs.as_mut_ptr());
         let mut sp = PkSegParams::default();
         pk_seg_defaults(&mut sp);
-        sp.max_speech_s = 30.0 - 0.06 - 0.1; // a segment and Silero's 30 ms pads fit in 30 s, as ./pktito-c has it
+        sp.min_silence_ms = 32.0; // two of Silero's 32 ms frames
+        sp.max_speech_s = 30.72 - 0.06 - 0.1; // a segment and Silero's 30 ms pads fit in a chunk
+        let max_len = (30.72 * rate as f64) as usize;
         let ns = pk_segments(probs.as_ptr(), frames, rate as c_int, n as i64, &sp, seg.as_mut_ptr(), seg.len());
-        let mut chunk = vec![PkSeg::default(); 2 * ns + 2 + n / (30 * rate)];
-        let nc = pk_chunks(x.as_ptr(), seg.as_ptr(), ns, n as i64, (30 * rate) as i64, chunk.as_mut_ptr());
+        let mut chunk = vec![PkSeg::default(); 2 * ns + 2 + n / max_len];
+        let nc = pk_chunks(x.as_ptr(), seg.as_ptr(), ns, n as i64, max_len as i64, chunk.as_mut_ptr());
 
         // each chunk through the transcriber, as NeMo would hear it as a file
         let a = pk_asr_new(m, 0);

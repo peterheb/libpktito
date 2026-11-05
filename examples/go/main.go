@@ -85,8 +85,9 @@ func run(modelPath, wavPath string) int {
 	C.pk_wav_close(w)
 	n := len(x)
 
-	// Silero's speech segments, then chunks of at most 30 s cut between
-	// them, the silence left out; a recording that fits is one chunk
+	// Silero's speech segments, ended at a pause of 64 ms, then chunks of
+	// at most 30.72 s cut between them, the silence left out; a recording
+	// that fits is one chunk. ./pktito-c cuts so (core/transcribe.c)
 	frames := (n + C.PK_VAD_SAMPLES - 1) / C.PK_VAD_SAMPLES
 	padded := make([]float32, frames*C.PK_VAD_SAMPLES)
 	copy(padded, x)
@@ -96,10 +97,12 @@ func run(modelPath, wavPath string) int {
 	C.pk_vad_probs(v, floats(padded), C.size_t(frames), floats(probs))
 	var sp C.pk_seg_params
 	C.pk_seg_defaults(&sp)
-	sp.max_speech_s = 30 - 0.06 - 0.1 // a segment and Silero's 30 ms pads fit in 30 s, as ./pktito-c has it
+	sp.min_silence_ms = 32               // two of Silero's 32 ms frames
+	sp.max_speech_s = 30.72 - 0.06 - 0.1 // a segment and Silero's 30 ms pads fit in a chunk
+	maxLen := int(30.72 * float64(rate))
 	ns := int(C.pk_segments(floats(probs), C.size_t(frames), C.int(rate), C.int64_t(n), &sp, &seg[0], C.size_t(len(seg))))
-	chunk := make([]C.pk_seg, 2*ns+2+n/(30*rate))
-	nc := int(C.pk_chunks(floats(x), &seg[0], C.size_t(ns), C.int64_t(n), C.int64_t(30*rate), &chunk[0]))
+	chunk := make([]C.pk_seg, 2*ns+2+n/maxLen)
+	nc := int(C.pk_chunks(floats(x), &seg[0], C.size_t(ns), C.int64_t(n), C.int64_t(maxLen), &chunk[0]))
 
 	// each chunk through the transcriber, as NeMo would hear it as a file;
 	// the transcriber runs its own threads, and a cgo call holds only the

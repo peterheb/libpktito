@@ -54,6 +54,8 @@ way. What every one has to get right:
   back with koffi's async form.
 
 `make check-ffi` runs each example whose language is here on test.wav and
-holds its transcript to ./pktito-c's, as `make check-c` holds transcribe.c
-to it; one whose language is not is skipped with a line. It is not part of
+holds its transcript to that of `./pktito-c --no-context --no-retry`, word
+for word (the examples write a chunk a line, the CLI a sentence), as `make
+check-c` holds transcribe.c to it; one whose language is not is skipped
+with a line. It is not part of
 `make check`.

@@ -330,8 +330,9 @@ check-math: tests/mathcheck
 
 # The examples in other languages (examples/README.md), through the shared
 # library or the archive: each whose language is here must print test.wav's
-# transcript as ./pktito-c does, as check-c holds examples/transcribe to it,
-# and one whose language is not is skipped with a line (examples/check.sh).
+# transcript as ./pktito-c --no-context --no-retry does, as check-c holds
+# examples/transcribe to it, and one whose language is not is skipped with a
+# line (examples/check.sh).
 # Apart from check, since they are examples of the wiring, not the library:
 # a language missing or changed on a board is no reason to hold up a commit.
 check-ffi: pktito-c libpktito.a $(SHLIB)
