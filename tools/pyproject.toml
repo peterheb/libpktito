@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pktito-tools"
-version = "0.1.0"
+version = "0.9.6"
 description = "Convert NVIDIA's Parakeet TDT .nemo checkpoints to pktito's .pkf, and check the result"
 license = "MIT"
 requires-python = ">=3.9"

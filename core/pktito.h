@@ -38,7 +38,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define PKTITO_VERSION "0.1.0"
+#define PKTITO_VERSION "0.9.6"
 
 /* ---------------------------------------------------------------- model --- */
 
