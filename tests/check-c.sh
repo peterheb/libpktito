@@ -31,8 +31,9 @@ run ./tests/sentcheck "$MODEL" tests/data/test.wav
   && echo "pktito-c: the tiny model through the CLI, chunked, four ways" \
   || { echo "pktito-c: FAIL on the tiny model"; exit 1; }
 d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/ñ.wav" \
-  && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
-[ $r = 0 ] && echo "pktito-c: a model and a WAV named past ASCII, from its command line" \
+  && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json \
+  && PKTITO_MODEL="$d/tiny-é.pkf" ./pktito-c --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
+[ $r = 0 ] && echo "pktito-c: a model and a WAV named past ASCII, from its command line and \$PKTITO_MODEL" \
   || { echo "pktito-c: FAIL on a model and a WAV named past ASCII"; exit 1; }
 rm -f tests/pkfcheck.wav tests/pkfcheck.json
 

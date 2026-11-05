@@ -59,9 +59,16 @@ Copy-Item $tiny "$d\tiny-$e.pkf"
 Copy-Item tests\pkfcheck.wav "$d\$n.wav"
 cmd /c "pktito-c.exe -m `"$d\tiny-$e.pkf`" --json `"$d\$n.wav`" > tests\pathcheck.json"
 $ok = (-not $LASTEXITCODE) -and (same tests\pathcheck.json tests\pkfcheck.json)
+# and the model through the environment, which getenv gives in the ANSI
+# code page, as main's argv
+$was = $env:PKTITO_MODEL
+$env:PKTITO_MODEL = "$d\tiny-$e.pkf"
+cmd /c "pktito-c.exe --json `"$d\$n.wav`" > tests\pathcheck.json"
+$ok = $ok -and (-not $LASTEXITCODE) -and (same tests\pathcheck.json tests\pkfcheck.json)
+$env:PKTITO_MODEL = $was
 Remove-Item -Recurse -Force $d, tests\pathcheck.json
 if (-not $ok) { 'pktito-c: FAIL on a model and a WAV named past ASCII'; exit 1 }
-'pktito-c: a model and a WAV named past ASCII, from its command line'
+'pktito-c: a model and a WAV named past ASCII, from its command line and $PKTITO_MODEL'
 Remove-Item tests\pkfcheck.wav, tests\pkfcheck.json
 
 cmd /c "pktito-c.exe probs -m `"$Model`" tests\data\test.wav > tests\probs.out"

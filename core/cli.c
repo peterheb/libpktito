@@ -68,10 +68,40 @@ static char **utf8_args(int *argc, char **argv) {
     *argc = n;
     return out;
 }
+
+static void die(const char *fmt, ...);
+
+/* An environment variable in UTF-8, from Windows' own UTF-16 copy: the C
+ * runtime's getenv gives it in the ANSI code page, as main's argv, and an
+ * older runtime's _wgetenv is made from that. Kept for the life of the
+ * process; NULL where it is unset */
+static const char *utf8_getenv(const char *name) {
+    wchar_t wname[64];
+    if (!MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 64))
+        return NULL;
+    const DWORD n = GetEnvironmentVariableW(wname, NULL, 0);    /* its length and the NUL; 0 where unset */
+    if (!n)
+        return NULL;
+    wchar_t *w = malloc((size_t)n * sizeof *w);
+    char *s = NULL;
+    if (w && GetEnvironmentVariableW(wname, w, n) == n - 1) {
+        const int k = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+        if (k > 0 && (s = malloc((size_t)k)) != NULL)
+            WideCharToMultiByte(CP_UTF8, 0, w, -1, s, k, NULL, NULL);
+    }
+    free(w);
+    if (!s)
+        die("cannot read $%s", name);
+    return s;
+}
 #else
 static char **utf8_args(int *argc, char **argv) {     /* argv is the UTF-8 already */
     (void)argc;
     return argv;
+}
+
+static const char *utf8_getenv(const char *name) {    /* the environment is the UTF-8 already */
+    return getenv(name);
 }
 #endif
 
@@ -191,7 +221,7 @@ static pk_model *load_model(const char *flag, const char *argv0) {
     static const char *names[] = { "parakeet-tdt-0.6b-v3.pkf", "parakeet-tdt-0.6b-v2.pkf" };
     char err[512], path[4096], found[2][4096];
     int nfound = 0;
-    const char *p = flag ? flag : getenv("PKTITO_MODEL");
+    const char *p = flag ? flag : utf8_getenv("PKTITO_MODEL");
     if (!p) {
         const char *slash = strrchr(argv0, '/');
 #ifdef _WIN32
