@@ -2144,3 +2144,41 @@ under gcc 13.3 and clang 18.1 (neon-sve, neon-dp and neon), on the M4 Pro
 under Apple clang 21 (neon-dp and neon; neon-sve skipped), on the Pi 5
 (gcc 14.2, the same) and on the Pi 3B+ (gcc 14.2, neon; the other two
 skipped).
+
+## 2026-11-05 - neon-sve on Windows: SVE and I8MM asked of the system (hypothesis)
+
+core/os.c's Windows cpu_has answers asimddp alone, so neon-sve, which
+needs asimddp, sve, i8mm and svei8mm, is never picked there. Windows
+answers the other three through IsProcessorFeaturePresent:
+PF_ARM_SVE_INSTRUCTIONS_AVAILABLE (46), PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE
+(66) and PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE (57), Microsoft Learn's
+numbers for that call. rtxspark, an NVIDIA RTX Spark N1X (the GB10's ten
+Cortex-X925 and ten Cortex-A725) under Windows 11 build 28000, reported all
+three on 2026-11-03. Expected, if Windows runs the SVE loop as Linux does:
+kcheck gives ref's bits under neon-sve there, and test.wav through v2
+takes about 12% less time than under neon-dp, as on spark-a80d with the
+lanes (2026-11-03 above). A Windows that answers no keeps neon-dp.
+
+## 2026-11-05 - neon-sve on Windows: SVE and I8MM asked of the system (result: kept)
+
+731cc3b with core/os.c's Windows cpu_has answering sve, i8mm and svei8mm
+through IsProcessorFeaturePresent (46, 66, 57), cross-built on the 9950X
+by llvm-mingw's clang 23.1.2 (UCRT) and run on rtxspark: Windows 11 build
+28000.3231 says yes to all three, and neon-sve is picked.
+tests/check-c.ps1 passes there with v2 (the app's copy; no v3 on the
+machine, skipped): kcheck (1906 cases) gives ref's bits under neon-sve,
+neon-dp and neon, and test.wav's v2 transcript under neon-sve is ref's,
+every token and time.
+
+test.wav through v2, best of 5, at the default of 20 threads, neon-sve as
+picked and neon-dp by PKTITO_KERNELS back to back in each of 6 rounds, the
+order alternating, the laptop idle before (1-2% CPU):
+
+| compiler     | neon-dp       | neon-sve      | change, median (range)  |
+| ------------ | ------------- | ------------- | ----------------------- |
+| clang 23.1.2 | 0.319-0.346 s | 0.283-0.296 s | -12.4% (-15.3 to -10.3) |
+
+Both slowed across the rounds as the laptop warmed (neon-dp 0.319 to
+0.346 s, neon-sve 0.283 to 0.293), and the margin held: spark-a80d's
+-12.4% (gcc 13.3) and -12.7% (clang 18.1) under Linux with the lanes
+(2026-11-03 above).

@@ -561,13 +561,30 @@ static int cpu_has(const char *f) {
 }
 
 #elif (defined(__aarch64__) || defined(_M_ARM64)) && defined(PK_WINDOWS)
+/* winnt.h's numbers (IsProcessorFeaturePresent on Microsoft Learn), for
+ * headers older than the feature */
 #ifndef PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
 #define PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE 43
+#endif
+#ifndef PF_ARM_SVE_INSTRUCTIONS_AVAILABLE
+#define PF_ARM_SVE_INSTRUCTIONS_AVAILABLE 46
+#endif
+#ifndef PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE
+#define PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE 57
+#endif
+#ifndef PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE
+#define PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE 66
 #endif
 
 static int cpu_has(const char *f) {
     if (!strcmp(f, "asimddp"))
         return IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE) != 0;
+    if (!strcmp(f, "sve"))
+        return IsProcessorFeaturePresent(PF_ARM_SVE_INSTRUCTIONS_AVAILABLE) != 0;
+    if (!strcmp(f, "i8mm"))
+        return IsProcessorFeaturePresent(PF_ARM_V82_I8MM_INSTRUCTIONS_AVAILABLE) != 0;
+    if (!strcmp(f, "svei8mm"))
+        return IsProcessorFeaturePresent(PF_ARM_SVE_I8MM_INSTRUCTIONS_AVAILABLE) != 0;
     return 0;
 }
 
