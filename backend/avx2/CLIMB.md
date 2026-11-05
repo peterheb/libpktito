@@ -2857,3 +2857,35 @@ the rows leave open: the rule only where every core is one kind, as on the
 9950X and most servers (the cores a lane's threads run on being the
 scheduler's, not the engine's), and whether the avx2 tile's loss is its
 copy or the E cores.
+
+## 2026-11-02 - the lanes on armlet (result, recorded 2026-11-05)
+
+0.9.5's AliceBench fleet run gave armlet 7.3x, where 0.9.3's gave 7.8x,
+and armlet's are the most lopsided cores the lanes run on: two Cortex-A76
+and six A55 (Snapdragon 7c, Windows 11 on Arm), at its default 8 threads,
+so two lanes. So the lanes were timed against one lane there. The build
+was a scratch one of 7012b87, cross-built with llvm-mingw 20260922 (clang
+23.1.2, aarch64-w64-mingw32), running neon-dp; the one-lane runs are the
+same binary with PKTITO_LANES_X=1, an experiment-only switch for the most
+lanes that was never committed. AliceBench's chapter 1 alone (640.5 s),
+through the v2 model, in 4 rounds with the order turned and 60 s of rest
+before each run, 16:34 to 16:57:
+
+| round | one lane | lanes | change |
+|---|---|---|---|
+| 1, lanes first | 84.75 s | 80.94 | 1.05x |
+| 2 | 85.46 | 73.74 | 1.16x |
+| 3, lanes first | 67.25 | 83.75 | 0.80x |
+| 4 | 85.61 | 72.60 | 1.18x |
+| median | 85.1 (7.5x) | 77.3 (8.3x) | 1.10x |
+
+- The lanes were faster in 3 of 4 rounds. One lane's 67.25 s is the
+  outlier of the eight; armlet's AliceBench runs spread by 13% on
+  2026-10-27 (backend/neon-dp/CLIMB.md, the SDOT block loop on Windows).
+- bench on test.wav: lanes 6.005 and 5.776 s against one lane's 7.048 and
+  7.075 (1.17 to 1.22x).
+- The 8 transcripts are the same bytes, and the phones' (above) too: md5
+  ce7397d8 at its start.
+
+So 0.9.5's drop on armlet is not the lanes, which gain a tenth there as
+on the phones.
