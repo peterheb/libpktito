@@ -88,9 +88,10 @@ foreach ($v in @(@('v2', $V2), @('v3', $V3))) {
 
 # Line by line, as PowerShell gives a program's output, without the line
 # ends (examples/transcribe writes the C runtime's CR LF) and less the two
-# times it puts before a chunk's text; -cne, since -ne ignores case.
+# times it puts before a chunk's text, then joined: the example writes a
+# chunk a line, the CLI a sentence. -cne, since -ne ignores case.
 $ex = cmd /c "examples\transcribe.exe `"$Model`" tests\data\test.wav" | ForEach-Object { ($_ -split ' ', 3)[2] }
 $cli = cmd /c "pktito-c.exe --no-context --no-retry -m `"$Model`" tests\data\test.wav"
-if (($ex -join "`n") -cne ($cli -join "`n")) { "examples/transcribe: FAIL - not the CLI's transcript"; exit 1 }
+if ((($ex -join ' ') -replace ' +', ' ') -cne (($cli -join ' ') -replace ' +', ' ')) { "examples/transcribe: FAIL - not the CLI's transcript"; exit 1 }
 "examples/transcribe: the CLI's transcript without the context and the retry, through the library alone"
 'check-c: all passed'

@@ -1,6 +1,6 @@
 /* pktito-c: speech in a WAV or AIFF file to text, from the command line.
  *
- *   pktito-c talk.wav                   the transcript
+ *   pktito-c talk.wav                   the transcript, a sentence a line
  *   pktito-c --json talk.wav            chunks with their times, text and tokens
  *   pktito-c --srt talk.wav             subtitles, or --vtt as WebVTT: pk_captions' cues
  *   pktito-c bench talk.wav             how fast this machine transcribes it
@@ -78,7 +78,7 @@ static char **utf8_args(int *argc, char **argv) {     /* argv is the UTF-8 alrea
 #define READ_FRAMES 16384
 
 static const char *usage =
-    "usage: pktito-c [options] FILE...        transcribe\n"
+    "usage: pktito-c [options] FILE...        transcribe, a sentence a line\n"
     "       pktito-c bench [options] FILE     time a transcription\n"
     "       pktito-c segments [options] FILE  speech start and end times (s)\n"
     "       pktito-c probs [options] FILE     speech probability of each 32 ms frame\n"
@@ -466,7 +466,78 @@ typedef struct {
     char *text;
     size_t cap;
     capwords words;
+    /* a sentence a line: the tokens in none yet, their frames from the
+     * recording's start, and the words' language once they say it */
+    pk_tok *tail;
+    size_t ntail, tailcap;
+    const char *lang;
 } chunk_out;
+
+/* The language of the words so far (pk_language), their texts where the
+ * buffer is now, for a file still being heard */
+static const char *words_language(const capwords *c) {
+    pk_capword *w = malloc((c->n ? c->n : 1) * sizeof *w);
+    if (!w)
+        die("out of memory");
+    for (size_t i = 0; i < c->n; i++)
+        w[i] = (pk_capword){ c->text + (uintptr_t)c->w[i].text, 0, 0 };
+    const char *lang = pk_language(w, c->n);
+    free(w);
+    return lang;
+}
+
+/* A file's sentences, a line each, as its chunks come: the tokens in none
+ * yet, then the chunk's, their frames counted from the recording's start
+ * as pk_sentences takes them. A sentence that runs on into the next chunk
+ * waits for it, and the last chunk ends the last one. */
+static void print_sentences(chunk_out *p, const pk_chunk_out *ch) {
+    const pk_model *m = p->m;
+    const size_t nt = (size_t)ch->count;
+    if (p->ntail + nt > p->tailcap) {
+        while (p->ntail + nt > p->tailcap)
+            p->tailcap = p->tailcap ? 2 * p->tailcap : 1024;
+        if (!(p->tail = realloc(p->tail, p->tailcap * sizeof *p->tail)))
+            die("out of memory");
+    }
+    const int32_t at = (int32_t)llround((double)ch->at.start / (p->rate * p->fs));
+    for (size_t k = 0; k < nt; k++) {
+        p->tail[p->ntail] = ch->toks[k];
+        p->tail[p->ntail++].frame += at;
+    }
+    if (!p->lang && nt) {           /* the multilingual model's, until its words say */
+        pk_word *wd = malloc(nt * sizeof *wd);
+        if (!wd)
+            die("out of memory");
+        size_t nw = pk_words(m, ch->toks, nt, wd);
+        for (size_t k = 0; k < nw; k++) {
+            char word[1024];
+            pk_text(m, ch->toks + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
+            cap_add(&p->words, word, 0, 0);
+        }
+        free(wd);
+        p->lang = words_language(&p->words);
+    }
+    pk_sentence *s = malloc((p->ntail ? p->ntail : 1) * sizeof *s);
+    if (!s)
+        die("out of memory");
+    long ns = pk_sentences(m, p->tail, p->ntail, p->lang, ch->i + 1 == ch->n, s);
+    if (ns < 0)
+        die("out of memory");
+    for (long k = 0; k < ns; k++) {
+        size_t len;
+        while ((len = pk_text(m, p->tail + s[k].first, (size_t)s[k].n, p->text, p->cap)) >= p->cap)
+            if (!(p->text = realloc(p->text, p->cap *= 2)))
+                die("out of memory");
+        if (len)
+            puts(p->text);
+    }
+    if (ns > 0) {
+        const size_t used = (size_t)(s[ns - 1].first + s[ns - 1].n);
+        memmove(p->tail, p->tail + used, (p->ntail - used) * sizeof *p->tail);
+        p->ntail -= used;
+    }
+    free(s);
+}
 
 /* One chunk's tokens, printed as -o asks (pk_asr_transcribe's fn) */
 static int print_chunk(void *arg, const pk_chunk_out *ch) {
@@ -528,22 +599,25 @@ static int print_chunk(void *arg, const pk_chunk_out *ch) {
         free(wd);
     } else if (p->many) {
         printf("%s%s", i && len ? " " : "", p->text);
-    } else if (len) {
-        puts(p->text);
+    } else {
+        print_sentences(p, ch);
     }
     fflush(stdout);
     p->printing += pk_os_now() - t0;
     return 0;
 }
 
-/* One file through the transcriber: its chunks, printed as -o asks. With
- * several files a line each, the file's name, a tab and its chunks' text. */
+/* One file through the transcriber: its chunks, printed as -o asks, by
+ * default a sentence a line. With several files a line each, the file's
+ * name, a tab and its chunks' text. */
 static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, int many,
                             double *audio_s, double *asr_total, const char **lang) {
     size_t n;
     const int rate = pk_model_rate(m);
     float *x = read_audio(path, rate, &n, o);
-    chunk_out out = { o, m, many, rate, pk_model_frame_seconds(m), 0, malloc(1 << 16), 1 << 16, { 0 } };
+    const char *langs = pk_model_meta(m, "languages");
+    chunk_out out = { o, m, many, rate, pk_model_frame_seconds(m), 0, malloc(1 << 16), 1 << 16, { 0 },
+                      NULL, 0, 0, langs && !strcmp(langs, "en") ? "en" : NULL };
     if (!out.text)
         die("out of memory");
     if (many && !o->json)
@@ -573,10 +647,14 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         putchar('\n');
     if (o->subs) {
         /* the English model's are English; the multilingual model's say */
-        const char *langs = pk_model_meta(m, "languages");
         cap_print(&out.words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en") ? 1 : -1, (int64_t)n * 1000 / rate);
     }
     *audio_s += (double)n / rate;
+    if (!o->json && !o->subs) {     /* the words a sentence's language was read from */
+        free(out.words.w);
+        free(out.words.text);
+    }
+    free(out.tail);
     free(out.text);
     free(x);
 }

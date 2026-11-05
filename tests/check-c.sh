@@ -48,8 +48,9 @@ for v in v2 v3; do f=models/parakeet-tdt-0.6b-$v.pkf
     && echo "test.wav: $v transcript in the fast mode is ref's" \
     || { echo "test.wav: FAIL - $v --fast transcript differs from tests/data/test.$v.fast.json"; exit 1; }
 done
-./examples/transcribe "$MODEL" tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- > tests/example.out
-./pktito-c --no-context --no-retry -m "$MODEL" tests/data/test.wav | cmp -s - tests/example.out \
+# the example writes a chunk a line, the CLI a sentence: the words held in order
+./examples/transcribe "$MODEL" tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- | tr -s '\n' ' ' > tests/example.out
+./pktito-c --no-context --no-retry -m "$MODEL" tests/data/test.wav | tr -s '\n' ' ' | cmp -s - tests/example.out \
   && echo "examples/transcribe: the CLI's transcript without the context and the retry, through the library alone" \
   || { echo "examples/transcribe: FAIL - not the CLI's transcript"; exit 1; }
 rm -f tests/example.out

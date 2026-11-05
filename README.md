@@ -86,7 +86,7 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 4-bit would cost. Then:
 
 ```sh
-./pktito-c talk.wav                        # the transcript
+./pktito-c talk.wav                        # the transcript, a sentence a line
 ./pktito-c --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
 ./pktito-c --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito-c a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
@@ -814,7 +814,9 @@ sentences as from the whole: it passes each chunk's tokens with `done` 0,
 which leaves the words after the last end for the next call, passes those
 words again with the next chunk's tokens, and passes `done` 1 with the
 last. `tests/sentcheck` holds it to that at every split of test.wav's
-tokens.
+tokens. `pktito-c FILE` writes its transcript so, a sentence a line as the
+chunks come (core/cli.c), with `lang` NULL for v3 until `pk_language`
+names the words heard so far.
 
 ## How it works
 
