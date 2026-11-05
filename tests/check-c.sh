@@ -22,6 +22,7 @@ run ./tests/capcheck
 run ./tests/langcheck
 run ./tests/chunkcheck
 run ./tests/transcheck "$MODEL" tests/data/test.wav
+run ./tests/sentcheck "$MODEL" tests/data/test.wav
 
 ./pktito-c -m $TINY --json tests/pkfcheck.wav > tests/pkfcheck.json \
   && ./pktito-c -m $TINY --srt tests/pkfcheck.wav > /dev/null \

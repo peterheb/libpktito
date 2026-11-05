@@ -25,6 +25,7 @@
  *                                 transcribes them, each chunk's decoder
  *                                 beside the next one's encoder
  *   captions     pk_captions      words with times to a subtitle track's cues
+ *   sentences    pk_sentences     tokens to the sentences a transcript reads in
  *
  * A model is read-only once loaded and may be shared by any number of
  * transcribers on any number of threads; a transcriber belongs to one
@@ -420,5 +421,41 @@ long pk_captions(const pk_capword *w, size_t n, int english, int64_t media_end, 
  * in (core/language.c). NULL for words too few, or no language ahead by
  * enough. Only the words' text is read. */
 const char *pk_language(const pk_capword *w, size_t n);
+
+/* ------------------------------------------------------------ sentences --- */
+
+/* A sentence: tokens [first, first + n) of those pk_sentences was given. */
+typedef struct {
+    int32_t first, n, flags;
+} pk_sentence;
+
+enum {
+    PK_SENTENCE_LONG = 1,   /* broken because it ran past 30 s, at a comma or a pause, not at its end */
+};
+
+/* The sentences of n tokens in order, their frames counted from one start:
+ * a recording's chunks laid end to end, each chunk's frames plus its
+ * at.start in frames (pk_model_frame_seconds). A sentence ends at a word
+ * ending in . ? ! or an ellipsis, unless the next word starts with a small
+ * letter, or the word is shaped like an abbreviation ("Dr.", "F.", "U.S.")
+ * and its times say no sentence ended there; and one that runs past 30 s is
+ * broken after a comma, semicolon, colon or dash that leaves a first part of
+ * 10 to 20 s, else at the longest pause there (core/sentences.c; README,
+ * "Sentences", has the measurements). lang is the words' language as
+ * pk_language names it, for the rules of one language's ("en", "de"), or
+ * NULL.
+ *
+ * done is 1 when the tokens run to the recording's end, so that the words
+ * after the last sentence's end make one too, and 0 when more may come:
+ * then those words are no sentence yet, and a caller hearing a recording
+ * chunk by chunk passes them again with the next chunk's tokens. A
+ * sentence's end depends on its own words and the word after it alone, so
+ * the sentences are the same however the tokens come.
+ *
+ * Returns the count; out has room for n. -1 if memory runs out (five times
+ * the first power of two past the longest word's text, 320 bytes at least,
+ * given back before it returns). */
+long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const char *lang, int done,
+                  pk_sentence *out);
 
 #endif /* PKTITO_H */

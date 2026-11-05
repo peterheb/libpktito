@@ -732,6 +732,82 @@ on every machine and run, so that transcripts compare byte for byte; with
 `-v` it adds what the `-v` line says: the VAD's and transcription's
 seconds, the speed, pktito's version, the backend and the threads.
 
+## Sentences
+
+The models write cased, punctuated text, and a transcript reads best a
+sentence to a line. `pk_sentences` (core/sentences.c) finds the sentences in
+a recording's tokens. A sentence ends at a word ending in . ? ! or an
+ellipsis, before any closing quote or bracket, except where the mark ends
+nothing:
+
+- the next word starts with a small letter. The mark closes a question or
+  a cry the sentence goes on past ("What is a caucus race?" said Alice;
+  "Was ist ein Kaukasrennen?" sagte Alice), or an abbreviation's ("np.
+  zastosowanie").
+- the word is shaped like an abbreviation - one capital ("George W. Bush",
+  "M. Fogg"), a period inside it ("U.S."), letters and no vowel ("Dr.",
+  "Mrs.", "św."), and in German a number ("am 6. Oktober") - and its times
+  say no sentence ended there.
+
+The times are TDT's, which gives each token a duration of 0 to 4 encoder
+frames (0.32 s). A sentence's last period is given the pause after it; an
+abbreviation's lasts a frame or two, the word it stands for said on after
+it. Of the 114 words shaped like an abbreviation before a word with no small
+letter in the sets below, read against their texts, the 76 inside a
+sentence have a period of 1 frame (44 of them), 2 (28) or 3 (4), and the 38
+that end one 4 (27), 3 (9) or 2 (2). The pause from the end of the word's
+letters to the next word says less: up to 0.48 s inside a sentence, and as
+little as 0.24 s at an end. So such a word ends a sentence when its period
+lasts 3 frames or more, or the next word starts 0.56 s or more after its
+letters. That gets 5 of the 114 wrong: "I'm I. | And" and
+"Roger W. | Barnett", twice each, with periods of 3 frames, and
+"LibriVox.org. | That's", 2 frames and 0.40 s. The period alone gets 6
+wrong, and the pause alone 10 at its best (0.56 s) and 16 at 0.32 s.
+
+Neither rule reads a list of one language's abbreviations, so both hold in
+each alphabet the models write - Latin, Greek and Cyrillic, whose letters
+have a case and whose words have vowels. German's ordinals, and the small m
+of "mister" and "misses" that the models write at an English sentence's
+start, are the only rules of one language, and `lang` NULL leaves them off.
+A sentence longer than 30 s is broken after the last comma, semicolon,
+colon or dash that leaves a first part of 10 to 20 s, else at the longest
+pause there, as pktito-app breaks them, and is flagged `PK_SENTENCE_LONG`.
+
+Against a sentence at every . ? ! and ellipsis, broken at 30 s the same
+way - pktito-app's lines until now - the ends `pk_sentences` takes out are
+(`tests/sentcheck --eval`):
+
+| | sentences | ? ! before a small letter | . before one | an abbreviation's shape |
+|---|---|---|---|---|
+| AliceBench, v2 | 1703 → 1624 | 74 | 5 | 1 |
+| AliceBench, v3 | 1893 → 1822 | 65 | 5 | 1 |
+| long40, v2 | 1310 → 1288 | 12 | 5 | 5 |
+| long40, v3 | 1332 → 1316 | 9 | 0 | 7 |
+| FLEURS's six sets, v3 | 420 → 415 | 0 | 1 | 4 |
+| LibriVox in seven languages, v3 | 4848 → 4720 | 61 | 14 | 55 |
+
+The LibriVox set is the first four recordings of eight books, 10.8 hours:
+Carroll's *Alice* and Hoffmann's *Klein Zaches* in German, Verne in French,
+Collodi in Italian, Dickens in Dutch, Reymont in Polish, Castelo Branco in
+Portuguese and Cervantes in Spanish. Read against the texts, 5 of the 324
+ends taken out were sentences' ends: four periods before a sentence the
+model began with a small letter ("replied the Boolaroo. | the worst
+punishment", Italian "canzonarlo. | smetti", Dutch "naar huis. | einde van
+hoofdstuk", Polish "miejsce. | łańcuch"), and "LibriVox.org. | That's".
+Two more could be either. Sentences that joined ran past 30 s and were
+broken three more times, once on AliceBench and twice on LibriVox, and one
+break moved.
+
+The tokens' frames count from one start: each chunk's tokens' frames plus
+its `at.start` in frames (at.start / 1280, rounded, at 16 kHz and 80 ms a
+frame). A sentence's end depends on its own words and the word after it
+alone, so a caller hearing a recording chunk by chunk gets the same
+sentences as from the whole: it passes each chunk's tokens with `done` 0,
+which leaves the words after the last end for the next call, passes those
+words again with the next chunk's tokens, and passes `done` 1 with the
+last. `tests/sentcheck` holds it to that at every split of test.wav's
+tokens.
+
 ## How it works
 
 Parakeet TDT is, for a recording of n samples at 16 kHz:
@@ -803,6 +879,10 @@ pk_asr_run_chunks(a, samples, chunk, nc, show, arg);
 pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */
 long nq = pk_captions(w, 2, 1, 0, cue);           /* 1: English; 0: the end unknown */
 /* cue[0]: words 0-1, one line, 1000-2000 ms */
+
+/* the chunks' tokens in one array, each frame plus its chunk's at.start / 1280, rounded */
+long nsen = pk_sentences(m, toks, ntoks, "en", 1, sen);   /* "en": the language, or NULL; 1: the last */
+/* sen[0]: toks[sen[0].first] up to toks[sen[0].first + sen[0].n] */
 ```
 
 A model is read-only once loaded and may be shared by transcribers on any
@@ -866,8 +946,8 @@ tests\check-c.ps1`, given `-V2` and `-V3` for models kept outside models\.
 core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              the text (tokens.c), the transcriber (asr.c), the VAD (vad.c,
              segment.c), the WAV and AIFF library (wav.c, resample.c), the captions
-             (captions.c), the math (vmath.h), the pool (pool.c), the CLI
-             (cli.c)
+             and sentences (captions.c, sentences.c), the math (vmath.h), the
+             pool (pool.c), the CLI (cli.c)
 backend/     the seam (kernels.h, and kernels.c, which picks the backend that
              runs) and ref/, neon/ (and neon-dp/, neon-sve/), avx2/ (and
              avx2-vnni/, avx512-vnni/, amx-int8/); a CLIMB.md beside each

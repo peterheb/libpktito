@@ -39,6 +39,7 @@ run 'tests\capcheck.exe'
 run 'tests\langcheck.exe'
 run 'tests\chunkcheck.exe'
 run "tests\transcheck.exe `"$Model`" tests\data\test.wav"
+run "tests\sentcheck.exe `"$Model`" tests\data\test.wav"
 
 cmd /c "pktito-c.exe -m $tiny --json tests\pkfcheck.wav > tests\pkfcheck.json"
 $r = $LASTEXITCODE
