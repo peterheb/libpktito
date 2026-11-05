@@ -39,16 +39,18 @@
 
 /* The retry, from pktito-app's transcribe.rs, where it was measured
  * (2026-10-26). The model now and then writes nothing for speech it plainly
- * hears: v2 gives nothing for the first chunk of AliceBench's chapters 8
- * and 10 (0.897-28.112 s, 0.929-28.32 s), and keeps only "This is a
+ * hears: v2 gave nothing for the first chunk of AliceBench's chapters 8
+ * and 10 (0.897-28.112 s, 0.929-28.32 s), and kept only "This is a
  * LibriVox recording" of the first chunk of chapters 2, 7, 9 and 12. At
- * every frame its search visits, blank beats the next word (by 0.02 logits
+ * every frame its search visited, blank beat the next word (by 0.02 logits
  * at the closest), and NeMo 3.0's own float32 transcription of chapter 8's
- * chunk is empty too: the model's failure, not pktito's. v3 drops chapter
+ * chunk is empty too: the model's failure, not pktito's. v3 dropped chapter
  * 5's closing chunk, chapter 1's closing credits, a title in chapter 5 and
  * a line of chapter 10. Each stretch, heard again on its own, gives its
- * words; LibriSpeech's long40 and long300 have no such stretch with either
- * model.
+ * words; LibriSpeech's long40 and long300 had no such stretch with either
+ * model. The chunks cut since 88293f2 drop others: at b937d71 the retry
+ * gets words back in 8 of v2's chunks and 9 of v3's (README, "When the
+ * model drops speech").
  *
  * A stretch no word covers is heard again once, if Silero heard at least
  * RETRY_SPEECH_S of speech in it inside a sentence. Less is too little: at
@@ -58,10 +60,16 @@
 /* Between sentences - after a word that ends one, at a chunk's start or
  * end, or the whole of a chunk that gave no words, cut in two at
  * quietest() since whole again it would give nothing again - RETRY_BREAK_S
- * is enough. AliceBench's chapter 1 gets back "End of chapter one", 1.6 s
- * of speech after "...finished off the cake." with no word, which 2 s
- * missed; the corpus (ls200, long40 and long300 with both models, six FLEURS
- * sets) is otherwise as at 2 s. */
+ * is enough. At b937d71 it gets back words that 2 s misses in six of
+ * AliceBench's chunks: v2's second "Prizes" in chapter 3 and its "chapter
+ * eight" of "End of chapter eight", and v3's "End of chapter five.",
+ * "Advice from a caterpillar.", "Alice was silent." and "End of chapter
+ * eight" (2026-11-05). It was set on 5b85618's chunks, where chapter 1's
+ * "End of chapter one", 1.6 s of speech after "...finished off the cake."
+ * with no word, needed it, and the corpus (ls200, long40 and long300 with
+ * both models, six FLEURS sets) was otherwise as at 2 s. Since 88293f2's
+ * cuts v3 writes that ending whole, and v2 drops only "End of", under a
+ * second of speech, too little for either. */
 #define RETRY_BREAK_S 1.0
 /* At most this share of the recording heard again for nothing, or one
  * chunk if that is more: music that Silero takes for speech gives no words
@@ -76,14 +84,14 @@
 /* Only speech no more than 4 dB quieter than the recording's speech is
  * heard again: what the model dropped is the voice the rest of the
  * recording is in, where a voice in the background, which Silero hears as
- * speech too, is quieter. AliceBench's dropped stretches lie -3.6 to +2.7
- * dB from their chapters' speech. LibriSpeech recordings with three other
- * speakers mixed in at 10 dB SNR had stretches retried down to -24 dB, the
- * background's words put into them: WER at 10 dB SNR 6.21% with no retry,
- * 9.20% ungated, 6.02% at 4 dB; at 5 dB 19.88%, 21.91%, 19.79% (24
- * recordings). Pink noise and a phone band draw no retry, nor do two
- * songs. 10^(-4/10), so that the test is on mean powers and no logarithm,
- * libm's or ours, decides a transcript. */
+ * speech too, is quieter. AliceBench's dropped stretches, as 5b85618 cut
+ * the chapters, lie -3.6 to +2.7 dB from their chapters' speech.
+ * LibriSpeech recordings with three other speakers mixed in at 10 dB SNR
+ * had stretches retried down to -24 dB, the background's words put into
+ * them: WER at 10 dB SNR 6.21% with no retry, 9.20% ungated, 6.02% at 4 dB;
+ * at 5 dB 19.88%, 21.91%, 19.79% (24 recordings). Pink noise and a phone
+ * band draw no retry, nor do two songs. 10^(-4/10), so that the test is on
+ * mean powers and no logarithm, libm's or ours, decides a transcript. */
 #define RETRY_LEVEL 0.39810717055349725
 /* Or no more than 3 dB quieter than its chunk's speech, for a passage read
  * softly: AliceBench's chapter 9 (v2) dropped "And how many hours a day did

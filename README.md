@@ -492,15 +492,19 @@ What did not work, on the same recordings (v3 unless named, no retry):
 
 Parakeet now and then writes nothing for speech it plainly hears. Over the
 12 chapters of LibriVox's *Alice's Adventures in Wonderland* (AliceBench,
-3 hours), v2 gives nothing for the first 28 s of chapters 8 and 10, of the
-first chunk of chapters 2, 7, 9 and 12 keeps only LibriVox's announcement
-and drops the reader's name and the chapter's title after it, and loses
-chapter 1's "End of chapter one"; v3 drops chapter 5's closing chunk, chapter 1's closing credits
-and lines of chapters 4, 5 and 10. It is the model's failure, not
-pktito's: at every frame of chapter 10's first chunk the search visits,
-blank beats the next word (by 0.02 logits at the closest), and NeMo 3.0's
-own float32 transcription of chapter 8's first chunk is empty too. Heard
-again on its own, each of those stretches gives its words.
+3 hours, at b937d71), v2 gives nothing for the first 28 s of chapter 8, of
+the first chunk of chapters 7, 9 and 12 keeps only LibriVox's announcement
+and drops what follows it, the chapter's title among it, and drops words
+of chapters 3, 8 and 9; v3 gives nothing for 27 s of chapter 7, and drops
+chapter 5's title, the "End of chapter" of chapters 4, 5 and 8, and lines
+of chapters 7, 10 and 11. It is the model's failure, not pktito's: NeMo
+3.0's own float32 transcription of chapter 8's first chunk is empty too,
+and in chapter 10's first chunk as 5b85618 cut it, which v2 gave nothing
+for, blank beat the next word at every frame the search visited (by 0.02
+logits at the closest). Heard again on its own, each of those stretches
+gives its words. Which ones drop moves with the cuts: 88293f2's took
+chapters 2 and 10 out of v2's, and chapter 1's closing credits out of
+v3's.
 
 So the high level hears a stretch again, once, when:
 
@@ -509,17 +513,21 @@ So the high level hears a stretch again, once, when:
   where it follows the end of a sentence or ends the chunk. At 1 s inside a
   sentence a FLEURS Polish recording's "km", said "kilometrów
   kwadratowych", left a second after it that gave "metrów kwadratowych." a
-  second time; at 2 s between sentences AliceBench's chapter 1 lost "End
-  of chapter one", 1.6 s after "...finished off the cake.";
+  second time; at 2 s between sentences six of AliceBench's chunks lose
+  words that 1 s gets back, v3's "End of chapter five." among them, as
+  chapter 1's "End of chapter one" was lost on 5b85618's chunks. Since
+  88293f2's cuts v2 drops only that ending's "End of", under a second of
+  speech, too little for either;
 - its speech is no more than 4 dB quieter than the recording's speech, or
   3 dB quieter than its chunk's (below). What the model drops is the voice
   the rest of the recording is in; a voice in the background, which Silero
   hears as speech too, is quieter, and hearing it again puts the
-  background's words in. AliceBench's dropped stretches lie -3.6 to +2.7
-  dB from their chapters' speech. The exception is chapter 9's "And how
-  many hours a day did you do lessons?" (v2), in a passage read softly:
-  4.9 dB under the chapter's speech, 1.8 dB under its chunk's. Pink noise
-  and a telephone band draw no retry, nor do two songs;
+  background's words in. AliceBench's dropped stretches, as 5b85618 cut
+  the chapters, lie -3.6 to +2.7 dB from their chapters' speech. The
+  exception is chapter 9's "And how many hours a day did you do lessons?"
+  (v2), in a passage read softly: 4.9 dB under the chapter's speech, 1.8
+  dB under its chunk's. Pink noise and a telephone band draw no retry, nor
+  do two songs;
 - the stretches heard again for nothing so far are under a fifth of the
   recording, or a chunk if that is more: music that Silero takes for
   speech gives no words however it is cut, and costs at most a fifth more
