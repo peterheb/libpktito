@@ -431,23 +431,37 @@ int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
     return rc;
 }
 
-/* pk_asr_run_chunks' fn, which cannot stop the run, as an each */
+/* pk_asr_run_chunks' fn as an each: each chunk with its place and the
+ * run's progress */
 typedef struct {
     pk_chunk_fn fn;
     void *arg;
+    const pk_model *m;
+    const pk_seg *c;
+    size_t n;
+    int64_t done, total;
 } plain_each;
 
 static int plain(void *arg, size_t i, const pk_tok *t, long nt, float *spare) {
     (void)spare;
     plain_each *p = arg;
-    p->fn(p->arg, i, t, nt);
-    return 0;
+    p->done += p->c[i].end - p->c[i].start;
+    const pk_chunk_out out = { i, p->n, p->c[i], t, nt, 0, p->done, p->total,
+                               pk_frame_of(p->m, p->c[i].start) };
+    return p->fn(p->arg, &out) ? 1 : 0;
 }
 
 int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
                       void *arg) {
-    plain_each p = { fn, arg };
+    plain_each p = { fn, arg, a->m, c, n, 0, 0 };
+    for (size_t i = 0; i < n; i++)
+        p.total += c[i].end - c[i].start;
     return pk_run_chunks_with(a, x, c, n, plain, &p);
+}
+
+int32_t pk_frame_of(const pk_model *m, int64_t sample) {
+    const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
+    return (int32_t)((sample + spf / 2) / spf);
 }
 
 long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare) {
@@ -456,6 +470,8 @@ long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare) {
 }
 
 const char *pk_backend(void) { return pk_k_name(); }
+
+const char *pk_version(void) { return PKTITO_VERSION; }
 
 /* The compiler's own words for itself; Apple's clang names a version of its
  * own, unlike the LLVM one it comes from. */

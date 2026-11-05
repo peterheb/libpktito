@@ -325,19 +325,17 @@ static void streaming(const pk_tok *t, size_t n, const char *lang, const char *w
 typedef struct {
     pk_tok *t;
     size_t  n, cap;
-    double  spf;                /* samples a frame */
 } heard;
 
 static int on_chunk(void *arg, const pk_chunk_out *c) {
     heard *h = arg;
-    const int32_t base = (int32_t)llround((double)c->at.start / h->spf);
     for (long i = 0; i < c->count; i++) {
         if (h->n == h->cap) {
             h->cap = h->cap ? 2 * h->cap : 1024;
             h->t = realloc(h->t, h->cap * sizeof *h->t);
         }
         h->t[h->n] = c->toks[i];
-        h->t[h->n++].frame += base;
+        h->t[h->n++].frame += c->at_frame;
     }
     return 0;
 }
@@ -394,7 +392,7 @@ static const char *text_of(const pk_tok *t, size_t a, size_t b) {
 
 static void eval(pk_model *m, const char *lang, char **wavs, int nwav) {
     pk_asr *a = pk_asr_new(m, 0);
-    heard h = { .spf = pk_model_frame_seconds(m) * pk_model_rate(m) };
+    heard h = { 0 };
     long n_plain = 0, n_pk = 0, small_q = 0, small_p = 0, abbr = 0, gone = 0, added = 0, other = 0;
     long shaped = 0, shaped_ended = 0;
     double seconds = 0;
@@ -508,7 +506,7 @@ int main(int argc, char **argv) {
         streaming(t, nt, "en", "a sentence of 60 words, broken twice");
 
     pk_asr *a = pk_asr_new(m, 0);
-    heard h = { .spf = pk_model_frame_seconds(m) * pk_model_rate(m) };
+    heard h = { 0 };
     CHECK(a && hear(a, argv[2], &h), "%s: no transcript", argv[2]);
     if (h.n) {
         streaming(h.t, h.n, "en", argv[2]);

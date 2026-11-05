@@ -129,6 +129,10 @@ int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
  * progress, its joint half in spare: a->toks, the count, or -1. */
 long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare);
 
+/* A sample of a recording in encoder frames, rounded: pk_chunk_out's
+ * at_frame. */
+int32_t pk_frame_of(const pk_model *m, int64_t sample);
+
 /* pk_vad_probs with Silero's encoder over the pool's active threads, a run
  * of blocks at a time, and the LSTM on the calling thread after each run:
  * the same bits, since a block's encoder needs only its own samples and the

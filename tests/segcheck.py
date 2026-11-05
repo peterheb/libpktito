@@ -4,7 +4,7 @@
 get_speech_timestamps_from_probs and VADIterator are imported from Silero's
 source (SILERO=path to a checkout, or the installed silero_vad package) and
 run on the same probabilities as tests/segcheck, which drives pk_segments
-and pk_iter_step. The probability sequences are made to land where the
+and pk_vad_iter_step. The probability sequences are made to land where the
 state machines branch: runs that start and end speech, silences just
 shorter and just longer than min_silence, speech that outruns a small
 max_speech so that every splitting path runs, both values of

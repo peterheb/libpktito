@@ -424,12 +424,12 @@ static const char *file_language(const pk_model *m, capwords *c) {
     return lang;
 }
 
-static void cap_print(capwords *c, int vtt, int english, int64_t media_end) {
+static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end) {
     cap_texts(c);
     pk_cue *cue = malloc((c->n ? c->n : 1) * sizeof *cue);
     if (!cue)
         die("out of memory");
-    long nc = pk_captions(c->w, c->n, english, media_end, cue);
+    long nc = pk_captions(c->w, c->n, lang ? lang : pk_language(c->w, c->n), media_end, cue);
     if (nc < 0)
         die("out of memory");
     if (vtt)
@@ -499,10 +499,9 @@ static void print_sentences(chunk_out *p, const pk_chunk_out *ch) {
         if (!(p->tail = realloc(p->tail, p->tailcap * sizeof *p->tail)))
             die("out of memory");
     }
-    const int32_t at = (int32_t)llround((double)ch->at.start / (p->rate * p->fs));
     for (size_t k = 0; k < nt; k++) {
         p->tail[p->ntail] = ch->toks[k];
-        p->tail[p->ntail++].frame += at;
+        p->tail[p->ntail++].frame += ch->at_frame;
     }
     if (!p->lang && nt) {           /* the multilingual model's, until its words say */
         pk_word *wd = malloc(nt * sizeof *wd);
@@ -647,7 +646,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         putchar('\n');
     if (o->subs) {
         /* the English model's are English; the multilingual model's say */
-        cap_print(&out.words, o->subs == SUBS_VTT, langs && !strcmp(langs, "en") ? 1 : -1, (int64_t)n * 1000 / rate);
+        cap_print(&out.words, o->subs == SUBS_VTT, out.lang, (int64_t)n * 1000 / rate);
     }
     *audio_s += (double)n / rate;
     if (!o->json && !o->subs) {     /* the words a sentence's language was read from */
@@ -709,8 +708,8 @@ static int stream(const opts *o, pk_model *m) {
     pk_seg_params sp;
     pk_seg_defaults(&sp);
     sp.min_silence_ms = o->pause_ms;
-    pk_iter it;
-    pk_iter_init(&it, rate, &sp);
+    pk_vad_iter it;
+    pk_vad_iter_init(&it, rate, &sp);
     const int64_t max_len = (int64_t)(o->max_chunk * rate);
     /* buf holds the samples from `base` on; probs the frames' probabilities
      * since then, for the cut */
@@ -790,10 +789,10 @@ static int stream(const opts *o, pk_model *m) {
         if (fi < pcap) probs[fi] = p;
         frame_at += PK_VAD_SAMPLES;
         int64_t at;
-        int e = pk_iter_step(&it, p, &at);
-        if (e == PK_START)
+        int e = pk_vad_iter_step(&it, p, &at);
+        if (e == PK_VAD_START)
             start = at;
-        else if (e == PK_END && start >= 0) {
+        else if (e == PK_VAD_END && start >= 0) {
             EMIT(start, at);
             start = -1;
         } else if (start >= 0 && frame_at - start >= max_len) {
@@ -881,10 +880,9 @@ static double bench_resample(const char *path, int rate, uint32_t *from) {
     return best;
 }
 
-static void count_tokens(void *arg, size_t i, const pk_tok *t, long nt) {
-    (void)i;
-    (void)t;
-    *(long *)arg += nt;
+static int count_tokens(void *arg, const pk_chunk_out *c) {
+    *(long *)arg += c->count;
+    return 0;
 }
 
 static int bench(const opts *o, pk_model *m) {

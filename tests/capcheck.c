@@ -61,30 +61,30 @@ static void fixtures(void) {
     /* basic phrase: one cue 1000-2000, "Hello world.", 12 characters (the
      * spec writes its words text,start,end) */
     pk_capword basic[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };
-    long n = pk_captions(basic, 2, 1, 4000, c);
+    long n = pk_captions(basic, 2, "en", 4000, c);
     CHECK(n == 1 && c[0].start == 1000 && c[0].end == 2000 && c[0].chars == 12 && c[0].line2 == 0 && !c[0].flags,
           "basic phrase: %ld cues, %lld-%lld, %d characters", n, (long long)c[0].start, (long long)c[0].end, c[0].chars);
 
     /* a required pause: two cues 1000-2000 and 3000-4000 */
     pk_capword pause[] = { { "Hello.", 1000, 1600 }, { "Again.", 3000, 3600 } };
-    n = pk_captions(pause, 2, 1, 5000, c);
+    n = pk_captions(pause, 2, "en", 5000, c);
     CHECK(n == 2 && c[0].start == 1000 && c[0].end == 2000 && c[1].start == 3000 && c[1].end == 4000,
           "required pause: %ld cues", n);
 
     /* a short reply on its own: the minimum-duration tail, 800 ms after speech */
     pk_capword yes[] = { { "Yes.", 1000, 1200 } };
-    n = pk_captions(yes, 1, 1, 4000, c);
+    n = pk_captions(yes, 1, "en", 4000, c);
     CHECK(n == 1 && c[0].start == 1000 && c[0].end == 2000 && !c[0].flags, "short reply: %lld-%lld",
           (long long)c[0].start, (long long)c[0].end);
     /* at the recording's end: 1000-1300, too short, no overrun */
-    n = pk_captions(yes, 1, 1, 1300, c);
+    n = pk_captions(yes, 1, "en", 1300, c);
     CHECK(n == 1 && c[0].end == 1300 && c[0].flags == PK_CUE_SHORT, "short final reply: %lld, flags %d",
           (long long)c[0].end, c[0].flags);
 
     /* rapid speech: no readable track, every word kept; the three as one cue
      * are 32 characters in 450 ms, 71.1 a second */
     pk_capword rapid[] = { { "abcdefghij", 0, 150 }, { "abcdefghij", 150, 300 }, { "abcdefghij", 300, 450 } };
-    n = pk_captions(rapid, 3, 1, 450, c);
+    n = pk_captions(rapid, 3, "en", 450, c);
     int kept = 0, slow = 1;
     for (long k = 0; k < n; k++) {
         kept += c[k].n;
@@ -139,7 +139,7 @@ static void fixtures(void) {
     static char w43[44];
     memset(w43, 'a', 43);
     pk_capword longw[] = { { w43, 0, 1000 } };
-    n = pk_captions(longw, 1, 1, 0, c);
+    n = pk_captions(longw, 1, "en", 0, c);
     CHECK(n == 1 && c[0].n == 1 && c[0].chars == 43 && (c[0].flags & PK_CUE_FORCED), "a 43-grapheme word: forced");
 
     /* 30, 30, 20: 82 in all, yet 30 / 51 and 61 / 20 fit no layout */
@@ -149,7 +149,7 @@ static void fixtures(void) {
     pk_capword lengths[] = { { w30, 0, 1000 }, { w30, 1000, 2000 }, { w20, 2000, 3000 } };
     make(&t, lengths, 3, 0, 0);
     CHECK(!cand(&t, 0, 3).ok, "30, 30, 20: no cue holds all three");
-    n = pk_captions(lengths, 3, 0, 0, c);
+    n = pk_captions(lengths, 3, NULL, 0, c);
     CHECK(n >= 2 && c[0].first == 0 && c[n - 1].first + c[n - 1].n == 3 && !(c[0].flags & PK_CUE_FORCED),
           "30, 30, 20: %ld cues", n);
 
@@ -163,9 +163,9 @@ static void fixtures(void) {
         memcpy(acc43 + 3 * k, "e\xCC\x81", 3);
     memcpy(acc42, acc43, 42 * 3);
     pk_capword a42[] = { { acc42, 0, 3000 } }, a43[] = { { acc43, 0, 3000 } };
-    n = pk_captions(a42, 1, 0, 0, c);
+    n = pk_captions(a42, 1, NULL, 0, c);
     CHECK(n == 1 && c[0].chars == 42 && !(c[0].flags & PK_CUE_FORCED), "42 accented e's fit a line");
-    n = pk_captions(a43, 1, 0, 0, c);
+    n = pk_captions(a43, 1, NULL, 0, c);
     CHECK(n == 1 && c[0].chars == 43 && (c[0].flags & PK_CUE_FORCED), "43 do not");
 
     /* punctuation: an abbreviation, an initial and a decimal end no sentence; a question does */
@@ -223,18 +223,18 @@ static void fixtures(void) {
      * too short to cut at, or at the recording's end */
     pk_capword soi[] = { { "So", 54710, 55030 }, { "I", 55030, 55350 }, { "when", 56550, 56800 }, { "I", 56800, 56900 },
                          { "think.", 56900, 57400 } };
-    n = pk_captions(soi, 5, 1, 60000, c);
+    n = pk_captions(soi, 5, "en", 60000, c);
     CHECK(n == 2 && c[0].n == 2 && (c[0].flags & PK_CUE_PAUSE) && c[0].chars == 5 && !(c[1].flags & PK_CUE_PAUSE),
           "So I | when I think.: %ld cues, flags %d and %d, %d characters", n, c[0].flags, n > 1 ? c[1].flags : 0, c[0].chars);
     soi[1].text = "I,";
-    n = pk_captions(soi, 5, 1, 60000, c);
+    n = pk_captions(soi, 5, "en", 60000, c);
     CHECK(n == 2 && !(c[0].flags & PK_CUE_PAUSE), "So I, | when: no ellipsis after a comma");
     soi[1].text = "I";
     soi[2].start = 56300;
-    n = pk_captions(soi, 5, 1, 60000, c);
+    n = pk_captions(soi, 5, "en", 60000, c);
     CHECK(!(c[0].flags & PK_CUE_PAUSE), "a pause under a second is not cut at: no ellipsis");
     pk_capword tail[] = { { "and", 0, 300 }, { "then", 300, 700 } };
-    n = pk_captions(tail, 2, 1, 5000, c);
+    n = pk_captions(tail, 2, "en", 5000, c);
     CHECK(n == 1 && !(c[0].flags & PK_CUE_PAUSE), "the recording's end: no ellipsis");
     /* 42 graphemes before the pause fit a line, but not with the ellipsis */
     pk_capword w42p[] = { { w42, 0, 2500 }, { "next.", 4000, 4500 } };
@@ -264,9 +264,9 @@ static void fixtures(void) {
 
     /* unsound times are made sound, not refused: a track still */
     pk_capword bad[] = { { "b", 500, 400 }, { "a", 300, 300 }, { "c", 900, 1200 } };
-    n = pk_captions(bad, 3, 1, 0, c);
+    n = pk_captions(bad, 3, "en", 0, c);
     CHECK(n >= 1 && c[n - 1].first + c[n - 1].n == 3, "unsound times: %ld cues", n);
-    CHECK(pk_captions(bad, 0, 1, 0, c) == 0, "no words: no cues");
+    CHECK(pk_captions(bad, 0, "en", 0, c) == 0, "no words: no cues");
 }
 
 /* ------------------------------------------------------------------ 11.3 --- */
@@ -276,7 +276,7 @@ static void greedy(void) {
     for (int k = 0; k < 9; k++)
         w[k] = (pk_capword){ "abcdefgh", 500 * k, 500 * k + 500 };
     pk_cue c[9];
-    long n = pk_captions(w, 9, 1, 4500, c);
+    long n = pk_captions(w, 9, "en", 4500, c);
     tgraph t;
     make(&t, w, 9, 1, 4500);
     int64_t v = 0, q = 0;
@@ -373,7 +373,16 @@ static void random_tracks(void) {
             at = start + len;
         }
         const int64_t media_end = rnd(3) ? 0 : at + rnd(2000);
-        long nc = pk_captions(w, (size_t)n, english, media_end, c);
+        long nc = pk_captions(w, (size_t)n, english ? "en" : NULL, media_end, c);
+        if (!english) { /* another language's track is NULL's: punctuation and pauses */
+            pk_cue o[MAXW];
+            int same = pk_captions(w, (size_t)n, "de", media_end, o) == nc;
+            for (long k = 0; same && k < nc; k++)
+                same = o[k].first == c[k].first && o[k].n == c[k].n && o[k].line2 == c[k].line2
+                       && o[k].chars == c[k].chars && o[k].flags == c[k].flags && o[k].start == c[k].start
+                       && o[k].end == c[k].end;
+            CHECK(same, "run %d: \"de\"'s track is not NULL's", run);
+        }
         make(&t, w, n, english, media_end);
         path best = { 0 };
         if (!oracle(&t, n, &best)) {
@@ -429,7 +438,7 @@ static void long_track(void) {
         at += len + (rnd(8) ? rnd(150) : rnd(1500));
     }
     clock_t t0 = clock();
-    long n = pk_captions(w, N, 1, 0, c);
+    long n = pk_captions(w, N, "en", 0, c);
     double s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     CHECK(n > 0 && c[n - 1].first + c[n - 1].n == N, "20000 words: %ld cues", n);
     printf("capcheck: 20000 words to %ld cues in %.0f ms\n", n, s * 1000);

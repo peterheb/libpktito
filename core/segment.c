@@ -1,6 +1,6 @@
 /* Probabilities to speech segments: Silero's two state machines, ported.
  *
- * pk_segments is get_speech_timestamps_from_probs and pk_iter_step is
+ * pk_segments is get_speech_timestamps_from_probs and pk_vad_iter_step is
  * VADIterator.__call__, both from silero_vad/utils_vad.py at v6.2.3, line
  * for line: vadito's port (core/segment.c there), renamed. The port is
  * literal on purpose. These are what a Silero user's timestamps come out
@@ -61,6 +61,11 @@ static void put(pk_seg *out, size_t cap, size_t *n, int64_t start, int64_t end) 
 
 size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
                    const pk_seg_params *p, pk_seg *out, size_t cap) {
+    pk_seg_params def;
+    if (!p) {
+        pk_seg_defaults(&def);
+        p = &def;
+    }
     const int64_t window = rate == 16000 ? 512 : 256;
     const int64_t audio_len = n_samples > 0 ? n_samples : (int64_t)n * window;
     const double min_speech = rate * p->min_speech_ms / 1000;
@@ -192,7 +197,12 @@ size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
 
 /* ------------------------------------------------------------ iterator --- */
 
-void pk_iter_init(pk_iter *it, int rate, const pk_seg_params *p) {
+void pk_vad_iter_init(pk_vad_iter *it, int rate, const pk_seg_params *p) {
+    pk_seg_params def;
+    if (!p) {
+        pk_seg_defaults(&def);
+        p = &def;
+    }
     it->frame = rate == 16000 ? 512 : 256;
     it->threshold = p->threshold;
     it->neg_threshold = neg_threshold(p);
@@ -203,7 +213,7 @@ void pk_iter_init(pk_iter *it, int rate, const pk_seg_params *p) {
     it->current_sample = 0;
 }
 
-int pk_iter_step(pk_iter *it, float prob, int64_t *at) {
+int pk_vad_iter_step(pk_vad_iter *it, float prob, int64_t *at) {
     const double pr = prob;
     it->current_sample += it->frame;
 
@@ -214,18 +224,18 @@ int pk_iter_step(pk_iter *it, float prob, int64_t *at) {
         it->triggered = 1;
         double start = it->current_sample - it->speech_pad_samples - it->frame;
         *at = start > 0 ? (int64_t)start : 0;
-        return PK_START;
+        return PK_VAD_START;
     }
 
     if (pr < it->neg_threshold && it->triggered) {
         if (!it->temp_end)
             it->temp_end = it->current_sample;
         if (it->current_sample - it->temp_end < it->min_silence_samples)
-            return PK_NONE;
+            return PK_VAD_NONE;
         *at = (int64_t)(it->temp_end + it->speech_pad_samples - it->frame);
         it->temp_end = 0;
         it->triggered = 0;
-        return PK_END;
+        return PK_VAD_END;
     }
-    return PK_NONE;
+    return PK_VAD_NONE;
 }

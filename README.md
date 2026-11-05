@@ -727,8 +727,10 @@ of the texts of 20 words or more, and English texts are found 99.6% of the
 time at 20 words, all of them from 50; on v3's own transcripts of FLEURS
 and LibriSpeech, all of them from 20 (`tests/langcheck --eval`). `--json`'s
 `meta` says the language too.
-The same function is the library's `pk_captions`, which the desktop app's
-subtitles come from too.
+
+The track is the library's `pk_captions`, which the desktop app's subtitles
+come from too. It takes the words' language: pktito-c gives it "en" for
+v2's words and `pk_language`'s answer for v3's.
 
 `make check-c` holds it to the spec's own cases (tests/capcheck.c),
 including the nine words that greedy packing cuts 8 + 1 and this cuts 4 + 5,
@@ -807,16 +809,16 @@ broken three more times, once on AliceBench and twice on LibriVox, and one
 break moved.
 
 The tokens' frames count from one start: each chunk's tokens' frames plus
-its `at.start` in frames (at.start / 1280, rounded, at 16 kHz and 80 ms a
-frame). A sentence's end depends on its own words and the word after it
-alone, so a caller hearing a recording chunk by chunk gets the same
-sentences as from the whole: it passes each chunk's tokens with `done` 0,
-which leaves the words after the last end for the next call, passes those
-words again with the next chunk's tokens, and passes `done` 1 with the
-last. `tests/sentcheck` holds it to that at every split of test.wav's
-tokens. `pktito-c FILE` writes its transcript so, a sentence a line as the
-chunks come (core/cli.c), with `lang` NULL for v3 until `pk_language`
-names the words heard so far.
+its `at_frame`, its `at.start` in frames (at.start / 1280, rounded, at 16
+kHz and 80 ms a frame). A sentence's end depends on its own words and the
+word after it alone, so a caller hearing a recording chunk by chunk gets the
+same sentences as from the whole: it passes each chunk's tokens with `done`
+0, which leaves the words after the last end for the next call, passes those
+words again with the next chunk's tokens, and passes `done` 1 with the last.
+`tests/sentcheck` holds it to that at every split of test.wav's tokens.
+`pktito-c FILE` writes its transcript so, a sentence a line as the chunks
+come (core/cli.c), with `lang` NULL for v3 until `pk_language` names the
+words heard so far.
 
 ## How it works
 
@@ -884,13 +886,13 @@ pk_vad_probs(v, frames, n_frames, probs);
 size_t ns = pk_segments(probs, n_frames, 16000, n_samples, &sp, seg, cap);
 size_t nc = pk_chunks(samples, seg, ns, n_samples, 30 * 16000, chunk);
 pk_asr_run_chunks(a, samples, chunk, nc, show, arg);
-/* show(arg, i, t, n) has chunk i's tokens, its decoder run beside chunk i + 1's encoder */
+/* show has each chunk as above, its decoder run beside the next one's encoder */
 
 pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */
-long nq = pk_captions(w, 2, 1, 0, cue);           /* 1: English; 0: the end unknown */
+long nq = pk_captions(w, 2, "en", 0, cue);        /* "en": English's rules too; 0: the end unknown */
 /* cue[0]: words 0-1, one line, 1000-2000 ms */
 
-/* the chunks' tokens in one array, each frame plus its chunk's at.start / 1280, rounded */
+/* the chunks' tokens in one array, each frame plus its chunk's at_frame */
 long nsen = pk_sentences(m, toks, ntoks, "en", 1, sen);   /* "en": the language, or NULL; 1: the last */
 /* sen[0]: toks[sen[0].first] up to toks[sen[0].first + sen[0].n] */
 ```
@@ -900,7 +902,8 @@ number of threads; a transcriber belongs to one thread at a time and runs
 its own pool. Every path it takes is UTF-8, on Windows too, whatever the
 process's code page. `make libpktito.a` builds the library alone;
 core/pktito.h is all of its interface, core/wav.h and core/resample.h the
-WAV and AIFF library's.
+WAV and AIFF library's, and `pk_version()` the version it was built as, for
+a program that loads it as a shared library.
 examples/transcribe.c is a whole program against it in a page, and `make
 check-c` holds its transcript to the CLI's. examples/ has the same program
 in Python, Go, Rust and Node, Go and Rust linking the archive and Python

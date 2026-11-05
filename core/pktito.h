@@ -13,11 +13,15 @@
  *                                 the VAD, with where every number came from
  *   a recording  pk_asr_transcribe  the high-level path: any length in,
  *                                 each chunk's tokens out, VAD, chunking
- *                                 and the retries done
+ *                                 and the retries done; pk_steps_new, the
+ *                                 same in steps for a caller who runs the
+ *                                 transcribing itself
  *   transcribe   pk_asr_run       the low-level path: 16 kHz samples in,
  *                                 tokens with times out, NeMo's to the bit
- *   text         pk_text          tokens to UTF-8, as NeMo writes them
- *   segments     pk_vad_probs,    Silero's per-frame speech probabilities, and
+ *   text         pk_text,         tokens to UTF-8, as NeMo writes them, and
+ *                pk_words         to words with times
+ *   segments     pk_asr_speech    Silero's speech segments of a recording;
+ *                pk_vad_probs,    its per-frame speech probabilities, and
  *                pk_segments      get_speech_timestamps' segments from them
  *   chunks       pk_chunks        a long recording cut at its silences into
  *                                 pieces the encoder takes whole, its
@@ -25,12 +29,23 @@
  *                                 transcribes them, each chunk's decoder
  *                                 beside the next one's encoder
  *   captions     pk_captions      words with times to a subtitle track's cues
+ *   language     pk_language      which of the 25 languages words are in
  *   sentences    pk_sentences     tokens to the sentences a transcript reads in
  *
  * A model is read-only once loaded and may be shared by any number of
  * transcribers on any number of threads; a transcriber belongs to one
  * thread at a time, and runs its own pool of worker threads. Nothing here
  * keeps global state or prints.
+ *
+ * Throughout: a count is a size_t where nothing can fail and a long where
+ * something can, -1 then; a status is an int, -1 a failure; a constructor
+ * fails with NULL; each function says what its failures are, most often
+ * memory run out. Every *_free takes NULL, and an options pointer may be
+ * NULL for the defaults. A time is in its own unit: a token's or a word's
+ * in encoder frames (pk_model_frame_seconds), a stretch of audio's in
+ * samples, a caption's in milliseconds. A language is a two-letter code, as
+ * pk_language names it. core/wav.h reads WAV and AIFF files, and
+ * core/resample.h brings another rate to the model's.
  */
 #ifndef PKTITO_H
 #define PKTITO_H
@@ -138,10 +153,26 @@ long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks);
 /* A stretch of a recording, in samples; end is exclusive. */
 typedef struct { int64_t start, end; } pk_seg;
 
-/* pk_asr_run over a recording's chunks c[0..n) of x (pk_chunks), in order:
- * fn(arg, i, toks, count) for each, on the calling thread, with chunk i's
- * tokens as pk_asr_run would return them, the same bits, lasting until fn
- * returns. Each chunk's decoder runs beside the next chunk's encoder, on a
+/* A chunk of a recording, transcribed (pk_asr_run_chunks,
+ * pk_asr_transcribe, pk_steps_take). */
+typedef struct {
+    size_t        i, n;         /* this chunk, of how many */
+    pk_seg        at;           /* its samples in the recording */
+    const pk_tok *toks;         /* its tokens, frames from at.start, retries' included */
+    long          count;
+    int           retried;      /* stretches of it transcribed again */
+    int64_t       done, total;  /* samples of chunks done, of all of them: progress */
+    int32_t       at_frame;     /* at.start in encoder frames, rounded: a token's frame
+                                   plus this counts from the recording's start */
+} pk_chunk_out;
+
+/* Has each chunk of a run in order, on the calling thread, its tokens
+ * lasting until it returns; nonzero stops the run there. */
+typedef int (*pk_chunk_fn)(void *arg, const pk_chunk_out *c);
+
+/* pk_asr_run over a recording's chunks c[0..n) of x (pk_chunks): fn has
+ * chunk i's tokens as pk_asr_run would return them, the same bits, and
+ * retried 0. Each chunk's decoder runs beside the next chunk's encoder, on a
  * thread of its own, so that only the last one's is waited for, and fn has
  * a chunk once the next one's encoder is done: 1.2 to 5.6% less time than
  * through pk_asr_run a chunk at a time where there are more than four
@@ -156,9 +187,8 @@ typedef struct { int64_t start, end; } pk_seg;
  * an M5 Ultra's 36, and a Pi's four threads keep one lane (README, "How
  * fast"). The working memory is the longest chunk's, and a second chunk's
  * joint half, 1 MB at 30 s, for each lane: about 45 MB a lane at 30.72 s.
- * Returns 0, or -1 if memory runs out (fn has then seen the chunks
- * before). */
-typedef void (*pk_chunk_fn)(void *arg, size_t i, const pk_tok *toks, long count);
+ * Returns 0, 1 when fn stopped it, or -1 if memory runs out (fn has then
+ * seen the chunks before). */
 int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
                       void *arg);
 
@@ -179,14 +209,12 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
  * measurements). Without the context and the retry each chunk is
  * pk_asr_run's transcript of it.
  *
- * fn(arg, out) has each chunk in order as soon as it is done, on the
- * calling thread, its tokens' frames counted from the chunk's start and
- * lasting until fn returns; fn returns nonzero to stop the run there.
- * Returns 0 when every chunk is done, 1 when fn stopped it, and -1 if
- * memory runs out or max_chunk_s is under a second. Besides the
- * transcriber's working memory, which is the longest chunk's for each
- * chunk run at once, and its VAD's, which it keeps (0.85 MB a thread), the
- * call holds about 2% of the recording's own size. */
+ * fn has each chunk as soon as it is done, and o NULL is
+ * pk_transcribe_defaults'. Returns 0 when every chunk is done, 1 when fn
+ * stopped it, and -1 if memory runs out or max_chunk_s is under a second.
+ * Besides the transcriber's working memory, which is the longest chunk's
+ * for each chunk run at once, and its VAD's, which it keeps (0.85 MB a
+ * thread), the call holds about 2% of the recording's own size. */
 typedef struct {
     double max_chunk_s;         /* 30.72: the most the encoder hears at once (README, "Long recordings") */
     int    retry;               /* 1: speech the model wrote nothing for heard again */
@@ -195,18 +223,8 @@ typedef struct {
 
 void pk_transcribe_defaults(pk_transcribe_opts *o);
 
-typedef struct {
-    size_t        i, n;         /* this chunk, of how many */
-    pk_seg        at;           /* its samples in the recording */
-    const pk_tok *toks;         /* its tokens, frames from at.start, retries' included */
-    long          count;
-    int           retried;      /* stretches of it transcribed again */
-    int64_t       done, total;  /* samples of chunks done, of all of them: progress */
-} pk_chunk_out;
-
-typedef int (*pk_transcribe_fn)(void *arg, const pk_chunk_out *c);
 int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o,
-                      pk_transcribe_fn fn, void *arg);
+                      pk_chunk_fn fn, void *arg);
 
 /* pk_asr_transcribe in steps, for a caller who runs the transcribing
  * itself: on threads of its own, over several transcribers, with several
@@ -234,10 +252,11 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
  * with the next chunk in *out, its tokens lasting until the next call on
  * s; 0 while that chunk is not done; -1 if memory runs out. The run is
  * over after pk_steps_chunks(s) of them, or at any call's -1, after which
- * every call on s returns -1 and s is for pk_steps_free alone. x must last as long as s, which belongs to one thread
- * at a time, and holds what a pk_asr_transcribe call holds (above) and the
- * tokens of chunks put and not yet taken. pk_steps_new returns NULL if
- * memory runs out or max_chunk_s is under a second. */
+ * every call on s returns -1 and s is for pk_steps_free alone. x must last
+ * as long as s, which belongs to one thread at a time, and holds what a
+ * pk_asr_transcribe call holds (above) and the tokens of chunks put and not
+ * yet taken. pk_steps_new takes o NULL as pk_asr_transcribe does, and
+ * returns NULL if memory runs out or max_chunk_s is under a second. */
 typedef struct pk_steps pk_steps;
 
 typedef struct {
@@ -283,6 +302,10 @@ const char *pk_backend(void);
  * a transcript is the same from any, its speed not (README, "How fast"). */
 const char *pk_compiler(void);
 
+/* The library's version, PKTITO_VERSION as it was built: for a caller that
+ * loads it as a shared library, whose header may be another's. */
+const char *pk_version(void);
+
 /* ------------------------------------------------------------------ VAD --- */
 
 /* Silero VAD, as vadito runs it: one stream's state. A new or reset
@@ -317,8 +340,9 @@ typedef struct {
 void pk_seg_defaults(pk_seg_params *p);
 
 /* get_speech_timestamps_from_probs (silero_vad/utils_vad.py, v6.2.3): the
- * speech in n frames' probabilities. Returns how many segments there are;
- * if that is more than cap, out is unfinished. 2n + 1 is always enough. */
+ * speech in n frames' probabilities, with p, or Silero's defaults where p is
+ * NULL. Returns how many segments there are; if that is more than cap, out
+ * is unfinished. 2n + 1 is always enough. */
 size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
                    const pk_seg_params *p, pk_seg *out, size_t cap);
 
@@ -339,19 +363,23 @@ long pk_asr_vad(pk_asr *a, const float *x, size_t n, float *probs);
 long pk_asr_speech(pk_asr *a, const float *x, size_t n, const pk_seg_params *p, pk_seg *out,
                    size_t cap);
 
-/* VADIterator: speech starts and ends as they happen. */
+/* Silero's VADIterator: speech starts and ends as they happen, from each
+ * frame's probability in turn. pk_vad_iter_init starts one with p, or
+ * Silero's defaults where p is NULL. pk_vad_iter_step takes the next
+ * frame's probability and returns PK_VAD_START or PK_VAD_END, with the
+ * sample the speech started or ended at in *at, or PK_VAD_NONE. */
 typedef struct {
     int     frame;
     double  threshold, neg_threshold;
     double  min_silence_samples, speech_pad_samples;
     int     triggered;
     int64_t temp_end, current_sample;
-} pk_iter;
+} pk_vad_iter;
 
-enum { PK_NONE = 0, PK_START = 1, PK_END = 2 };
+enum { PK_VAD_NONE = 0, PK_VAD_START = 1, PK_VAD_END = 2 };
 
-void pk_iter_init(pk_iter *it, int rate, const pk_seg_params *p);
-int  pk_iter_step(pk_iter *it, float prob, int64_t *at);
+void pk_vad_iter_init(pk_vad_iter *it, int rate, const pk_seg_params *p);
+int  pk_vad_iter_step(pk_vad_iter *it, float prob, int64_t *at);
 
 /* --------------------------------------------------------------- chunks --- */
 
@@ -406,14 +434,14 @@ enum {
  * two to a cue, each cue on from its first word until a little after its
  * last, and the words cut into cues where their pauses, punctuation and
  * timing read best - the cheapest of every possible cut by
- * core/captions.c's costs, not the first that fits. english 1 adds the
- * English rules (no cue or line ends on "the" or "to"; an abbreviation's
- * period ends no sentence); 0 leaves punctuation and pauses; -1 adds them
- * if pk_language finds the words English, as for the multilingual model. media_end is
- * when the recording ends (ms), or 0 if unknown. out has room for n.
- * Returns the count of cues, or -1 if memory runs out (90 bytes a word,
- * given back before it returns). */
-long pk_captions(const pk_capword *w, size_t n, int english, int64_t media_end, pk_cue *out);
+ * core/captions.c's costs, not the first that fits. lang is the words'
+ * language as pk_language names it: "en" adds the English rules (no cue or
+ * line ends on "the" or "to"; an abbreviation's period ends no sentence),
+ * and another, or NULL, leaves punctuation and pauses. media_end is when
+ * the recording ends (ms), or 0 if unknown. out has room for n. Returns the
+ * count of cues, or -1 if memory runs out (90 bytes a word, given back
+ * before it returns). */
+long pk_captions(const pk_capword *w, size_t n, const char *lang, int64_t media_end, pk_cue *out);
 
 /* The language of n words, one of the 25 the multilingual model writes (bg
  * cs da de el en es et fi fr hr hu it lt lv mt nl pl pt ro ru sk sl sv uk),
@@ -435,7 +463,7 @@ enum {
 
 /* The sentences of n tokens in order, their frames counted from one start:
  * a recording's chunks laid end to end, each chunk's frames plus its
- * at.start in frames (pk_model_frame_seconds). A sentence ends at a word
+ * at_frame (pk_chunk_out). A sentence ends at a word
  * ending in . ? ! or an ellipsis, unless the next word starts with a small
  * letter, or the word is shaped like an abbreviation ("Dr.", "F.", "U.S.")
  * and its times say no sentence ended there; and one that runs past 30 s is

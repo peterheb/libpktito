@@ -765,7 +765,8 @@ int pk_steps_take(pk_steps *r, pk_chunk_out *out) {
         return -1;
     if (r->at >= r->nc || r->state != DONE)
         return 0;
-    *out = (pk_chunk_out){ r->at, r->nc, r->c[r->at], r->t, (long)r->n, r->retried, r->done, r->total };
+    *out = (pk_chunk_out){ r->at, r->nc, r->c[r->at], r->t, (long)r->n, r->retried, r->done, r->total,
+                           pk_frame_of(r->m, r->c[r->at].start) };
     r->at++;
     r->state = AWAIT;
     return 1;
@@ -796,7 +797,7 @@ void pk_steps_free(pk_steps *r) {
 typedef struct {
     run *r;
     pk_asr *a;
-    pk_transcribe_fn fn;
+    pk_chunk_fn fn;
     void *arg;
 } own;
 
@@ -819,7 +820,7 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
 }
 
 int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o,
-                      pk_transcribe_fn fn, void *arg) {
+                      pk_chunk_fn fn, void *arg) {
     if (n == 0)
         return 0;
     run *r = pk_steps_new(a, x, n, o);

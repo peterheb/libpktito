@@ -92,17 +92,17 @@ static void segments_case(fz_input *f) {
      * speech again gives START 0, END 2000, START 0 with a 1488-sample pad.
      * What holds is that the events alternate, starting with a start, and
      * that each end is at or after its own start. */
-    pk_iter it;
-    pk_iter_init(&it, rate, &p);
+    pk_vad_iter it;
+    pk_vad_iter_init(&it, rate, &p);
     int64_t start = -1;
     for (size_t i = 0; i < n; i++) {
         int64_t at;
-        int event = pk_iter_step(&it, probs[i], &at);
-        FZ_ASSERT(event == PK_NONE || event == PK_START || event == PK_END);
-        if (event == PK_START) {
+        int event = pk_vad_iter_step(&it, probs[i], &at);
+        FZ_ASSERT(event == PK_VAD_NONE || event == PK_VAD_START || event == PK_VAD_END);
+        if (event == PK_VAD_START) {
             FZ_ASSERT(start < 0 && at >= 0);
             start = at;
-        } else if (event == PK_END) {
+        } else if (event == PK_VAD_END) {
             FZ_ASSERT(start >= 0 && at >= start);
             start = -1;
         }
@@ -173,9 +173,10 @@ static void captions_case(fz_input *f) {
         words[i] = (pk_capword){ text[i], start, start + dur };
         at = start + dur + fz_u32(f) % 1501;
     }
-    int english = (int)(fz_u8(f) % 3) - 1;
+    const int lang = fz_u8(f) % 3;
     int64_t media_end = fz_u8(f) & 1 ? at + fz_u32(f) % 5001 : 0;
-    long nc = pk_captions(words, n, english, media_end, cues);
+    long nc = pk_captions(words, n, lang == 0 ? NULL : lang == 1 ? "en" : pk_language(words, n),
+                          media_end, cues);
     FZ_ASSERT(nc >= 0 && (size_t)nc <= n);
     int32_t next = 0;
     for (long i = 0; i < nc; i++) {

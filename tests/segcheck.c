@@ -1,6 +1,6 @@
 /* tests/segcheck.py's other half: probabilities on stdin, one a line, and
  * Silero's parameters as arguments; out come pk_segments' segments and then
- * pk_iter_step's events, a line each.
+ * pk_vad_iter_step's events, a line each.
  *
  *   segcheck RATE N_SAMPLES THRESHOLD NEG MIN_SPEECH_MS MAX_SPEECH_S
  *            MIN_SILENCE_MS PAD_MS MIN_SIL_AT_MAX_MS USE_MAX
@@ -39,12 +39,12 @@ int main(int argc, char **argv) {
     pk_seg *seg = malloc(room * sizeof *seg);
     size_t ns = pk_segments(probs, n, rate, n_samples, &p, seg, room);
     for (size_t i = 0; i < ns; i++) printf("seg %lld %lld\n", (long long)seg[i].start, (long long)seg[i].end);
-    pk_iter it;
-    pk_iter_init(&it, rate, &p);
+    pk_vad_iter it;
+    pk_vad_iter_init(&it, rate, &p);
     for (size_t i = 0; i < n; i++) {
         int64_t at;
-        int e = pk_iter_step(&it, probs[i], &at);
-        if (e != PK_NONE) printf("%s %zu %lld\n", e == PK_START ? "start" : "end", i, (long long)at);
+        int e = pk_vad_iter_step(&it, probs[i], &at);
+        if (e != PK_VAD_NONE) printf("%s %zu %lld\n", e == PK_VAD_START ? "start" : "end", i, (long long)at);
     }
     return 0;
 }

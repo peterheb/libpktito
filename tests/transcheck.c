@@ -1,16 +1,16 @@
 /* transcheck MODEL WAV: pk_asr_transcribe, the high-level path, against the
  * low-level one it is made of. Without the context and the retry every
- * chunk is pk_asr_run_chunks' (which is pk_asr_run's), token for token;
- * with them every word starts in its own chunk; fn returning nonzero stops
- * the run there; two lanes give one lane's chunks, in the fast mode too;
- * the same in steps (pk_steps), its jobs heard out of order on other
- * transcribers, gives pk_asr_transcribe's chunks, and a chunk put back
- * empty its retries one at a time; the VAD over a pool gives one thread's
- * probabilities, and pk_asr_vad and pk_asr_speech pk_vad_probs' and
- * pk_segments'; the retry's own parts as pktito-app's transcribe.rs tested
- * them, where they came from; and the seam's and the retry level's, on
- * tokens and samples built for them. Includes core/transcribe.c, for its
- * static parts. */
+ * chunk is pk_asr_run_chunks' (which is pk_asr_run's), token for token,
+ * each chunk's place and the run's progress the same; with them every word
+ * starts in its own chunk; fn returning nonzero stops either run there; two
+ * lanes give one lane's chunks, in the fast mode too; the same in steps
+ * (pk_steps), its jobs heard out of order on other transcribers, gives
+ * pk_asr_transcribe's chunks, and a chunk put back empty its retries one at
+ * a time; the VAD over a pool gives one thread's probabilities, and
+ * pk_asr_vad and pk_asr_speech pk_vad_probs' and pk_segments'; the retry's
+ * own parts as pktito-app's transcribe.rs tested them, where they came
+ * from; and the seam's and the retry level's, on tokens and samples built
+ * for them. Includes core/transcribe.c, for its static parts. */
 #include "../core/transcribe.c"
 #include "wav.h"
 
@@ -25,7 +25,9 @@ typedef struct {
     pk_seg at[64];
     pk_tok *t[64];
     long nt[64];
-    int retried[64];            /* pk_chunk_out's, where it came from one */
+    int retried[64];            /* pk_chunk_out's */
+    int32_t at_frame[64];
+    int64_t done[64], total;
     size_t stop_after;          /* stop after this many chunks; 0: never */
 } seen;
 
@@ -42,8 +44,12 @@ static void keep(seen *s, size_t i, pk_seg at, const pk_tok *t, long nt) {
 static int on_out(void *arg, const pk_chunk_out *c) {
     seen *s = arg;
     keep(s, c->i, c->at, c->toks, c->count);
-    if (c->i < 64)
+    if (c->i < 64) {
         s->retried[c->i] = c->retried;
+        s->at_frame[c->i] = c->at_frame;
+        s->done[c->i] = c->done;
+        s->total = c->total;
+    }
     return s->stop_after && s->n == s->stop_after;
 }
 
@@ -103,9 +109,7 @@ static int drive(pk_steps *st, pk_asr *h[2], const float *x, int64_t spf, seen *
         pk_chunk_out c;
         while ((rc = pk_steps_take(st, &c)) == 1) {
             *ok &= c.i == taken++ && c.n == nc;
-            keep(s, c.i, c.at, c.toks, c.count);
-            if (c.i < 64)
-                s->retried[c.i] = c.retried;
+            on_out(s, &c);
         }
         if (rc < 0)
             return -1;
@@ -114,24 +118,15 @@ static int drive(pk_steps *st, pk_asr *h[2], const float *x, int64_t spf, seen *
     return pk_steps_job(st, &j) == 0 && nout == 0 ? 0 : -1;
 }
 
-typedef struct {
-    seen *s;
-    const pk_seg *c;
-} plain_arg;
-
-static void on_plain(void *arg, size_t i, const pk_tok *t, long nt) {
-    plain_arg *p = arg;
-    keep(p->s, i, p->c[i], t, nt);
-}
-
 static int same(const seen *a, const seen *b) {
     if (a->n != b->n)
         return 0;
     for (size_t i = 0; i < a->n; i++)
         if (a->at[i].start != b->at[i].start || a->at[i].end != b->at[i].end || a->nt[i] != b->nt[i]
+            || a->at_frame[i] != b->at_frame[i] || a->done[i] != b->done[i]
             || memcmp(a->t[i], b->t[i], (size_t)a->nt[i] * sizeof *a->t[i]))
             return 0;
-    return 1;
+    return a->total == b->total;
 }
 
 /* the token whose piece is text, -1 if the model has none */
@@ -238,9 +233,21 @@ int main(int argc, char **argv) {
         size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
         pk_seg *c = malloc((2 * ns + 2 + (size_t)((int64_t)n / max_len)) * sizeof *c);
         size_t nc = pk_chunks(x, seg, ns, (int64_t)n, max_len, c);
-        plain_arg p = { &lo, c };
-        CHECK(pk_asr_run_chunks(a, x, c, nc, on_plain, &p) == 0, "pk_asr_run_chunks runs");
-        CHECK(nc > 1, "the recording is more than one chunk");
+        CHECK(pk_asr_run_chunks(a, x, c, nc, on_out, &lo) == 0, "pk_asr_run_chunks runs");
+        CHECK(nc > 1 && lo.n == nc, "the recording is more than one chunk");
+        const int64_t spf = llround(pk_model_frame_seconds(m) * rate);
+        int64_t done = 0;
+        int ok = 1;
+        for (size_t i = 0; i < lo.n; i++) {
+            done += c[i].end - c[i].start;
+            ok &= lo.at[i].start == c[i].start && lo.at[i].end == c[i].end && !lo.retried[i]
+                  && lo.done[i] == done && lo.at_frame[i] == (lo.at[i].start + spf / 2) / spf;
+        }
+        CHECK(ok && lo.total == done, "pk_asr_run_chunks: each chunk's place, its frame and the progress");
+        seen one = { .stop_after = 1 };
+        CHECK(pk_asr_run_chunks(a, x, c, nc, on_out, &one) == 1 && one.n == 1 && one.nt[0] == lo.nt[0],
+              "pk_asr_run_chunks: stopped after one chunk");
+        forget(&one);
         pk_vad_free(v);
         free(pad), free(probs), free(seg), free(c);
     }
