@@ -55,12 +55,12 @@ allows.
   among them). Inside a family a variant replaces a kernel only where it
   measures faster: the int8 product in each, and in the AVX-512 builds the
   float kernels in zmm - each to ref's bits, like every kernel.
-- Comments explain *why* and carry the number that justified it, and say
+- Comments explain _why_ and carry the number that justified it, and say
   where the number came from (a CLIMB.md row, a check), because a bare
   figure goes stale when the code under it changes.
 - Comments and commit messages describe the code and its measurements as
   they stand. A reader has the tree, not the conversation that produced it.
-- backend/*/CLIMB.md are dated records. Append to them; do not rewrite old
+- backend/\*/CLIMB.md are dated records. Append to them; do not rewrite old
   rows, and keep the rejected ones.
 - The model file and WAV parsing follow docs/MEMORY_SAFETY.md; a format
   change extends its validator and its corpus in the same change.
@@ -89,6 +89,8 @@ allows.
 - `make check-c` before every commit, on every backend touched, on its board.
 - `make check` where Python and NeMo's checkpoints are, before every merge.
 - `make check-sanitize` for any change to core/model.c or core/wav.c.
+- `scripts/fmt.sh --check` before every commit: prettier, ruff, cargo fmt
+  and gofmt at their defaults, as in the app and the server.
 
 ## Working
 

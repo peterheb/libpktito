@@ -20,21 +20,30 @@ the arithmetic, so that the engine does not have to know about them:
 The names, the shapes and every rule the engine checks a file against are
 core/pkf.h's.
 """
+
 import collections
 import math
 
 import numpy as np
 
-BN_EPS = 1e-5        # torch.nn.BatchNorm1d's default, which NeMo leaves alone
+BN_EPS = 1e-5  # torch.nn.BatchNorm1d's default, which NeMo leaves alone
 
 
 def arch(cfg):
     """The numbers core/pkf.h's params carry, from a NeMo config; anything
     pktito does not implement is refused here rather than run wrongly."""
-    pre, enc, dec, joint = cfg["preprocessor"], cfg["encoder"], cfg["decoder"], cfg["joint"]
+    pre, enc, dec, joint = (
+        cfg["preprocessor"],
+        cfg["encoder"],
+        cfg["decoder"],
+        cfg["joint"],
+    )
     dur = cfg["model_defaults"]["tdt_durations"]
     want = [
-        (pre.get("_target_", "").endswith("AudioToMelSpectrogramPreprocessor"), "the preprocessor"),
+        (
+            pre.get("_target_", "").endswith("AudioToMelSpectrogramPreprocessor"),
+            "the preprocessor",
+        ),
         (pre.get("normalize") == "per_feature", "per_feature normalization"),
         (pre.get("window") == "hann", "a Hann window"),
         (pre.get("log", True) is True, "log features"),
@@ -50,7 +59,10 @@ def arch(cfg):
         (enc.get("xscaling") is False, "no xscaling"),
         (enc.get("untie_biases") is True, "per-layer position biases"),
         (enc.get("use_bias") is False, "bias-free encoder matrices"),
-        (enc.get("conv_norm_type") == "batch_norm", "batch norm in the convolution module"),
+        (
+            enc.get("conv_norm_type") == "batch_norm",
+            "batch norm in the convolution module",
+        ),
         (enc.get("causal_downsampling", False) is False, "non-causal subsampling"),
         (enc.get("reduction") is None, "no reduction layer"),
         (dec.get("_target_", "").endswith("RNNTDecoder"), "an RNNTDecoder"),
@@ -61,32 +73,36 @@ def arch(cfg):
     ]
     for ok, what in want:
         if not ok:
-            raise ValueError("pktito implements Parakeet TDT with %s; this checkpoint differs" % what)
+            raise ValueError(
+                "pktito implements Parakeet TDT with %s; this checkpoint differs" % what
+            )
     sr = int(pre["sample_rate"])
     win, hop = round(pre["window_size"] * sr), round(pre["window_stride"] * sr)
-    return collections.OrderedDict([
-        ("sample_rate", sr),
-        ("n_fft", int(pre.get("n_fft") or 2 ** math.ceil(math.log2(win)))),
-        ("win_length", win),
-        ("hop_length", hop),
-        ("n_mels", int(pre["features"])),
-        ("preemph", float(pre.get("preemph", 0.97))),
-        ("log_guard", float(pre.get("log_zero_guard_value", 2 ** -24))),
-        ("norm_eps", 1e-5),                 # features.py CONSTANT, added to each std
-        ("n_layers", int(enc["n_layers"])),
-        ("d_model", int(enc["d_model"])),
-        ("n_heads", int(enc["n_heads"])),
-        ("ff_dim", int(enc["d_model"] * enc["ff_expansion_factor"])),
-        ("conv_kernel", int(enc["conv_kernel_size"])),
-        ("sub_channels", int(enc["subsampling_conv_channels"])),
-        ("ln_eps", 1e-5),                   # torch.nn.LayerNorm's default
-        ("vocab", int(dec["vocab_size"])),
-        ("pred_hidden", int(dec["prednet"]["pred_hidden"])),
-        ("pred_layers", int(dec["prednet"]["pred_rnn_layers"])),
-        ("joint_hidden", int(joint["jointnet"]["joint_hidden"])),
-        ("durations", [int(d) for d in dur]),
-        ("max_symbols", int(cfg["decoding"]["greedy"]["max_symbols"])),
-    ])
+    return collections.OrderedDict(
+        [
+            ("sample_rate", sr),
+            ("n_fft", int(pre.get("n_fft") or 2 ** math.ceil(math.log2(win)))),
+            ("win_length", win),
+            ("hop_length", hop),
+            ("n_mels", int(pre["features"])),
+            ("preemph", float(pre.get("preemph", 0.97))),
+            ("log_guard", float(pre.get("log_zero_guard_value", 2**-24))),
+            ("norm_eps", 1e-5),  # features.py CONSTANT, added to each std
+            ("n_layers", int(enc["n_layers"])),
+            ("d_model", int(enc["d_model"])),
+            ("n_heads", int(enc["n_heads"])),
+            ("ff_dim", int(enc["d_model"] * enc["ff_expansion_factor"])),
+            ("conv_kernel", int(enc["conv_kernel_size"])),
+            ("sub_channels", int(enc["subsampling_conv_channels"])),
+            ("ln_eps", 1e-5),  # torch.nn.LayerNorm's default
+            ("vocab", int(dec["vocab_size"])),
+            ("pred_hidden", int(dec["prednet"]["pred_hidden"])),
+            ("pred_layers", int(dec["prednet"]["pred_rnn_layers"])),
+            ("joint_hidden", int(joint["jointnet"]["joint_hidden"])),
+            ("durations", [int(d) for d in dur]),
+            ("max_symbols", int(cfg["decoding"]["greedy"]["max_symbols"])),
+        ]
+    )
 
 
 def pos_freq(d_model):
@@ -100,8 +116,11 @@ def pos_freq(d_model):
 
 def tensors(state, a):
     """[(name, float64 array)] in file order, from a NeMo state dict."""
-    s = {k: np.asarray(v, np.float64) for k, v in state.items()
-         if not k.endswith("num_batches_tracked")}
+    s = {
+        k: np.asarray(v, np.float64)
+        for k, v in state.items()
+        if not k.endswith("num_batches_tracked")
+    }
     used = set()
 
     def g(name):
@@ -109,16 +128,26 @@ def tensors(state, a):
         return s[name]
 
     D, H, C = a["d_model"], a["n_heads"], a["sub_channels"]
-    out = [("mel.fb", g("preprocessor.featurizer.fb")[0]),
-           ("mel.window", g("preprocessor.featurizer.window")),
-           ("pos.freq", pos_freq(D).astype(np.float64))]
+    out = [
+        ("mel.fb", g("preprocessor.featurizer.fb")[0]),
+        ("mel.window", g("preprocessor.featurizer.window")),
+        ("pos.freq", pos_freq(D).astype(np.float64)),
+    ]
     p = "encoder.pre_encode."
-    out += [("sub.conv0.w", g(p + "conv.0.weight").reshape(C, 9)), ("sub.conv0.b", g(p + "conv.0.bias")),
-            ("sub.dw1.w", g(p + "conv.2.weight").reshape(C, 9)), ("sub.dw1.b", g(p + "conv.2.bias")),
-            ("sub.pw1.w", g(p + "conv.3.weight").reshape(C, C)), ("sub.pw1.b", g(p + "conv.3.bias")),
-            ("sub.dw2.w", g(p + "conv.5.weight").reshape(C, 9)), ("sub.dw2.b", g(p + "conv.5.bias")),
-            ("sub.pw2.w", g(p + "conv.6.weight").reshape(C, C)), ("sub.pw2.b", g(p + "conv.6.bias")),
-            ("sub.out.w", g(p + "out.weight")), ("sub.out.b", g(p + "out.bias"))]
+    out += [
+        ("sub.conv0.w", g(p + "conv.0.weight").reshape(C, 9)),
+        ("sub.conv0.b", g(p + "conv.0.bias")),
+        ("sub.dw1.w", g(p + "conv.2.weight").reshape(C, 9)),
+        ("sub.dw1.b", g(p + "conv.2.bias")),
+        ("sub.pw1.w", g(p + "conv.3.weight").reshape(C, C)),
+        ("sub.pw1.b", g(p + "conv.3.bias")),
+        ("sub.dw2.w", g(p + "conv.5.weight").reshape(C, 9)),
+        ("sub.dw2.b", g(p + "conv.5.bias")),
+        ("sub.pw2.w", g(p + "conv.6.weight").reshape(C, C)),
+        ("sub.pw2.b", g(p + "conv.6.bias")),
+        ("sub.out.w", g(p + "out.weight")),
+        ("sub.out.b", g(p + "out.bias")),
+    ]
     for i in range(a["n_layers"]):
         p, q = "encoder.layers.%d." % i, "l%d." % i
         bn = p + "conv.batch_norm."
@@ -156,12 +185,19 @@ def tensors(state, a):
     out.append(("dec.embed", g(p + "embed.weight")))
     for i in range(a["pred_layers"]):
         r = p + "dec_rnn.lstm."
-        out += [("dec.l%d.wx" % i, g(r + "weight_ih_l%d" % i)),
-                ("dec.l%d.wh" % i, g(r + "weight_hh_l%d" % i)),
-                ("dec.l%d.b" % i, g(r + "bias_ih_l%d" % i) + g(r + "bias_hh_l%d" % i))]
-    out += [("joint.enc.w", g("joint.enc.weight")), ("joint.enc.b", g("joint.enc.bias")),
-            ("joint.pred.w", g("joint.pred.weight")), ("joint.pred.b", g("joint.pred.bias")),
-            ("joint.out.w", g("joint.joint_net.2.weight")), ("joint.out.b", g("joint.joint_net.2.bias"))]
+        out += [
+            ("dec.l%d.wx" % i, g(r + "weight_ih_l%d" % i)),
+            ("dec.l%d.wh" % i, g(r + "weight_hh_l%d" % i)),
+            ("dec.l%d.b" % i, g(r + "bias_ih_l%d" % i) + g(r + "bias_hh_l%d" % i)),
+        ]
+    out += [
+        ("joint.enc.w", g("joint.enc.weight")),
+        ("joint.enc.b", g("joint.enc.bias")),
+        ("joint.pred.w", g("joint.pred.weight")),
+        ("joint.pred.b", g("joint.pred.bias")),
+        ("joint.out.w", g("joint.joint_net.2.weight")),
+        ("joint.out.b", g("joint.joint_net.2.bias")),
+    ]
     left = sorted(set(s) - used)
     if left:
         raise ValueError("tensors pktito does not know what to do with: %s" % left[:8])

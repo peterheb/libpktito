@@ -8,15 +8,15 @@ hypotheses included.
 
 ## The board and the build
 
-| | |
-|---|---|
-| board | Raspberry Pi 3B+, 4 x Cortex-A53 at 1.4 GHz (cpufreq `ondemand`, 1400 MHz under load), 905 MB |
-| caches | 32 KB L1D a core, 512 KB L2 shared |
-| compiler | gcc 14.2.0 (Debian 14.2.0-19) |
-| flags | `-O3 -march=armv8-a -mtune=cortex-a53 -std=c11 -ffp-contract=off` (the Makefile's, backend neon) |
-| model | parakeet-tdt-0.6b-v2.pkf |
-| recording | Silero's test.wav, 60 s, which `--max-chunk 30` cuts into 3 chunks |
-| tools | `./pkito bench` (best of 5 transcriptions), `make PROFILE=1` for the stage split, `tests/gemmbench` (the int8 product alone on the encoder's four shapes, T = 250, the engine's 64-row slices) |
+|           |                                                                                                                                                                                                |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| board     | Raspberry Pi 3B+, 4 x Cortex-A53 at 1.4 GHz (cpufreq `ondemand`, 1400 MHz under load), 905 MB                                                                                                  |
+| caches    | 32 KB L1D a core, 512 KB L2 shared                                                                                                                                                             |
+| compiler  | gcc 14.2.0 (Debian 14.2.0-19)                                                                                                                                                                  |
+| flags     | `-O3 -march=armv8-a -mtune=cortex-a53 -std=c11 -ffp-contract=off` (the Makefile's, backend neon)                                                                                               |
+| model     | parakeet-tdt-0.6b-v2.pkf                                                                                                                                                                       |
+| recording | Silero's test.wav, 60 s, which `--max-chunk 30` cuts into 3 chunks                                                                                                                             |
+| tools     | `./pkito bench` (best of 5 transcriptions), `make PROFILE=1` for the stage split, `tests/gemmbench` (the int8 product alone on the encoder's four shapes, T = 250, the engine's 64-row slices) |
 
 The board has hit its soft temperature limit before (`vcgencmd get_throttled`
 0x80000) and a bench runs four cores flat out for five minutes, so every run
@@ -38,13 +38,13 @@ The int8 product (`q8_tile`, ARMv8.0 path): a tile of 8 rows by 4 columns,
 a pair of groups (8 inputs) at a time as SMULL / SMLAL into 16 bits and
 SADALP into 32, each row's sum in two lanes until the block's end.
 
-| | 1 thread | 4 threads |
-|---|---|---|
+|                            | 1 thread                  | 4 threads                     |
+| -------------------------- | ------------------------- | ----------------------------- |
 | gemmbench, all four shapes | 1075.9 ms, 1.91 MAC/cycle | 309.7 ms, 1.66 MAC/cycle/core |
-| ff up 4096x1024 | 1.97 | 1.86 |
-| ff down 1024x4096 | 1.82 | **1.41** |
-| q k v o 1024x1024 | 1.98 | 1.86 |
-| conv pw1 2048x1024 | 1.97 | 1.86 |
+| ff up 4096x1024            | 1.97                      | 1.86                          |
+| ff down 1024x4096          | 1.82                      | **1.41**                      |
+| q k v o 1024x1024          | 1.98                      | 1.86                          |
+| conv pw1 2048x1024         | 1.97                      | 1.86                          |
 
 `./pkito bench` (PROFILE=1 build, main's commit message): 58.4 s, 1.0x real
 time; feed-forward 57%, q k v pos 15%, conv pw1 pw2 9%, attention 5%,
@@ -91,19 +91,20 @@ and gemmbench, a second or so a shape, mostly runs before the limit.
 gemmbench, GMAC/s (the MAC/cycle column read the idle clock at the start of
 these runs, so it is left out; GMAC/s is the measure):
 
-| | 1 thread | 4 threads |
-|---|---|---|
-| baseline, 4 columns, spilling | 2.68 | 9.31 |
-| 2 columns, LD1R-less replication, SMULL2 | 2.78 (+3.7%) | 10.00 (+7.4%) |
-| **3 columns**, the same | **3.03 (+13.1%)** | **10.94 (+17.5%)** |
+|                                          | 1 thread          | 4 threads          |
+| ---------------------------------------- | ----------------- | ------------------ |
+| baseline, 4 columns, spilling            | 2.68              | 9.31               |
+| 2 columns, LD1R-less replication, SMULL2 | 2.78 (+3.7%)      | 10.00 (+7.4%)      |
+| **3 columns**, the same                  | **3.03 (+13.1%)** | **10.94 (+17.5%)** |
 
 Far short of the +40-55% priced. The 3-column loop (objdump) has no spill
 left: per 192 MACs, 12 SMULL/SMULL2, 12 SMLAL/SMLAL2, 12 SADALP, 6 `ldr s`
-+ 6 `dup v.4s, v.s[0]` for the activations (gcc did not fold memcpy +
-vdupq_n_s32 into LD1R), `ldr q`, `ldr q`, `ldp q` for the weights, 8
-integer ops. At pinfer's prices that is 24 + 24 + 6 + 6 + 8 = 68 cycles,
-and it runs in 88. The SADALPs are bunched at the loop's end, six in a
-row, where nothing can pair with them.
+
+- 6 `dup v.4s, v.s[0]` for the activations (gcc did not fold memcpy +
+  vdupq_n_s32 into LD1R), `ldr q`, `ldr q`, `ldp q` for the weights, 8
+  integer ops. At pinfer's prices that is 24 + 24 + 6 + 6 + 8 = 68 cycles,
+  and it runs in 88. The SADALPs are bunched at the loop's end, six in a
+  row, where nothing can pair with them.
 
 Kept: 3 columns. A tile reads its half panel's weights once, so 3 columns
 read them a third more often than 4 and a third less often than 2; the
@@ -126,10 +127,10 @@ gcc 14 emits `ldr s` + `dup` for `vld1q_dup_s32` too (objdump: no LD1R in
 the function), and gemmbench did not move (3.03 GMAC/s at 1 thread). Forced
 with an inline-asm LD1R (18 of them in the function):
 
-| | 1 thread | 4 threads |
-|---|---|---|
-| `ldr s` + `dup` (gcc) | 3.03 | 10.87 |
-| `ld1r {v.4s}` (asm) | 2.70 (-11%) | 9.29 (-15%) |
+|                       | 1 thread    | 4 threads   |
+| --------------------- | ----------- | ----------- |
+| `ldr s` + `dup` (gcc) | 3.03        | 10.87       |
+| `ld1r {v.4s}` (asm)   | 2.70 (-11%) | 9.29 (-15%) |
 
 LD1R is the slower way to replicate four bytes on this core, and the asm
 block also takes the loads out of gcc's scheduling. The memcpy form stays.
@@ -150,13 +151,13 @@ threads and costs little alone.
 
 gemmbench at 4 threads, GMAC/s (two sweeps, run on a cool board each):
 
-| block | ff down | all four | | block | ff down | all four |
-|---|---|---|---|---|---|---|
-| 16 KB | 5.83 | 8.69 | | 96 KB | 9.17 | 10.86 |
-| 24 KB | 6.17 | 9.02 | | 128 KB | 9.58 | 11.08 |
-| 32 KB | 9.31 | 10.96 | | 192 KB (was) | 9.45, 9.15 | 10.97, 10.84 |
-| **48 KB** | **10.31, 9.88** | **11.45, 11.25** | | 384 KB | 8.97 | 10.79 |
-| 64 KB | 9.55 | 11.06 | | | | |
+| block     | ff down         | all four         |     | block        | ff down    | all four     |
+| --------- | --------------- | ---------------- | --- | ------------ | ---------- | ------------ |
+| 16 KB     | 5.83            | 8.69             |     | 96 KB        | 9.17       | 10.86        |
+| 24 KB     | 6.17            | 9.02             |     | 128 KB       | 9.58       | 11.08        |
+| 32 KB     | 9.31            | 10.96            |     | 192 KB (was) | 9.45, 9.15 | 10.97, 10.84 |
+| **48 KB** | **10.31, 9.88** | **11.45, 11.25** |     | 384 KB       | 8.97       | 10.79        |
+| 64 KB     | 9.55            | 11.06            |     |              |            |              |
 
 and alone, ff down 2.85 GMAC/s at 192 KB, 2.94 at 48, 2.89 at 32. The
 repeats put the spread at about 4%; 48 KB is +8% on ff down at four threads
@@ -172,9 +173,9 @@ the M4 Pro in main's commit; an A76 has not been asked).
 
 `./pkito bench`, release build, each run started below 55 C:
 
-| | run 1 | run 2 |
-|---|---|---|
-| baseline (b07c50d) | 58.681 s | 58.496 s |
+|                              | run 1        | run 2        |
+| ---------------------------- | ------------ | ------------ |
+| baseline (b07c50d)           | 58.681 s     | 58.496 s     |
 | 3-column tile + 48 KB blocks | **51.801 s** | **51.793 s** |
 
 -11.6%, against a spread of 0.3%. Kept.
@@ -237,11 +238,11 @@ four threads +3 to +8%, the 1024-input shapes flat.
 
 gemmbench, GMAC/s, all four shapes (two passes; 0 is no prefetch):
 
-| distance | 4 threads | | 1 thread | L1-resident |
-|---|---|---|---|---|
-| 0 | 11.03, 11.05 | | 3.08 | 2.40 MAC/cycle |
-| 256 B | 10.68, 10.76 | | | |
-| 512 B | 10.64, 10.79 | | 2.98 | 2.30 |
+| distance | 4 threads    |     | 1 thread | L1-resident    |
+| -------- | ------------ | --- | -------- | -------------- |
+| 0        | 11.03, 11.05 |     | 3.08     | 2.40 MAC/cycle |
+| 256 B    | 10.68, 10.76 |     |          |                |
+| 512 B    | 10.64, 10.79 |     | 2.98     | 2.30           |
 
 -3% everywhere, the L1-resident case included, where there is nothing to
 fetch: a PRFM an iteration costs this loop more than its issue slot.
@@ -254,24 +255,24 @@ four-thread conclusion here wants an effect larger than that, or the bench.
 
 Two candidates, the second measured to be the one:
 
-1. *Four threads thrash the shared L2 with four column blocks.* gemmbench
+1. _Four threads thrash the shared L2 with four column blocks._ gemmbench
    can deal its items column-block-major, every thread on the same block of
    activations at once (which core/encoder.c's pk_gemm does not do). ff down
    at four threads, GMAC/s, blocks of 0 (rows only, as now), 24, 48, 96
    columns: 10.68 / 9.70 / 10.25 / 10.10, and again 9.79 / 10.29 / 9.75 /
    9.70 - nothing outside the drift. Rejected, and with it the idea of
    changing pk_gemm's dealing for this.
-2. *A half panel of 4096 inputs does not fit L1.* Its 32 bytes of every
+2. _A half panel of 4096 inputs does not fit L1._ Its 32 bytes of every
    64-byte group span 64 KB of cache lines, twice the A53's L1D, so every
    3-column tile streams them in again from the L2 the four cores share; at
    1024 inputs they are 16 KB and stay. Rows fixed at 1024, MAC/cycle a core:
 
    | inputs | 1 thread | 2 threads | 4 threads |
-   |---|---|---|---|
-   | 1024 | 2.24 | 2.22 | 2.17 |
-   | 2048 | 2.13 | 2.14 | 2.01 |
-   | 3072 | 2.08 | 2.07 | 1.88 |
-   | 4096 | 2.10 | 2.04 | 1.74 |
+   | ------ | -------- | --------- | --------- |
+   | 1024   | 2.24     | 2.22      | 2.17      |
+   | 2048   | 2.13     | 2.14      | 2.01      |
+   | 3072   | 2.08     | 2.07      | 1.88      |
+   | 4096   | 2.10     | 2.04      | 1.74      |
 
    Flat alone, falling with width at four threads: the L2's bandwidth,
    shared, against a weight stream that should have been in L1.
@@ -293,11 +294,11 @@ again. Predicted: ff down at four threads +15 to +25% (towards the 2.17 of
 
 gemmbench, GMAC/s (MAC/cycle a core at 1400 MHz):
 
-| | 1 thread | 4 threads |
-|---|---|---|
-| ff down, before (the six repeats above) | 2.94-2.96 | 9.46-10.68 |
-| **ff down, chunks of 1024** | 2.96 (2.11) | **11.41 (2.04)** |
-| all four shapes | 3.07 (2.19) | 11.89 (2.12) |
+|                                         | 1 thread    | 4 threads        |
+| --------------------------------------- | ----------- | ---------------- |
+| ff down, before (the six repeats above) | 2.94-2.96   | 9.46-10.68       |
+| **ff down, chunks of 1024**             | 2.96 (2.11) | **11.41 (2.04)** |
+| all four shapes                         | 3.07 (2.19) | 11.89 (2.12)     |
 
 and the width sweep at four threads, MAC/cycle a core, 1024 / 2048 / 3072
 / 4096 inputs: 2.15 / 2.07 / 2.07 / 2.04, where it was 2.17 / 2.01 / 1.88 /
@@ -313,14 +314,14 @@ A probe in the manner of pinfer's tests/isabench (inline asm, sixteen-wide
 independence where it matters, L1-resident, one core, 1400 MHz; it lives
 outside the tree, as the CLIMB rows are what it was for):
 
-| loop | cycles | MAC/cycle |
-|---|---|---|
-| `smlal v.4s, v.4h, v.h[i]` x16, the int16 by-element form | 33.2 per 32 | 3.86 |
-| an int16 panel: 8 rows x 5 columns x 8 inputs, its loads included | 230.5 | 2.78 |
-| this file's int8 loop, 8 rows x 3 columns x 8 inputs, gcc 14's order | 156.0 per 2 | **2.46** |
-| the same instructions, each column's SADALPs interleaved with the next column's activation loads and DUPs | 143.9 | **2.67** |
-| SADALPs and multiplies alternating, two product sets | 147.9 | 2.60 |
-| interleaved as above with one product set (the drains read the products before the next column's multiplies overwrite them, in program order, which an in-order core makes safe) | 143.9 | **2.67** |
+| loop                                                                                                                                                                             | cycles      | MAC/cycle |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
+| `smlal v.4s, v.4h, v.h[i]` x16, the int16 by-element form                                                                                                                        | 33.2 per 32 | 3.86      |
+| an int16 panel: 8 rows x 5 columns x 8 inputs, its loads included                                                                                                                | 230.5       | 2.78      |
+| this file's int8 loop, 8 rows x 3 columns x 8 inputs, gcc 14's order                                                                                                             | 156.0 per 2 | **2.46**  |
+| the same instructions, each column's SADALPs interleaved with the next column's activation loads and DUPs                                                                        | 143.9       | **2.67**  |
+| SADALPs and multiplies alternating, two product sets                                                                                                                             | 147.9       | 2.60      |
+| interleaved as above with one product set (the drains read the products before the next column's multiplies overwrite them, in program order, which an in-order core makes safe) | 143.9       | **2.67**  |
 
 The by-element SMLAL issues once a cycle, so an int16 form with the
 weights re-laid out [k][row] (into L1, once a half panel and chunk) would
@@ -339,12 +340,12 @@ so ref's bits cannot change. Predicted: gemmbench +5 to +8% at one thread
 
 ### H7, measured: rejected
 
-| | 1 thread | 4 threads | L1-resident |
-|---|---|---|---|
-| gcc 14's C (b9fd42c) | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
-| asm, one 8-input step a statement | 2.69 | 10.40 | 2.07 |
-| asm, 32 inputs a pair of statements, immediate offsets | 2.86 | 10.99 | 2.22 |
-| the same, the block's first drains SADDLP (no zeroing) | 3.06 | 11.72 | 2.38 |
+|                                                        | 1 thread    | 4 threads | L1-resident    |
+| ------------------------------------------------------ | ----------- | --------- | -------------- |
+| gcc 14's C (b9fd42c)                                   | 3.07 GMAC/s | 11.89     | 2.40 MAC/cycle |
+| asm, one 8-input step a statement                      | 2.69        | 10.40     | 2.07           |
+| asm, 32 inputs a pair of statements, immediate offsets | 2.86        | 10.99     | 2.22           |
+| the same, the block's first drains SADDLP (no zeroing) | 3.06        | 11.72     | 2.38           |
 
 At best level with gcc. The probe's "gcc order" row was this file's loop as
 read from one objdump, not its schedule in place: in place, with its
@@ -367,10 +368,10 @@ to +6% at one thread.
 
 ### H8, measured: kept
 
-| | 1 thread | 4 threads | L1-resident |
-|---|---|---|---|
-| b9fd42c | 3.07 GMAC/s | 11.89 | 2.40 MAC/cycle |
-| **first step SADDLP** | **3.23 (+5.2%)** | **12.43 (+4.5%)** | 2.45 |
+|                       | 1 thread         | 4 threads         | L1-resident    |
+| --------------------- | ---------------- | ----------------- | -------------- |
+| b9fd42c               | 3.07 GMAC/s      | 11.89             | 2.40 MAC/cycle |
+| **first step SADDLP** | **3.23 (+5.2%)** | **12.43 (+4.5%)** | 2.45           |
 
 ff down gained most alone, 2.96 -> 3.18 (its blocks are the same 32 inputs,
 its tiles more of them). MAC/cycle a core: 2.31 alone, 2.22 at four.
@@ -387,11 +388,11 @@ glu + depthwise 0.47, mel 0.44, layer norms 0.35. The int8 products run at
 pk_k_conv3x3s2 alone (a probe outside the tree), one 20 s chunk's shapes,
 one thread:
 
-| | ms | GFMA/s | FMA/cycle |
-|---|---|---|---|
-| conv0, 2000x128 -> 1000x64x256, one input channel | 465.8 | 0.32 | 0.23 |
-| dw1, 1000x64x256 -> 500x32x256 | 700.7 | 0.05 | **0.04** |
-| dw2, 500x32x256 -> 250x16x256 | 165.8 | 0.06 | 0.04 |
+|                                                   | ms    | GFMA/s | FMA/cycle |
+| ------------------------------------------------- | ----- | ------ | --------- |
+| conv0, 2000x128 -> 1000x64x256, one input channel | 465.8 | 0.32   | 0.23      |
+| dw1, 1000x64x256 -> 500x32x256                    | 700.7 | 0.05   | **0.04**  |
+| dw2, 500x32x256 -> 250x16x256                     | 165.8 | 0.06   | 0.04      |
 
 1.33 s a chunk, 4 s of the bench's one-thread equivalent. The kernel loops
 channels outermost: for each group of four it walks the whole image, its
@@ -437,12 +438,12 @@ code.
 
 ## Where the climb ends
 
-| | main at b07c50d | e870ae1 |
-|---|---|---|
-| `./pkito bench`, 60 s in 3 chunks (`--max-chunk 30`) | 58.681 s, 58.496 s | **47.319 s, 47.328 s (-19.3%)** |
-| gemmbench, all four shapes, 1 thread | 2.68 GMAC/s, 1.91 MAC/cycle | 3.23, **2.31** |
-| gemmbench, all four shapes, 4 threads | 9.31 GMAC/s, 1.66 MAC/cycle a core | 12.43, **2.22** |
-| gemmbench, L1-resident (64 x 256, T 48) | - | 2.45 MAC/cycle |
+|                                                      | main at b07c50d                    | e870ae1                         |
+| ---------------------------------------------------- | ---------------------------------- | ------------------------------- |
+| `./pkito bench`, 60 s in 3 chunks (`--max-chunk 30`) | 58.681 s, 58.496 s                 | **47.319 s, 47.328 s (-19.3%)** |
+| gemmbench, all four shapes, 1 thread                 | 2.68 GMAC/s, 1.91 MAC/cycle        | 3.23, **2.31**                  |
+| gemmbench, all four shapes, 4 threads                | 9.31 GMAC/s, 1.66 MAC/cycle a core | 12.43, **2.22**                 |
+| gemmbench, L1-resident (64 x 256, T 48)              | -                                  | 2.45 MAC/cycle                  |
 
 The stage split, before and after:
 
@@ -461,14 +462,14 @@ Kept:
 
 Rejected:
 
-| Hypothesis | Result |
-|---|---|
-| H2, LD1R | -11% |
-| H4, eight activation bytes a load | -7.5%: gcc split it back into `ldr s` |
-| H5, prefetching the weight stream | -3%, even in L1 |
+| Hypothesis                                         | Result                                |
+| -------------------------------------------------- | ------------------------------------- |
+| H2, LD1R                                           | -11%                                  |
+| H4, eight activation bytes a load                  | -7.5%: gcc split it back into `ldr s` |
+| H5, prefetching the weight stream                  | -3%, even in L1                       |
 | Column-block-major dealing (a gemmbench prototype) | no change, so the pool was left alone |
-| H7, the loop in asm in the measured order | at best level with gcc |
-| H9 | not rejected: stopped, see above |
+| H7, the loop in asm in the measured order          | at best level with gcc                |
+| H9                                                 | not rejected: stopped, see above      |
 
 The tile now runs at 2.45 MAC/cycle in L1, about 93% of what its
 instruction stream is priced at. A column's 8-input step costs about 24
@@ -503,10 +504,10 @@ the merged tree (with main's convolution rewrites and fused quantizes),
 `make PROFILE=1`, the default bench, each run after the SoC cooled below
 55 C:
 
-| | attention | minute (3 chunks) |
-|---|---|---|
-| the pass off (the pragma) | 2312 ms | 44.960 s |
-| the pass on | 2035 ms | 44.618 s |
+|                           | attention | minute (3 chunks) |
+| ------------------------- | --------- | ----------------- |
+| the pass off (the pragma) | 2312 ms   | 44.960 s          |
+| the pass on               | 2035 ms   | 44.618 s          |
 
 The A53 runs in order, and the scheduled code with its spills is faster
 there than the unscheduled code without them. The pragma now applies to
@@ -669,7 +670,7 @@ Kept only on a bench past the spread, as above.
 ## 2026-10-27 - the activations' columns 64 bytes apart past their width (hypothesis)
 
 The int8 product's activations are column after column, column t at
-q + t * n. On ARMv8.0 a 4096-input product, the feed-forward's down
+q + t \* n. On ARMv8.0 a 4096-input product, the feed-forward's down
 projection (half its multiply-adds), is taken 1024 inputs a chunk (H6),
 three columns a tile, and a tile reads its three columns' chunks in step,
 4096 bytes apart: the same offset in their 4 KB pages. The A72's L1D is
@@ -708,14 +709,14 @@ transcript test.v2.json's bytes. Interleaved rounds, the order turned
 each round, test.wav through v2, best of 5 at the default threads; each
 variant's ratio to its base a round, median (range):
 
-| board | compiler | FCVTNS | softmax16 | control |
-|---|---|---|---|---|
-| pi4, A72, 6 rounds | gcc 14.2 | -0.07% (-0.37 to +0.22) | -0.08% (-0.34 to +0.02) | -0.01% (-0.22 to +0.39) |
-| | clang 21.1 | -0.06% (-0.54 to +0.66) | -0.23% (-0.46 to +0.14) | +0.10% (-0.19 to +0.32) |
-| pi3, A53, 3 rounds | gcc 14.2 | +0.07% (-1.88 to +0.18) | -0.09% (-1.14 to +0.12) | +0.18% (-1.22 to +0.35) |
-| | clang 21.1 | -0.11% (-0.33 to +0.53) | +0.66% (-0.52 to +1.28) | +0.94% (-0.20 to +1.99) |
+| board                           | compiler   | FCVTNS                  | softmax16               | control                 |
+| ------------------------------- | ---------- | ----------------------- | ----------------------- | ----------------------- |
+| pi4, A72, 6 rounds              | gcc 14.2   | -0.07% (-0.37 to +0.22) | -0.08% (-0.34 to +0.02) | -0.01% (-0.22 to +0.39) |
+|                                 | clang 21.1 | -0.06% (-0.54 to +0.66) | -0.23% (-0.46 to +0.14) | +0.10% (-0.19 to +0.32) |
+| pi3, A53, 3 rounds              | gcc 14.2   | +0.07% (-1.88 to +0.18) | -0.09% (-1.14 to +0.12) | +0.18% (-1.22 to +0.35) |
+|                                 | clang 21.1 | -0.11% (-0.33 to +0.53) | +0.66% (-0.52 to +1.28) | +0.94% (-0.20 to +1.99) |
 | pi5c, A76, on ebce152, 6 rounds | clang 21.1 | -0.38% (-1.12 to -0.22) | -0.10% (-0.49 to +0.03) | -0.03% (-0.38 to +0.16) |
-| | gcc 15.2 | -0.18% (-0.43 to +0.19) | -0.23% (-0.54 to -0.19) | -0.25% (-0.43 to 0.00) |
+|                                 | gcc 15.2   | -0.18% (-0.43 to +0.19) | -0.23% (-0.54 to -0.19) | -0.25% (-0.43 to 0.00)  |
 
 pi4's and pi3's gcc builds were the boards' own (Debian 13), their clang
 builds cross-compiled with -mtune for the core; pi5c's were all
@@ -746,12 +747,12 @@ static on ebce152 with -mtune for the core; interleaved rounds, the order
 turned each round, best of 5 at the default threads; each build's ratio
 to base a round, median (range):
 
-| board | compiler | stride | control |
-|---|---|---|---|
-| pi4, A72, 6 rounds | gcc 15.2 | -0.60% (-0.86 to -0.51) | +0.01% (-0.17 to +0.14) |
-| | clang 21.1 | -0.21% (-0.33 to -0.10) | +0.06% (-0.11 to +0.28) |
-| pi5c, A76, 6 rounds | gcc 15.2 | -0.31% (-0.60 to +0.03) | -0.25% (-0.43 to 0.00) |
-| | clang 21.1 | -0.26% (-0.84 to -0.08) | -0.03% (-0.38 to +0.16) |
+| board               | compiler   | stride                  | control                 |
+| ------------------- | ---------- | ----------------------- | ----------------------- |
+| pi4, A72, 6 rounds  | gcc 15.2   | -0.60% (-0.86 to -0.51) | +0.01% (-0.17 to +0.14) |
+|                     | clang 21.1 | -0.21% (-0.33 to -0.10) | +0.06% (-0.11 to +0.28) |
+| pi5c, A76, 6 rounds | gcc 15.2   | -0.31% (-0.60 to +0.03) | -0.25% (-0.43 to 0.00)  |
+|                     | clang 21.1 | -0.26% (-0.84 to -0.08) | -0.03% (-0.38 to +0.16) |
 
 Both boards throttled=0x0. PROFILE=1 builds of base and stride on pi4,
 one bench each: the feed-forward stage 11679 to 11563 ms a run under gcc
@@ -815,22 +816,22 @@ its first round of each ran partly at 1.4 GHz, and its ranges carry it.
 
 The compiler, against the .deb's gcc 11.4, every build generic:
 
-| board, rounds | backend, threads | gcc 11.4 | gcc 12.3 | clang 14.0 | clang 21.1 |
-|---|---|---|---|---|---|
-| pi3, A53, 3 | neon, 4 | 51.386 s | -5.69% (-5.71 to -5.32) | +54.98% (+54.29 to +61.80) | +6.84% (+6.53 to +12.22) |
-| pi4, A72, 3 | neon, 4 | 23.589 s | -1.09% (-1.12 to -0.95) | +46.55% (+46.36 to +46.90) | +6.60% (+6.37 to +6.67) |
-| pi5c, A76, 6 | neon-dp, 4 | 3.670 s | -0.28% (-0.38 to -0.20) | -0.61% (-0.80 to -0.54) | -0.42% (-0.57 to -0.31) |
-| gb10, X925, 6 | neon-dp, 10 | 0.433 s | -0.29% (-1.14 to +14.00) | -1.32% (-2.18 to -0.46) | -1.45% (-2.18 to -0.35) |
-| gb10, the second set | | 0.4350 s | -0.86% | -1.03% | -1.21% |
+| board, rounds        | backend, threads | gcc 11.4 | gcc 12.3                 | clang 14.0                 | clang 21.1               |
+| -------------------- | ---------------- | -------- | ------------------------ | -------------------------- | ------------------------ |
+| pi3, A53, 3          | neon, 4          | 51.386 s | -5.69% (-5.71 to -5.32)  | +54.98% (+54.29 to +61.80) | +6.84% (+6.53 to +12.22) |
+| pi4, A72, 3          | neon, 4          | 23.589 s | -1.09% (-1.12 to -0.95)  | +46.55% (+46.36 to +46.90) | +6.60% (+6.37 to +6.67)  |
+| pi5c, A76, 6         | neon-dp, 4       | 3.670 s  | -0.28% (-0.38 to -0.20)  | -0.61% (-0.80 to -0.54)    | -0.42% (-0.57 to -0.31)  |
+| gb10, X925, 6        | neon-dp, 10      | 0.433 s  | -0.29% (-1.14 to +14.00) | -1.32% (-2.18 to -0.46)    | -1.45% (-2.18 to -0.35)  |
+| gb10, the second set |                  | 0.4350 s | -0.86%                   | -1.03%                     | -1.21%                   |
 
 The tuning, against gcc 12.3 generic:
 
-| board, rounds | gcc 12 a53 | gcc 12 a72 | gcc 12 a76 | gcc 15.2 generic | gcc 15 a53 | gcc 15 a72 | gcc 15 a76 | gcc 15 x925 | clang 21 | clang 21 tuned |
-|---|---|---|---|---|---|---|---|---|---|---|
-| pi3, A53, 3 | -0.22% (-0.24 to +0.17) | +3.30% (+2.93 to +3.67) | | +0.48% (-0.02 to +4.09) | +0.39% (+0.10 to +5.24) | +3.84% (+3.59 to +9.85) | | | +13.77% (+13.75 to +20.98) | a53: +9.65% (+9.40 to +16.52) |
-| pi4, A72, 3 | -1.45% (-1.48 to -1.42) | -9.16% (-9.17 to -8.93) | | -0.67% (-0.88 to -0.65) | -0.87% (-0.95 to -0.84) | -8.56% (-8.71 to -8.55) | | | | |
-| pi5c, A76, 6 | | | -0.01% (-0.20 to +0.05) | -0.08% (-0.10 to +0.01) | | | +0.20% (+0.11 to +0.31) | +0.33% (+0.16 to +0.45) | -0.26% (-0.33 to -0.19) | a76: +0.01% (-0.12 to +0.18) |
-| gb10, 6 runs a build | | | +0.46% | +0.35% | | | +0.29% | +0.52% | -0.35% | a76: +0.29% |
+| board, rounds        | gcc 12 a53              | gcc 12 a72              | gcc 12 a76              | gcc 15.2 generic        | gcc 15 a53              | gcc 15 a72              | gcc 15 a76              | gcc 15 x925             | clang 21                   | clang 21 tuned                |
+| -------------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- | -------------------------- | ----------------------------- |
+| pi3, A53, 3          | -0.22% (-0.24 to +0.17) | +3.30% (+2.93 to +3.67) |                         | +0.48% (-0.02 to +4.09) | +0.39% (+0.10 to +5.24) | +3.84% (+3.59 to +9.85) |                         |                         | +13.77% (+13.75 to +20.98) | a53: +9.65% (+9.40 to +16.52) |
+| pi4, A72, 3          | -1.45% (-1.48 to -1.42) | -9.16% (-9.17 to -8.93) |                         | -0.67% (-0.88 to -0.65) | -0.87% (-0.95 to -0.84) | -8.56% (-8.71 to -8.55) |                         |                         |                            |                               |
+| pi5c, A76, 6         |                         |                         | -0.01% (-0.20 to +0.05) | -0.08% (-0.10 to +0.01) |                         |                         | +0.20% (+0.11 to +0.31) | +0.33% (+0.16 to +0.45) | -0.26% (-0.33 to -0.19)    | a76: +0.01% (-0.12 to +0.18)  |
+| gb10, 6 runs a build |                         |                         | +0.46%                  | +0.35%                  |                         |                         | +0.29%                  | +0.52%                  | -0.35%                     | a76: +0.29%                   |
 
 gb10's runs of one build spread over 1 to 2%, so nothing there is past
 its noise; pi5c's spread between placements is at most 0.25%, pi4's 0.12%.
@@ -905,16 +906,16 @@ into the other of two register pairs. A unit's order is a pattern of its
 slots, M (the next multiply), S (the next SADALP of the unit before) and
 the loads. On one 4 KB buffer, its addresses fixed, cycles a step:
 
-| order | A72 | A53 |
-|---|---|---|
-| gcc's generic (the .deb's) | 44.04 | 67.42 |
-| gcc's A72 | 36.53 | 69.44 |
-| column by column, each column's SADALP after its multiplies | 48.05 | 72.46 |
-| M M S four times, words by ldr s + DUP | 35.31 | 68.94 |
+| order                                                                                  | A72   | A53   |
+| -------------------------------------------------------------------------------------- | ----- | ----- |
+| gcc's generic (the .deb's)                                                             | 44.04 | 67.42 |
+| gcc's A72                                                                              | 36.53 | 69.44 |
+| column by column, each column's SADALP after its multiplies                            | 48.05 | 72.46 |
+| M M S four times, words by ldr s + DUP                                                 | 35.31 | 68.94 |
 | hill-climbed on the A72, single moves, ldr s + DUP (`S M S a b S M M S M M M A M M B`) | 31.86 | 68.93 |
-| M M S, the words by LD1R | 37.81 | 62.91 |
-| hill-climbed on the A72, LD1R (`S M M S M S M a b M M M M S`) | 33.03 | 62.92 |
-| M M S, the words by ldr d and two DUPs by element | 35.82 | 65.93 |
+| M M S, the words by LD1R                                                               | 37.81 | 62.91 |
+| hill-climbed on the A72, LD1R (`S M M S M S M a b M M M M S`)                          | 33.03 | 62.92 |
+| M M S, the words by ldr d and two DUPs by element                                      | 35.82 | 65.93 |
 
 The A53 takes every interleaving of M and S at the same price (eleven
 orders measured at 68.93 to 68.95 with ldr s + DUP, four at 62.90 to
@@ -939,13 +940,13 @@ past the tile's last block. Timed as k_gemm_q8 calls it, 32 blocks a
 call (a 1024-input chunk: the half panel's 8 KB of weights and the
 columns' 1 KB each, scales of 1.0), cycles a block:
 
-| loop | A72, six processes | against the last | A53, three | against the last |
-|---|---|---|---|---|
-| words by ldr s + DUP, post-indexed (`S M S a b S M M S M M M A M M B`) | 159.8 to 179.2 | +7.7% (+6.1 to +8.0) | 303.7 to 307.8 | +11.8% (+11.6 to +11.8) |
-| words by LD1R, post-indexed (`S M M S M S M a b M M M M S`) | 174.6 to 195.4 | +17.6% (+16.2 to +18.3) | 279.3 to 283.8 | +2.8% (+2.8 to +2.9) |
-| words by ldr d at offsets, climbed on the A53 (`L M S M S M S M S M A M M M B`) | 159.0 to 176.6 | +7.0% (+4.9 to +7.4) | 270.6 to 274.8 | -0.4% (-0.4 to -0.3) |
-| words by ldr d at offsets, climbed on the A72 (`S M M S S M S M L M M A M M B`) | 149.7 to 165.6 | +0.7% (-1.5 to +1.1) | 281.7 to 285.8 | +3.7% (+3.6 to +3.7) |
-| words by ldr d at offsets, `L S M M S S M S M M M A M M B` | 148.1 to 167.5 | | 271.6 to 275.8 | |
+| loop                                                                            | A72, six processes | against the last        | A53, three     | against the last        |
+| ------------------------------------------------------------------------------- | ------------------ | ----------------------- | -------------- | ----------------------- |
+| words by ldr s + DUP, post-indexed (`S M S a b S M M S M M M A M M B`)          | 159.8 to 179.2     | +7.7% (+6.1 to +8.0)    | 303.7 to 307.8 | +11.8% (+11.6 to +11.8) |
+| words by LD1R, post-indexed (`S M M S M S M a b M M M M S`)                     | 174.6 to 195.4     | +17.6% (+16.2 to +18.3) | 279.3 to 283.8 | +2.8% (+2.8 to +2.9)    |
+| words by ldr d at offsets, climbed on the A53 (`L M S M S M S M S M A M M M B`) | 159.0 to 176.6     | +7.0% (+4.9 to +7.4)    | 270.6 to 274.8 | -0.4% (-0.4 to -0.3)    |
+| words by ldr d at offsets, climbed on the A72 (`S M M S S M S M L M M A M M B`) | 149.7 to 165.6     | +0.7% (-1.5 to +1.1)    | 281.7 to 285.8 | +3.7% (+3.6 to +3.7)    |
+| words by ldr d at offsets, `L S M M S S M S M M M A M M B`                      | 148.1 to 167.5     |                         | 271.6 to 275.8 |                         |
 
 (L the ldr d of the next unit's two words into its b register, A and B
 the DUPs of its lanes 0 and 1 into a and b.) One binary of the five, run
@@ -1002,16 +1003,16 @@ pk_gemm calls them), two rounds, pi3's from 45 C, below its limit: the
 four shapes' time, and in brackets MAC a cycle a core at cpufreq's
 clock:
 
-| board | compiler | threads | base | loop | change |
-|---|---|---|---|---|---|
-| pi4, A72, 1.8 GHz | gcc 12.3 | 1 | 480.7 ms (3.33) | 362.6 ms (4.42) | -24.6% |
-| | | 4 | 123.9 ms (3.23) | 96.7 ms (4.14) | -22.0% |
-| | clang 21.1 | 1 | 523.8 ms (3.05) | 367.8 ms (4.36) | -29.8% |
-| | | 4 | 135.8 ms (2.95) | 97.4 ms (4.12) | -28.3% |
-| pi3, A53, 1.4 GHz | gcc 12.3 | 1 | 903.0 ms (2.28) | 842.5 ms (2.44) | -6.7% |
-| | | 4 | 235.8 ms (2.19) | 222.3 ms (2.32) | -5.8% |
-| | clang 21.1 | 1 | 1072.5 ms (1.92) | 849.6 ms (2.42) | -20.8% |
-| | | 4 | 278.5 ms (1.85) | 222.4 ms (2.31) | -20.2% |
+| board             | compiler   | threads | base             | loop            | change |
+| ----------------- | ---------- | ------- | ---------------- | --------------- | ------ |
+| pi4, A72, 1.8 GHz | gcc 12.3   | 1       | 480.7 ms (3.33)  | 362.6 ms (4.42) | -24.6% |
+|                   |            | 4       | 123.9 ms (3.23)  | 96.7 ms (4.14)  | -22.0% |
+|                   | clang 21.1 | 1       | 523.8 ms (3.05)  | 367.8 ms (4.36) | -29.8% |
+|                   |            | 4       | 135.8 ms (2.95)  | 97.4 ms (4.12)  | -28.3% |
+| pi3, A53, 1.4 GHz | gcc 12.3   | 1       | 903.0 ms (2.28)  | 842.5 ms (2.44) | -6.7%  |
+|                   |            | 4       | 235.8 ms (2.19)  | 222.3 ms (2.32) | -5.8%  |
+|                   | clang 21.1 | 1       | 1072.5 ms (1.92) | 849.6 ms (2.42) | -20.8% |
+|                   |            | 4       | 278.5 ms (1.85)  | 222.4 ms (2.31) | -20.2% |
 
 In L1 (64 rows by 256 inputs, T 48, one thread), a block's 768
 multiply-adds take the A72 212 to 217 cycles under gcc and 233 to 235
@@ -1025,13 +1026,13 @@ through v2, best of 5 at the default threads (4); a build's time a
 round is its placements' mean, and its ratio to base a round, median
 (range):
 
-| board, rounds | compiler | base | loop | change |
-|---|---|---|---|---|
-| pi4, A72, 3 | gcc 12.3 | 23.425 s | 18.926 s | -19.17% (-19.34 to -19.09) |
-| | clang 21.1 | 25.242 s | 18.909 s | -25.09% (-25.13 to -25.01) |
-| | gcc 15.2, -mtune=cortex-a72 | 21.398 s | | the loop under gcc 12 against it: -11.55% (-11.79 to -11.45) |
-| pi3, A53, 3 | gcc 12.3 | 48.484 s | 46.654 s | -3.32% (-3.78 to -2.77) |
-| | clang 21.1 | 54.819 s | 46.847 s | -14.50% (-14.74 to -14.03) |
+| board, rounds | compiler                    | base     | loop     | change                                                       |
+| ------------- | --------------------------- | -------- | -------- | ------------------------------------------------------------ |
+| pi4, A72, 3   | gcc 12.3                    | 23.425 s | 18.926 s | -19.17% (-19.34 to -19.09)                                   |
+|               | clang 21.1                  | 25.242 s | 18.909 s | -25.09% (-25.13 to -25.01)                                   |
+|               | gcc 15.2, -mtune=cortex-a72 | 21.398 s |          | the loop under gcc 12 against it: -11.55% (-11.79 to -11.45) |
+| pi3, A53, 3   | gcc 12.3                    | 48.484 s | 46.654 s | -3.32% (-3.78 to -2.77)                                      |
+|               | clang 21.1                  | 54.819 s | 46.847 s | -14.50% (-14.74 to -14.03)                                   |
 
 pi4 throttled=0x0 through every run, 60 to 69 C, its placements within
 0.25% of each other. The loop runs level under the two compilers, on
@@ -1042,14 +1043,14 @@ A53; 43.544 s).
 
 PROFILE=1 builds under gcc 12, two runs of each, ms a run:
 
-| stage | pi4 base | pi4 loop | change | pi3 base | pi3 loop | change |
-|---|---|---|---|---|---|---|
-| feed-forward | 12990 | 10146 | -21.9% | 26472 | 25423 | -4.0% |
-| q k v pos | 3992 | 3089 | -22.6% | 7990 | 7709 | -3.5% |
-| attention out | 817 | 635 | -22.2% | 1659 | 1604 | -3.4% |
-| conv pw1 pw2 | 2412 | 1882 | -22.0% | 4857 | 4664 | -4.0% |
-| subsampling | 600 | 538 | -10.3% | 1299 | 1277 | -1.7% |
-| run, best of 5 | 23.42 s | 18.94 s | -19.1% | 48.23 s | 46.69 s | -3.2% |
+| stage          | pi4 base | pi4 loop | change | pi3 base | pi3 loop | change |
+| -------------- | -------- | -------- | ------ | -------- | -------- | ------ |
+| feed-forward   | 12990    | 10146    | -21.9% | 26472    | 25423    | -4.0%  |
+| q k v pos      | 3992     | 3089     | -22.6% | 7990     | 7709     | -3.5%  |
+| attention out  | 817      | 635      | -22.2% | 1659     | 1604     | -3.4%  |
+| conv pw1 pw2   | 2412     | 1882     | -22.0% | 4857     | 4664     | -4.0%  |
+| subsampling    | 600      | 538      | -10.3% | 1299     | 1277     | -1.7%  |
+| run, best of 5 | 23.42 s  | 18.94 s  | -19.1% | 48.23 s  | 46.69 s  | -3.2%  |
 
 (the subsampling's two pointwise convolutions are int8 products). Every
 other stage within 2.8% on pi4 and 2.4% on pi3.
@@ -1064,11 +1065,11 @@ and the loop under gcc 12 alternating, the ARM clock read every half
 second (vcgencmd measure_clock), each run's transcription time against
 its samples' mean clock:
 
-| | base | loop | change |
-|---|---|---|---|
-| a run at 1400 MHz throughout (each's first three) | 46.40 to 46.45 s | 44.15 to 44.31 s | -4.7% |
-| cycles a run, time by mean clock, all fifteen, median (range) | 64.96 G (63.95 to 65.87) | 61.47 G (60.62 to 61.87) | -5.4% |
-| mean clock at the limit (pairs 2 and 3), median | 1288 MHz | 1251 MHz | -2.9% |
+|                                                               | base                     | loop                     | change |
+| ------------------------------------------------------------- | ------------------------ | ------------------------ | ------ |
+| a run at 1400 MHz throughout (each's first three)             | 46.40 to 46.45 s         | 44.15 to 44.31 s         | -4.7%  |
+| cycles a run, time by mean clock, all fifteen, median (range) | 64.96 G (63.95 to 65.87) | 61.47 G (60.62 to 61.87) | -5.4%  |
+| mean clock at the limit (pairs 2 and 3), median               | 1288 MHz                 | 1251 MHz                 | -2.9%  |
 
 So the loop takes 5.4% of a run's cycles at every clock, and 4.7% of its
 time at 1.4 GHz; held at its limit, the board ran the loop's runs at a
@@ -1135,23 +1136,23 @@ loads takes the same cycles in every process (115.03 for the multiplies
 and adds in all eight). Cycles a block, median over the processes, and
 the ratio to the loop, median (range):
 
-| variant | cycles | of the loop |
-|---|---|---|
-| the loop | 154.6 | |
-| no DUP (24 a block) | 138.4 | 89.5% (89.2 to 91.0) |
-| no finish (21: 6 ADDP, 6 SCVTF, 3 scale loads, 6 FMLA) | 136.5 | 88.0% (87.4 to 89.2) |
-| no FMLA | 146.7 | 94.5% (93.4 to 97.5) |
-| no SCVTF | 149.3 | 96.5% (96.5 to 97.5) |
-| no ADDP | 150.6 | 97.3% (96.6 to 97.7) |
-| no scale load | 154.3 | 99.2% (98.8 to 100.6) |
-| no load (12 of activations, 8 of weights) | 151.6 | 98.1% (90.7 to 100.9) |
-| no SADDLP or SADALP (48) | 126.0 | 81.2% (80.6 to 82.1) |
-| no multiply (96) | 89.7 | 57.0% (54.8 to 60.2) |
-| no DUP and no finish | 121.9 | 77.4% (76.8 to 80.5) |
-| no finish, the DUPs into v26-v29, read by nothing | 141.7 | 91.4% (91.2 to 92.0) |
-| the multiplies and adds alone | 115.0 | 74.4% (68.8 to 76.5) |
-| the multiplies alone | 96.9 | 62.7% (58.0 to 64.5) |
-| the adds alone | 49.7 | 32.2% (29.8 to 33.1) |
+| variant                                                | cycles | of the loop           |
+| ------------------------------------------------------ | ------ | --------------------- |
+| the loop                                               | 154.6  |                       |
+| no DUP (24 a block)                                    | 138.4  | 89.5% (89.2 to 91.0)  |
+| no finish (21: 6 ADDP, 6 SCVTF, 3 scale loads, 6 FMLA) | 136.5  | 88.0% (87.4 to 89.2)  |
+| no FMLA                                                | 146.7  | 94.5% (93.4 to 97.5)  |
+| no SCVTF                                               | 149.3  | 96.5% (96.5 to 97.5)  |
+| no ADDP                                                | 150.6  | 97.3% (96.6 to 97.7)  |
+| no scale load                                          | 154.3  | 99.2% (98.8 to 100.6) |
+| no load (12 of activations, 8 of weights)              | 151.6  | 98.1% (90.7 to 100.9) |
+| no SADDLP or SADALP (48)                               | 126.0  | 81.2% (80.6 to 82.1)  |
+| no multiply (96)                                       | 89.7   | 57.0% (54.8 to 60.2)  |
+| no DUP and no finish                                   | 121.9  | 77.4% (76.8 to 80.5)  |
+| no finish, the DUPs into v26-v29, read by nothing      | 141.7  | 91.4% (91.2 to 92.0)  |
+| the multiplies and adds alone                          | 115.0  | 74.4% (68.8 to 76.5)  |
+| the multiplies alone                                   | 96.9   | 62.7% (58.0 to 64.5)  |
+| the adds alone                                         | 49.7   | 32.2% (29.8 to 33.1)  |
 
 and in a third run, the scale by LD1R and the FMLA by vector, the same
 bits: 102.2% (101.1 to 102.4).
@@ -1235,12 +1236,12 @@ The product alone, gemmbench at T 250 on one thread (the encoder's four
 shapes as pk_gemm calls them), two rounds, blocks of 64 against 32, the
 loop at each, the four shapes' time:
 
-| board | compiler | blocks of 32 | 64 | change |
-|---|---|---|---|---|
-| pi4, A72 | gcc 14.2 | 365.15, 366.93 ms | 339.47, 339.89 | -7.0%, -7.4% |
-| | clang 21.1 | 360.04, 360.59 | 344.36, 340.74 | -4.4%, -5.5% |
-| pi3, A53 | gcc 14.2 | 847.16, 842.19 | 812.49, 812.88 | -4.1%, -3.5% |
-| | clang 21.1 | 851.99, 845.91 | 822.93, 822.65 | -3.4%, -2.7% |
+| board    | compiler   | blocks of 32      | 64             | change       |
+| -------- | ---------- | ----------------- | -------------- | ------------ |
+| pi4, A72 | gcc 14.2   | 365.15, 366.93 ms | 339.47, 339.89 | -7.0%, -7.4% |
+|          | clang 21.1 | 360.04, 360.59    | 344.36, 340.74 | -4.4%, -5.5% |
+| pi3, A53 | gcc 14.2   | 847.16, 842.19    | 812.49, 812.88 | -4.1%, -3.5% |
+|          | clang 21.1 | 851.99, 845.91    | 822.93, 822.65 | -3.4%, -2.7% |
 
 In L1 (64 rows by 256 inputs, T 48, one thread), MAC a cycle at
 cpufreq's clock: the A72 4.82 and 4.84 at 32 and 5.04 and 5.13 at 64
@@ -1257,12 +1258,12 @@ this build (s2) and against 33c5e7c's (base) under the same compiler, a
 round's change, median (range); s1 is the fast mode's commit (de85e2a),
 whose ARMv8.0 tile takes blocks of 64 in its C:
 
-| board, rounds | compiler | base | s2 default | s2 --fast | s1 --fast |
-|---|---|---|---|---|---|
-| pi4, A72, 3 | gcc 14.2 | 18.742 s | 18.742, +0.0% (0.0 to +0.1) | 17.711, -5.5% (-5.6 to -5.5) | 19.692, +4.9% (+4.8 to +5.4) |
-| | clang 21.1 | 18.712 | 18.702, -0.1% (-0.2 to +0.3) | 17.672, -5.5% (-5.6 to -5.4) | |
-| pi3, A53, 2 | gcc 14.2 | 48.491 | 48.981, +1.0% (-0.3 to +2.4) | 47.323, -3.4% (-3.6 to -3.1) | 49.507, +1.1% (+1.0 to +1.2) |
-| | clang 21.1 | 49.193 | 49.322, +0.3% (+0.1 to +0.4) | 47.746, -3.2% (-3.2 to -3.2) | |
+| board, rounds | compiler   | base     | s2 default                   | s2 --fast                    | s1 --fast                    |
+| ------------- | ---------- | -------- | ---------------------------- | ---------------------------- | ---------------------------- |
+| pi4, A72, 3   | gcc 14.2   | 18.742 s | 18.742, +0.0% (0.0 to +0.1)  | 17.711, -5.5% (-5.6 to -5.5) | 19.692, +4.9% (+4.8 to +5.4) |
+|               | clang 21.1 | 18.712   | 18.702, -0.1% (-0.2 to +0.3) | 17.672, -5.5% (-5.6 to -5.4) |                              |
+| pi3, A53, 2   | gcc 14.2   | 48.491   | 48.981, +1.0% (-0.3 to +2.4) | 47.323, -3.4% (-3.6 to -3.1) | 49.507, +1.1% (+1.0 to +1.2) |
+|               | clang 21.1 | 49.193   | 49.322, +0.3% (+0.1 to +0.4) | 47.746, -3.2% (-3.2 to -3.2) |                              |
 
 pi4 throttled=0x0 throughout, its clock 1.8 GHz. pi3 ran its whole runs
 at the soft limit its config sets (temp_soft_limit=70), 70.9 to 74.7 C,

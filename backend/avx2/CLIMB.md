@@ -6,25 +6,25 @@ Dated records. Append; do not rewrite old rows; rejected hypotheses stay.
 
 ## The board
 
-| | |
-|---|---|
-| CPU | Intel Core i9-12900HK (Alder Lake-H): 6 P-cores (Golden Cove, 2 threads each, CPUs 0-11, 4.9-5.0 GHz, 1.25 MB L2 each) + 8 E-cores (Gracemont, CPUs 12-19, 3.8 GHz, 2 MB L2 per four) |
-| L3 | 24 MB, shared |
-| power | PL1 = PL2 = 45 W (`/sys/class/powercap/intel-rapl:0`), governor powersave (HWP) |
-| OS, compiler | Ubuntu, kernel 7.0, gcc 15.2.0 |
-| flags | avx2: `-O3 -mavx2 -mfma -std=c11 -ffp-contract=off`; avx2-vnni adds `-mavxvnni` |
-| bench | `./pkito bench -t N --max-chunk 60 test.wav` (Silero's 60 s test.wav whole: T = 750 encoder frames), best of 5 per run; the spread is over 5 runs |
+|              |                                                                                                                                                                                       |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CPU          | Intel Core i9-12900HK (Alder Lake-H): 6 P-cores (Golden Cove, 2 threads each, CPUs 0-11, 4.9-5.0 GHz, 1.25 MB L2 each) + 8 E-cores (Gracemont, CPUs 12-19, 3.8 GHz, 2 MB L2 per four) |
+| L3           | 24 MB, shared                                                                                                                                                                         |
+| power        | PL1 = PL2 = 45 W (`/sys/class/powercap/intel-rapl:0`), governor powersave (HWP)                                                                                                       |
+| OS, compiler | Ubuntu, kernel 7.0, gcc 15.2.0                                                                                                                                                        |
+| flags        | avx2: `-O3 -mavx2 -mfma -std=c11 -ffp-contract=off`; avx2-vnni adds `-mavxvnni`                                                                                                       |
+| bench        | `./pkito bench -t N --max-chunk 60 test.wav` (Silero's 60 s test.wav whole: T = 750 encoder frames), best of 5 per run; the spread is over 5 runs                                     |
 
 ## Baseline (main at b07c50d)
 
 `x86bench.sh`: 5 runs of `pkito bench`, each best of 5.
 
-| build | threads | min | median | max |
-|---|---|---|---|---|
-| avx2-vnni | 1 | 5.460 | 5.512 | 5.597 |
-| avx2-vnni | 6 | 1.652 | 1.656 | 1.658 |
-| avx2 | 1 | 7.706 | 7.709 | 7.712 |
-| avx2 | 6 | 2.259 | 2.260 | 2.261 |
+| build     | threads | min   | median | max   |
+| --------- | ------- | ----- | ------ | ----- |
+| avx2-vnni | 1       | 5.460 | 5.512  | 5.597 |
+| avx2-vnni | 6       | 1.652 | 1.656  | 1.658 |
+| avx2      | 1       | 7.706 | 7.709  | 7.712 |
+| avx2      | 6       | 2.259 | 2.260  | 2.261 |
 
 So the spread is 0.4% at 6 threads and 2.5% at one (one core's turbo wanders
 between 4.5 and 5.0 GHz). Profile (`make PROFILE=1`), avx2-vnni, one thread:
@@ -36,23 +36,23 @@ At 6 threads every stage is ~3.3x faster than at one.
 
 **Power, then instructions.** turbostat (PkgWatt, Bzy_MHz over the bench):
 
-| threads | package | busy MHz | bench |
-|---|---|---|---|
-| 1 | 44.1 W | 4537 | 5.51 s |
-| 6 | 45.0 W | 3081 | 1.655 s |
-| 12 | 44.6 W | 2734 | 1.862 s |
+| threads | package | busy MHz | bench   |
+| ------- | ------- | -------- | ------- |
+| 1       | 44.1 W  | 4537     | 5.51 s  |
+| 6       | 45.0 W  | 3081     | 1.655 s |
+| 12      | 44.6 W  | 2734     | 1.862 s |
 
 The package is at its 45 W limit with one thread already. Six threads run at
 3.08 GHz, and more threads (hyperthreads, E-cores) only spread the same 45 W
 thinner. perf stat (cpu_core cycles and instructions over the whole bench,
 five runs):
 
-| threads | core GHz | core instructions | atom instructions | IPC |
-|---|---|---|---|---|
-| 1 | 4.94 | 727e9 | 0.15e9 | 5.30 |
-| 6 | 3.07 | 729e9 | 0.06e9 | 4.88 |
-| 12 | | 916e9 | 355e9 | |
-| 20 | | 834e9 | 551e9 | |
+| threads | core GHz | core instructions | atom instructions | IPC  |
+| ------- | -------- | ----------------- | ----------------- | ---- |
+| 1       | 4.94     | 727e9             | 0.15e9            | 5.30 |
+| 6       | 3.07     | 729e9             | 0.06e9            | 4.88 |
+| 12      |          | 916e9             | 355e9             |      |
+| 20      |          | 834e9             | 551e9             |      |
 
 At 12 and 20 threads the instruction count grows 74-90%: the pool's workers
 spin between jobs, and on a power-capped chip a spinning core's watts are
@@ -63,10 +63,10 @@ one thread and at six.
 **The int8 product alone** (`tests/q8bench`, one thread, taskset to a P-core,
 T = 750, blocks of 32):
 
-| build | 4096x1024 | 1024x4096 | 1024x1024 | decoder 2560x640, T 1 |
-|---|---|---|---|---|
-| avx2-vnni | 113.4 GMAC/s | 112.2 | 113.6 | 19.3 |
-| avx2 | 73.3 | 73.7 | 73.4 | 47.6 |
+| build     | 4096x1024    | 1024x4096 | 1024x1024 | decoder 2560x640, T 1 |
+| --------- | ------------ | --------- | --------- | --------------------- |
+| avx2-vnni | 113.4 GMAC/s | 112.2     | 113.6     | 19.3                  |
+| avx2      | 73.3         | 73.7      | 73.4      | 47.6                  |
 
 At ~4.9 GHz that is 23 MAC/cycle for VNNI against a peak of 64 (two
 VPDPBUSD a cycle, 32 MACs each) and 15 for VPMADDUBSW, at IPC 5.05 and 4.55:
@@ -92,7 +92,7 @@ at one column is as much work as the product.
 ## H1, before the edit: VNNI with the offset on the weights
 
 Put the +128 on the weights instead (XOR the weight vector once a group, for
-every column of the tile) and take 128 x the block's sum of the *activations*
+every column of the tile) and take 128 x the block's sum of the _activations_
 back off, which depends on the column and the block but not on the row: one
 sum a column a block, taken once a call over T x n bytes, not over the
 weights. That removes the weight-sum pass (the decoder at T = 1) and the
@@ -138,10 +138,10 @@ q8bench, one P-core: 142.4 -> 228.8 GMAC/s on 4096x1024, 213.1 on 1024x4096,
 228.7 on 1024x1024: about 47 MAC/cycle at ~4.85 GHz, 73% of VPDPBUSD's 64.
 The decoder's qb = n path keeps its loop: 64.3. Kept. The engine:
 
-| build | threads | min | median | max | was (median) |
-|---|---|---|---|---|---|
-| avx2-vnni | 1 | 3.359 | 3.419 | 3.447 | 5.512 |
-| avx2-vnni | 6 | 1.056 | 1.057 | 1.062 | 1.656 |
+| build     | threads | min   | median | max   | was (median) |
+| --------- | ------- | ----- | ------ | ----- | ------------ |
+| avx2-vnni | 1       | 3.359 | 3.419  | 3.447 | 5.512        |
+| avx2-vnni | 6       | 1.056 | 1.057  | 1.062 | 1.656        |
 
 -36% at six threads. The profile at six moves the float attention to 24.1%
 of the run (257.6 ms), behind the feed-forward's 42.1% (449.3 ms).
@@ -163,10 +163,10 @@ P-core, avx2: 73.3 -> 89.9 GMAC/s on 4096x1024 (90.2, 90.0 on the other two),
 the decoder's T = 1 product 47.6 -> 52.1: 18.6 MAC/cycle against the ~20
 that ports 0 and 1 allow it. As predicted. Kept. The engine:
 
-| build | threads | min | median | max | was (median) |
-|---|---|---|---|---|---|
-| avx2 | 1 | 6.544 | 6.640 | 6.711 | 7.709 |
-| avx2 | 6 | 1.994 | 1.997 | 2.002 | 2.260 |
+| build | threads | min   | median | max   | was (median) |
+| ----- | ------- | ----- | ------ | ----- | ------------ |
+| avx2  | 1       | 6.544 | 6.640  | 6.711 | 7.709        |
+| avx2  | 6       | 1.994 | 1.997  | 2.002 | 2.260        |
 
 (A side effect worth writing down: with |w| as the unsigned factor a weight
 of -128 multiplies correctly, VPABSB leaving it 0x80 = 128 unsigned, where
@@ -177,21 +177,21 @@ the old form's VPSIGNB w, x wrapped it. No converted file has one.)
 `pkito bench -t N`, best of 5, one run each; scheduler's placement unless
 taskset is given:
 
-| threads | where | s |
-|---|---|---|
-| 4 | | 1.241 |
-| 5 | | 1.188 |
-| **6** | | **1.062** |
-| 6 | taskset one a P-core (0,2,4,6,8,10) | 1.062 |
-| 7 | | 1.206 |
-| 8 | | 1.192 |
-| 10 | | 1.223 |
-| 12 | | 1.183 |
-| 12 | taskset P-cores and their siblings (0-11) | 1.110 |
-| 14 | (the default: pk_os_cores(), every physical core) | 1.194 |
-| 14 | taskset one a core, P and E | 1.191 |
-| 20 | | 1.199 |
-| 8 | taskset E-cores only (12-19) | 2.010 |
+| threads | where                                             | s         |
+| ------- | ------------------------------------------------- | --------- |
+| 4       |                                                   | 1.241     |
+| 5       |                                                   | 1.188     |
+| **6**   |                                                   | **1.062** |
+| 6       | taskset one a P-core (0,2,4,6,8,10)               | 1.062     |
+| 7       |                                                   | 1.206     |
+| 8       |                                                   | 1.192     |
+| 10      |                                                   | 1.223     |
+| 12      |                                                   | 1.183     |
+| 12      | taskset P-cores and their siblings (0-11)         | 1.110     |
+| 14      | (the default: pk_os_cores(), every physical core) | 1.194     |
+| 14      | taskset one a core, P and E                       | 1.191     |
+| 20      |                                                   | 1.199     |
+| 8       | taskset E-cores only (12-19)                      | 2.010     |
 
 Six threads, one a P-core, is the best by 11-15%, and the default (14) is
 12% slower than it. A seventh thread lands on an E-core or a sibling: it
@@ -259,10 +259,10 @@ threads, and 1 chunk wherever the slices are whole rounds already (four and
 eight threads at 1024 rows, any count at 4096). `--json` output (text and
 every token's time) identical at 1 and 6 threads and to main's build.
 
-| build | threads | min | median | max | was (median) |
-|---|---|---|---|---|---|
-| avx2-vnni | 6 | 1.015 | 1.017 | 1.021 | 1.057 |
-| avx2 | 6 | 1.890 | 1.891 | 1.937 | 1.997 |
+| build     | threads | min   | median | max   | was (median) |
+| --------- | ------- | ----- | ------ | ----- | ------------ |
+| avx2-vnni | 6       | 1.015 | 1.017  | 1.021 | 1.057        |
+| avx2      | 6       | 1.890 | 1.891  | 1.937 | 1.997        |
 
 and avx2-vnni at 1, 4 and 8 threads unchanged (3.39-3.41, 1.244-1.247,
 1.200-1.203 s); at 5, 1.188 -> 1.113-1.117. Kept.
@@ -291,13 +291,13 @@ tests/kcheck: ref's bits on avx2 and avx2-vnni. `--json` output (text and
 token times, test.wav whole) and the default 30 s chunked text are main's,
 byte for byte, from both builds. pkito bench, test.wav whole, 5 runs:
 
-| build | threads | before (median) | after (min / median / max) |
-|---|---|---|---|
-| avx2-vnni | 1 | 5.512 | 3.375 / 3.420 / 3.470 |
-| avx2-vnni | 6 | 1.656 | 1.014 / 1.018 / 1.021 |
-| avx2-vnni | default | 1.194 (14 threads) | 1.018 (6: H4) |
-| avx2 | 1 | 7.709 | 6.762 / 6.766 / 6.798 |
-| avx2 | 6 | 2.260 | 1.891 / 1.896 / 1.938 |
+| build     | threads | before (median)    | after (min / median / max) |
+| --------- | ------- | ------------------ | -------------------------- |
+| avx2-vnni | 1       | 5.512              | 3.375 / 3.420 / 3.470      |
+| avx2-vnni | 6       | 1.656              | 1.014 / 1.018 / 1.021      |
+| avx2-vnni | default | 1.194 (14 threads) | 1.018 (6: H4)              |
+| avx2      | 1       | 7.709              | 6.762 / 6.766 / 6.798      |
+| avx2      | 6       | 2.260              | 1.891 / 1.896 / 1.938      |
 
 The int8 product alone (q8bench, one P-core at ~4.85 GHz, encoder shapes):
 avx2-vnni 113 -> 229 GMAC/s (23 -> 47 MAC/cycle, 92% of what its per-block
@@ -319,10 +319,10 @@ holds. `./pkito bench --max-chunk 60` (the minute whole), tree 78c27e1,
 avx2-vnni, the same 12900HK, two passes over the counts in turn (each
 count's best of five):
 
-| threads | 6 | 8 | 10 | 12 | 14 | 16 | 18 | 20 |
-|---|---|---|---|---|---|---|---|---|
-| pass 1 | 0.965 | 1.147 | 0.925 | 0.958 | 0.910 | 1.119 | 1.103 | 0.926 |
-| pass 2 | 0.959 | 1.140 | 0.923 | 0.958 | 0.906 | 1.115 | 1.101 | 0.913 |
+| threads | 6     | 8     | 10    | 12    | 14    | 16    | 18    | 20    |
+| ------- | ----- | ----- | ----- | ----- | ----- | ----- | ----- | ----- |
+| pass 1  | 0.965 | 1.147 | 0.925 | 0.958 | 0.910 | 1.119 | 1.103 | 0.926 |
+| pass 2  | 0.959 | 1.140 | 0.923 | 0.958 | 0.906 | 1.115 | 1.101 | 0.913 |
 
 (10 and 12 are from three passes on b05af83, whose other counts were
 within 10 ms of these.) Every core, 14, is the fastest; 8, 16 and 18 are the
@@ -331,9 +331,9 @@ plainer: an Intel Core 3 304 (Wildcat Lake: one Cougar Cove P-core, four
 Darkmont E-cores, gcc's -march=native is pantherlake, AVX-VNNI and
 AVX-VNNI-INT8), Windows 11, built with MSYS2's UCRT64 gcc 16.2:
 
-| threads | 1 (P) | 2 | 3 | 4 | 5 (every core) |
-|---|---|---|---|---|---|
-| best of 5 | 5.019, 5.193 | 3.159 | 2.090 | 1.801, 1.877 | 1.387, 1.409 |
+| threads   | 1 (P)        | 2     | 3     | 4            | 5 (every core) |
+| --------- | ------------ | ----- | ----- | ------------ | -------------- |
+| best of 5 | 5.019, 5.193 | 3.159 | 2.090 | 1.801, 1.877 | 1.387, 1.409   |
 
 The rule that chose the fast kind alone gave the 304 one thread, at a
 quarter of its speed. core/os.c now takes one thread a physical core of
@@ -365,11 +365,11 @@ bits (`BFLAGS="-mavx2 -mfma -mavx512vnni -mavx512vl"`; every one of
 kernels.o's 219 VPDPBUSDs 62-prefixed), the encoding that had not run
 before.
 
-| build | default (16) whole | -t 1 | -t 8 | -t 32 | 30 s chunks | q8bench, 1 thread (ff up / down / att q) |
-|---|---|---|---|---|---|---|
-| avx2-vnni, VEX (the Makefile's choice) | 0.328 s | 2.656 | 0.380 | 0.355 | 0.310 | 257.4 / 252.0 / 260.5 GMAC/s |
-| avx2-vnni, EVEX | 0.332 | 2.628 | 0.379 | 0.319 | 0.303 | 260.0 / 256.3 / 265.2 |
-| avx2 | 0.615 | 4.817 | 0.681 | 0.551 | 0.604 | 117.9 / 118.1 / 119.3 |
+| build                                  | default (16) whole | -t 1  | -t 8  | -t 32 | 30 s chunks | q8bench, 1 thread (ff up / down / att q) |
+| -------------------------------------- | ------------------ | ----- | ----- | ----- | ----------- | ---------------------------------------- |
+| avx2-vnni, VEX (the Makefile's choice) | 0.328 s            | 2.656 | 0.380 | 0.355 | 0.310       | 257.4 / 252.0 / 260.5 GMAC/s             |
+| avx2-vnni, EVEX                        | 0.332              | 2.628 | 0.379 | 0.319 | 0.303       | 260.0 / 256.3 / 265.2                    |
+| avx2                                   | 0.615              | 4.817 | 0.681 | 0.551 | 0.604       | 117.9 / 118.1 / 119.3                    |
 
 The two encodings are level within 1-2%, inside the spread (a recheck of
 the VEX build's default gave 0.334 and 0.333; -t 32 wanders 0.350-0.374).
@@ -380,7 +380,7 @@ gcc 13 (msvcrt, winpthreads, static): check-c passed with every line the
 same; 16 threads 0.298-0.303 s whole and 0.294 s in 30 s chunks, about 10%
 faster than under WSL2. That toolchain's msvcrt printf did not know %zu (46
 -Wformat warnings), so the Makefile's Windows branch now defines
-__USE_MINGW_ANSI_STDIO; under MSYS2's UCRT64 the output is the same bytes
+\_\_USE_MINGW_ANSI_STDIO; under MSYS2's UCRT64 the output is the same bytes
 with it (check-c on the Core 3 304).
 
 ## 2026-10-20 - one binary for the family: the backend picked at run time
@@ -411,10 +411,10 @@ there on its first VPDPBUSD.
 
 A Ryzen 9 9950X (Zen 5, both encodings), 16 threads, whole and in chunks:
 
-| | avx2-vnni (picked) | avx512-vnni | avx2 |
-|---|---|---|---|
-| Windows, the exe | 0.283, 0.235 s | 0.282, 0.241 | 0.524, 0.498 |
-| WSL2, the Linux binary | 0.323, 0.296 | 0.322, 0.283 | 0.595, 0.552 |
+|                        | avx2-vnni (picked) | avx512-vnni  | avx2         |
+| ---------------------- | ------------------ | ------------ | ------------ |
+| Windows, the exe       | 0.283, 0.235 s     | 0.282, 0.241 | 0.524, 0.498 |
+| WSL2, the Linux binary | 0.323, 0.296       | 0.322, 0.283 | 0.595, 0.552 |
 
 Both write the v3 transcript byte for byte; built from source there,
 check-c passes with all three backends in kcheck. The two encodings stay
@@ -475,16 +475,16 @@ The 12900HK as above, Ubuntu 26.04, kernel 7.0.0-38, GCC 15.2. Tree
 57d6ccb. `./pktito bench` on test.wav in its default 30 s chunks (three),
 best of five, load 0.00; backend avx2-vnni.
 
-| threads | on | best | real time |
-|---|---|---|---|
-| 14, the default (a core of every kind each) | any | 0.836-0.839 s | 71.5-71.8x |
-| 20 | any | 0.912 s | 65.8x |
-| 12 | any | 0.888 s | 67.5x |
-| 8 | any | 1.050 s | 57.2x |
-| 6 | any | 0.867 s | 69.2x |
-| 12 | the P-cores, CPUs 0-11 (taskset) | 0.860 s | 69.8x |
-| 6 | the P-cores | 0.864 s | 69.5x |
-| 8 | the E-cores, CPUs 12-19 | 1.772 s | 33.9x |
+| threads                                     | on                               | best          | real time  |
+| ------------------------------------------- | -------------------------------- | ------------- | ---------- |
+| 14, the default (a core of every kind each) | any                              | 0.836-0.839 s | 71.5-71.8x |
+| 20                                          | any                              | 0.912 s       | 65.8x      |
+| 12                                          | any                              | 0.888 s       | 67.5x      |
+| 8                                           | any                              | 1.050 s       | 57.2x      |
+| 6                                           | any                              | 0.867 s       | 69.2x      |
+| 12                                          | the P-cores, CPUs 0-11 (taskset) | 0.860 s       | 69.8x      |
+| 6                                           | the P-cores                      | 0.864 s       | 69.5x      |
+| 8                                           | the E-cores, CPUs 12-19          | 1.772 s       | 33.9x      |
 
 The default is still the fastest here, but by 3% over the P-cores alone,
 where the eight E-cores alone do half their work (33.9x against 69.5x): a
@@ -509,6 +509,7 @@ integer sums and the float chain) beside the weight vector: NC up to 8,
 so the weights a load brings are used by up to eight columns, not three.
 
 What it should do, by core:
+
 - Zen 5 (the 9950X here; c8a's EPYC 9R45) executes 512-bit VPDPBUSD at
   full width. The ymm tile ran 257-265 GMAC/s on one 9950X core (above,
   2026-10-20), about 46 MAC a cycle against 64 for two ymm VPDPBUSD a
@@ -591,15 +592,15 @@ of `pktito bench` on test.wav (best of five each, the default threads),
 then q8bench on one thread. Every transcript of every build and backend,
 38 files, ref's bytes. avx512-vnni's medians:
 
-| instance | CPU | threads | main | zmm | | zmm over avx2-vnni |
-|---|---|---|---|---|---|---|
-| c8a.xlarge | EPYC 9R45, Zen 5 | 4 | 82.5x | 119.1x | +44% | +47% |
-| c8a.4xlarge | EPYC 9R45, Zen 5 | 16 | 226.1x | 287.8x | +27% | +29% |
-| c7i.xlarge | Xeon 8488C, Sapphire Rapids | 2 | 25.7x | 32.8x | +28% | +28% |
-| c8i.xlarge | Xeon 6975P-C, Granite Rapids | 2 | 29.6x | 35.4x | +20% | +20% |
-| c8i.4xlarge | Xeon 6975P-C, Granite Rapids | 8 | 108.6x | 126.2x | +16% | +18% |
-| c7a.xlarge | EPYC 9R14, Zen 4 | 4 | 63.6x | 67.6x | +6% | (none) |
-| c6i.xlarge | Xeon 8375C, Ice Lake | 2 | 24.1x | 23.6x | -2% | (none) |
+| instance    | CPU                          | threads | main   | zmm    |      | zmm over avx2-vnni |
+| ----------- | ---------------------------- | ------- | ------ | ------ | ---- | ------------------ |
+| c8a.xlarge  | EPYC 9R45, Zen 5             | 4       | 82.5x  | 119.1x | +44% | +47%               |
+| c8a.4xlarge | EPYC 9R45, Zen 5             | 16      | 226.1x | 287.8x | +27% | +29%               |
+| c7i.xlarge  | Xeon 8488C, Sapphire Rapids  | 2       | 25.7x  | 32.8x  | +28% | +28%               |
+| c8i.xlarge  | Xeon 6975P-C, Granite Rapids | 2       | 29.6x  | 35.4x  | +20% | +20%               |
+| c8i.4xlarge | Xeon 6975P-C, Granite Rapids | 8       | 108.6x | 126.2x | +16% | +18%               |
+| c7a.xlarge  | EPYC 9R14, Zen 4             | 4       | 63.6x  | 67.6x  | +6%  | (none)             |
+| c6i.xlarge  | Xeon 8375C, Ice Lake         | 2       | 24.1x  | 23.6x  | -2%  | (none)             |
 
 q8bench, feed-forward up, one thread, GMAC/s, main and zmm: Zen 5 224 and
 394, Sapphire Rapids 152 and 212, Granite Rapids 167 and 227, Zen 4 178
@@ -609,12 +610,12 @@ c8a (main 221-232, zmm 278-290) and c8i.4xlarge (zmm 121-131).
 The tile's width, swept on four of them (the same method; PK_Q8_NC 4, 6, 8
 and 12, medians):
 
-| | main | 4 | 6 | 8 | 12 |
-|---|---|---|---|---|---|
+|            | main | 4     | 6     | 8     | 12    |
+| ---------- | ---- | ----- | ----- | ----- | ----- |
 | c8a.xlarge | 82.1 | 116.1 | 116.8 | 118.4 | 108.5 |
-| c7a.xlarge | 63.6 | 67.3 | 67.0 | 67.9 | 55.3 |
-| c8i.xlarge | 29.7 | 34.3 | 35.1 | 35.2 | 33.6 |
-| c6i.xlarge | 23.4 | 21.5 | 22.0 | 22.2 | 19.7 |
+| c7a.xlarge | 63.6 | 67.3  | 67.0  | 67.9  | 55.3  |
+| c8i.xlarge | 29.7 | 34.3  | 35.1  | 35.2  | 33.6  |
+| c6i.xlarge | 23.4 | 21.5  | 22.0  | 22.2  | 19.7  |
 
 Eight is best or level everywhere; twelve spills. Ice Lake is the one
 loss, and not the tile's: its product is faster in zmm at eight columns
@@ -649,11 +650,11 @@ bench` on test.wav (best of five each, the default threads), then
 q8bench on one thread, the 1024 x 1024 attention product at T 750, whole
 and in pk_gemm's 64-row slices:
 
-| instance | CPU | threads | avx512-vnni | amx-int8 | | q8bench, whole | in slices |
-|---|---|---|---|---|---|---|---|
-| c7i.xlarge | Xeon 8488C, Sapphire Rapids | 2 | 37.7x | 46.8x | +24% | 250 to 429 | 236 to 343 |
-| c8i.xlarge | Xeon 6975P-C, Granite Rapids | 2 | 35.2x | 44.0x | +25% | 223 to 351 | 207 to 296 |
-| c8i.4xlarge | Xeon 6975P-C, Granite Rapids | 8 | 135.6x | 168.9x | +25% | 253 to 448 | 226 to 370 |
+| instance    | CPU                          | threads | avx512-vnni | amx-int8 |      | q8bench, whole | in slices  |
+| ----------- | ---------------------------- | ------- | ----------- | -------- | ---- | -------------- | ---------- |
+| c7i.xlarge  | Xeon 8488C, Sapphire Rapids  | 2       | 37.7x       | 46.8x    | +24% | 250 to 429     | 236 to 343 |
+| c8i.xlarge  | Xeon 6975P-C, Granite Rapids | 2       | 35.2x       | 44.0x    | +25% | 223 to 351     | 207 to 296 |
+| c8i.4xlarge | Xeon 6975P-C, Granite Rapids | 8       | 135.6x      | 168.9x   | +25% | 253 to 448     | 226 to 370 |
 
 (medians; every round within 1% of its median; q8bench in GMAC/s.)
 
@@ -676,11 +677,11 @@ against f0232d2, three interleaved rounds of `pktito bench` on test.wav,
 16 threads, run twice (the second after another job's build had shared
 the first); medians of the second, seconds whole and in 30 s chunks:
 
-| | main | f0232d2 |
-|---|---|---|
+|             | main         | f0232d2             |
+| ----------- | ------------ | ------------------- |
 | avx512-vnni | 0.288, 0.274 | 0.228, 0.217 (+26%) |
-| avx2-vnni | 0.287, 0.283 | 0.292, 0.274 |
-| avx2 | 0.546, 0.541 | 0.534, 0.529 |
+| avx2-vnni   | 0.287, 0.283 | 0.292, 0.274        |
+| avx2        | 0.546, 0.541 | 0.534, 0.529        |
 
 The first run agreed within 3%. avx2-vnni and avx2 are the same code in
 both and move within their spread (200 to 224x across rounds); the zmm
@@ -719,7 +720,7 @@ name they were measured under.
 The amx-int8 result above left 25 of some 57 cycles a block unexplained.
 Measured on the c7i.large (Xeon 8488C), with standalone loops of one
 instruction kind under `perf stat` (cycles, exe.amx_busy,
-uops_dispatched.port_*), all data in L1:
+uops_dispatched.port\_\*), all data in L1:
 
 - TDPBSSD takes 16 cycles at K = 64, 32 or 16 alike (exe.amx_busy 16.0 an
   instruction), and 16 back to back on one C tile: a block of 32 inputs
@@ -764,8 +765,7 @@ with main's loop too, which gcc 13 keeps in registers: so the chains are
 16 named variables. And with nb a variable the 16 scales' offsets m nb
 take as many registers, some of them moved through xmm; so the steady
 state is four steps a turn (every tile and buffer a constant), and nb a
-constant for the encoder's 32 and 128, a variable for other multiples of
-4. Blocks that are no multiple of 4 (none of the model's) take the zmm
+constant for the encoder's 32 and 128, a variable for other multiples of 4. Blocks that are no multiple of 4 (none of the model's) take the zmm
 tile.
 
 kcheck, 1777 cases, ref's bits on amx-int8, avx512-vnni, avx2-vnni and
@@ -778,11 +778,11 @@ there with gcc 13.3 and here with gcc 15.2, three interleaved rounds of
 q8bench in slices of 64 (GMAC/s: feed-forward up, down, attention) and
 then of `pktito bench` on test.wav (one thread, best of five):
 
-| | q8bench, medians | bench |
-|---|---|---|
-| main, gcc 13 | 363, 348, 381 | 24.8, 26.0, 25.8x |
+|              | q8bench, medians               | bench                    |
+| ------------ | ------------------------------ | ------------------------ |
+| main, gcc 13 | 363, 348, 381                  | 24.8, 26.0, 25.8x        |
 | this, gcc 13 | 443, 420, 459 (+22, +21, +20%) | 28.9, 28.9, 28.5x (+12%) |
-| main, gcc 15 | 306, 297, 299 | 22.8, 22.9, 22.7x |
+| main, gcc 15 | 306, 297, 299                  | 22.8, 22.9, 22.7x        |
 | this, gcc 15 | 471, 429, 458 (+54, +44, +53%) | 28.3, 28.5, 28.6x (+25%) |
 
 The rounds' ranges: main gcc 13 q8bench 359-384, 347-353, 369-387; this
@@ -954,21 +954,21 @@ default two threads), then q8bench once on one thread in pk_gemm's
 64-row slices. Every transcript, from either binary through either
 backend, is ref's bytes (test.v2.json).
 
-| instance | backend | main | d1bda18 | |
-|---|---|---|---|---|
-| c7i.xlarge, Xeon 8488C | amx-int8 | 38.4, 38.6, 38.3x | 47.5, 48.1, 48.3x | +25% |
-| | avx512-vnni | 33.9, 34.0, 33.9x | 33.7, 34.0, 33.9x | level |
-| c8i.xlarge, Xeon 6975P-C | amx-int8 | 43.2, 43.0, 42.8x | 56.3, 56.1, 56.4x | +31% |
-| | avx512-vnni | 34.8, 35.0, 34.7x | 34.8, 34.9, 34.7x | level |
+| instance                 | backend     | main              | d1bda18           |       |
+| ------------------------ | ----------- | ----------------- | ----------------- | ----- |
+| c7i.xlarge, Xeon 8488C   | amx-int8    | 38.4, 38.6, 38.3x | 47.5, 48.1, 48.3x | +25%  |
+|                          | avx512-vnni | 33.9, 34.0, 33.9x | 33.7, 34.0, 33.9x | level |
+| c8i.xlarge, Xeon 6975P-C | amx-int8    | 43.2, 43.0, 42.8x | 56.3, 56.1, 56.4x | +31%  |
+|                          | avx512-vnni | 34.8, 35.0, 34.7x | 34.8, 34.9, 34.7x | level |
 
 q8bench on amx-int8, GMAC/s (up, down, attention):
 
-| instance | T | main | d1bda18 |
-|---|---|---|---|
+| instance   | T   | main          | d1bda18       |
+| ---------- | --- | ------------- | ------------- |
 | c7i.xlarge | 750 | 258, 276, 277 | 412, 426, 426 |
-| | 250 | 250, 286, 293 | 399, 440, 422 |
+|            | 250 | 250, 286, 293 | 399, 440, 422 |
 | c8i.xlarge | 750 | 288, 285, 293 | 463, 438, 479 |
-| | 250 | 282, 288, 302 | 474, 455, 499 |
+|            | 250 | 282, 288, 302 | 474, 455, 499 |
 
 The product 1.44 to 1.68 times main's; avx512-vnni's, whose code the two
 share, within 4% of it on every shape (single runs). Both builds are gcc
@@ -1030,20 +1030,20 @@ binary each, the forms picked by an environment variable read once (the
 prototype's, for the A/B alone), interleaved rounds, one sitting a box;
 `pktito bench` on test.wav, best of five:
 
-| box | backend | threads | ymm | the zmm product | all four in zmm |
-|---|---|---|---|---|---|
-| 9950X | avx512-vnni | 1 | 38.3-38.5x | 41.3-41.5x (+8%) | 41.8-42.0x (+9%) |
-| | | 16 | 252.0-260.1x | 259.6-266.0x (+2%) | 259.6-266.0x (+2%) |
-| c7i.large | amx-int8 | 1 | 31.7-31.9x | 34.2-34.9x (+9%) | 33.6-35.7x (+11%) |
-| | avx512-vnni | 1 | 19.2-19.3x | 19.8-19.9x (+4%) | 19.7-20.3x (+5%) |
-| c7i.xlarge | amx-int8 | 2 | 55.3-56.0x | | 60.2-60.8x (+8%) |
-| | | 1 | 31.1-31.6x | | 34.1-34.6x (+10%) |
-| | avx512-vnni | 2 | 36.8-37.3x | | 38.1-38.6x (+3%) |
-| | | 1 | 19.4-19.6x | | 20.4x (+5%) |
-| c8i.xlarge | amx-int8 | 2 | 56.9-57.3x | | 61.4-61.5x (+7%) |
-| | | 1 | 32.8-33.2x | | 35.8x (+8%) |
-| | avx512-vnni | 2 | 35.4-35.9x | | 36.7-37.1x (+4%) |
-| | | 1 | 19.1x | | 19.7-19.9x (+4%) |
+| box        | backend     | threads | ymm          | the zmm product    | all four in zmm    |
+| ---------- | ----------- | ------- | ------------ | ------------------ | ------------------ |
+| 9950X      | avx512-vnni | 1       | 38.3-38.5x   | 41.3-41.5x (+8%)   | 41.8-42.0x (+9%)   |
+|            |             | 16      | 252.0-260.1x | 259.6-266.0x (+2%) | 259.6-266.0x (+2%) |
+| c7i.large  | amx-int8    | 1       | 31.7-31.9x   | 34.2-34.9x (+9%)   | 33.6-35.7x (+11%)  |
+|            | avx512-vnni | 1       | 19.2-19.3x   | 19.8-19.9x (+4%)   | 19.7-20.3x (+5%)   |
+| c7i.xlarge | amx-int8    | 2       | 55.3-56.0x   |                    | 60.2-60.8x (+8%)   |
+|            |             | 1       | 31.1-31.6x   |                    | 34.1-34.6x (+10%)  |
+|            | avx512-vnni | 2       | 36.8-37.3x   |                    | 38.1-38.6x (+3%)   |
+|            |             | 1       | 19.4-19.6x   |                    | 20.4x (+5%)        |
+| c8i.xlarge | amx-int8    | 2       | 56.9-57.3x   |                    | 61.4-61.5x (+7%)   |
+|            |             | 1       | 32.8-33.2x   |                    | 35.8x (+8%)        |
+|            | avx512-vnni | 2       | 35.4-35.9x   |                    | 36.7-37.1x (+4%)   |
+|            |             | 1       | 19.1x        |                    | 19.7-19.9x (+4%)   |
 
 (9950X and c7i.large: five and three rounds, the ymm column the
 prototype's own ymm form, the percentages on the medians. The EC2 rows:
@@ -1087,12 +1087,12 @@ threads the feed-forward's up product is then one round of 16 slices,
 where 64 rows make four). On EC2 the same rule, gcc 13.3, three rounds,
 against d1bda18 (the float kernels' table above, the same sitting):
 
-| instance | backend | 2 threads | 1 thread |
-|---|---|---|---|
-| c7i.xlarge | amx-int8 | 59.5-60.6x (+7%) | 32.5-33.4x (+7%) |
-| | avx512-vnni | 38.6-38.7x (+4%) | 20.2-20.4x (+4%) |
-| c8i.xlarge | amx-int8 | 60.1-61.1x (+6%) | 33.8-34.2x (+3%) |
-| | avx512-vnni | 37.3-37.6x (+5%) | 19.8x (+4%) |
+| instance   | backend     | 2 threads        | 1 thread         |
+| ---------- | ----------- | ---------------- | ---------------- |
+| c7i.xlarge | amx-int8    | 59.5-60.6x (+7%) | 32.5-33.4x (+7%) |
+|            | avx512-vnni | 38.6-38.7x (+4%) | 20.2-20.4x (+4%) |
+| c8i.xlarge | amx-int8    | 60.1-61.1x (+6%) | 33.8-34.2x (+3%) |
+|            | avx512-vnni | 37.3-37.6x (+5%) | 19.8x (+4%)      |
 
 and on the c7i.large, amx-int8, one thread, with the float kernels in zmm
 as well: 37.4-37.5x, against 31.9-32.3x for d1bda18, 33.1-34.2x for the
@@ -1124,12 +1124,12 @@ As the hypothesis above. On the boards it reaches that nothing above
 measured, base (47f0093) against it, interleaved rounds, `pktito-c bench`
 on test.wav, best of five:
 
-| board | backend | threads | 47f0093 | 256 where two rounds |
-|---|---|---|---|---|
-| 12900HK, gcc 15.2 | avx2-vnni | 14 (its default) | 72.5-73.0x | 72.6-73.0x |
-| | | 6 | 69.3-69.6x | 70.0-70.1x (+0.7%) |
-| Pi 5, gcc 14.2 | neon-dp | 4 | 14.4-14.7x | 14.4-14.8x |
-| Pi 3B+, gcc 14.2 | neon | 4 | 44.70 s (1.3x) | 44.72 s |
+| board             | backend   | threads          | 47f0093        | 256 where two rounds |
+| ----------------- | --------- | ---------------- | -------------- | -------------------- |
+| 12900HK, gcc 15.2 | avx2-vnni | 14 (its default) | 72.5-73.0x     | 72.6-73.0x           |
+|                   |           | 6                | 69.3-69.6x     | 70.0-70.1x (+0.7%)   |
+| Pi 5, gcc 14.2    | neon-dp   | 4                | 14.4-14.7x     | 14.4-14.8x           |
+| Pi 3B+, gcc 14.2  | neon      | 4                | 44.70 s (1.3x) | 44.72 s              |
 
 (12900HK five rounds at 14, three at 6; the Pi 5 five; the Pi 3B+ two
 base and one of the change, each 2.5 minutes.) Level within the spread
@@ -1147,18 +1147,18 @@ ref's bits. Both changes against 47f0093, the same binary pair, three
 interleaved rounds, test.wav, best of five; every transcript ref's, and
 check-c passing with amx-int8 on the two Xeons:
 
-| box | backend | threads | 47f0093 | both |
-|---|---|---|---|---|
-| 9950X, gcc 15.2 | avx512-vnni | 16 | 262.8-267.2x | 266.6-269.9x |
-| | | 1 | 38.5-38.7x | 43.3-43.4x (+12%) |
-| c7i.xlarge, gcc 13.3 | amx-int8 | 2 | 57.3-57.7x | 66.1-67.1x (+16%) |
-| | | 1 | 32.4-32.5x | 37.7-38.0x (+17%) |
-| | avx512-vnni | 2 | 37.9x | 41.3-41.5x (+9%) |
-| | | 1 | 19.9-20.0x | 21.9-22.0x (+10%) |
-| c8i.xlarge, gcc 13.3 | amx-int8 | 2 | 56.7-57.0x | 64.3-64.9x (+13%) |
-| | | 1 | 32.4-32.5x | 35.5-36.0x (+10%) |
-| | avx512-vnni | 2 | 35.3-35.8x | 38.5-39.0x (+9%) |
-| | | 1 | 18.8x | 20.3x (+8%) |
+| box                  | backend     | threads | 47f0093      | both              |
+| -------------------- | ----------- | ------- | ------------ | ----------------- |
+| 9950X, gcc 15.2      | avx512-vnni | 16      | 262.8-267.2x | 266.6-269.9x      |
+|                      |             | 1       | 38.5-38.7x   | 43.3-43.4x (+12%) |
+| c7i.xlarge, gcc 13.3 | amx-int8    | 2       | 57.3-57.7x   | 66.1-67.1x (+16%) |
+|                      |             | 1       | 32.4-32.5x   | 37.7-38.0x (+17%) |
+|                      | avx512-vnni | 2       | 37.9x        | 41.3-41.5x (+9%)  |
+|                      |             | 1       | 19.9-20.0x   | 21.9-22.0x (+10%) |
+| c8i.xlarge, gcc 13.3 | amx-int8    | 2       | 56.7-57.0x   | 64.3-64.9x (+13%) |
+|                      |             | 1       | 32.4-32.5x   | 35.5-36.0x (+10%) |
+|                      | avx512-vnni | 2       | 35.3-35.8x   | 38.5-39.0x (+9%)  |
+|                      |             | 1       | 18.8x        | 20.3x (+8%)       |
 
 (EC2: us-east-1, Ubuntu 24.04, fresh instances, both trees built there.)
 Not measured: Ice Lake (c6i), whose clock falls under 512-bit work.
@@ -1185,14 +1185,14 @@ The hypothesis above, on the 9950X, ee893c3, one sitting, three
 interleaved rounds (test.wav best of five; q8bench T 750, 64-row slices,
 GMAC/s up/down/attention/decoder):
 
-| backend | measure | gcc 15.2 | gcc 14.3 | clang 21.1 |
-|---|---|---|---|---|
-| avx512-vnni | bench, 1 thread | 43.3-43.7x | 43.5-43.7x | 45.6-45.7x |
-| | bench, 16 | 269.3-274.5x | 270.6-271.7x | 269.6-273.0x |
-| | q8bench | 424-427/415-416/431-440/94-95 | 435-441/416-422/441-446/95-96 | 458-460/431-437/463-466/103-106 |
-| avx2-vnni | bench, 1 thread | 26.8-26.9x | 27.0x | 27.2x |
-| | bench, 16 | 200.3-211.4x | 199.0-201.6x | 206.3-210.8x |
-| | q8bench | 253-256/250-254/259-261/93-94 | 261-262/254-255/263-267/94 | 259-262/252-257/263-267/100-102 |
+| backend     | measure         | gcc 15.2                      | gcc 14.3                      | clang 21.1                      |
+| ----------- | --------------- | ----------------------------- | ----------------------------- | ------------------------------- |
+| avx512-vnni | bench, 1 thread | 43.3-43.7x                    | 43.5-43.7x                    | 45.6-45.7x                      |
+|             | bench, 16       | 269.3-274.5x                  | 270.6-271.7x                  | 269.6-273.0x                    |
+|             | q8bench         | 424-427/415-416/431-440/94-95 | 435-441/416-422/441-446/95-96 | 458-460/431-437/463-466/103-106 |
+| avx2-vnni   | bench, 1 thread | 26.8-26.9x                    | 27.0x                         | 27.2x                           |
+|             | bench, 16       | 200.3-211.4x                  | 199.0-201.6x                  | 206.3-210.8x                    |
+|             | q8bench         | 253-256/250-254/259-261/93-94 | 261-262/254-255/263-267/94    | 259-262/252-257/263-267/100-102 |
 
 avx512-vnni's product is 7 to 8% behind under gcc, a whole run 5%; the
 decoder's one-column product (T 1) 7 to 10% under gcc on both. A climb,
@@ -1205,7 +1205,7 @@ instructions where the activations are read in place (the broadcast
 folded into VPDPBUSD as {1to16}) and 192 from the offset copy (the
 broadcast first: the unsigned operand cannot be the folded one), 12
 stack references; gcc 15.2 262 to 277 with 15 to 29, its eight scale
-pointers a->d + (t0 + c) * nb in xmm27-31 and on the stack (vmovq rax,
+pointers a->d + (t0 + c) \* nb in xmm27-31 and on the stack (vmovq rax,
 xmmN before each FMA), and the block count and two offsets kept in
 memory (add DWORD PTR [rsp+...]). Hypothesis: with the copy's tile's
 scales laid out block-major beside the copied activations, a block's
@@ -1226,12 +1226,12 @@ two running offsets in memory. Three interleaved rounds, avx512-vnni,
 q8bench T 750 in 64-row slices (up/down/attention) and test.wav at one
 thread:
 
-| build | q8bench | bench, 1 thread |
-|---|---|---|
-| gcc 15.2, ee893c3 | 430-440 / 422-424 / 442 | 43.6-43.7x |
-| gcc 15.2, scales block-major | 441-447 / 420-423 / 447-450 | 44.5-44.8x (+2.3%) |
-| clang 21.1, ee893c3 | 458-463 / 431-436 / 466-467 | 45.5-45.7x |
-| clang 21.1, scales block-major | 452-455 / 428-434 / 460-464 (-1.5%) | 45.7-45.9x |
+| build                          | q8bench                             | bench, 1 thread    |
+| ------------------------------ | ----------------------------------- | ------------------ |
+| gcc 15.2, ee893c3              | 430-440 / 422-424 / 442             | 43.6-43.7x         |
+| gcc 15.2, scales block-major   | 441-447 / 420-423 / 447-450         | 44.5-44.8x (+2.3%) |
+| clang 21.1, ee893c3            | 458-463 / 431-436 / 466-467         | 45.5-45.7x         |
+| clang 21.1, scales block-major | 452-455 / 428-434 / 460-464 (-1.5%) | 45.7-45.9x         |
 
 Half of gcc's 5% closed, clang's product 1.5% down (the scales' copy, a
 call's T x nb floats) with its run level. By the two-compiler rule not
@@ -1249,17 +1249,17 @@ slices at 16 threads (four panels a call) would feel most.
 WSL2 (1-minute load under 2, this bench's own), tree 226fbf8 with the
 shared target, avx512-vnni, test.wav, best of 5, three runs each (s):
 
-| build | 16 threads | 1 thread |
-|---|---|---|
-| gcc 15.2, ./pktito-c | 0.224-0.225 | 1.385-1.393 |
-| gcc 15.2, libpktito.so | 0.232-0.240 (+3.5 to 7%) | 1.418-1.420 (+2%) |
-| gcc 15.2, libpktito.so, -ftls-model=initial-exec | 0.225-0.227 | 1.386-1.388 |
-| clang 21.1, ./pktito-c | 0.215-0.216 | 1.323-1.326 |
-| clang 21.1, libpktito.so | 0.219-0.221 | 1.314-1.323 |
+| build                                            | 16 threads               | 1 thread          |
+| ------------------------------------------------ | ------------------------ | ----------------- |
+| gcc 15.2, ./pktito-c                             | 0.224-0.225              | 1.385-1.393       |
+| gcc 15.2, libpktito.so                           | 0.232-0.240 (+3.5 to 7%) | 1.418-1.420 (+2%) |
+| gcc 15.2, libpktito.so, -ftls-model=initial-exec | 0.225-0.227              | 1.386-1.388       |
+| clang 21.1, ./pktito-c                           | 0.215-0.216              | 1.323-1.326       |
+| clang 21.1, libpktito.so                         | 0.219-0.221              | 1.314-1.323       |
 
 The gap is q8_zmm's offset copy, `static _Thread_local xoff`. In an
 executable a thread-local is an offset from %fs; in a shared object it is
-a call to __tls_get_addr, and gcc makes it at 13 places in q8_zmm, the
+a call to \_\_tls_get_addr, and gcc makes it at 13 places in q8_zmm, the
 uses in PK_Q8_TILES' cases in the tile loop, where clang makes it once
 (objdump -dr of backend/avx512-vnni/kernels.pic.o). -ftls-model=
 initial-exec reads it at an offset again and closes the gap, but a
@@ -1280,7 +1280,7 @@ its hypothesis here first, and benched under both compilers.
 ## 2026-10-27 - the offset copies' addresses taken once a call (hypothesis)
 
 As the Next above: q8_zmm's offset copy, and the ymm product's (avx2-vnni's
-k_gemm_q8, where gcc makes 4 calls to __tls_get_addr), each moved into a
+k_gemm_q8, where gcc makes 4 calls to \_\_tls_get_addr), each moved into a
 function gcc does not inline that returns its address, taken once a call.
 Expected: gcc's libpktito.so level with its ./pktito-c, 3.5 to 7% faster
 at 16 threads and 2% at one on avx512-vnni, and avx2-vnni faster in kind;
@@ -1297,7 +1297,7 @@ the new q8_zmm with the others.
 
 As the hypothesis: zmm_xoff and ymm_xoff, noinline, each return its
 product's thread-local copy, taken once a product call. gcc's calls to
-__tls_get_addr in the shared objects went from 13 in q8_zmm and 4 in
+\_\_tls_get_addr in the shared objects went from 13 in q8_zmm and 4 in
 avx2-vnni's k_gemm_q8 to the one in each function; clang's stayed at one.
 kcheck: every case ref's bits under both compilers (1779 each, avx2,
 avx2-vnni, avx512-vnni); libpktito.so's test.wav transcripts ref's, v2
@@ -1305,24 +1305,24 @@ and v3, on avx512-vnni and avx2-vnni under both. The 9950X under WSL2, the
 other sessions' jobs held, base (da42a7b) and new interleaved, test.wav,
 best of 5, three rounds (s):
 
-| kernel | threads | build | base | new | |
-|---|---|---|---|---|---|
-| avx512-vnni | 16 | gcc, libpktito.so | 0.238-0.241 | 0.224-0.227 | -5.9% |
-| avx512-vnni | 16 | gcc, ./pktito-c | 0.219-0.225 | 0.225-0.227 | (below) |
-| avx512-vnni | 16 | clang, libpktito.so | 0.220-0.222 | 0.220-0.222 | level |
-| avx512-vnni | 16 | clang, ./pktito-c | 0.218-0.222 | 0.213-0.222 | level |
-| avx512-vnni | 1 | gcc, libpktito.so | 1.414-1.418 | 1.386-1.387 | -2.0% |
-| avx512-vnni | 1 | gcc, ./pktito-c | 1.381-1.386 | 1.383-1.385 | level |
-| avx512-vnni | 1 | clang, libpktito.so | 1.315-1.316 | 1.313-1.323 | level |
-| avx512-vnni | 1 | clang, ./pktito-c | 1.317-1.320 | 1.311-1.321 | level |
-| avx2-vnni | 16 | gcc, libpktito.so | 0.315-0.319 | 0.303-0.306 | -3.8% |
-| avx2-vnni | 16 | gcc, ./pktito-c | 0.297-0.303 | 0.299-0.307 | level |
-| avx2-vnni | 16 | clang, libpktito.so | 0.298-0.301 | 0.299-0.305 | level |
-| avx2-vnni | 16 | clang, ./pktito-c | 0.294-0.300 | 0.296-0.302 | level |
-| avx2-vnni | 1 | gcc, libpktito.so | 2.291-2.302 | 2.237-2.248 | -2.4% |
-| avx2-vnni | 1 | gcc, ./pktito-c | 2.238-2.245 | 2.238-2.244 | level |
-| avx2-vnni | 1 | clang, libpktito.so | 2.212-2.217 | 2.215-2.217 | level |
-| avx2-vnni | 1 | clang, ./pktito-c | 2.212-2.214 | 2.210-2.215 | level |
+| kernel      | threads | build               | base        | new         |         |
+| ----------- | ------- | ------------------- | ----------- | ----------- | ------- |
+| avx512-vnni | 16      | gcc, libpktito.so   | 0.238-0.241 | 0.224-0.227 | -5.9%   |
+| avx512-vnni | 16      | gcc, ./pktito-c     | 0.219-0.225 | 0.225-0.227 | (below) |
+| avx512-vnni | 16      | clang, libpktito.so | 0.220-0.222 | 0.220-0.222 | level   |
+| avx512-vnni | 16      | clang, ./pktito-c   | 0.218-0.222 | 0.213-0.222 | level   |
+| avx512-vnni | 1       | gcc, libpktito.so   | 1.414-1.418 | 1.386-1.387 | -2.0%   |
+| avx512-vnni | 1       | gcc, ./pktito-c     | 1.381-1.386 | 1.383-1.385 | level   |
+| avx512-vnni | 1       | clang, libpktito.so | 1.315-1.316 | 1.313-1.323 | level   |
+| avx512-vnni | 1       | clang, ./pktito-c   | 1.317-1.320 | 1.311-1.321 | level   |
+| avx2-vnni   | 16      | gcc, libpktito.so   | 0.315-0.319 | 0.303-0.306 | -3.8%   |
+| avx2-vnni   | 16      | gcc, ./pktito-c     | 0.297-0.303 | 0.299-0.307 | level   |
+| avx2-vnni   | 16      | clang, libpktito.so | 0.298-0.301 | 0.299-0.305 | level   |
+| avx2-vnni   | 16      | clang, ./pktito-c   | 0.294-0.300 | 0.296-0.302 | level   |
+| avx2-vnni   | 1       | gcc, libpktito.so   | 2.291-2.302 | 2.237-2.248 | -2.4%   |
+| avx2-vnni   | 1       | gcc, ./pktito-c     | 2.238-2.245 | 2.238-2.244 | level   |
+| avx2-vnni   | 1       | clang, libpktito.so | 2.212-2.217 | 2.215-2.217 | level   |
+| avx2-vnni   | 1       | clang, ./pktito-c   | 2.212-2.214 | 2.210-2.215 | level   |
 
 gcc's ./pktito-c on avx512-vnni at 16 threads read +2.7% by its minimum,
 one base run of 0.219 against pairs otherwise 0.4% apart; ten more
@@ -1363,16 +1363,16 @@ each, the binaries from an Ubuntu 22.04 container: its gcc 11.4.0 and
 apt.llvm.org's clang 21.1.8. The threads are the cores: two on Intel's
 xlarge and on AMD's with SMT, four on the c7a and the c8a.
 
-| instance, rounds | CPU | backend, threads | gcc 11 | gcc 12 | gcc 13 | clang 14 | clang 21 | spread |
-|---|---|---|---|---|---|---|---|---|
-| c5a, 6 | EPYC 7R32, Zen 2 | avx2, 2 | 6.381 s | -0.5% (-0.6 to -0.2) | -0.3% (-0.5 to -0.2) | -4.6% (-4.9 to -4.5) | -4.5% (-4.7 to -4.2) | 0.3% |
-| c6a, 6 | EPYC 7R13, Zen 3 | avx2, 2 | 4.219 s | -1.0% (-1.5 to -0.5) | -1.0% (-1.3 to -0.7) | -3.0% (-3.2 to -2.7) | -5.2% (-5.5 to -5.1) | 0.4% |
-| c7a, 6 | EPYC 9R14, Zen 4 | avx512-vnni, 4 | 0.866 s | +0.5% (+0.4 to +0.5) | -0.1% (-0.3 to -0.1) | -1.2% (-1.3 to -1.1) | -1.8% (-1.9 to -1.7) | 0.3% |
-| c8a, 6 | EPYC 9R45, Zen 5 | avx512-vnni, 4 | 0.457 s | -0.9% (-1.0 to -0.8) | +0.4% (+0.3 to +0.5) | -2.7% (-2.8 to -2.5) | -4.3% (-4.5 to -4.1) | 1.1% |
-| m5zn, 6 | Xeon 8252C, Cascade Lake | avx512-vnni, 2 | 1.921 s | -0.5% (-0.6 to -0.2) | +0.1% (0.0 to +0.3) | +1.7% (+1.6 to +2.2) | -2.7% (-3.1 to -2.2) | 0.3% |
-| c6i, 6 | Xeon 8375C, Ice Lake | avx512-vnni, 2 | 2.448 s | -0.9% (-1.4 to -0.6) | +0.2% (0.0 to +0.5) | +0.2% (-0.1 to +0.6) | -2.6% (-2.9 to -2.3) | 0.4% |
-| c7i, 6 | Xeon 8488C, Sapphire Rapids | amx-int8, 2 | 1.127 s | -0.5% (-0.8 to 0.0) | 0.0% (-0.3 to 0.0) | +0.8% (+0.3 to +1.4) | +0.4% (+0.4 to +1.0) | 0.5% |
-| c8i, 6 | Xeon 6975P-C, Granite Rapids | amx-int8, 2 | 0.913 s | +0.1% (-0.3 to +0.2) | 0.0% (-0.5 to +0.4) | +2.5% (+1.8 to +2.9) | +2.1% (+1.7 to +2.5) | 0.8% |
+| instance, rounds | CPU                          | backend, threads | gcc 11  | gcc 12               | gcc 13               | clang 14             | clang 21             | spread |
+| ---------------- | ---------------------------- | ---------------- | ------- | -------------------- | -------------------- | -------------------- | -------------------- | ------ |
+| c5a, 6           | EPYC 7R32, Zen 2             | avx2, 2          | 6.381 s | -0.5% (-0.6 to -0.2) | -0.3% (-0.5 to -0.2) | -4.6% (-4.9 to -4.5) | -4.5% (-4.7 to -4.2) | 0.3%   |
+| c6a, 6           | EPYC 7R13, Zen 3             | avx2, 2          | 4.219 s | -1.0% (-1.5 to -0.5) | -1.0% (-1.3 to -0.7) | -3.0% (-3.2 to -2.7) | -5.2% (-5.5 to -5.1) | 0.4%   |
+| c7a, 6           | EPYC 9R14, Zen 4             | avx512-vnni, 4   | 0.866 s | +0.5% (+0.4 to +0.5) | -0.1% (-0.3 to -0.1) | -1.2% (-1.3 to -1.1) | -1.8% (-1.9 to -1.7) | 0.3%   |
+| c8a, 6           | EPYC 9R45, Zen 5             | avx512-vnni, 4   | 0.457 s | -0.9% (-1.0 to -0.8) | +0.4% (+0.3 to +0.5) | -2.7% (-2.8 to -2.5) | -4.3% (-4.5 to -4.1) | 1.1%   |
+| m5zn, 6          | Xeon 8252C, Cascade Lake     | avx512-vnni, 2   | 1.921 s | -0.5% (-0.6 to -0.2) | +0.1% (0.0 to +0.3)  | +1.7% (+1.6 to +2.2) | -2.7% (-3.1 to -2.2) | 0.3%   |
+| c6i, 6           | Xeon 8375C, Ice Lake         | avx512-vnni, 2   | 2.448 s | -0.9% (-1.4 to -0.6) | +0.2% (0.0 to +0.5)  | +0.2% (-0.1 to +0.6) | -2.6% (-2.9 to -2.3) | 0.4%   |
+| c7i, 6           | Xeon 8488C, Sapphire Rapids  | amx-int8, 2      | 1.127 s | -0.5% (-0.8 to 0.0)  | 0.0% (-0.3 to 0.0)   | +0.8% (+0.3 to +1.4) | +0.4% (+0.4 to +1.0) | 0.5%   |
+| c8i, 6           | Xeon 6975P-C, Granite Rapids | amx-int8, 2      | 0.913 s | +0.1% (-0.3 to +0.2) | 0.0% (-0.5 to +0.4)  | +2.5% (+1.8 to +2.9) | +2.1% (+1.7 to +2.5) | 0.8%   |
 
 clang 21 is ahead everywhere but amx-int8, by 1.8 to 5.2%; gcc 12 and 13
 are within about 1% of gcc 11; clang 14 runs from 4.6% ahead to 2.5%
@@ -1380,12 +1380,12 @@ behind. On the two AMX Xeons each compiler's binary was linked with the
 other's backend/amx-int8 object (pads 0 and 32, 8 rounds, a fresh c8i
 and c7i, every transcript test.v2.json's bytes):
 
-| build | c8i | c7i |
-|---|---|---|
-| gcc 11 | 0.912 s | 0.944 s |
+| build                       | c8i                     | c7i                     |
+| --------------------------- | ----------------------- | ----------------------- |
+| gcc 11                      | 0.912 s                 | 0.944 s                 |
 | gcc 11, clang 21's amx-int8 | +2.80% (+2.02 to +3.51) | +1.51% (+0.53 to +2.60) |
 | clang 21, gcc 11's amx-int8 | -0.58% (-1.14 to +0.05) | -0.58% (-0.95 to +0.21) |
-| clang 21 | +2.02% (+1.59 to +2.41) | +0.69% (+0.26 to +1.55) |
+| clang 21                    | +2.02% (+1.59 to +2.41) | +0.69% (+0.26 to +1.55) |
 
 The loss is clang's amx-int8 object, and the rest of clang's build is
 ahead there too. PROFILE=1 on the c8i, two runs of each: under clang 21
@@ -1403,11 +1403,11 @@ whole toolchain (llvm-mingw's lld and runtime with its clang), at the
 same four placements, 6 rounds at 16 threads, each backend through
 PKTITO_KERNELS:
 
-| backend | gcc 16.2 | clang 23.1 | clang against gcc | spread, gcc / clang |
-|---|---|---|---|---|
-| avx512-vnni | 0.2165 s | 0.2120 s | -1.99% (-3.87 to -0.80) | 2.6% / 4.1% |
-| avx2-vnni | 0.2910 s | 0.2850 s | -2.42% (-3.32 to -1.32) | 1.4% / 1.2% |
-| avx2 | 0.5500 s | 0.5000 s | -10.25% (-13.42 to -8.81) | 1.5% / 3.8% |
+| backend     | gcc 16.2 | clang 23.1 | clang against gcc         | spread, gcc / clang |
+| ----------- | -------- | ---------- | ------------------------- | ------------------- |
+| avx512-vnni | 0.2165 s | 0.2120 s   | -1.99% (-3.87 to -0.80)   | 2.6% / 4.1%         |
+| avx2-vnni   | 0.2910 s | 0.2850 s   | -2.42% (-3.32 to -1.32)   | 1.4% / 1.2%         |
+| avx2        | 0.5500 s | 0.5000 s   | -10.25% (-13.42 to -8.81) | 1.5% / 3.8%         |
 
 At one thread (PROFILE=1, one run of each) clang is 5.4%, 2.2% and 9.3%
 ahead, in the int8 products' stages: avx2's feed-forward, q k v,
@@ -1456,19 +1456,19 @@ interleaved rounds, best of 5: Linux (WSL) 0.218-0.316 s at 8 threads,
 stage's pool jobs, two rounds at each of 1, 2, 4, 8 and 16 threads on
 each OS (the other sessions' jobs held), Linux, the two rounds' means:
 
-| stage | 1 thread | 8 | 16 | jobs | a job at 1 | at 8 | at 16 |
-|---|---|---|---|---|---|---|---|
-| norm+quantize | 14.1 ms | 3.0 | 6.0 | 288 | 48.9 us | 10.6 | 21.1 |
-| silu+quantize | 37.1 | 6.7 | 10.9 | 144 | 257.6 | 46.0 | 75.7 |
-| quantize, attention and conv out | 3.3 | 0.9 | 2.7 | 144 | 23.3 | 6.1 | 18.9 |
-| attention repack | 19.0 | 3.9 | 8.8 | 72 | 265.0 | 53.8 | 122.7 |
-| glu | 5.0 | 1.1 | 2.6 | 72 | 68.8 | 15.1 | 36.5 |
-| depthwise | 15.2 | 2.5 | 2.8 | 72 | 211.6 | 35.3 | 38.8 |
-| layer norms | 1.9 | 0.6 | 1.0 | 72 | 25.9 | 7.8 | 14.3 |
-| feed-forward | 665.8 | 118.2 | 96.7 | 288 | | | |
-| q k v pos | 206.4 | 40.0 | 35.2 | 288 | | | |
-| decoder | 22.1 | 11.4 | 12.4 | 946 | | | |
-| the run, best of 5 | 1.317 s | 0.218 | 0.222 | | | | |
+| stage                            | 1 thread | 8     | 16    | jobs | a job at 1 | at 8 | at 16 |
+| -------------------------------- | -------- | ----- | ----- | ---- | ---------- | ---- | ----- |
+| norm+quantize                    | 14.1 ms  | 3.0   | 6.0   | 288  | 48.9 us    | 10.6 | 21.1  |
+| silu+quantize                    | 37.1     | 6.7   | 10.9  | 144  | 257.6      | 46.0 | 75.7  |
+| quantize, attention and conv out | 3.3      | 0.9   | 2.7   | 144  | 23.3       | 6.1  | 18.9  |
+| attention repack                 | 19.0     | 3.9   | 8.8   | 72   | 265.0      | 53.8 | 122.7 |
+| glu                              | 5.0      | 1.1   | 2.6   | 72   | 68.8       | 15.1 | 36.5  |
+| depthwise                        | 15.2     | 2.5   | 2.8   | 72   | 211.6      | 35.3 | 38.8  |
+| layer norms                      | 1.9      | 0.6   | 1.0   | 72   | 25.9       | 7.8  | 14.3  |
+| feed-forward                     | 665.8    | 118.2 | 96.7  | 288  |            |      |       |
+| q k v pos                        | 206.4    | 40.0  | 35.2  | 288  |            |      |       |
+| decoder                          | 22.1     | 11.4  | 12.4  | 946  |            |      |       |
+| the run, best of 5               | 1.317 s  | 0.218 | 0.222 |      |            |      |       |
 
 The products still gain from 8 threads to 16; the passes between them
 lose, every job slower at 16 threads than at 8 in its own time, with the
@@ -1547,11 +1547,11 @@ quantized from there, lost on every Pi. Static builds of f6bc689 and of
 it, gcc 12.3 and clang 21.1.8, test.wav at the default threads, best of
 5, interleaved rounds (five; three on pi4), the medians:
 
-| board | gcc 12 | clang 21 |
-|---|---|---|
-| pi5c (Pi 5, 4 GB) | +1.29% | +0.90% |
-| pi5-8gb (Pi 5, 8 GB) | +4.60% | +4.55% |
-| pi4 (Pi 400) | +0.95% | +0.71% |
+| board                | gcc 12 | clang 21 |
+| -------------------- | ------ | -------- |
+| pi5c (Pi 5, 4 GB)    | +1.29% | +0.90%   |
+| pi5-8gb (Pi 5, 8 GB) | +4.60% | +4.55%   |
+| pi4 (Pi 400)         | +0.95% | +0.71%   |
 
 and pi3, in cycles a run (each run's transcription time times the ARM
 clock's mean over it, sampled every half second, the board at its 70 C
@@ -1573,13 +1573,13 @@ rounds, four at 16 and 8 threads and three at 1, 2 and 4, best of 5,
 f6bc689 against this, the medians (in brackets f6bc689's rounds' range
 over its median, then the paired rounds' changes):
 
-| threads | Linux clang 21 | Linux gcc 15 | Windows clang 23 |
-|---|---|---|---|
-| 16 | 0.221 to 0.212 s, -3.85% (0.9%; -1.83 to -4.52) | 0.228 to 0.216, -5.05% (0.4%; -3.96 to -5.70) | 0.205 to 0.193, -6.10% (2.9%; -4.37 to -7.69) |
-| 8 | 0.230 to 0.220, -4.57% (9.6%; +1.86 to -7.59) | 0.230 to 0.230, 0.00% (7.0%; +2.17 to -6.50) | 0.208 to 0.206, -0.72% (2.9%; +1.46 to -2.37) |
-| 4 | 0.376 to 0.377, +0.27% (0.5%) | | |
-| 2 | 0.690 to 0.691, +0.14% (0.6%) | | |
-| 1 | 1.319 to 1.330, +0.83% (0.3%; +0.23 to +0.83) | | 1.291 to 1.305, +1.08% (0.5%; +0.93 to +1.08) |
+| threads | Linux clang 21                                  | Linux gcc 15                                  | Windows clang 23                              |
+| ------- | ----------------------------------------------- | --------------------------------------------- | --------------------------------------------- |
+| 16      | 0.221 to 0.212 s, -3.85% (0.9%; -1.83 to -4.52) | 0.228 to 0.216, -5.05% (0.4%; -3.96 to -5.70) | 0.205 to 0.193, -6.10% (2.9%; -4.37 to -7.69) |
+| 8       | 0.230 to 0.220, -4.57% (9.6%; +1.86 to -7.59)   | 0.230 to 0.230, 0.00% (7.0%; +2.17 to -6.50)  | 0.208 to 0.206, -0.72% (2.9%; +1.46 to -2.37) |
+| 4       | 0.376 to 0.377, +0.27% (0.5%)                   |                                               |                                               |
+| 2       | 0.690 to 0.691, +0.14% (0.6%)                   |                                               |                                               |
+| 1       | 1.319 to 1.330, +0.83% (0.3%; +0.23 to +0.83)   |                                               | 1.291 to 1.305, +1.08% (0.5%; +0.93 to +1.08) |
 
 and the in-place form at 16 threads -3.40% (Linux, clang) and -5.12%
 (Windows), at 8 +0.43% and -1.20%. The other boards, the same way as the
@@ -1588,35 +1588,35 @@ its rounds drifting from 0.43 to 0.49 s, so paired; storage1, the
 12900HK: gcc 15.2 and clang 21.1.8 static, six rounds; the GB10: its ten
 X925s, six rounds, GLM's vLLM idle on the GPU throughout):
 
-| board | threads | compiler | f6bc689 | this | change | f6bc689's spread |
-|---|---|---|---|---|---|---|
-| GB10 | 10 | gcc 12 | 0.432 s | 0.399 s | -7.64% | 2.5% |
-| | | clang 21 | 0.430 | 0.398 | -7.55% | 2.3% |
-| pi5c | 4 | gcc 12 | 3.661 | 3.629 | -0.87% | 0.14% |
-| | | clang 21 | 3.656 | 3.618 | -1.04% | 0.30% |
-| pi5-8gb | 4 | gcc 12 | 4.190 | 4.158 | -0.76% | 0.57% |
-| | | clang 21 | 4.177 | 4.127 | -1.20% | 1.3% |
-| pi4 | 4 | gcc 12 | 18.759 | 18.752 | -0.04% | 0.42% |
-| | | clang 21 | 18.729 | 18.690 | -0.21% | 0.29% |
-| pi3 | 4 | gcc 12 | cycles | | +0.03% (pairs -0.32 to +0.36) | |
-| M4 Pro | 8 | Apple clang 21 | 0.479 | 0.480 | +0.21% (paired 0.00) | drift |
-| | 12 | | 0.469 | 0.468 | -0.32% (paired -0.95) | |
-| | default (12) | | 0.469 | 0.465 | -0.85% (paired -0.65) | |
-| storage1 | 14 | clang 21 | 0.819 | 0.819 | 0.00% | 1.0% |
-| | | gcc 15 | 0.825 | 0.824 | -0.06% | 1.0% |
+| board    | threads      | compiler       | f6bc689 | this    | change                        | f6bc689's spread |
+| -------- | ------------ | -------------- | ------- | ------- | ----------------------------- | ---------------- |
+| GB10     | 10           | gcc 12         | 0.432 s | 0.399 s | -7.64%                        | 2.5%             |
+|          |              | clang 21       | 0.430   | 0.398   | -7.55%                        | 2.3%             |
+| pi5c     | 4            | gcc 12         | 3.661   | 3.629   | -0.87%                        | 0.14%            |
+|          |              | clang 21       | 3.656   | 3.618   | -1.04%                        | 0.30%            |
+| pi5-8gb  | 4            | gcc 12         | 4.190   | 4.158   | -0.76%                        | 0.57%            |
+|          |              | clang 21       | 4.177   | 4.127   | -1.20%                        | 1.3%             |
+| pi4      | 4            | gcc 12         | 18.759  | 18.752  | -0.04%                        | 0.42%            |
+|          |              | clang 21       | 18.729  | 18.690  | -0.21%                        | 0.29%            |
+| pi3      | 4            | gcc 12         | cycles  |         | +0.03% (pairs -0.32 to +0.36) |                  |
+| M4 Pro   | 8            | Apple clang 21 | 0.479   | 0.480   | +0.21% (paired 0.00)          | drift            |
+|          | 12           |                | 0.469   | 0.468   | -0.32% (paired -0.95)         |                  |
+|          | default (12) |                | 0.469   | 0.465   | -0.85% (paired -0.65)         |                  |
+| storage1 | 14           | clang 21       | 0.819   | 0.819   | 0.00%                         | 1.0%             |
+|          |              | gcc 15         | 0.825   | 0.824   | -0.06%                        | 1.0%             |
 
 PROFILE=1, each stage's change in ms a run (two runs a build; the
 9950X's clang builds on Linux at 16, 8 and 1 thread and Windows at 16
 and 8; the boards' at their default threads, the M4 Pro's at 8):
 
-| stage | L16 | W16 | L8 | W8 | L1 | GB10 | pi5c | pi5-8gb | pi4 | M4 Pro | storage1 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| quantize | -12.2 | -11.9 | -6.5 | -6.9 | -39.0 | -37.9 | -171.6 | -191.7 | -497.9 | -15.6 | -32.6 |
-| feed-forward | +6.0 | +8.5 | +1.5 | +5.8 | +35.1 | +14.6 | +163.6 | +180.3 | +529.8 | +12.7 | +26.2 |
-| q k v pos | +3.5 | +4.8 | +3.9 | +4.1 | +25.7 | +3.8 | +58.7 | +103.7 | +185.0 | +2.4 | +7.0 |
-| attention repack | -8.9 | -8.8 | -3.8 | -4.0 | -19.5 | -15.5 | -83.4 | -149.1 | -151.9 | -3.4 | -8.1 |
-| glu + depthwise | +1.0 | +1.0 | +1.0 | +0.9 | +2.5 | +0.8 | +9.5 | +5.2 | +33.6 | +0.7 | +2.5 |
-| the run | -13.5 | -7.5 | +3.5 | +3.5 | +6.5 | -32.0 | -28.5 | -41.0 | +118.5 | -1.5 | -5.5 |
+| stage            | L16   | W16   | L8   | W8   | L1    | GB10  | pi5c   | pi5-8gb | pi4    | M4 Pro | storage1 |
+| ---------------- | ----- | ----- | ---- | ---- | ----- | ----- | ------ | ------- | ------ | ------ | -------- |
+| quantize         | -12.2 | -11.9 | -6.5 | -6.9 | -39.0 | -37.9 | -171.6 | -191.7  | -497.9 | -15.6  | -32.6    |
+| feed-forward     | +6.0  | +8.5  | +1.5 | +5.8 | +35.1 | +14.6 | +163.6 | +180.3  | +529.8 | +12.7  | +26.2    |
+| q k v pos        | +3.5  | +4.8  | +3.9 | +4.1 | +25.7 | +3.8  | +58.7  | +103.7  | +185.0 | +2.4   | +7.0     |
+| attention repack | -8.9  | -8.8  | -3.8 | -4.0 | -19.5 | -15.5 | -83.4  | -149.1  | -151.9 | -3.4   | -8.1     |
+| glu + depthwise  | +1.0  | +1.0  | +1.0 | +0.9 | +2.5  | +0.8  | +9.5   | +5.2    | +33.6  | +0.7   | +2.5     |
+| the run          | -13.5 | -7.5  | +3.5 | +3.5 | +6.5  | -32.0 | -28.5  | -41.0   | +118.5 | -1.5   | -5.5     |
 
 Which logical processors ran the threads (the hypervisor's % Total Run
 Time for each, typeperf, over three benches; LPs 0-15 the first CCD): at
@@ -1671,8 +1671,7 @@ every 16-column group of its tile, panels_tile finds the row's head and
 dimension as r / dk and r % dk, a division by a value known only at run
 time, and copies the group's columns in a loop whose bounds it computes
 and whose every column it tests for padding. The repack walked one
-head's dimensions down a group of 16 frames, no division, in a loop of
-16. The hypothesis: the head and dimension stepped along the rows (one
+head's dimensions down a group of 16 frames, no division, in a loop of 16. The hypothesis: the head and dimension stepped along the rows (one
 division a group, for the tile's first row), and a group whose 16
 columns are all the tile's and all keys or positions (every group but
 the tile's edges and the padding) copied by a loop of 16 with no test,
@@ -1695,13 +1694,13 @@ On the 9950X (the box quiet, pinfer's jobs held), three interleaved
 rounds at one thread and four at 16, best of 5, against d648b27 (the
 entry above's tree) and, at one thread, f6bc689:
 
-| threads | tree | Linux clang 21 | Linux gcc 15 | Windows clang 23 |
-|---|---|---|---|---|
-| 1 | f6bc689 | 1.323 s (1.7%) | | 1.292 (0.4%) |
-| | d648b27 | 1.324 (0.4%) | 1.397 (0.2%) | 1.304 (0.3%) |
-| | this | 1.321 (0.5%) | 1.388 (0.9%) | 1.291 (0.5%) |
-| 16 | d648b27 | 0.213 (2.8%) | 0.214 (2.8%) | 0.190 (5.3%) |
-| | this | 0.209 (3.3%) | 0.215 (2.3%) | 0.190 (1.6%) |
+| threads | tree    | Linux clang 21 | Linux gcc 15 | Windows clang 23 |
+| ------- | ------- | -------------- | ------------ | ---------------- |
+| 1       | f6bc689 | 1.323 s (1.7%) |              | 1.292 (0.4%)     |
+|         | d648b27 | 1.324 (0.4%)   | 1.397 (0.2%) | 1.304 (0.3%)     |
+|         | this    | 1.321 (0.5%)   | 1.388 (0.9%) | 1.291 (0.5%)     |
+| 16      | d648b27 | 0.213 (2.8%)   | 0.214 (2.8%) | 0.190 (5.3%)     |
+|         | this    | 0.209 (3.3%)   | 0.215 (2.3%) | 0.190 (1.6%)     |
 
 (the medians, each with its rounds' range over the median). Against
 d648b27 at one thread: Windows -1.00% (pairs -0.77 to -1.00), back to
@@ -1745,12 +1744,12 @@ a system-managed thread too. On the 9950X (Windows 11 x64, llvm-mingw
 clang 23), a probe that loads v2 twenty times while a second thread
 reads the loading thread's two masks as fast as it can:
 
-| build | the thread before | during the loads | after | best load |
-|---|---|---|---|---|
-| HEAD (2b34cd3) | 0/0, system-managed | 0/0 | 0/0 | 3.43 ms |
-| | 1/1, EcoQoS | 1/1 | 1/1 | 3.37 |
-| this | 0/0 | 1/0, out | 0/0 | 3.41 |
-| | 1/1 | 1/0 | 1/1 | 3.43 |
+| build          | the thread before   | during the loads | after | best load |
+| -------------- | ------------------- | ---------------- | ----- | --------- |
+| HEAD (2b34cd3) | 0/0, system-managed | 0/0              | 0/0   | 3.43 ms   |
+|                | 1/1, EcoQoS         | 1/1              | 1/1   | 3.37      |
+| this           | 0/0                 | 1/0, out         | 0/0   | 3.41      |
+|                | 1/1                 | 1/0              | 1/1   | 3.43      |
 
 (ControlMask/StateMask; the poller also saw each thread's own state
 between the loads.) With the file in the page cache the checks take
@@ -1770,18 +1769,18 @@ while the others wait. test.wav is three chunks (20.0, 27.8 and 12.0 s;
 PROFILE=1 runs of the entries above (d648b27's tree; the decoder is the
 same at 25ca5e6):
 
-| board | threads | the decoder, ms a run | of the run |
-|---|---|---|---|
-| 9950X, Linux, clang 21 | 16 | 11.7-11.9 | 5.1-5.4% of 0.208-0.212 s |
-| | 8 | 10.9-11.0 | 4.7% |
-| | 1 | 22.1 (cb12bab) | 1.7% |
-| 9950X, Windows, clang 23 | 16 | 10.2 | 4.7% |
-| GB10, its X925s | 10 | 16.3-17.7 | 3.9-4.1% |
-| M4 Pro | 8 | 18.7 | 3.8-3.9% |
-| 12900HK (storage1) | 14 | 25.1-25.5 | 3.1% |
-| | 1 | 34.2-36.2 | 1.2% |
-| Pi 5 (pi5c) | 4 | 139.5-144.2 | 3.8-4.0% |
-| Pi 4 | 4 | 551-554 | 2.9% |
+| board                    | threads | the decoder, ms a run | of the run                |
+| ------------------------ | ------- | --------------------- | ------------------------- |
+| 9950X, Linux, clang 21   | 16      | 11.7-11.9             | 5.1-5.4% of 0.208-0.212 s |
+|                          | 8       | 10.9-11.0             | 4.7%                      |
+|                          | 1       | 22.1 (cb12bab)        | 1.7%                      |
+| 9950X, Windows, clang 23 | 16      | 10.2                  | 4.7%                      |
+| GB10, its X925s          | 10      | 16.3-17.7             | 3.9-4.1%                  |
+| M4 Pro                   | 8       | 18.7                  | 3.8-3.9%                  |
+| 12900HK (storage1)       | 14      | 25.1-25.5             | 3.1%                      |
+|                          | 1       | 34.2-36.2             | 1.2%                      |
+| Pi 5 (pi5c)              | 4       | 139.5-144.2           | 3.8-4.0%                  |
+| Pi 4                     | 4       | 551-554               | 2.9%                      |
 
 A chunk's search starts from a zero state and reads nothing of the
 encoder's but the joint's encoder half of its own frames, which one
@@ -1851,70 +1850,70 @@ The 9950X, in pinfer's quiet window (13:37-13:42): be4b58a (base) and
 this tree (new), test.wav through v2, best of 5, four interleaved rounds
 at 16 and 8 threads and three at one; long10.wav two rounds at 16:
 
-| | threads | base | new | new against base, a round |
-|---|---|---|---|---|
-| Linux, clang 21 | 16 | 0.212 s (1.4%) | 0.205 (1.0%) | -3.53% (-4.23 to -1.90) |
-| | 8 | 0.218 (11.0%) | 0.210 (6.7%) | -3.66% (-12.55 to +3.72) |
-| | 1 | 1.322 (0.2%) | 1.319 (0.4%) | -0.30% (-0.38 to +0.08) |
-| Linux, gcc 15 | 16 | 0.212 (2.8%) | 0.209 (0.5%) | -1.88% (-4.13 to -1.42) |
-| | 8 | 0.245 (3.7%) | 0.217 (0.5%) | -11.01% (-12.50 to -9.21) |
-| | 1 | 1.388 (0.5%) | 1.390 (0.6%) | +0.14% (-0.79 to +0.29) |
-| Windows, clang 23 | 16 | 0.197 (3.1%) | 0.185 (3.2%) | -5.60% (-7.61 to -1.57) |
-| | 8 | 0.206 (3.9%) | 0.202 (3.5%) | -3.15% (-4.69 to +0.49) |
-| | 1 | 1.296 (0.2%) | 1.294 (0.2%) | -0.15% (-0.15 to -0.08) |
-| long10.wav, Linux, clang 21 | 16 | 2.090 (0.2%) | 2.014 (0.3%) | -3.61% (-3.87 to -3.35) |
-| long10.wav, Windows | 16 | 1.936 (0.7%) | 1.867 (0.2%) | -3.59% (-3.86 to -3.32) |
+|                             | threads | base           | new          | new against base, a round |
+| --------------------------- | ------- | -------------- | ------------ | ------------------------- |
+| Linux, clang 21             | 16      | 0.212 s (1.4%) | 0.205 (1.0%) | -3.53% (-4.23 to -1.90)   |
+|                             | 8       | 0.218 (11.0%)  | 0.210 (6.7%) | -3.66% (-12.55 to +3.72)  |
+|                             | 1       | 1.322 (0.2%)   | 1.319 (0.4%) | -0.30% (-0.38 to +0.08)   |
+| Linux, gcc 15               | 16      | 0.212 (2.8%)   | 0.209 (0.5%) | -1.88% (-4.13 to -1.42)   |
+|                             | 8       | 0.245 (3.7%)   | 0.217 (0.5%) | -11.01% (-12.50 to -9.21) |
+|                             | 1       | 1.388 (0.5%)   | 1.390 (0.6%) | +0.14% (-0.79 to +0.29)   |
+| Windows, clang 23           | 16      | 0.197 (3.1%)   | 0.185 (3.2%) | -5.60% (-7.61 to -1.57)   |
+|                             | 8       | 0.206 (3.9%)   | 0.202 (3.5%) | -3.15% (-4.69 to +0.49)   |
+|                             | 1       | 1.296 (0.2%)   | 1.294 (0.2%) | -0.15% (-0.15 to -0.08)   |
+| long10.wav, Linux, clang 21 | 16      | 2.090 (0.2%)   | 2.014 (0.3%) | -3.61% (-3.87 to -3.35)   |
+| long10.wav, Windows         | 16      | 1.936 (0.7%)   | 1.867 (0.2%) | -3.59% (-3.86 to -3.32)   |
 
 (the medians, each with its rounds' range over the median; a round's
 change is new's time over base's in that round, their median and range.)
 PROFILE=1 builds, two runs each turned, the stages' means, ms a run (gcc
 15's in a second window, 13:50):
 
-| | threads | the decoder, base and new | the mel and encoder stages, new less base | the run |
-|---|---|---|---|---|
-| Linux, clang 21 | 16 | 11.8, 2.8 | -1.8 | 210.5 to 203.5 (-3.3%) |
-| Linux, gcc 15 | 16 | 11.8, 2.8 | -1.1 | 217.0 to 210.5 (-3.0%) |
-| Windows | 16 | 10.7, 2.2 | +1.6 | 193.0 to 188.0 (-2.6%) |
-| Linux, clang 21 | 8 | 10.9, 2.5 | +19.7 | 217.5 to 211.5 (-2.8%) |
-| Linux, gcc 15 | 8 | 11.0, 2.6 | +21.0 | 242.5 to 240.5 (-0.8%) |
-| Windows | 8 | 9.8, 2.1 | +5.6 | 205.5 to 204.0 (-0.7%) |
+|                 | threads | the decoder, base and new | the mel and encoder stages, new less base | the run                |
+| --------------- | ------- | ------------------------- | ----------------------------------------- | ---------------------- |
+| Linux, clang 21 | 16      | 11.8, 2.8                 | -1.8                                      | 210.5 to 203.5 (-3.3%) |
+| Linux, gcc 15   | 16      | 11.8, 2.8                 | -1.1                                      | 217.0 to 210.5 (-3.0%) |
+| Windows         | 16      | 10.7, 2.2                 | +1.6                                      | 193.0 to 188.0 (-2.6%) |
+| Linux, clang 21 | 8       | 10.9, 2.5                 | +19.7                                     | 217.5 to 211.5 (-2.8%) |
+| Linux, gcc 15   | 8       | 11.0, 2.6                 | +21.0                                     | 242.5 to 240.5 (-0.8%) |
+| Windows         | 8       | 9.8, 2.1                  | +5.6                                      | 205.5 to 204.0 (-0.7%) |
 
 The boards, static generic builds as before (arm64: Ubuntu 22.04's
 aarch64 gcc 12.3 and clang 21.1.8; storage1: gcc 15.2 and clang 21.1.8;
 the M4 Pro its own Apple clang 21 builds), test.wav at the default
 threads, interleaved rounds, best of 5:
 
-| board | threads | compiler | base | new | new against base, a round |
-|---|---|---|---|---|---|
-| GB10, 8 rounds | 10 of 20 | gcc 12 | 0.397 (3.8%) | 0.391 (2.0%) | -2.01% (-3.45 to -1.26) |
-| | | clang 21 | 0.395 (2.3%) | 0.384 (3.9%) | -2.77% (-5.06 to -1.53) |
-| | long10.wav, 3 | gcc 12 | 4.019 (0.2%) | 3.917 (1.2%) | -2.47% (-2.73 to -1.42) |
-| M4 Pro, 6 rounds, in use | 12, the race's | Apple clang 21 | 0.459 (7.0%) | 0.449 (8.2%) | -2.58% (-3.38 to -1.55) |
-| | 12 | | 0.463 (7.6%) | 0.449 (8.0%) | -2.57% (-3.44 to -1.62) |
-| | 8 | | 0.477 (10.9%) | 0.471 (11.3%) | -1.66% (-2.57 to -1.05) |
-| 12900HK (storage1), 6 | 14 | gcc 15 | 0.822 (0.9%) | 0.813 (1.1%) | -1.27% (-1.83 to -1.09) |
-| | | clang 21 | 0.817 (1.0%) | 0.806 (0.4%) | -1.22% (-1.71 to -0.98) |
-| | long10.wav, 2 | gcc 15 | 8.134 (0.6%) | 8.018 (0.0%) | -1.42% (-1.69 to -1.15) |
-| Pi 5 (pi5c), 6 | 4 | gcc 12 | 3.641 (0.3%) | 3.632 (0.3%) | -0.16% (-0.60 to -0.05) |
-| | | clang 21 | 3.630 (0.3%) | 3.617 (0.5%) | -0.36% (-0.58 to +0.06) |
-| Pi 4, 4 | 4 | gcc 12 | 18.827 (0.7%) | 18.681 (0.8%) | -0.72% (-1.16 to -0.16) |
-| | | clang 21 | 18.776 (1.1%) | 18.655 (0.4%) | -0.63% (-1.28 to -0.59) |
-| Pi 3, 3 | 4 | gcc 12 | 49.345 (13.0%) | 49.071 (13.0%) | -0.56% (-0.56 to -0.55) |
-| | | clang 21 | 49.543 (4.7%) | 49.320 (0.9%) | -0.19% (-0.53 to +3.68) |
-| | 15 pairs, single runs | gcc 12 | 50.57 (0.9%) | 50.16 (1.4%) | -0.79% (-1.42 to +0.26), a pair |
+| board                    | threads               | compiler       | base           | new            | new against base, a round       |
+| ------------------------ | --------------------- | -------------- | -------------- | -------------- | ------------------------------- |
+| GB10, 8 rounds           | 10 of 20              | gcc 12         | 0.397 (3.8%)   | 0.391 (2.0%)   | -2.01% (-3.45 to -1.26)         |
+|                          |                       | clang 21       | 0.395 (2.3%)   | 0.384 (3.9%)   | -2.77% (-5.06 to -1.53)         |
+|                          | long10.wav, 3         | gcc 12         | 4.019 (0.2%)   | 3.917 (1.2%)   | -2.47% (-2.73 to -1.42)         |
+| M4 Pro, 6 rounds, in use | 12, the race's        | Apple clang 21 | 0.459 (7.0%)   | 0.449 (8.2%)   | -2.58% (-3.38 to -1.55)         |
+|                          | 12                    |                | 0.463 (7.6%)   | 0.449 (8.0%)   | -2.57% (-3.44 to -1.62)         |
+|                          | 8                     |                | 0.477 (10.9%)  | 0.471 (11.3%)  | -1.66% (-2.57 to -1.05)         |
+| 12900HK (storage1), 6    | 14                    | gcc 15         | 0.822 (0.9%)   | 0.813 (1.1%)   | -1.27% (-1.83 to -1.09)         |
+|                          |                       | clang 21       | 0.817 (1.0%)   | 0.806 (0.4%)   | -1.22% (-1.71 to -0.98)         |
+|                          | long10.wav, 2         | gcc 15         | 8.134 (0.6%)   | 8.018 (0.0%)   | -1.42% (-1.69 to -1.15)         |
+| Pi 5 (pi5c), 6           | 4                     | gcc 12         | 3.641 (0.3%)   | 3.632 (0.3%)   | -0.16% (-0.60 to -0.05)         |
+|                          |                       | clang 21       | 3.630 (0.3%)   | 3.617 (0.5%)   | -0.36% (-0.58 to +0.06)         |
+| Pi 4, 4                  | 4                     | gcc 12         | 18.827 (0.7%)  | 18.681 (0.8%)  | -0.72% (-1.16 to -0.16)         |
+|                          |                       | clang 21       | 18.776 (1.1%)  | 18.655 (0.4%)  | -0.63% (-1.28 to -0.59)         |
+| Pi 3, 3                  | 4                     | gcc 12         | 49.345 (13.0%) | 49.071 (13.0%) | -0.56% (-0.56 to -0.55)         |
+|                          |                       | clang 21       | 49.543 (4.7%)  | 49.320 (0.9%)  | -0.19% (-0.53 to +3.68)         |
+|                          | 15 pairs, single runs | gcc 12         | 50.57 (0.9%)   | 50.16 (1.4%)   | -0.79% (-1.42 to +0.26), a pair |
 
 PROFILE=1 (gcc 12 on the arm64 boards, clang 21 on storage1, Apple clang
 on the M4 Pro), two runs each, the Pi 3's one:
 
-| board | threads | the decoder, base and new | the mel and encoder stages, new less base | the run |
-|---|---|---|---|---|
-| GB10 | 10 of 20 | 17.4, 3.9 | +2.4 | 401.5 to 390.5 (-2.7%) |
-| M4 Pro | 12 | 18.8, 4.2 | +4.6 | 468.5 to 456.5 (-2.6%) |
-| | 8 | 18.8, 4.2 | +8.0 | 478.0 to 472.5 (-1.2%) |
-| 12900HK | 14 | 25.2, 6.3 | +8.2 | 811.0 to 803.5 (-0.9%) |
-| Pi 5 | 4 | 138.4, 28.6 | +122.2, the subsampling +69.0 | 3644.5 to 3630.0 (-0.4%) |
-| Pi 4 | 4 | 555.1, 121.6 | +314.3, the subsampling +193.3 | 18835.0 to 18779.5 (-0.3%) |
-| Pi 3 | 4 | 1120.6, 250.1 | +581.2, the subsampling +330.1 | 49478.0 to 49198.0 (-0.6%) |
+| board   | threads  | the decoder, base and new | the mel and encoder stages, new less base | the run                    |
+| ------- | -------- | ------------------------- | ----------------------------------------- | -------------------------- |
+| GB10    | 10 of 20 | 17.4, 3.9                 | +2.4                                      | 401.5 to 390.5 (-2.7%)     |
+| M4 Pro  | 12       | 18.8, 4.2                 | +4.6                                      | 468.5 to 456.5 (-2.6%)     |
+|         | 8        | 18.8, 4.2                 | +8.0                                      | 478.0 to 472.5 (-1.2%)     |
+| 12900HK | 14       | 25.2, 6.3                 | +8.2                                      | 811.0 to 803.5 (-0.9%)     |
+| Pi 5    | 4        | 138.4, 28.6               | +122.2, the subsampling +69.0             | 3644.5 to 3630.0 (-0.4%)   |
+| Pi 4    | 4        | 555.1, 121.6              | +314.3, the subsampling +193.3            | 18835.0 to 18779.5 (-0.3%) |
+| Pi 3    | 4        | 1120.6, 250.1             | +581.2, the subsampling +330.1            | 49478.0 to 49198.0 (-0.6%) |
 
 pi5-8gb's rounds are not here: its runs took 4.69 to 5.75 s where they
 took 4.15 to 4.20 this morning, with spreads of 7 to 19% and rounds
@@ -1987,41 +1986,41 @@ encoder's error 4.1% against 3.6% and 5.8% against 5.3%. The engine
 itself, core/encoder.c's QB at 64 on 33c5e7c (a scratch build), through
 tests/wercheck.py against quantcheck's float32:
 
-| | v2: WER | differ from float32 | v3: WER | differ from float32 (WER between) |
-|---|---|---|---|---|
-| blocks of 32 (33c5e7c) | 1.51% | 4 of 200 | 4.42% | 45 of 360 (0.35%) |
-| blocks of 64 | 1.47% | 7 | 4.43% | 49 (0.50%) |
+|                        | v2: WER | differ from float32 | v3: WER | differ from float32 (WER between) |
+| ---------------------- | ------- | ------------------- | ------- | --------------------------------- |
+| blocks of 32 (33c5e7c) | 1.51%   | 4 of 200            | 4.42%   | 45 of 360 (0.35%)                 |
+| blocks of 64           | 1.47%   | 7                   | 4.43%   | 49 (0.50%)                        |
 
 What they buy: the same scratch build against 33c5e7c, test.wav through
 v2, best of 5 at the default threads, four interleaved rounds, the order
 turned, each base build's --json test.v2.json's bytes:
 
-| board | threads | compiler | 33c5e7c | blocks of 64 | a round's change, median (range) |
-|---|---|---|---|---|---|
-| 9950X, Linux | 16 | gcc 15 | 0.209 s | 0.198 | -5.5% (-5.7 to -3.9) |
-| | | clang 21 | 0.204 | 0.1945 | -4.4% (-5.9 to -3.4) |
-| 12900HK (storage1) | 14 | gcc 15 | 0.809 | 0.764 | -5.6% (-6.2 to -5.1) |
-| | | clang 21 | 0.8055 | 0.7595 | -5.8% (-6.0 to -5.0) |
-| GB10 | 10 | gcc 13 | 0.388 | 0.372 | -3.7% (-4.6 to -3.1) |
-| | | clang 18 | 0.3815 | 0.3655 | -4.6% (-4.7 to -2.7) |
-| M4 Pro, in use | 12 | Apple clang 21 | 0.422 | 0.401 | -5.0% (-5.4 to -4.1) |
-| Pi 5 (pi5c) | 4 | gcc 12 | 3.628 | 3.440 | -5.2% (-5.4 to -5.0) |
+| board              | threads | compiler       | 33c5e7c | blocks of 64 | a round's change, median (range) |
+| ------------------ | ------- | -------------- | ------- | ------------ | -------------------------------- |
+| 9950X, Linux       | 16      | gcc 15         | 0.209 s | 0.198        | -5.5% (-5.7 to -3.9)             |
+|                    |         | clang 21       | 0.204   | 0.1945       | -4.4% (-5.9 to -3.4)             |
+| 12900HK (storage1) | 14      | gcc 15         | 0.809   | 0.764        | -5.6% (-6.2 to -5.1)             |
+|                    |         | clang 21       | 0.8055  | 0.7595       | -5.8% (-6.0 to -5.0)             |
+| GB10               | 10      | gcc 13         | 0.388   | 0.372        | -3.7% (-4.6 to -3.1)             |
+|                    |         | clang 18       | 0.3815  | 0.3655       | -4.6% (-4.7 to -2.7)             |
+| M4 Pro, in use     | 12      | Apple clang 21 | 0.422   | 0.401        | -5.0% (-5.4 to -4.1)             |
+| Pi 5 (pi5c)        | 4       | gcc 12         | 3.628   | 3.440        | -5.2% (-5.4 to -5.0)             |
 
 And the int8 product alone: q8bench on one core (taskset), the
 encoder's three shapes (4096 x 1024, 1024 x 4096, 1024 x 1024) at 256
 columns in 64-row slices, best of 5, three interleaved rounds, blocks of
 64 against 32, the range over the shapes' medians:
 
-| core | the tile at 32 | at 64 | 64 against 32 |
-|---|---|---|---|
-| Zen 5 (9950X) | zmm, unrolled (as now) | the same, unrolled | +8 to +12% (gcc 15), +5 to +7.5% (clang 21) |
-| Zen 5, PKTITO_KERNELS=avx2 | VPMADDUBSW, unrolled | the same | -5 to -6% (gcc 15), +3 to +4% (clang 21) |
-| Golden Cove (12900HK) | AVX-VNNI, unrolled | the same | +1 to +2% (gcc 15), -0.7 to +1.1% (clang 21) |
-| M4 Pro P-core | SDOT, the assembly | the C tile | +8 to +13% (Apple clang 21) |
-| X925 (GB10) | | | +3.5 to +10% (gcc 13, clang 18) |
-| A76 (Pi 5) | | | +5 to +7% (gcc 12) |
-| A72 (Pi 4) | ARMv8.0, the assembly | the C tile | -4 to -8% (gcc 14); the C tile at 64 against its own 32, +8 to +10% |
-| A53 (Pi 3) | | | -2 to 0% (gcc 14); the C tile's, +4 to +5% |
+| core                       | the tile at 32         | at 64              | 64 against 32                                                       |
+| -------------------------- | ---------------------- | ------------------ | ------------------------------------------------------------------- |
+| Zen 5 (9950X)              | zmm, unrolled (as now) | the same, unrolled | +8 to +12% (gcc 15), +5 to +7.5% (clang 21)                         |
+| Zen 5, PKTITO_KERNELS=avx2 | VPMADDUBSW, unrolled   | the same           | -5 to -6% (gcc 15), +3 to +4% (clang 21)                            |
+| Golden Cove (12900HK)      | AVX-VNNI, unrolled     | the same           | +1 to +2% (gcc 15), -0.7 to +1.1% (clang 21)                        |
+| M4 Pro P-core              | SDOT, the assembly     | the C tile         | +8 to +13% (Apple clang 21)                                         |
+| X925 (GB10)                |                        |                    | +3.5 to +10% (gcc 13, clang 18)                                     |
+| A76 (Pi 5)                 |                        |                    | +5 to +7% (gcc 12)                                                  |
+| A72 (Pi 4)                 | ARMv8.0, the assembly  | the C tile         | -4 to -8% (gcc 14); the C tile at 64 against its own 32, +8 to +10% |
+| A53 (Pi 3)                 |                        |                    | -2 to 0% (gcc 14); the C tile's, +4 to +5%                          |
 
 The hypothesis: a fast mode, pk_asr_set_fast_mode(a, 1) and pktito-c's
 --fast, for a caller who wants the speed more than float32's nearest
@@ -2113,12 +2112,12 @@ default threads (16 and 14), interleaved rounds (4 to 6), the order
 turned each round; a build's change against 33c5e7c (base) a round,
 median (range):
 
-| build: the tiles | 9950X: default, gcc 15 / clang 21 | --fast against the default | 12900HK: default | --fast |
-|---|---|---|---|---|
-| new: one tile a variant, 32, 64 or a loop chosen as it runs | +0.5% (+0.5 to +1.9) / +1.2% (+0.5 to +1.5) | -6.4% (-8.3 to -4.8) / -3.9% (-5.8 to -3.4) | +1.5% (+1.1 to +1.9) / -0.3% (-0.9 to 0.0) | -7.2% (-8.0 to -6.8) / -5.5% (-5.7 to -4.6) |
-| qb: a tile for each size, chosen a panel at a time, the size a constant | -1.9% (-2.8 to -1.4) / +23.5% (+22.9 to +25.7) | -5.3% (-5.4 to -3.9) / -17.4% (-18.5 to -16.5) | -1.6% (-2.2 to -1.0) / -1.7% (-2.1 to -1.4) | -5.4% (-5.8 to -4.9) / -5.5% (-5.6 to -5.1) |
-| fa: the default's tile as at 33c5e7c; the fast mode's its own function, 64 a constant | 0.0% (-1.9 to +1.0) / -0.5% (-2.4 to +1.0) | -6.7% (-8.5 to -6.2) / +2.5% (-0.5 to +2.5) | 0.0% (-0.5 to +0.5) / -0.2% (-0.6 to -0.1) | -7.4% (-7.7 to -7.0) / -6.7% (-6.9 to -6.3) |
-| fb: as fa, the fast tile choosing 32, 64 or the loop as it runs | +0.5% (0.0 to +1.4) / 0.0% (-1.4 to +1.0) | -5.2% (-8.0 to -5.2) / -4.9% (-5.9 to -4.4) | -0.1% (-0.2 to +0.1) / -0.2% (-0.9 to +0.1) | -6.0% (-6.4 to -5.2) / -5.3% (-5.8 to -4.4) |
+| build: the tiles                                                                      | 9950X: default, gcc 15 / clang 21              | --fast against the default                     | 12900HK: default                            | --fast                                      |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- | ------------------------------------------- | ------------------------------------------- |
+| new: one tile a variant, 32, 64 or a loop chosen as it runs                           | +0.5% (+0.5 to +1.9) / +1.2% (+0.5 to +1.5)    | -6.4% (-8.3 to -4.8) / -3.9% (-5.8 to -3.4)    | +1.5% (+1.1 to +1.9) / -0.3% (-0.9 to 0.0)  | -7.2% (-8.0 to -6.8) / -5.5% (-5.7 to -4.6) |
+| qb: a tile for each size, chosen a panel at a time, the size a constant               | -1.9% (-2.8 to -1.4) / +23.5% (+22.9 to +25.7) | -5.3% (-5.4 to -3.9) / -17.4% (-18.5 to -16.5) | -1.6% (-2.2 to -1.0) / -1.7% (-2.1 to -1.4) | -5.4% (-5.8 to -4.9) / -5.5% (-5.6 to -5.1) |
+| fa: the default's tile as at 33c5e7c; the fast mode's its own function, 64 a constant | 0.0% (-1.9 to +1.0) / -0.5% (-2.4 to +1.0)     | -6.7% (-8.5 to -6.2) / +2.5% (-0.5 to +2.5)    | 0.0% (-0.5 to +0.5) / -0.2% (-0.6 to -0.1)  | -7.4% (-7.7 to -7.0) / -6.7% (-6.9 to -6.3) |
+| fb: as fa, the fast tile choosing 32, 64 or the loop as it runs                       | +0.5% (0.0 to +1.4) / 0.0% (-1.4 to +1.0)      | -5.2% (-8.0 to -5.2) / -4.9% (-5.9 to -4.4)    | -0.1% (-0.2 to +0.1) / -0.2% (-0.9 to +0.1) | -6.0% (-6.4 to -5.2) / -5.3% (-5.8 to -4.4) |
 
 new: gcc 15 merged the tile's 64 and 32 paths' last six groups, and the
 32's loop jumped into the 64's for them; q8bench at 32 on a 12900HK
@@ -2142,19 +2141,19 @@ instruction (objdump -d, every block of 8 or more products), gcc's ymm
 VNNI fast tile up to the names of its registers. The kept build itself
 on the 12900HK, and the rows above elsewhere: --fast against the default
 
-| board | threads | compiler | default | --fast | change, median (range) |
-|---|---|---|---|---|---|
-| 9950X, Linux (zmm, fb's) | 16 | gcc 15.2 | 0.211 s | 0.199 | -5.2% (-8.0 to -5.2) |
-| | | clang 21.1 | 0.205 | 0.195 | -4.9% (-5.9 to -4.4) |
-| 12900HK, storage1 (ymm VNNI, the kept build) | 14 | gcc 15.2 | 0.801 s | 0.748 | -6.6% (-7.4 to -6.3) |
-| | | clang 21.1 | 0.7995 | 0.7465 | -6.6% (-7.1 to -6.0) |
-| GB10 | 10 | gcc 13.3 | 0.3895 | 0.3755 | -3.9% (-5.2 to -2.8) |
-| | | clang 18 | 0.3885 | 0.3710 | -4.3% (-5.2 to -2.6) |
-| M4 Pro, in use | 12 | Apple clang 21 | 0.4305 | 0.4105 | -4.5% (-6.1 to -3.4) |
-| Pi 5 (pi5c) | 4 | gcc 12.2 | 3.676 | 3.4805 | -5.3% (-5.5 to -5.3) |
-| | | clang 21.1 | 3.664 | 3.3935 | -7.3% (-7.7 to -7.2) |
-| Pi 4, ARMv8.0 (the C at 64) | 4 | gcc 14.2 | 18.742 | 19.692 | +4.9% (+4.8 to +5.4) |
-| Pi 3B+, ARMv8.0 (the C at 64) | 4 | gcc 14.2 | 48.981 | 49.507 | +1.1% (+1.0 to +1.2) |
+| board                                        | threads | compiler       | default | --fast | change, median (range) |
+| -------------------------------------------- | ------- | -------------- | ------- | ------ | ---------------------- |
+| 9950X, Linux (zmm, fb's)                     | 16      | gcc 15.2       | 0.211 s | 0.199  | -5.2% (-8.0 to -5.2)   |
+|                                              |         | clang 21.1     | 0.205   | 0.195  | -4.9% (-5.9 to -4.4)   |
+| 12900HK, storage1 (ymm VNNI, the kept build) | 14      | gcc 15.2       | 0.801 s | 0.748  | -6.6% (-7.4 to -6.3)   |
+|                                              |         | clang 21.1     | 0.7995  | 0.7465 | -6.6% (-7.1 to -6.0)   |
+| GB10                                         | 10      | gcc 13.3       | 0.3895  | 0.3755 | -3.9% (-5.2 to -2.8)   |
+|                                              |         | clang 18       | 0.3885  | 0.3710 | -4.3% (-5.2 to -2.6)   |
+| M4 Pro, in use                               | 12      | Apple clang 21 | 0.4305  | 0.4105 | -4.5% (-6.1 to -3.4)   |
+| Pi 5 (pi5c)                                  | 4       | gcc 12.2       | 3.676   | 3.4805 | -5.3% (-5.5 to -5.3)   |
+|                                              |         | clang 21.1     | 3.664   | 3.3935 | -7.3% (-7.7 to -7.2)   |
+| Pi 4, ARMv8.0 (the C at 64)                  | 4       | gcc 14.2       | 18.742  | 19.692 | +4.9% (+4.8 to +5.4)   |
+| Pi 3B+, ARMv8.0 (the C at 64)                | 4       | gcc 14.2       | 48.981  | 49.507 | +1.1% (+1.0 to +1.2)   |
 
 and the default against 33c5e7c within its spread on every board: the
 9950X +0.5% (0.0 to +1.4) and 0.0%, the 12900HK -0.2% (-0.5 to 0.0) and
@@ -2202,10 +2201,10 @@ differently. kcheck: ref's bits, 1906 cases, under both.
 avx2 forced (PKTITO_KERNELS=avx2), test.wav through v2, best of 5 at the
 default threads, 4 interleaved rounds, against nobar:
 
-| board | gcc 15.2: default | --fast | clang 21.1: default |
-|---|---|---|---|
-| 9950X | -9.7% (-10.4 to -7.6) | -13.6% (-15.7 to -10.4) | +0.9% (-1.7 to +2.3) |
-| 12900HK | -5.5% (-6.4 to -5.0) | -12.0% (-12.2 to -10.7) | +0.5% (+0.1 to +0.6) |
+| board   | gcc 15.2: default     | --fast                  | clang 21.1: default  |
+| ------- | --------------------- | ----------------------- | -------------------- |
+| 9950X   | -9.7% (-10.4 to -7.6) | -13.6% (-15.7 to -10.4) | +0.9% (-1.7 to +2.3) |
+| 12900HK | -5.5% (-6.4 to -5.0)  | -12.0% (-12.2 to -10.7) | +0.5% (+0.1 to +0.6) |
 
 and the kept build against 33c5e7c: gcc -8.9% (-11.5 to -6.9) on the
 9950X (fa's sitting, its tile the kept one's to within an instruction)
@@ -2277,12 +2276,12 @@ The 12900HK (storage1), test.wav through v2, best of 5 at 14 threads, 6
 interleaved rounds, the order turned, against the kept build (de85e2a)
 under the same compiler, a round's change, median (range):
 
-| compiler | default: de85e2a | QB | change | --fast: de85e2a | QB | change |
-|---|---|---|---|---|---|---|
-| gcc 15.2 | 0.805 s | 0.7905 | -1.9% (-2.5 to -1.5) | 0.7485 | 0.7460 | -0.3% (-0.7 to +0.5) |
-| clang 21.1 | 0.799 | 0.789 | -1.2% (-1.7 to -0.8) | 0.7465 | 0.7460 | +0.1% (-0.1 to +0.5) |
-| gcc 15.2, avx2 forced | 1.460 | 1.461 | +0.1% (-0.3 to +0.3) | | | |
-| clang 21.1, avx2 forced | 1.4605 | 1.4535 | -0.5% (-0.6 to -0.2) | | | |
+| compiler                | default: de85e2a | QB     | change               | --fast: de85e2a | QB     | change               |
+| ----------------------- | ---------------- | ------ | -------------------- | --------------- | ------ | -------------------- |
+| gcc 15.2                | 0.805 s          | 0.7905 | -1.9% (-2.5 to -1.5) | 0.7485          | 0.7460 | -0.3% (-0.7 to +0.5) |
+| clang 21.1              | 0.799            | 0.789  | -1.2% (-1.7 to -0.8) | 0.7465          | 0.7460 | +0.1% (-0.1 to +0.5) |
+| gcc 15.2, avx2 forced   | 1.460            | 1.461  | +0.1% (-0.3 to +0.3) |                 |        |                      |
+| clang 21.1, avx2 forced | 1.4605           | 1.4535 | -0.5% (-0.6 to -0.2) |                 |        |                      |
 
 As predicted: the default 1.2 to 1.9% faster under both compilers, the
 fast mode level, avx2 level to 0.5% faster. q8bench on a P-core, GMAC/s
@@ -2319,36 +2318,36 @@ the slowest. Best of 3 interleaved rounds after an untimed run (2 for
 the 9950X's second set and the Ultra's last five), within the spread
 shown:
 
-| board | K x T | x real time | spread | of one transcriber on every core |
-|---|---|---|---|---|
-| 9950X (16 cores), gcc 15.2 | 1 x 16 | 254.2 | 0.8% | 1.00 |
-| | 2 x 8 | 283.0 | 1.4% | 1.11 |
-| | 3 x 5 | 309.3 | 0.4% | 1.22 |
-| | 4 x 4 | 336.1 | 1.1% | 1.32 |
-| | 5 x 3 | 324.0 | 1.3% | 1.27 |
-| | 8 x 2 | 344.3 | 1.1% | 1.35 |
-| | 16 x 1 | 370.4 | 1.2% | 1.46 |
-| | 4 x 8 (SMT) | 358.2 | 1.8% | 1.41 |
-| | 16 x 2 (SMT) | 395.4 | 0.9% | 1.56 |
-| M5 Ultra (12 + 24 cores), Apple clang 21 | 1 x 36 | 194.8 | 1.3% | 1.00 |
-| | 1 x 24 | 202.7 | 0.0% | 1.04 |
-| | 1 x 12 | 175.4 | 0.0% | 0.90 |
-| | 2 x 6 | 195.4 | 0.0% | 1.00 |
-| | 2 x 18 | 352.9 | 2.3% | 1.81 |
-| | 3 x 12 | 411.0 | 0.5% | 2.11 |
-| | 4 x 9 | 451.1 | 0.4% | 2.32 |
-| | 6 x 6 | 477.5 | 0.5% | 2.45 |
-| | 9 x 4 | 473.7 | 0.4% | 2.43 |
-| | 12 x 3 | 499.3 | 0.8% | 2.56 |
-| | 36 x 1 | 524.0 | 1.6% | 2.69 |
-| Pi 5 (pi5c, 4 cores), gcc 12.2 | 1 x 4 | 14.42 | 0.7% | 1.00 |
-| | 2 x 2 | 14.49 | 0.6% | 1.00 |
-| | 4 x 1 | 13.08 | 1.8% | 0.91 |
-| | 3 x 1 | 11.74 | 1.3% | 0.81 |
-| Pi 4 (Pi 400, 4 cores), gcc 14.2; 4 x 1 and 3 x 1 of 2 rounds | 1 x 4 | 2.869 | 0.8% | 1.00 |
-| | 2 x 2 | 2.787 | 0.9% | 0.97 |
-| | 4 x 1 | 2.761 | 0.5% | 0.96 |
-| | 3 x 1 | 2.221 | 0.2% | 0.77 |
+| board                                                         | K x T        | x real time | spread | of one transcriber on every core |
+| ------------------------------------------------------------- | ------------ | ----------- | ------ | -------------------------------- |
+| 9950X (16 cores), gcc 15.2                                    | 1 x 16       | 254.2       | 0.8%   | 1.00                             |
+|                                                               | 2 x 8        | 283.0       | 1.4%   | 1.11                             |
+|                                                               | 3 x 5        | 309.3       | 0.4%   | 1.22                             |
+|                                                               | 4 x 4        | 336.1       | 1.1%   | 1.32                             |
+|                                                               | 5 x 3        | 324.0       | 1.3%   | 1.27                             |
+|                                                               | 8 x 2        | 344.3       | 1.1%   | 1.35                             |
+|                                                               | 16 x 1       | 370.4       | 1.2%   | 1.46                             |
+|                                                               | 4 x 8 (SMT)  | 358.2       | 1.8%   | 1.41                             |
+|                                                               | 16 x 2 (SMT) | 395.4       | 0.9%   | 1.56                             |
+| M5 Ultra (12 + 24 cores), Apple clang 21                      | 1 x 36       | 194.8       | 1.3%   | 1.00                             |
+|                                                               | 1 x 24       | 202.7       | 0.0%   | 1.04                             |
+|                                                               | 1 x 12       | 175.4       | 0.0%   | 0.90                             |
+|                                                               | 2 x 6        | 195.4       | 0.0%   | 1.00                             |
+|                                                               | 2 x 18       | 352.9       | 2.3%   | 1.81                             |
+|                                                               | 3 x 12       | 411.0       | 0.5%   | 2.11                             |
+|                                                               | 4 x 9        | 451.1       | 0.4%   | 2.32                             |
+|                                                               | 6 x 6        | 477.5       | 0.5%   | 2.45                             |
+|                                                               | 9 x 4        | 473.7       | 0.4%   | 2.43                             |
+|                                                               | 12 x 3       | 499.3       | 0.8%   | 2.56                             |
+|                                                               | 36 x 1       | 524.0       | 1.6%   | 2.69                             |
+| Pi 5 (pi5c, 4 cores), gcc 12.2                                | 1 x 4        | 14.42       | 0.7%   | 1.00                             |
+|                                                               | 2 x 2        | 14.49       | 0.6%   | 1.00                             |
+|                                                               | 4 x 1        | 13.08       | 1.8%   | 0.91                             |
+|                                                               | 3 x 1        | 11.74       | 1.3%   | 0.81                             |
+| Pi 4 (Pi 400, 4 cores), gcc 14.2; 4 x 1 and 3 x 1 of 2 rounds | 1 x 4        | 2.869       | 0.8%   | 1.00                             |
+|                                                               | 2 x 2        | 2.787       | 0.9%   | 0.97                             |
+|                                                               | 4 x 1        | 2.761       | 0.5%   | 0.96                             |
+|                                                               | 3 x 1        | 2.221       | 0.2%   | 0.77                             |
 
 v3 on the 9950X has the same shape: 250.0, 280.4, 328.8 and 365.0 at 1 x
 16, 2 x 8, 4 x 4 and 16 x 1. On the Ultra two lanes of six threads, a
@@ -2401,16 +2400,16 @@ pktito-mac's figures added), over d2c70f0's chunks of the corpora, in x
 real time; the simulation's one-lane rate, from the 300 s excerpt, sits
 under the chapters' measured one:
 
-| board | set | one lane | the rule | each recording's best K, by the board's own times |
-|---|---|---|---|---|
-| 9950X | AliceBench | 245.9 | 308.3 | 308.3 |
-| | talks | 245.9 | 295.9 | 295.9 |
-| | long40 | 245.9 | 284.6 | 284.6 |
-| | test.wav | 245.9 | 262.1 | 262.1 |
-| M5 Ultra | AliceBench | 185.9 | 401.9 | 407.1 |
-| | talks | 185.9 | 383.2 | 386.3 |
-| | long40 | 185.9 | 378.1 | 384.5 |
-| | test.wav | 185.9 | 312.6 | 312.6 |
+| board    | set        | one lane | the rule | each recording's best K, by the board's own times |
+| -------- | ---------- | -------- | -------- | ------------------------------------------------- |
+| 9950X    | AliceBench | 245.9    | 308.3    | 308.3                                             |
+|          | talks      | 245.9    | 295.9    | 295.9                                             |
+|          | long40     | 245.9    | 284.6    | 284.6                                             |
+|          | test.wav   | 245.9    | 262.1    | 262.1                                             |
+| M5 Ultra | AliceBench | 185.9    | 401.9    | 407.1                                             |
+|          | talks      | 185.9    | 383.2    | 386.3                                             |
+|          | long40     | 185.9    | 378.1    | 384.5                                             |
+|          | test.wav   | 185.9    | 312.6    | 312.6                                             |
 
 So: on the 9950X a fifth faster on the chapters, a sixth on the talks and
 long40, test.wav 6.6%; on the Ultra twice as fast throughout, test.wav 1.7
@@ -2420,11 +2419,12 @@ long40, and 310.1x and 277.9x for the Ultra's, test.wav one lane on both.
 
 Risks: memory, a lane's working memory each, about 30 MB at 30.72 s, so
 the Ultra's nine lanes hold 270 MB more; threads, sum(floor(threads / (j
-+ 1))) over the lanes, which on the Ultra is 101 and 8 for the lanes'
-drivers, asleep when no run needs them; a chunk's own time, several
-times longer, so fn has its first chunk later; and chips of two kinds of
-core, whose default runs only the fast kind where the race keeps it (the
-GB10's X925s), where every lane would run all of them.
+
+- 1))) over the lanes, which on the Ultra is 101 and 8 for the lanes'
+  drivers, asleep when no run needs them; a chunk's own time, several
+  times longer, so fn has its first chunk later; and chips of two kinds of
+  core, whose default runs only the fast kind where the race keeps it (the
+  GB10's X925s), where every lane would run all of them.
 
 Kept if AliceBench's chapters, the talks and long40 transcribe faster on
 the 9950X, under gcc and clang, and on the Ultra, by more than the
@@ -2458,12 +2458,12 @@ interleaved rounds with the order turned, the faster (the rounds within
 and the fast kind came out differently from round to round); test.wav's
 `bench` in chunks best of 5 in 3 rounds:
 
-| set | d2c70f0 | lanes | change | lanes, 6 at most |
-|---|---|---|---|---|
-| AliceBench, 12 chapters, 10,732 s | 53.39 s (201.0x) | 26.35 (407.3x) | 2.03x | 26.50 (405.0x) |
-| the talks, 26, 5,362 s | 28.36 (189.1x) | 14.28 (375.5x) | 1.99x | 14.11 (380.0x) |
-| long40, 9,252 s | 47.46 (194.9x) | 23.99 (385.7x) | 1.98x | 24.27 (381.2x) |
-| test.wav, `bench` | 0.320 (187.7x) | 0.180 (334.1x) | 1.78x | |
+| set                               | d2c70f0          | lanes          | change | lanes, 6 at most |
+| --------------------------------- | ---------------- | -------------- | ------ | ---------------- |
+| AliceBench, 12 chapters, 10,732 s | 53.39 s (201.0x) | 26.35 (407.3x) | 2.03x  | 26.50 (405.0x)   |
+| the talks, 26, 5,362 s            | 28.36 (189.1x)   | 14.28 (375.5x) | 1.99x  | 14.11 (380.0x)   |
+| long40, 9,252 s                   | 47.46 (194.9x)   | 23.99 (385.7x) | 1.98x  | 24.27 (381.2x)   |
+| test.wav, `bench`                 | 0.320 (187.7x)   | 0.180 (334.1x) | 1.78x  |                  |
 
 As predicted, twice as fast, test.wav 1.8 times; six lanes at most level
 with the nine the rule allows. The floor of four chunks a lane, built
@@ -2477,16 +2477,16 @@ s), the talks, and long40's even half by chunk count (20 recordings of 3
 to 12 chunks, 4,564 s); 2 interleaved rounds, within 0.7%; test.wav's
 bench in 4:
 
-| compiler | set | d2c70f0 | lanes | change |
-|---|---|---|---|---|
-| gcc 15.2 | 6 chapters | 16.81 s (259.0x) | 13.78 (315.9x) | 1.22x |
-| | the talks | 21.08 (254.4x) | 17.64 (304.0x) | 1.20x |
-| | long40, half | 17.82 (256.1x) | 15.31 (298.1x) | 1.16x |
-| | test.wav, `bench` | 0.208 (288.8x) | 0.195 (307.7x) | 1.07x |
-| clang 21.1 | 6 chapters | 16.38 (265.8x) | 13.28 (327.8x) | 1.23x |
-| | the talks | 20.61 (260.2x) | 16.90 (317.3x) | 1.22x |
-| | long40, half | 17.35 (263.0x) | 14.64 (311.7x) | 1.19x |
-| | test.wav, `bench` | 0.203 (295.6x) | 0.188 (319.8x) | 1.08x |
+| compiler   | set               | d2c70f0          | lanes          | change |
+| ---------- | ----------------- | ---------------- | -------------- | ------ |
+| gcc 15.2   | 6 chapters        | 16.81 s (259.0x) | 13.78 (315.9x) | 1.22x  |
+|            | the talks         | 21.08 (254.4x)   | 17.64 (304.0x) | 1.20x  |
+|            | long40, half      | 17.82 (256.1x)   | 15.31 (298.1x) | 1.16x  |
+|            | test.wav, `bench` | 0.208 (288.8x)   | 0.195 (307.7x) | 1.07x  |
+| clang 21.1 | 6 chapters        | 16.38 (265.8x)   | 13.28 (327.8x) | 1.23x  |
+|            | the talks         | 20.61 (260.2x)   | 16.90 (317.3x) | 1.22x  |
+|            | long40, half      | 17.35 (263.0x)   | 14.64 (311.7x) | 1.19x  |
+|            | test.wav, `bench` | 0.203 (295.6x)   | 0.188 (319.8x) | 1.08x  |
 
 The simulation's 1.25, 1.20, 1.16 and 1.07 under gcc.
 
@@ -2494,10 +2494,10 @@ The GB10 (spark-b327, gcc 13.3, its vLLM worker resident), the 6 chapters
 and 13 of the talks (2,664 s), 2 rounds, the faster (within 2.3%), the
 threads -v reports:
 
-| set | d2c70f0: its race keeps the ten X925s | lanes: 20 threads, five lanes at most | lanes, `-t 10` | lanes, `-t 10` on the X925s (taskset) |
-|---|---|---|---|---|
-| 6 chapters | 30.91 s (140.8x) | 23.90 (182.1x) | 29.93 (145.4x) | 29.86 (145.8x) |
-| 13 talks | 19.54 (136.3x) | 15.27 (174.5x) | 18.73 (142.2x) | 18.65 (142.9x) |
+| set        | d2c70f0: its race keeps the ten X925s | lanes: 20 threads, five lanes at most | lanes, `-t 10` | lanes, `-t 10` on the X925s (taskset) |
+| ---------- | ------------------------------------- | ------------------------------------- | -------------- | ------------------------------------- |
+| 6 chapters | 30.91 s (140.8x)                      | 23.90 (182.1x)                        | 29.93 (145.4x) | 29.86 (145.8x)                        |
+| 13 talks   | 19.54 (136.3x)                        | 15.27 (174.5x)                        | 18.73 (142.2x) | 18.65 (142.9x)                        |
 
 The A725s, which hold up every job of a transcriber that spans them, add
 their share as lanes of their own: 1.29 and 1.28 times the race's ten
@@ -2524,11 +2524,11 @@ were AliceBench's 12 chapters and the 26 talks, through the v2 model,
 one process a set, in 3 interleaved rounds with the order turned. The
 bench is best of five, twice each.
 
-| set | d2c70f0 | lanes | change | each round's |
-|---|---|---|---|---|
-| AliceBench | 89.17 s (120.3x) | 81.87 (131.1x) | 1.09x | 1.03, 1.06, 1.10 |
-| 26 talks | 42.96 (124.8x) | 41.20 (130.1x) | 1.04x | 1.05, 1.01, 1.04 |
-| test.wav, `bench` | 0.422 (142.3x) | 0.410 (146.4x) | 1.03x | |
+| set               | d2c70f0          | lanes          | change | each round's     |
+| ----------------- | ---------------- | -------------- | ------ | ---------------- |
+| AliceBench        | 89.17 s (120.3x) | 81.87 (131.1x) | 1.09x  | 1.03, 1.06, 1.10 |
+| 26 talks          | 42.96 (124.8x)   | 41.20 (130.1x) | 1.04x  | 1.05, 1.01, 1.04 |
+| test.wav, `bench` | 0.422 (142.3x)   | 0.410 (146.4x) | 1.03x  |                  |
 
 The lanes were faster in every round of both sets, but by less than on
 the other boards of many threads. The spread between rounds, the Mac
@@ -2539,17 +2539,18 @@ threads, so three lanes at most. The sets were the 9950X's 6 chapters and
 half of long40, in 3 interleaved rounds with the order turned. The bench
 is best of five, twice each.
 
-| set | d2c70f0 | lanes | change | each round's |
-|---|---|---|---|---|
-| 6 chapters | 62.03 s (70.2x) | 58.39 (74.6x) | 1.06x | 1.07, 1.04, 1.06 |
-| long40, half | 65.12 (70.1x) | 62.10 (73.5x) | 1.05x | 1.05, 1.03, 1.05 |
-| test.wav, `bench` | 0.780 (76.9x) | 0.725 (82.8x) | 1.08x | |
+| set               | d2c70f0         | lanes         | change | each round's     |
+| ----------------- | --------------- | ------------- | ------ | ---------------- |
+| 6 chapters        | 62.03 s (70.2x) | 58.39 (74.6x) | 1.06x  | 1.07, 1.04, 1.06 |
+| long40, half      | 65.12 (70.1x)   | 62.10 (73.5x) | 1.05x  | 1.05, 1.03, 1.05 |
+| test.wav, `bench` | 0.780 (76.9x)   | 0.725 (82.8x) | 1.08x  |                  |
 
 The lanes were faster in every round here too. The M4 Pro and the
 12900HK, whose cores are of two kinds and whose default already runs on
 all of them, gain least: 4 to 9%, against 16 to 23% on the 9950X.
 
 Memory:
+
 - M4 Pro, chapter 10, /usr/bin/time -l: peak footprint 140 MB a chunk
   at a time and 220 MB on three lanes; maximum resident 765 and 845 MB.
   That is 40 MB a lane.
@@ -2578,10 +2579,10 @@ Measured on the 12900HK with a scratch harness (vadsplit, not in the
 tree: core/vad.c's block() timed in its two halves, best of 5), over
 AliceBench's chapter 1 (640.5 s):
 
-| core | pk_vad_probs | front-end | recurrence |
-|---|---|---|---|
-| P-core (CPU 0) | 0.148 s (4,327x) | 0.1055 s | 0.0425 s (29%) |
-| E-core (CPU 16) | 0.325 s (1,974x) | 0.239 s | 0.085 s (26%) |
+| core            | pk_vad_probs     | front-end | recurrence     |
+| --------------- | ---------------- | --------- | -------------- |
+| P-core (CPU 0)  | 0.148 s (4,327x) | 0.1055 s  | 0.0425 s (29%) |
+| E-core (CPU 16) | 0.325 s (1,974x) | 0.239 s   | 0.085 s (26%)  |
 
 The front-end is the STFT, the four convolutions and the gates' input
 half; the recurrence is the hidden half, the cell and the head. The two
@@ -2604,6 +2605,7 @@ run's gates, two blocks a thread at 64 KB each. That is about 380 KB a
 thread, which the transcriber keeps with its VAD.
 
 Kept if:
+
 - The probabilities and the transcripts are the bytes they were: check-c's
   test.probs.txt, and the corpus's AliceBench, long40 and talks.
 - bench's VAD figure falls on the 9950X, a Pi 5 and an Apple board.
@@ -2612,6 +2614,7 @@ Kept if:
 ## 2026-11-02 - Silero's encoder over the transcriber's threads (result: kept)
 
 Built as the hypothesis has it, in core/vad.c:
+
 - pk_vad_probs_on runs block()'s encode half over the pool, PK_VAD_RUN
   blocks a thread a run, and step() over each run on the calling thread.
 - pk_asr_transcribe keeps its VAD in the transcriber, with a stream's
@@ -2619,6 +2622,7 @@ Built as the hypothesis has it, in core/vad.c:
 - bench's VAD figure comes from the same call.
 
 The bits:
+
 - transcheck's new case: the recording four times over and a call after
   it, every probability pk_vad_probs's. Two broken contexts fail it.
 - check-c: test.probs.txt and the transcripts.
@@ -2630,12 +2634,12 @@ The VAD alone, over AliceBench's chapter 1 (640.5 s), from a scratch
 harness (vadpool: pk_vad_probs against pk_vad_probs_on, interleaved,
 best of 5):
 
-| board | threads | one thread | over the pool | |
-|---|---|---|---|---|
-| M5 Ultra | 36 | 0.156 s | 0.053 s | 2.93x |
-| 12900HK | 14 | 0.148 | 0.066 | 2.24x |
-| 9950X | 16 | 0.088 | 0.047 | 1.87x |
-| Pi 5 | 4 | 0.610 | 0.317 | 1.93x |
+| board    | threads | one thread | over the pool |       |
+| -------- | ------- | ---------- | ------------- | ----- |
+| M5 Ultra | 36      | 0.156 s    | 0.053 s       | 2.93x |
+| 12900HK  | 14      | 0.148      | 0.066         | 2.24x |
+| 9950X    | 16      | 0.088      | 0.047         | 1.87x |
+| Pi 5     | 4       | 0.610      | 0.317         | 1.93x |
 
 This falls short of the hypothesis's 2.9 at 14 threads. The recurrence
 is 44% of the VAD on the 9950X (vadsplit there: 0.039 s of 0.090),
@@ -2643,6 +2647,7 @@ against the 12900HK's 29%. And each run ends with the pool parked while
 the calling thread runs the recurrence.
 
 The run length, in blocks a thread:
+
 - 12900HK: 2, 4 and 8 took 0.082, 0.075 and 0.066 s.
 - 9950X: 2 took 0.053 s and 8 took 0.047.
 - Pi 5: 0.314 s at 2 and 0.317 at 8, a run of 8 filling its L3.
@@ -2652,23 +2657,23 @@ So the runs are 8 blocks a thread.
 End to end, against lanes (d148a53), through the v2 model, -v's time,
 interleaved, the faster:
 
-| board | set | lanes | vad-pool | change | each round's |
-|---|---|---|---|---|---|
-| M5 Ultra, 36 | AliceBench | 26.32 s (407.7x) | 24.74 (433.8x) | 1.06x | 1.06, 1.06, 1.07 |
-| | 26 talks | 14.29 (375.2x) | 13.40 (400.1x) | 1.07x | 1.07, 1.07, 1.07 |
-| 9950X, 16, gcc 15.2 | 6 chapters | 14.04 (310.1x) | 13.77 (316.1x) | 1.02x | 1.02, 1.03, 1.02, 1.02, 1.02 |
-| | long40, half | 15.33 (297.7x) | 15.10 (302.2x) | 1.02x | 1.02, 1.02, 1.02, 1.01, 1.01 |
-| 12900HK, 14, runs of 2 | 6 chapters | 58.92 (73.9x) | 58.85 (74.0x) | 1.00x | 1.00, 1.01, 1.00 |
-| Pi 5, 4, runs of 2 | chapters 1 and 11 | 91.65 (13.7x) | 91.25 (13.8x) | 1.00x | 1.01, 1.01, 1.00 |
+| board                  | set               | lanes            | vad-pool       | change | each round's                 |
+| ---------------------- | ----------------- | ---------------- | -------------- | ------ | ---------------------------- |
+| M5 Ultra, 36           | AliceBench        | 26.32 s (407.7x) | 24.74 (433.8x) | 1.06x  | 1.06, 1.06, 1.07             |
+|                        | 26 talks          | 14.29 (375.2x)   | 13.40 (400.1x) | 1.07x  | 1.07, 1.07, 1.07             |
+| 9950X, 16, gcc 15.2    | 6 chapters        | 14.04 (310.1x)   | 13.77 (316.1x) | 1.02x  | 1.02, 1.03, 1.02, 1.02, 1.02 |
+|                        | long40, half      | 15.33 (297.7x)   | 15.10 (302.2x) | 1.02x  | 1.02, 1.02, 1.02, 1.01, 1.01 |
+| 12900HK, 14, runs of 2 | 6 chapters        | 58.92 (73.9x)    | 58.85 (74.0x)  | 1.00x  | 1.00, 1.01, 1.00             |
+| Pi 5, 4, runs of 2     | chapters 1 and 11 | 91.65 (13.7x)    | 91.25 (13.8x)  | 1.00x  | 1.01, 1.01, 1.00             |
 
 bench's VAD figure on test.wav:
 
-| board | lanes | vad-pool |
-|---|---|---|
-| Ultra | 0.015 to 0.016 s | 0.006 |
-| 9950X | 0.010 to 0.011 | 0.007 |
-| 12900HK | 0.016 to 0.019 | 0.010 to 0.011 |
-| Pi 5 | 0.059 | 0.031 |
+| board   | lanes            | vad-pool       |
+| ------- | ---------------- | -------------- |
+| Ultra   | 0.015 to 0.016 s | 0.006          |
+| 9950X   | 0.010 to 0.011   | 0.007          |
+| 12900HK | 0.016 to 0.019   | 0.010 to 0.011 |
+| Pi 5    | 0.059            | 0.031          |
 
 bench's best of 5, which times no VAD, was level on the 9950X, the
 12900HK and the Pi 5. On the Ultra, over 6 alternated pairs, it ran
@@ -2697,10 +2702,10 @@ AliceBench's chapter 1 alone (640.5 s), through the v2 model, against a
 chunk at a time (d2c70f0). There were 4 rounds, the order turned each
 round, with 180 s of rest before each run:
 
-| phone | a chunk at a time | lanes | change | each round's |
-|---|---|---|---|---|
-| S24 Ultra | 22.04 s (29.1x) | 20.65 (31.0x) | 1.07x | 1.11, 1.09, 1.06, 1.07 |
-| S25 Ultra | 17.52 (36.6x) | 15.78 (40.6x) | 1.11x | 1.12, 1.14, 1.13, 1.11 |
+| phone     | a chunk at a time | lanes         | change | each round's           |
+| --------- | ----------------- | ------------- | ------ | ---------------------- |
+| S24 Ultra | 22.04 s (29.1x)   | 20.65 (31.0x) | 1.07x  | 1.11, 1.09, 1.06, 1.07 |
+| S25 Ultra | 17.52 (36.6x)     | 15.78 (40.6x) | 1.11x  | 1.12, 1.14, 1.13, 1.11 |
 
 - The hottest CPU zone was at 38 to 47 C when each run started, except
   the S25's first, which started at 54 C. In its round 3 both runs started
@@ -2712,6 +2717,7 @@ round, with 180 s of rest before each run:
 - The 16 transcripts were the same bytes on both phones.
 
 Silero's pool on the same phones, against lanes (d148a53):
+
 - The VAD alone (the vadpool harness over chapter 1, best of 5
   interleaved), with the same bits on both: S24 0.224 -> 0.162 s (1.38x),
   S25 0.166 -> 0.097 s (1.71x).
@@ -2727,12 +2733,12 @@ its merge with this branch. These are wall times, the best of 3
 interleaved rounds, and every transcript was the same bytes in every
 round. The VAD had been 10 to 16% of a run on this path.
 
-| Mac | set | before | with the pool | change |
-|---|---|---|---|---|
-| M5 Ultra | AliceBench | 652.7x | 729.0x | 1.12x |
-| | 26 talks | 534.0x | 585.3x | 1.10x |
-| M4 Pro, in use (load 2 to 3) | AliceBench | 29.93 s (358.6x) | 28.29 (379.3x) | 1.06x |
-| | 26 talks | 17.08 (313.9x) | 16.25 (330.0x) | 1.05x |
+| Mac                          | set        | before           | with the pool  | change |
+| ---------------------------- | ---------- | ---------------- | -------------- | ------ |
+| M5 Ultra                     | AliceBench | 652.7x           | 729.0x         | 1.12x  |
+|                              | 26 talks   | 534.0x           | 585.3x         | 1.10x  |
+| M4 Pro, in use (load 2 to 3) | AliceBench | 29.93 s (358.6x) | 28.29 (379.3x) | 1.06x  |
+|                              | 26 talks   | 17.08 (313.9x)   | 16.25 (330.0x) | 1.05x  |
 
 By pktito-mac's estimate, the VAD that is left is 7 to 9% of a run on
 the Ultra and 5 to 7% on the M4 Pro. On the M4 Pro, the Neural Engine's
@@ -2754,6 +2760,7 @@ When it happens: at 1, 2, 4, 8 and 16 threads a lane the slices make whole
 rounds and c is 1. At 5, 6, 7, 9, 10, 12, 14 and 20 threads c is 3 to 7.
 With the lanes (2026-11-02: a lane for every 4 threads, nth / k threads
 each), runs take those counts on:
+
 - the GB10 (20 cores): two lanes of 10 for test.wav, 7, 7 and 6 in three,
   5 in four;
 - the 12900HK (14): 7 a lane in two, 5, 5 and 4 in three, 6 or 14 alone;
@@ -2789,6 +2796,7 @@ and on the 9950X `-t` 5 to 14 against test.wav's transcripts too, since
 its 16 threads take none of the new path.
 
 Predict, test.wav through v2, best of 5, interleaved against the parent:
+
 - the GB10 at its default (two lanes of ten): neon-sve 2 to 5% faster
   (three reads fewer at under 2% each, the first read, from memory,
   costing more than the rest), neon-dp 1 to 3%, under gcc and clang;
@@ -2815,22 +2823,22 @@ transcripts are ref's in both modes at `-t` 3, 5, 6, 7, 9 to 15, 20 and 24.
 parent (7b030af), the order reversed every other round; the change's
 median and range, and the rounds it was faster in:
 
-| board | lanes | run | change | faster in |
-|---|---|---|---|---|
-| GB10 (spark-a80d), its 20 cores | two of 10, test.wav | neon-sve, gcc 13.3 | +6.1% (+4.6 to +7.8) | 0 of 6 |
-| | | neon-sve, clang 18.1 | +7.3% (+5.6 to +9.3) | 0 of 6 |
-| | | neon-dp, gcc | +5.9% (+4.5 to +7.2) | 0 of 6 |
-| | | neon-dp, clang | +5.5% (+4.6 to +9.0) | 0 of 6 |
-| GB10, its ten X925s alone (taskset, `-t 10`) | two of 5, test.wav | neon-sve, gcc | -2.2% (-3.7 to +0.0) | 5 of 6 |
-| | | neon-dp, gcc | -2.4% (-3.1 to -1.7) | 6 of 6 |
-| 9950X, 16 threads | 6, 5 and 5, 88 s of chapter 1 | avx512-vnni, gcc 15.2 | -3.4% (-6.7 to -1.9) | 6 of 6 |
-| | | clang 21.1 | -4.6% (-6.5 to -2.0) | 6 of 6 |
-| | two of 8, test.wav (the same items) | gcc | -1.7% (-5.4 to +3.6) | 2 of 4 |
-| | | clang | +1.3% (-3.1 to +2.1) | 1 of 4 |
-| 12900HK, 14 threads | two of 7, test.wav | avx2-vnni, gcc 15.2 | -1.2% (-4.8 to -0.6) | 6 of 6 |
-| | | avx2 | +6.9% (-1.5 to +9.8) | 1 of 6 |
-| | 115 s of chapter 1 (4 chunks) | avx2-vnni | +0.4% (-3.0 to +7.0) | 2 of 4 |
-| | | avx2 | +7.7% (+5.8 to +9.8) | 0 of 4 |
+| board                                        | lanes                               | run                   | change               | faster in |
+| -------------------------------------------- | ----------------------------------- | --------------------- | -------------------- | --------- |
+| GB10 (spark-a80d), its 20 cores              | two of 10, test.wav                 | neon-sve, gcc 13.3    | +6.1% (+4.6 to +7.8) | 0 of 6    |
+|                                              |                                     | neon-sve, clang 18.1  | +7.3% (+5.6 to +9.3) | 0 of 6    |
+|                                              |                                     | neon-dp, gcc          | +5.9% (+4.5 to +7.2) | 0 of 6    |
+|                                              |                                     | neon-dp, clang        | +5.5% (+4.6 to +9.0) | 0 of 6    |
+| GB10, its ten X925s alone (taskset, `-t 10`) | two of 5, test.wav                  | neon-sve, gcc         | -2.2% (-3.7 to +0.0) | 5 of 6    |
+|                                              |                                     | neon-dp, gcc          | -2.4% (-3.1 to -1.7) | 6 of 6    |
+| 9950X, 16 threads                            | 6, 5 and 5, 88 s of chapter 1       | avx512-vnni, gcc 15.2 | -3.4% (-6.7 to -1.9) | 6 of 6    |
+|                                              |                                     | clang 21.1            | -4.6% (-6.5 to -2.0) | 6 of 6    |
+|                                              | two of 8, test.wav (the same items) | gcc                   | -1.7% (-5.4 to +3.6) | 2 of 4    |
+|                                              |                                     | clang                 | +1.3% (-3.1 to +2.1) | 1 of 4    |
+| 12900HK, 14 threads                          | two of 7, test.wav                  | avx2-vnni, gcc 15.2   | -1.2% (-4.8 to -0.6) | 6 of 6    |
+|                                              |                                     | avx2                  | +6.9% (-1.5 to +9.8) | 1 of 6    |
+|                                              | 115 s of chapter 1 (4 chunks)       | avx2-vnni             | +0.4% (-3.0 to +7.0) | 2 of 4    |
+|                                              |                                     | avx2                  | +7.7% (+5.8 to +9.8) | 0 of 4    |
 
 The GB10's rounds on the 115 s clip are left out: its vLLM worker served
 through them (1500 to 2000 of its CPU ticks a pair of runs, against 16 to
@@ -2871,13 +2879,13 @@ lanes that was never committed. AliceBench's chapter 1 alone (640.5 s),
 through the v2 model, in 4 rounds with the order turned and 60 s of rest
 before each run, 16:34 to 16:57:
 
-| round | one lane | lanes | change |
-|---|---|---|---|
-| 1, lanes first | 84.75 s | 80.94 | 1.05x |
-| 2 | 85.46 | 73.74 | 1.16x |
-| 3, lanes first | 67.25 | 83.75 | 0.80x |
-| 4 | 85.61 | 72.60 | 1.18x |
-| median | 85.1 (7.5x) | 77.3 (8.3x) | 1.10x |
+| round          | one lane    | lanes       | change |
+| -------------- | ----------- | ----------- | ------ |
+| 1, lanes first | 84.75 s     | 80.94       | 1.05x  |
+| 2              | 85.46       | 73.74       | 1.16x  |
+| 3, lanes first | 67.25       | 83.75       | 0.80x  |
+| 4              | 85.61       | 72.60       | 1.18x  |
+| median         | 85.1 (7.5x) | 77.3 (8.3x) | 1.10x  |
 
 - The lanes were faster in 3 of 4 rounds. One lane's 67.25 s is the
   outlier of the eight; armlet's AliceBench runs spread by 13% on

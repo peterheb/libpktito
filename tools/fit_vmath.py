@@ -21,6 +21,7 @@ arithmetic: tests/mathcheck measures what the float32 code actually does.
 
     python3 tools/fit_vmath.py
 """
+
 import numpy as np
 
 
@@ -29,7 +30,7 @@ def remez(f, basis, offset, lo, hi, iters=40):
     over [lo, hi], and that maximum."""
     n = len(basis)
     k = np.arange(n + 1)
-    x = (lo + hi) / 2 + (hi - lo) / 2 * np.cos(np.pi * (n - k) / n)   # Chebyshev extrema
+    x = (lo + hi) / 2 + (hi - lo) / 2 * np.cos(np.pi * (n - k) / n)  # Chebyshev extrema
     grid = np.linspace(lo, hi, 200001)
     for _ in range(iters):
         # sum a_j b_j(x_i) + (-1)^i E f(x_i) = f(x_i) - offset(x_i)
@@ -44,7 +45,7 @@ def remez(f, basis, offset, lo, hi, iters=40):
         ext = np.array([r[np.argmax(np.abs(err[r]))] for r in runs])
         if len(ext) < n + 1:
             break
-        if len(ext) > n + 1:                  # keep the n + 1 largest, alternating
+        if len(ext) > n + 1:  # keep the n + 1 largest, alternating
             while len(ext) > n + 1:
                 drop = 0 if abs(err[ext[0]]) < abs(err[ext[-1]]) else len(ext) - 1
                 ext = np.delete(ext, drop)
@@ -57,19 +58,35 @@ def main():
     # All seven free: pinning c0 = c1 = 1 makes every basis function vanish
     # at r = 0, which is not a Haar system and the exchange does not
     # converge. Free, they come out within 2^-25 of 1 and round to it.
-    a, e = remez(np.exp, [lambda r, j=j: r ** j for j in range(7)],
-                 lambda r: 0 * r, -ln2 / 2, ln2 / 2)
-    print('exp: c0 + c1 r + ... + c6 r^6, max rel err %.3g (%.3f ulp at 2^-24)' % (e, e / 2 ** -24))
+    a, e = remez(
+        np.exp,
+        [lambda r, j=j: r**j for j in range(7)],
+        lambda r: 0 * r,
+        -ln2 / 2,
+        ln2 / 2,
+    )
+    print(
+        "exp: c0 + c1 r + ... + c6 r^6, max rel err %.3g (%.3f ulp at 2^-24)"
+        % (e, e / 2**-24)
+    )
     for j, c in enumerate(a):
-        print('  c%d = %a  (%.9e)' % (j, float(np.float32(c)), np.float32(c)))
+        print("  c%d = %a  (%.9e)" % (j, float(np.float32(c)), np.float32(c)))
 
     for x0, deg in ((0.625, 5), (0.625, 6), (0.55, 5)):
-        t, e = remez(np.tanh, [lambda x, j=j: x ** (2 * j + 3) for j in range(deg)],
-                     lambda x: x, 1e-4, x0)
-        print('tanh on [0, %g], %d terms: max rel err %.3g (%.3f ulp)' % (x0, deg, e, e / 2 ** -24))
+        t, e = remez(
+            np.tanh,
+            [lambda x, j=j: x ** (2 * j + 3) for j in range(deg)],
+            lambda x: x,
+            1e-4,
+            x0,
+        )
+        print(
+            "tanh on [0, %g], %d terms: max rel err %.3g (%.3f ulp)"
+            % (x0, deg, e, e / 2**-24)
+        )
         for j, c in enumerate(t):
-            print('  t%d = %a  (%.9e)' % (j, float(np.float32(c)), np.float32(c)))
+            print("  t%d = %a  (%.9e)" % (j, float(np.float32(c)), np.float32(c)))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -12,13 +12,16 @@ pktito-c runs it by default instead. --against takes quantcheck's JSON (its "f32
 run) or a --save of this script, and reports the recordings whose
 transcript differs and the WER between the two runs.
 """
+
 import argparse
 import json
 import os
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools")
+)
 from pktito_tools import wer  # noqa: E402
 
 
@@ -30,8 +33,16 @@ def main():
     ap.add_argument("--against")
     ap.add_argument("--save")
     ap.add_argument("--threads", type=int, default=0)
-    ap.add_argument("--max-chunk", default="3600", help="pktito's --max-chunk (default: whole recordings)")
-    ap.add_argument("--retry", action="store_true", help="hear dropped speech again, as pktito-c does by default")
+    ap.add_argument(
+        "--max-chunk",
+        default="3600",
+        help="pktito's --max-chunk (default: whole recordings)",
+    )
+    ap.add_argument(
+        "--retry",
+        action="store_true",
+        help="hear dropped speech again, as pktito-c does by default",
+    )
     a = ap.parse_args()
 
     files, refs = [], {}
@@ -43,12 +54,14 @@ def main():
                     path = os.path.join(d, name)
                     files.append(path)
                     refs[path] = text
-    cmd = [a.pktito, "-m", a.model, "--max-chunk", a.max_chunk] + ([] if a.retry else ["--no-retry"])
+    cmd = [a.pktito, "-m", a.model, "--max-chunk", a.max_chunk] + (
+        [] if a.retry else ["--no-retry"]
+    )
     if a.threads:
         cmd += ["-t", str(a.threads)]
     out = {}
     for i in range(0, len(files), 200):
-        r = subprocess.run(cmd + files[i:i + 200], stdout=subprocess.PIPE, check=True)
+        r = subprocess.run(cmd + files[i : i + 200], stdout=subprocess.PIPE, check=True)
         for line in r.stdout.decode("utf-8").splitlines():
             path, _, text = line.partition("\t")
             out[path] = text
@@ -56,8 +69,18 @@ def main():
     if missing:
         sys.exit("no transcript for %s" % missing[:3])
     e, n = wer.wer([(refs[p], out[p]) for p in files])
-    print("%s, --max-chunk %s%s: %d recordings, WER %.2f%% (%d/%d)" % (
-        os.path.basename(a.model), a.max_chunk, ", retry" if a.retry else "", len(files), 100 * e / n, e, n))
+    print(
+        "%s, --max-chunk %s%s: %d recordings, WER %.2f%% (%d/%d)"
+        % (
+            os.path.basename(a.model),
+            a.max_chunk,
+            ", retry" if a.retry else "",
+            len(files),
+            100 * e / n,
+            e,
+            n,
+        )
+    )
     if a.against:
         with open(a.against, encoding="utf-8") as f:
             other = json.load(f)
@@ -68,12 +91,25 @@ def main():
         diff = [p for p in common if out[p] != get(p)]
         e2, n2 = wer.wer([(get(p), out[p]) for p in common])
         e3, n3 = wer.wer([(refs[p], get(p)) for p in common])
-        print("  against %s: %d of %d recordings differ, WER between the two %.2f%%; "
-              "theirs against the references %.2f%%" % (os.path.basename(a.against), len(diff),
-                                                         len(common), 100 * e2 / n2, 100 * e3 / n3))
+        print(
+            "  against %s: %d of %d recordings differ, WER between the two %.2f%%; "
+            "theirs against the references %.2f%%"
+            % (
+                os.path.basename(a.against),
+                len(diff),
+                len(common),
+                100 * e2 / n2,
+                100 * e3 / n3,
+            )
+        )
     if a.save:
         with open(a.save, "w", encoding="utf-8") as f:
-            json.dump({"run": [{"file": p, "text": out[p]} for p in files]}, f, ensure_ascii=False, indent=0)
+            json.dump(
+                {"run": [{"file": p, "text": out[p]} for p in files]},
+                f,
+                ensure_ascii=False,
+                indent=0,
+            )
 
 
 if __name__ == "__main__":

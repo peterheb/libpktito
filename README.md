@@ -20,15 +20,15 @@ same bits on every machine.
 
 ## What this is
 
-| | |
-|---|---|
-| models | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints |
-| backends | `neon-sve` (SVE and I8MM's SMMLA: the GB10's X925 and A725), `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `amx-int8` (AMX's tiles: Sapphire and Granite Rapids), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
-| numerics | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8") |
-| what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles |
-| audio | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; AIFF and AIFF-C: PCM 8 to 32 bits either byte order, float 32/64, A-law, mu-law; any channel count; any rate, brought to 16 kHz |
-| dependencies | the C library, libm and pthreads |
-| systems | Linux, macOS, and Windows 10 and later (built with MSYS2's MinGW-w64 gcc) |
+|              |                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| models       | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints                                                                                                                                                                                                                                                                                                                |
+| backends     | `neon-sve` (SVE and I8MM's SMMLA: the GB10's X925 and A725), `neon-dp` (ARMv8.2 + SDOT: Pi 5's A76, Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `amx-int8` (AMX's tiles: Sapphire and Granite Rapids), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
+| numerics     | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8")                                                                                                                                                                                                                                                                                                     |
+| what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles                                                                                                                                                                                                                                                                  |
+| audio        | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; AIFF and AIFF-C: PCM 8 to 32 bits either byte order, float 32/64, A-law, mu-law; any channel count; any rate, brought to 16 kHz                                                                                                                                                                                                  |
+| dependencies | the C library, libm and pthreads                                                                                                                                                                                                                                                                                                                                                                                          |
+| systems      | Linux, macOS, and Windows 10 and later (built with MSYS2's MinGW-w64 gcc)                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Try it
 
@@ -123,10 +123,10 @@ computes - over real speech (`tools/corpus.py`: 200 LibriSpeech test-clean
 recordings, every speaker; 360 FLEURS recordings in German, French, Spanish,
 Italian, Polish and Russian), whole recordings, `tests/wercheck.py`:
 
-| | recordings | WER, float32 | WER, pktito | transcripts not float32's | WER between them |
-|---|---|---|---|---|---|
-| v2, LibriSpeech | 200 (26.5 min) | 1.51% | 1.51% | 4 | 0.07% |
-| v3, FLEURS | 360 (70.2 min) | 4.41% | 4.42% | 45 | 0.35% |
+|                 | recordings     | WER, float32 | WER, pktito | transcripts not float32's | WER between them |
+| --------------- | -------------- | ------------ | ----------- | ------------------------- | ---------------- |
+| v2, LibriSpeech | 200 (26.5 min) | 1.51%        | 1.51%       | 4                         | 0.07%            |
+| v3, FLEURS      | 360 (70.2 min) | 4.41%        | 4.42%       | 45                        | 0.35%            |
 
 **The text.** `tests/tokcheck.py` holds the C detokenizer to sentencepiece's
 own decoding and NeMo's one change after it (the space before punctuation
@@ -157,22 +157,22 @@ force another backend (`PKTITO_KERNELS`) or one thread. Seconds, and how
 many times real time, for the minute whole (`--max-chunk 60`, 750 encoder
 frames) and in 30 s chunks, the default then:
 
-| | compiler | backend | threads | whole | in 30 s chunks |
-|---|---|---|---|---|---|
-| Apple M4 Pro | Apple clang 21.0 | `neon-dp` | 12 | 0.487 (123x) | 0.490 (122x) |
-| | | `neon` | 12 | 1.047 (57x) | 1.040 (58x) |
-| | | `ref` | 12 | 20.6 (2.9x) | 21.6 (2.8x) |
-| Intel Core i9-12900HK | gcc 15.2 | `avx2-vnni` | 14 | 0.909 (66x) | 0.828 (72x) |
-| | | `avx2-vnni` | 1 | 3.28 (18.3x) | 2.84 (21x) |
-| | | `avx2` | 14 | 1.682 (36x) | 1.597 (38x) |
-| | | `avx2` | 1 | 6.80 (8.8x) | 6.12 (9.8x) |
-| Intel Core 3 304, Windows 11 | MSYS2 gcc 16.2 | `avx2-vnni` | 5 | 1.392 (43x) | 1.290 (47x) |
-| AMD Ryzen 9 9950X, Windows 11 | MSYS2 gcc 16.2 | `avx512-vnni` | 16 | 0.228 (263x) | 0.217 (277x) |
-| | | `avx2-vnni` | 16 | 0.292 (205x) | 0.274 (219x) |
-| | | `avx2` | 16 | 0.534 (112x) | 0.529 (113x) |
-| AMD Ryzen 7 PRO 8840HS, Windows 11 | the 304's build | `avx512-vnni` | 8 | 0.607 (99x) | 0.537 (112x) |
-| Raspberry Pi 5, Cortex-A76 2.4 GHz | gcc 14.2 | `neon-dp` | 4 | 4.150 (14.5x) | 3.710 (16.2x) |
-| Raspberry Pi 3B+, Cortex-A53 1.4 GHz | gcc 14.2 | `neon` | 4 | 48.1 (1.2x) | 44.6 (1.3x) |
+|                                      | compiler         | backend       | threads | whole         | in 30 s chunks |
+| ------------------------------------ | ---------------- | ------------- | ------- | ------------- | -------------- |
+| Apple M4 Pro                         | Apple clang 21.0 | `neon-dp`     | 12      | 0.487 (123x)  | 0.490 (122x)   |
+|                                      |                  | `neon`        | 12      | 1.047 (57x)   | 1.040 (58x)    |
+|                                      |                  | `ref`         | 12      | 20.6 (2.9x)   | 21.6 (2.8x)    |
+| Intel Core i9-12900HK                | gcc 15.2         | `avx2-vnni`   | 14      | 0.909 (66x)   | 0.828 (72x)    |
+|                                      |                  | `avx2-vnni`   | 1       | 3.28 (18.3x)  | 2.84 (21x)     |
+|                                      |                  | `avx2`        | 14      | 1.682 (36x)   | 1.597 (38x)    |
+|                                      |                  | `avx2`        | 1       | 6.80 (8.8x)   | 6.12 (9.8x)    |
+| Intel Core 3 304, Windows 11         | MSYS2 gcc 16.2   | `avx2-vnni`   | 5       | 1.392 (43x)   | 1.290 (47x)    |
+| AMD Ryzen 9 9950X, Windows 11        | MSYS2 gcc 16.2   | `avx512-vnni` | 16      | 0.228 (263x)  | 0.217 (277x)   |
+|                                      |                  | `avx2-vnni`   | 16      | 0.292 (205x)  | 0.274 (219x)   |
+|                                      |                  | `avx2`        | 16      | 0.534 (112x)  | 0.529 (113x)   |
+| AMD Ryzen 7 PRO 8840HS, Windows 11   | the 304's build  | `avx512-vnni` | 8       | 0.607 (99x)   | 0.537 (112x)   |
+| Raspberry Pi 5, Cortex-A76 2.4 GHz   | gcc 14.2         | `neon-dp`     | 4       | 4.150 (14.5x) | 3.710 (16.2x)  |
+| Raspberry Pi 3B+, Cortex-A53 1.4 GHz | gcc 14.2         | `neon`        | 4       | 48.1 (1.2x)   | 44.6 (1.3x)    |
 
 The compiler moves the speed and never the transcript: every backend
 computes `ref`'s bits whatever builds it. It can be a tenth: on a
@@ -188,11 +188,11 @@ Against [parakeet.cpp](https://github.com/mudler/parakeet.cpp) (ggml, its
 q8_0 files) on the same 100 LibriSpeech test-clean recordings, the M4 Pro's
 CPU at eight threads, both transcripts through one normalizer:
 
-| | WER | real time |
-|---|---|---|
-| pktito, v2 | 1.71% | 119x |
-| parakeet.cpp, v2 q8_0 | 1.75% | 30x |
-| pktito, v3 | 1.88% | 119x |
+|                       | WER   | real time                     |
+| --------------------- | ----- | ----------------------------- |
+| pktito, v2            | 1.71% | 119x                          |
+| parakeet.cpp, v2 q8_0 | 1.75% | 30x                           |
+| pktito, v3            | 1.88% | 119x                          |
 | parakeet.cpp, v3 q8_0 | 1.96% | 30x (its Metal GPU path: 90x) |
 
 Where the time goes (`make PROFILE=1`, the minute whole). On the M4 Pro
@@ -215,7 +215,7 @@ four E-cores, runs the minute whole in 5.02 s on its P-core and 1.39 s on
 all five; a 12900HK in 0.96 s on its six P-cores and 0.91 s on all 14
 (though 8, 16 and 18 threads take 1.10 to 1.15 s there, the same in every
 pass); an M4 Pro in 0.50 s on its eight performance cores and 0.49 s on
-all 12. backend/*/CLIMB.md has every measurement the kernels and the
+all 12. backend/\*/CLIMB.md has every measurement the kernels and the
 defaults rest on.
 
 A recording of several chunks keeps more of many threads busy taken
@@ -230,16 +230,16 @@ Pro's and the 12900HK's three; the bench's best of five, in two to
 four), 2026-11-02
 (backend/avx2/CLIMB.md):
 
-| | AliceBench | 26 talks | long40 | test.wav, `bench` in chunks |
-|---|---|---|---|---|
-| M5 Ultra, 36 threads, Apple clang 21 | 201x -> 407x | 189x -> 376x | 195x -> 386x | 188x -> 334x |
-| M4 Pro, 12 (8 P + 4 E), Apple clang 21 | 120x -> 131x | 125x -> 130x | | 142x -> 146x |
-| i9-12900HK, 14 (6 P + 8 E), gcc 15.2 | 70x -> 75x | | 70x -> 74x | 77x -> 83x |
-| Ryzen 9 9950X, 16, gcc 15.2 | 259x -> 316x | 254x -> 304x | 256x -> 298x | 289x -> 308x |
-| Ryzen 9 9950X, 16, clang 21.1 | 266x -> 328x | 260x -> 317x | 263x -> 312x | 296x -> 320x |
-| GB10, 20 (10 X925 + 10 A725), gcc 13.3 | 141x -> 182x | 136x -> 175x | | |
-| Galaxy S24 Ultra, 8 (Snapdragon 8 Gen 3), NDK clang 21 | 29x -> 31x | | | 37x -> 42x |
-| Galaxy S25 Ultra, 8 (Snapdragon 8 Elite), NDK clang 21 | 37x -> 41x | | | 49x -> 54x |
+|                                                        | AliceBench   | 26 talks     | long40       | test.wav, `bench` in chunks |
+| ------------------------------------------------------ | ------------ | ------------ | ------------ | --------------------------- |
+| M5 Ultra, 36 threads, Apple clang 21                   | 201x -> 407x | 189x -> 376x | 195x -> 386x | 188x -> 334x                |
+| M4 Pro, 12 (8 P + 4 E), Apple clang 21                 | 120x -> 131x | 125x -> 130x |              | 142x -> 146x                |
+| i9-12900HK, 14 (6 P + 8 E), gcc 15.2                   | 70x -> 75x   |              | 70x -> 74x   | 77x -> 83x                  |
+| Ryzen 9 9950X, 16, gcc 15.2                            | 259x -> 316x | 254x -> 304x | 256x -> 298x | 289x -> 308x                |
+| Ryzen 9 9950X, 16, clang 21.1                          | 266x -> 328x | 260x -> 317x | 263x -> 312x | 296x -> 320x                |
+| GB10, 20 (10 X925 + 10 A725), gcc 13.3                 | 141x -> 182x | 136x -> 175x |              |                             |
+| Galaxy S24 Ultra, 8 (Snapdragon 8 Gen 3), NDK clang 21 | 29x -> 31x   |              |              | 37x -> 42x                  |
+| Galaxy S25 Ultra, 8 (Snapdragon 8 Elite), NDK clang 21 | 37x -> 41x   |              |              | 49x -> 54x                  |
 
 The 9950X's, the 12900HK's and the GB10's AliceBench is six of the
 twelve chapters, the 9950X's and the 12900HK's long40 half of the 40, the
@@ -261,16 +261,16 @@ them, rounded each way, over the 200 LibriSpeech recordings, and reports
 `dlogp`: how much less likely the rounded model finds float32's own token and
 duration decisions, per decision, a paired measure much finer than WER.
 
-| rounded (v2) | WER | transcripts changed | dlogp | encoder error |
-|---|---|---|---|---|
-| float32 | 1.51% | | | |
-| fp16 weights | 1.51% | 0 | -0.00001 | 0.05% |
-| int8 weights, a scale a row | 1.49% | 6 | -0.012 | 2.8% |
-| ... and int8 activations, a scale a row | 1.49% | 20 | -0.080 | 10.4% |
-| ... and int8 activations, a scale a block of 32 | 1.47% | 7 | -0.012 | 3.4% |
-| ... blocks of 64 / 128 | 1.49% / 1.42% | 5 / 6 | -0.016 / -0.028 | 4.0% / 4.7% |
-| int8 weights and activations, blocks of 32 both (ggml's q8_0) | 1.49% | 1 | -0.017 | 2.9% |
-| 4-bit weights (ggml's q4_0, q4_K) | 1.51% | 36 / 31 | -0.25 / -0.20 | 20% / 18% |
+| rounded (v2)                                                  | WER           | transcripts changed | dlogp           | encoder error |
+| ------------------------------------------------------------- | ------------- | ------------------- | --------------- | ------------- |
+| float32                                                       | 1.51%         |                     |                 |               |
+| fp16 weights                                                  | 1.51%         | 0                   | -0.00001        | 0.05%         |
+| int8 weights, a scale a row                                   | 1.49%         | 6                   | -0.012          | 2.8%          |
+| ... and int8 activations, a scale a row                       | 1.49%         | 20                  | -0.080          | 10.4%         |
+| ... and int8 activations, a scale a block of 32               | 1.47%         | 7                   | -0.012          | 3.4%          |
+| ... blocks of 64 / 128                                        | 1.49% / 1.42% | 5 / 6               | -0.016 / -0.028 | 4.0% / 4.7%   |
+| int8 weights and activations, blocks of 32 both (ggml's q8_0) | 1.49%         | 1                   | -0.017          | 2.9%          |
+| 4-bit weights (ggml's q4_0, q4_K)                             | 1.51%         | 36 / 31             | -0.25 / -0.20   | 20% / 18%     |
 
 Activations with a scale a row lose what blocks of 32 keep, and the loss is
 the feed-forward modules': rounding only their inputs a row at a time costs
@@ -403,13 +403,13 @@ where the two differ in case alone. That takes out the capital, and a word
 the cut fell beside that the next chunk wrote again ("again, there | There
 was no") or in part ("reve" for "grieve").
 
-| | long40, v3 | long40, v2 | 26 talks, v3 | 26 talks, v2 |
-|---|---|---|---|---|
-| false sentence ends at a cut | 22 → 10 (3%) | 30 → 11 (3%) | 36 → 7 (4%) | 70 → 2 (1%) |
-| false capitals after one | 22 → 4 | 23 → 10 | 37 → 5 | 80 → 2 |
-| sentence ends lost at one | 5 → 2 | 7 → 8 | 5 → 4 | 1 → 5 |
-| WER | 2.27% → 2.19% | 1.89% → 1.95% | | |
-| chunks | 350 → 368 | 350 → 368 | 226 → 239 | 226 → 239 |
+|                              | long40, v3    | long40, v2    | 26 talks, v3 | 26 talks, v2 |
+| ---------------------------- | ------------- | ------------- | ------------ | ------------ |
+| false sentence ends at a cut | 22 → 10 (3%)  | 30 → 11 (3%)  | 36 → 7 (4%)  | 70 → 2 (1%)  |
+| false capitals after one     | 22 → 4        | 23 → 10       | 37 → 5       | 80 → 2       |
+| sentence ends lost at one    | 5 → 2         | 7 → 8         | 5 → 4        | 1 → 5        |
+| WER                          | 2.27% → 2.19% | 1.89% → 1.95% |              |              |
+| chunks                       | 350 → 368     | 350 → 368     | 226 → 239    | 226 → 239    |
 
 The cost is the audio heard twice, 5.1% more on long40 and 7.3% on the
 talks, and the chunks, which leave room for it. The false ends left are at
@@ -448,16 +448,15 @@ length, which pads a shorter chunk to it: at 30 s every window was at least
 chunks are most of its time. A CPU's work is the audio heard, and that is
 about the same: on long40 4.9% of it heard twice, where it was 5.1%.
 
-| from 160 ms and 30 s | long40, v3 | long40, v2 | 26 talks, v3 | 26 talks, v2 |
-|---|---|---|---|---|
-| chunks | 368 → 354 | 368 → 354 | 239 → 217 | 239 → 217 |
-| false sentence ends at a cut | 10 → 11 | 11 → 14 | 7 → 5 | 2 → 2 |
-| false capitals after one | 4 → 6 | 10 → 13 | 5 → 3 | 2 → 1 |
-| WER | 2.19% → 2.12% | 1.95% → 1.99% | | |
+| from 160 ms and 30 s         | long40, v3    | long40, v2    | 26 talks, v3 | 26 talks, v2 |
+| ---------------------------- | ------------- | ------------- | ------------ | ------------ |
+| chunks                       | 368 → 354     | 368 → 354     | 239 → 217    | 239 → 217    |
+| false sentence ends at a cut | 10 → 11       | 11 → 14       | 7 → 5        | 2 → 2        |
+| false capitals after one     | 4 → 6         | 10 → 13       | 5 → 3        | 2 → 1        |
+| WER                          | 2.19% → 2.12% | 1.95% → 1.99% |              |              |
 
 Each part on its own, long40's chunks and the talks': 64 ms 364 and 223,
-96 ms 366 and 231, 192 ms 371 and 243, 288 ms 373 and 250; 30.72 s 359 and
-235. The fewest that could hold the words, cut anywhere between two and
+96 ms 366 and 231, 192 ms 371 and 243, 288 ms 373 and 250; 30.72 s 359 and 235. The fewest that could hold the words, cut anywhere between two and
 with no silence or context in a chunk, are 333 and 193.
 
 What did not work, on the same recordings (v3 unless named, no retry):
@@ -491,7 +490,7 @@ What did not work, on the same recordings (v3 unless named, no retry):
 ### When the model drops speech
 
 Parakeet now and then writes nothing for speech it plainly hears. Over the
-12 chapters of LibriVox's *Alice's Adventures in Wonderland* (AliceBench,
+12 chapters of LibriVox's _Alice's Adventures in Wonderland_ (AliceBench,
 3 hours, at b937d71), v2 gives nothing for the first 28 s of chapter 8, of
 the first chunk of chapters 7, 9 and 12 keeps only LibriVox's announcement
 and drops what follows it, the chapter's title among it, and drops words
@@ -545,13 +544,13 @@ and to 6.02% at 4 dB; at 5 dB SNR, 19.88%, 21.91% and 19.79%. Mixed again
 from long40, each of its first 24 recordings with the next three
 speakers looped to its length, WER is:
 
-| | v2, 10 dB | v2, 5 dB | v3, 10 dB | v3, 5 dB |
-|---|---|---|---|---|
-| no retry | 3.82% | 12.05% | 14.35% | 31.48% |
-| every stretch heard again | 5.48% | 15.60% | 10.57% | 24.29% |
-| 4 dB under the recording's | 3.86% | 13.60% | 8.11% | 22.62% |
-| or 4 dB under its chunk's | 3.91% | 13.91% | 8.04% | 22.75% |
-| or 3 dB under its chunk's | 3.86% | 13.62% | 7.99% | 22.62% |
+|                            | v2, 10 dB | v2, 5 dB | v3, 10 dB | v3, 5 dB |
+| -------------------------- | --------- | -------- | --------- | -------- |
+| no retry                   | 3.82%     | 12.05%   | 14.35%    | 31.48%   |
+| every stretch heard again  | 5.48%     | 15.60%   | 10.57%    | 24.29%   |
+| 4 dB under the recording's | 3.86%     | 13.60%   | 8.11%     | 22.62%   |
+| or 4 dB under its chunk's  | 3.91%     | 13.91%   | 8.04%     | 22.75%   |
+| or 3 dB under its chunk's  | 3.86%     | 13.62%   | 7.99%     | 22.62%   |
 
 Under the babble, v3 drops much of the reader's speech, and the retry
 hears it again. v2 drops less, and at 5 dB the retry costs it 1.55 points
@@ -608,7 +607,7 @@ measurements in its comments.
   - the retry no longer hears again what the last chunk's words cover;
   - a stretch in a passage read softly is heard again, against its chunk's
     speech.
-  The retry's budget is now charged only for stretches that give nothing.
+    The retry's budget is now charged only for stretches that give nothing.
 - **2026-11-02**: a recording's chunks several at once on 8 threads or more
   (`pk_asr_run_chunks`), after pktito-mac's profile had an M5 Ultra's CPU
   path keeping 21 of its 36 cores busy: twice as fast there, a fifth on a
@@ -629,10 +628,10 @@ fits, at most a second into it. Over 12 LibriSpeech chapters stitched
 into recordings of 1.5 to 5 minutes (`tools/corpus.py longform`, 45 minutes,
 7,098 words):
 
-| `--max-chunk` | 10 s | 20 s | 30 s | 60 s | 120 s | whole |
-|---|---|---|---|---|---|---|
-| v2 | 1.80% | 1.70% | **1.58%** | 4.27% | 1.68% | 1.58% |
-| v3 | 2.27% | 2.16% | **2.06%** | 2.45% | 2.10% | 2.24% |
+| `--max-chunk` | 10 s  | 20 s  | 30 s      | 60 s  | 120 s | whole |
+| ------------- | ----- | ----- | --------- | ----- | ----- | ----- |
+| v2            | 1.80% | 1.70% | **1.58%** | 4.27% | 1.68% | 1.58% |
+| v3            | 2.27% | 2.16% | **2.06%** | 2.45% | 2.10% | 2.24% |
 
 30 s is as good as the whole recording for v2 and better for v3, at a
 fraction of the attention's cost. The 60 s outlier is one 58 s chunk that
@@ -664,10 +663,10 @@ Wallpaper; 18.9 minutes), 28 of each length, each transcribed whole by
 8c735c1, which heard any recording that fit in a chunk whole; how many came
 out with words:
 
-| piece | 1 s | 1.5 s | 2 s | 3 s | 4 s | 6 s | 9 s | 14 s | 20 s | 30 s |
-|---|---|---|---|---|---|---|---|---|---|---|
-| v2 | 27 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 of 42 |
-| v3 | 12 | 5 | 3 | 1 | 1 | 2 | 0 | 0 | 2 | 0 of 42 |
+| piece | 1 s | 1.5 s | 2 s | 3 s | 4 s | 6 s | 9 s | 14 s | 20 s | 30 s    |
+| ----- | --- | ----- | --- | --- | --- | --- | --- | ---- | ---- | ------- |
+| v2    | 27  | 2     | 1   | 0   | 0   | 0   | 0   | 0    | 0    | 0 of 42 |
+| v3    | 12  | 5     | 3   | 1   | 1   | 2   | 0   | 0    | 2    | 0 of 42 |
 
 The 1 s pieces said "Yeah.", "Mm." or "Uh". Of 12 kinds of synthetic noise
 and hum, v2 heard words in 10 one-second pieces and in none from 1.5 s up;
@@ -694,10 +693,10 @@ state machine). Only what Silero calls speech: a live input's singing is not
 transcribed. The pause is a trade between how soon a line appears and how
 much the model hears at once. On the same long-form set:
 
-| `--pause` | 100 | 300 | 500 | 700 | 1000 | 1500 | 2000 ms |
-|---|---|---|---|---|---|---|---|
-| v2 | 3.10% | 2.21% | 2.04% | 1.86% | **1.66%** | 1.66% | 1.68% |
-| v3 | 4.02% | 3.01% | 2.72% | 2.21% | **1.89%** | 1.78% | 1.73% |
+| `--pause` | 100   | 300   | 500   | 700   | 1000      | 1500  | 2000 ms |
+| --------- | ----- | ----- | ----- | ----- | --------- | ----- | ------- |
+| v2        | 3.10% | 2.21% | 2.04% | 1.86% | **1.66%** | 1.66% | 1.68%   |
+| v3        | 4.02% | 3.01% | 2.72% | 2.21% | **1.89%** | 1.78% | 1.73%   |
 
 ## Captions
 
@@ -787,17 +786,17 @@ Against a sentence at every . ? ! and ellipsis, broken at 30 s the same
 way - pktito-app's lines until now - the ends `pk_sentences` takes out are
 (`tests/sentcheck --eval`):
 
-| | sentences | ? ! before a small letter | . before one | an abbreviation's shape |
-|---|---|---|---|---|
-| AliceBench, v2 | 1703 → 1624 | 74 | 5 | 1 |
-| AliceBench, v3 | 1893 → 1822 | 65 | 5 | 1 |
-| long40, v2 | 1310 → 1288 | 12 | 5 | 5 |
-| long40, v3 | 1332 → 1316 | 9 | 0 | 7 |
-| FLEURS's six sets, v3 | 420 → 415 | 0 | 1 | 4 |
-| LibriVox in seven languages, v3 | 4848 → 4720 | 61 | 14 | 55 |
+|                                 | sentences   | ? ! before a small letter | . before one | an abbreviation's shape |
+| ------------------------------- | ----------- | ------------------------- | ------------ | ----------------------- |
+| AliceBench, v2                  | 1703 → 1624 | 74                        | 5            | 1                       |
+| AliceBench, v3                  | 1893 → 1822 | 65                        | 5            | 1                       |
+| long40, v2                      | 1310 → 1288 | 12                        | 5            | 5                       |
+| long40, v3                      | 1332 → 1316 | 9                         | 0            | 7                       |
+| FLEURS's six sets, v3           | 420 → 415   | 0                         | 1            | 4                       |
+| LibriVox in seven languages, v3 | 4848 → 4720 | 61                        | 14           | 55                      |
 
 The LibriVox set is the first four recordings of eight books, 10.8 hours:
-Carroll's *Alice* and Hoffmann's *Klein Zaches* in German, Verne in French,
+Carroll's _Alice_ and Hoffmann's _Klein Zaches_ in German, Verne in French,
 Collodi in Italian, Dickens in Dutch, Reymont in Polish, Castelo Branco in
 Portuguese and Cervantes in Spanish. Read against the texts, 5 of the 324
 ends taken out were sentences' ends: four periods before a sentence the
@@ -824,14 +823,14 @@ words heard so far.
 
 Parakeet TDT is, for a recording of n samples at 16 kHz:
 
-| stage | | shape |
-|---|---|---|
-| features | preemphasis; 512-point STFT, 400-sample Hann window, hop 160; power through 128 mel bands; log; each band normalized over the recording | n/160 x 128 |
-| subsampling | 3x3 stride-2 convolutions over time and frequency: one to 256 channels, then twice depthwise and pointwise, ReLUs; flattened and projected | n/1280 x 1024 |
-| 24 conformer layers | half a feed-forward (1024 -> 4096 -> 1024, SiLU); Transformer-XL attention, 8 heads, relative positions; a convolution module (GLU, depthwise 9, BatchNorm, SiLU); half a feed-forward; LayerNorm | n/1280 x 1024 |
-| prediction network | the last token's embedding through two 640-unit LSTMs | 640 |
-| joint | relu(encoder half + prediction half) through one matrix | 1024 + 1 + 5 logits |
-| TDT search | the best token and the best of five durations (0-4 frames); emit the token unless it is blank, move on by the duration | tokens |
+| stage               |                                                                                                                                                                                                   | shape               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| features            | preemphasis; 512-point STFT, 400-sample Hann window, hop 160; power through 128 mel bands; log; each band normalized over the recording                                                           | n/160 x 128         |
+| subsampling         | 3x3 stride-2 convolutions over time and frequency: one to 256 channels, then twice depthwise and pointwise, ReLUs; flattened and projected                                                        | n/1280 x 1024       |
+| 24 conformer layers | half a feed-forward (1024 -> 4096 -> 1024, SiLU); Transformer-XL attention, 8 heads, relative positions; a convolution module (GLU, depthwise 9, BatchNorm, SiLU); half a feed-forward; LayerNorm | n/1280 x 1024       |
+| prediction network  | the last token's embedding through two 640-unit LSTMs                                                                                                                                             | 640                 |
+| joint               | relu(encoder half + prediction half) through one matrix                                                                                                                                           | 1024 + 1 + 5 logits |
+| TDT search          | the best token and the best of five durations (0-4 frames); emit the token unless it is blank, move on by the duration                                                                            | tokens              |
 
 Four things here are not what NeMo computes, and none moves a transcript
 off NeMo's by more than the numerics above: the matrices are int8
@@ -937,6 +936,7 @@ make check-tsan              # the pool under ThreadSanitizer
 make check-math              # every float through exp, sigmoid, tanh and log
 make check-ffi               # the examples in other languages, where they are installed
 make remote HOST=user@board  # rsync, build, check-c and bench there
+scripts/fmt.sh --check       # every language but C in its formatter's form, before each commit
 ```
 
 `check-c` is the math library's bounds, every kernel of every backend the

@@ -9,6 +9,7 @@ stays, so "don't" is one word), whitespace collapsed. Numbers are left as
 written, so "21st" against "twenty first" counts as errors; that is the same
 for every build of a model and a paired comparison does not see it.
 """
+
 import unicodedata
 
 
@@ -17,7 +18,12 @@ def normalize(text):
     out = []
     for i, ch in enumerate(text):
         cat = unicodedata.category(ch)
-        if ch == "'" and 0 < i < len(text) - 1 and text[i - 1].isalnum() and text[i + 1].isalnum():
+        if (
+            ch == "'"
+            and 0 < i < len(text) - 1
+            and text[i - 1].isalnum()
+            and text[i + 1].isalnum()
+        ):
             out.append(ch)
         elif cat[0] in "PSZC":
             out.append(" ")

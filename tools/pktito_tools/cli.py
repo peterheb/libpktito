@@ -1,4 +1,5 @@
 """pktito-tools convert | tiny | info | ref"""
+
 import argparse
 import sys
 
@@ -10,6 +11,7 @@ from . import __version__
 def read_wav(path):
     """Mono float64 at 16 kHz (wavio.py)."""
     from . import wavio
+
     a, rate = wavio.read(path)
     if rate != 16000:
         sys.exit("%s: %d Hz; the reference reads 16000 only" % (path, rate))
@@ -20,18 +22,28 @@ def pkf_weights(path):
     """A .pkf's model as the reference takes it: canonical names, float64,
     q8 matrices dequantized, and NeMo's layouts restored."""
     from . import pkf
+
     f = pkf.File(path)
     a = dict(f.params)
     a["durations"] = [f.params["dur%d" % i] for i in range(f.params["n_durations"])]
     w = {}
     for name in f.descs:
-        if name.endswith(".scale") or name.startswith("vad.") or name.startswith("mel.fft"):
+        if (
+            name.endswith(".scale")
+            or name.startswith("vad.")
+            or name.startswith("mel.fft")
+        ):
             continue
         w[name] = f.tensor(name).astype(np.float64)
     C, D, F = a["sub_channels"], a["d_model"], a["n_mels"] // 8
-    w["sub.out.w"] = w["sub.out.w"].reshape(D, F, C).transpose(0, 2, 1).reshape(D, C * F)
+    w["sub.out.w"] = (
+        w["sub.out.w"].reshape(D, F, C).transpose(0, 2, 1).reshape(D, C * F)
+    )
     n_out = a["vocab"] + 1 + a["n_durations"]
-    w["joint.out.w"], w["joint.out.b"] = w["joint.out.w"][:n_out], w["joint.out.b"][:n_out]
+    w["joint.out.w"], w["joint.out.b"] = (
+        w["joint.out.w"][:n_out],
+        w["joint.out.b"][:n_out],
+    )
     return w, a, f
 
 
@@ -54,15 +66,21 @@ def main(argv=None):
 
     if a.cmd == "convert":
         from . import convert
+
         convert.convert(a.nemo, a.vad, a.dst)
     elif a.cmd == "tiny":
         from . import tiny
+
         size = tiny.write(a.dst)
         print("%s: %d bytes" % (a.dst, size))
     elif a.cmd == "info":
         from . import pkf
+
         f = pkf.File(a.file)
-        print("%s: %s (%s), version %d, digest %s" % (a.file, f.name, f.arch, f.version, f.digest))
+        print(
+            "%s: %s (%s), version %d, digest %s"
+            % (a.file, f.name, f.arch, f.version, f.digest)
+        )
         for k, v in f.meta.items():
             print("  %-16s %s" % (k, v))
         print("params")
@@ -71,18 +89,26 @@ def main(argv=None):
         total = 0
         for k, (typ, ndim, dims, off, nbytes) in f.descs.items():
             total += nbytes
-        print("%d tensors, %.1f MB; vocabulary of %d, punctuation %r" % (
-            len(f.descs), total / 1e6, len(f.pieces), f.punct))
+        print(
+            "%d tensors, %.1f MB; vocabulary of %d, punctuation %r"
+            % (len(f.descs), total / 1e6, len(f.pieces), f.punct)
+        )
     elif a.cmd == "ref":
         from . import reference, spm
+
         if a.model.endswith(".pkf"):
             w, arch, f = pkf_weights(a.model)
             m = spm.Model.__new__(spm.Model)
             m.pieces, m.types = f.pieces, f.types
-            m.unk_surface, m.add_dummy_prefix, m.remove_extra_whitespaces = " ⁇ ", True, False
+            m.unk_surface, m.add_dummy_prefix, m.remove_extra_whitespaces = (
+                " ⁇ ",
+                True,
+                False,
+            )
             punct = f.punct
         else:
             from . import canon, convert, nemo
+
             nm = nemo.Nemo(a.model)
             arch = canon.arch(nm.config)
             w = dict(canon.tensors(nm.state, arch))

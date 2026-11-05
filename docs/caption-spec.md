@@ -30,12 +30,12 @@ The pipeline is:
 
 There is no single universal set of subtitle limits. Use a named, versioned profile and document which requirements it implements.
 
-| Primary guidance | Relevant recommendations |
-|---|---|
-| Netflix General Requirements [1] | At most two lines; generally use one when it fits. Duration from 5/6 second to seven seconds. Respect grammatical units when breaking lines. |
-| Netflix English (USA) [2] | 42 characters per line; adult reading-speed ceiling of 20 characters per second (CPS), children's ceiling of 17 CPS. |
-| Netflix Subtitle Timing Guidelines [3] | Synchronize with audio and picture; approximately half a second of post-speech display can help. Its delivery rules also require a two-frame intercue gap and account for shot changes. |
-| DCMP Captioning Key [4, 5] | Phrase-aware line division; a 40-frame minimum in its stated 30 fps context and six-second maximum. Educational presentation-rate targets differ by audience: 130, 140, or 160 words per minute. |
+| Primary guidance                       | Relevant recommendations                                                                                                                                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Netflix General Requirements [1]       | At most two lines; generally use one when it fits. Duration from 5/6 second to seven seconds. Respect grammatical units when breaking lines.                                                     |
+| Netflix English (USA) [2]              | 42 characters per line; adult reading-speed ceiling of 20 characters per second (CPS), children's ceiling of 17 CPS.                                                                             |
+| Netflix Subtitle Timing Guidelines [3] | Synchronize with audio and picture; approximately half a second of post-speech display can help. Its delivery rules also require a two-frame intercue gap and account for shot changes.          |
+| DCMP Captioning Key [4, 5]             | Phrase-aware line division; a 40-frame minimum in its stated 30 fps context and six-second maximum. Educational presentation-rate targets differ by audience: 130, 140, or 160 words per minute. |
 
 The default below combines practical product choices. **It is not a claim of Netflix, DCMP, or broadcast-delivery compliance.** In particular, its zero minimum gap, one-second minimum duration, and short-utterance hold exception are product policies. SRT and WebVTT do not impose the same editorial limits as a delivery style guide.
 
@@ -95,9 +95,9 @@ The 17 CPS target gives the optimizer room below the 20 CPS ceiling. It is not t
 ```typescript
 type Word = {
   id: string;
-  text: string;       // One orthographic word, with its attached punctuation.
-  start_ms: number;  // Nonnegative integer on the media timeline.
-  end_ms: number;    // Integer; strictly greater than start_ms.
+  text: string; // One orthographic word, with its attached punctuation.
+  start_ms: number; // Nonnegative integer on the media timeline.
+  end_ms: number; // Integer; strictly greater than start_ms.
   speaker_id?: string;
 };
 
@@ -214,12 +214,12 @@ Store `pause_source`, raw gap, and chosen pause length. A word gap can reflect a
 
 Classify with inclusive thresholds:
 
-| Pause length | Classification | Behavior |
-|---:|---|---|
-| `< 250 ms` | None | No pause preference |
-| `250–499 ms` | Weak | Prefer a cut when other constraints agree |
-| `500–999 ms` | Strong | Strong preference for a cut |
-| `>= 1000 ms` | Required | Candidate cues must not cross the boundary |
+| Pause length | Classification | Behavior                                   |
+| -----------: | -------------- | ------------------------------------------ |
+|   `< 250 ms` | None           | No pause preference                        |
+| `250–499 ms` | Weak           | Prefer a cut when other constraints agree  |
+| `500–999 ms` | Strong         | Strong preference for a cut                |
+| `>= 1000 ms` | Required       | Candidate cues must not cross the boundary |
 
 Do not turn every hesitation into a separate caption. Weak and strong pauses compete with reading time, grammatical coherence, and the cost of another cue. The required-pause rule prevents a later phrase from appearing at the start of a cue that spans a long pause.
 
@@ -304,13 +304,13 @@ An optional `soft_bind` marks a boundary inside a known name, number/unit expres
 
 For each internal boundary, choose the first matching base value:
 
-| Condition before/at boundary | `base[k]` |
-|---|---:|
-| Sentence terminal | 0 |
-| Semicolon, colon, em dash, or ellipsis | 10 |
-| Comma | 20 |
-| Next token's lexical form is a phrase starter, other than `to` after a semi-modal | 25 |
-| Otherwise | 60 |
+| Condition before/at boundary                                                      | `base[k]` |
+| --------------------------------------------------------------------------------- | --------: |
+| Sentence terminal                                                                 |         0 |
+| Semicolon, colon, em dash, or ellipsis                                            |        10 |
+| Comma                                                                             |        20 |
+| Next token's lexical form is a phrase starter, other than `to` after a semi-modal |        25 |
+| Otherwise                                                                         |        60 |
 
 Define `major_punctuation[k]` as the semicolon, colon, em-dash, or ellipsis category in this table. When a supplied sentence-end override is true, the terminal category takes precedence.
 
@@ -588,8 +588,8 @@ type Cue = {
   line_break_before_word?: number;
   char_count: number;
   duration_ms: number;
-  cps_numerator: number;    // 1000 * char_count
-  cps_denominator: number;  // duration_ms
+  cps_numerator: number; // 1000 * char_count
+  cps_denominator: number; // duration_ms
   audio_start_ms: number;
   audio_end_ms: number;
   score: { violation: string; aesthetic: string }; // Decimal integers.
@@ -606,12 +606,12 @@ type Result = {
 };
 ```
 
-| Status | Meaning and product behavior |
-|---|---|
-| `ok` | A complete structurally valid path satisfies the configured readability checks. Other informational diagnostics may remain. Export normally. |
-| `needs_review` | A complete faithful path exists, but minimum duration, reading ceiling, or requested gap cannot all be met under this model. Supply the cues and precise warnings. A general transcription product may export with a visible quality status; a strict delivery workflow should block certification. |
-| `needs_editor` | No complete path meets structural constraints. Preserve the transcript and return the blocking regions. Do not silently return a partial file or claim a valid complete caption track. An explicitly selected overflow-draft feature can be separate. |
-| `invalid_input` | The input contract is violated. Return stable error codes and affected IDs; require correction or an explicit adapter repair. |
+| Status          | Meaning and product behavior                                                                                                                                                                                                                                                                        |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ok`            | A complete structurally valid path satisfies the configured readability checks. Other informational diagnostics may remain. Export normally.                                                                                                                                                        |
+| `needs_review`  | A complete faithful path exists, but minimum duration, reading ceiling, or requested gap cannot all be met under this model. Supply the cues and precise warnings. A general transcription product may export with a visible quality status; a strict delivery workflow should block certification. |
+| `needs_editor`  | No complete path meets structural constraints. Preserve the transcript and return the blocking regions. Do not silently return a partial file or claim a valid complete caption track. An explicitly selected overflow-draft feature can be separate.                                               |
+| `invalid_input` | The input contract is violated. Return stable error codes and affected IDs; require correction or an explicit adapter repair.                                                                                                                                                                       |
 
 Suggested diagnostics include `READING_SPEED_EXCEEDED`, `DURATION_TOO_SHORT`, `INTERCUE_GAP_TOO_SHORT`, `WORD_TOO_LONG`, `TEMPORAL_GROUP_TOO_WIDE`, `TEMPORAL_GROUP_TOO_LONG`, `BOUNDARY_CONFLICT`, `TIMESTAMP_COLLAPSED`, `INVALID_TIMESTAMP`, `TRANSCRIPT_AUDIO_DISAGREEMENT`, and `MEDIA_DURATION_UNKNOWN`.
 
@@ -678,14 +678,14 @@ Separate **candidate tests**, **boundary/layout tests**, **whole-transcript test
 
 These use the default profile, no detector intervals, and no shot caps.
 
-| Fixture | Input words `(text, start, end)` and media end | Expected result |
-|---|---|---|
-| Basic phrase | `Hello,1000,1300`; `world.,1400,1800`; `T=4000` | One cue `1000–2000`, `Hello world.`, 12 characters, 12 CPS. |
-| Required pause | `Hello.,1000,1600`; `Again.,3000,3600`; `T=5000` | Two cues `1000–2000` and `3000–4000`. The 1400 ms pause requires a cut. |
-| Short standalone reply | `Yes.,1000,1200`; `T=4000` | One cue `1000–2000`; the minimum-duration tail exception permits 800 ms after speech. |
-| Short final reply | `Yes.,1000,1200`; `T=1300` | One cue `1000–1300`; `needs_review`, 700 ms below the duration minimum. No media overrun. |
-| Rapid speech | Three 10-character words at `0–150`, `150–300`, `300–450`; `T=450` | No fully readable path. Preserve all words and return `needs_review`. Merged candidate has 32 characters and about 71.11 CPS. |
-| Two full lines, candidate only | Two 42-character words at `0–2500`, `2500–5000`; `T=6000` | Legal layout `42 / 42`, flat `C=85`, candidate `0–5200`. Do not reject by a total-84 rule. |
+| Fixture                        | Input words `(text, start, end)` and media end                     | Expected result                                                                                                               |
+| ------------------------------ | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| Basic phrase                   | `Hello,1000,1300`; `world.,1400,1800`; `T=4000`                    | One cue `1000–2000`, `Hello world.`, 12 characters, 12 CPS.                                                                   |
+| Required pause                 | `Hello.,1000,1600`; `Again.,3000,3600`; `T=5000`                   | Two cues `1000–2000` and `3000–4000`. The 1400 ms pause requires a cut.                                                       |
+| Short standalone reply         | `Yes.,1000,1200`; `T=4000`                                         | One cue `1000–2000`; the minimum-duration tail exception permits 800 ms after speech.                                         |
+| Short final reply              | `Yes.,1000,1200`; `T=1300`                                         | One cue `1000–1300`; `needs_review`, 700 ms below the duration minimum. No media overrun.                                     |
+| Rapid speech                   | Three 10-character words at `0–150`, `150–300`, `300–450`; `T=450` | No fully readable path. Preserve all words and return `needs_review`. Merged candidate has 32 characters and about 71.11 CPS. |
+| Two full lines, candidate only | Two 42-character words at `0–2500`, `2500–5000`; `T=6000`          | Legal layout `42 / 42`, flat `C=85`, candidate `0–5200`. Do not reject by a total-84 rule.                                    |
 
 For the last case, the optimizer may choose another partition based on scores; assert the candidate metrics independently.
 

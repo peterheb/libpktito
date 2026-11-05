@@ -18,6 +18,7 @@ computed here in float64. Every matrix is k-major, [inputs][outputs], in
 panels of 16 outputs, for pk_k_gemm_f32; a convolution's input index is
 tap * C + channel. The LSTM's two biases are summed in float64.
 """
+
 import hashlib
 
 import numpy as np
@@ -48,8 +49,12 @@ def branch16k(tensors):
     groups = {}
     for name, a in tensors:
         for suffix, role in SUFFIXES.items():
-            if name == suffix or name.endswith("." + suffix) or name.endswith("__" + suffix):
-                g = groups.setdefault(name[:len(name) - len(suffix)], {})
+            if (
+                name == suffix
+                or name.endswith("." + suffix)
+                or name.endswith("__" + suffix)
+            ):
+                g = groups.setdefault(name[: len(name) - len(suffix)], {})
                 if role in g:
                     raise ValueError("%s appears twice" % suffix)
                 g[role] = a.astype(np.float64)
@@ -70,14 +75,22 @@ def tensors(path):
     """[(name, float32 array)] for the .pkf, and the file's sha256."""
     g = branch16k(onnxpb.tensors(path))
     n, bins = 256, 129
-    want = {"wih": (512, HIDDEN), "whh": (512, HIDDEN), "bih": (512,), "bhh": (512,),
-            "head.w": (1, HIDDEN, 1), "head.b": (1,)}
+    want = {
+        "wih": (512, HIDDEN),
+        "whh": (512, HIDDEN),
+        "bih": (512,),
+        "bhh": (512,),
+        "head.w": (1, HIDDEN, 1),
+        "head.b": (1,),
+    }
     for i, (cin, cout) in enumerate(CONV):
         want["conv%d.w" % (i + 1)] = (cout, cin or bins, 3)
         want["conv%d.b" % (i + 1)] = (cout,)
     for role, shape in want.items():
         if g[role].shape != shape:
-            raise ValueError("VAD %s: shape %s, expected %s" % (role, g[role].shape, shape))
+            raise ValueError(
+                "VAD %s: shape %s, expected %s" % (role, g[role].shape, shape)
+            )
     b = g["basis"][:, 0, :]
     window = b[0]
     hann = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)
@@ -85,19 +98,33 @@ def tensors(path):
         raise ValueError("the VAD's STFT window is not a periodic Hann window")
     k = np.arange(n // 2 + 1)[:, None]
     ang = 2 * np.pi * k * np.arange(n)[None, :] / n
-    if np.abs(b - np.vstack([window * np.cos(ang), -window * np.sin(ang)])).max() > 2e-7:
-        raise ValueError("the VAD's STFT basis is not the windowed DFT pktito computes as an FFT")
+    if (
+        np.abs(b - np.vstack([window * np.cos(ang), -window * np.sin(ang)])).max()
+        > 2e-7
+    ):
+        raise ValueError(
+            "the VAD's STFT basis is not the windowed DFT pktito computes as an FFT"
+        )
     j = np.arange(n // 2)
-    out = [("vad.stft.window", window), ("vad.fft.cos", np.cos(2 * np.pi * j / n)),
-           ("vad.fft.sin", np.sin(2 * np.pi * j / n))]
+    out = [
+        ("vad.stft.window", window),
+        ("vad.fft.cos", np.cos(2 * np.pi * j / n)),
+        ("vad.fft.sin", np.sin(2 * np.pi * j / n)),
+    ]
     for i in range(1, 5):
         w = g["conv%d.w" % i]
         o, c, taps = w.shape
-        out.append(("vad.conv%d.w" % i, _panels(w.transpose(2, 1, 0).reshape(taps * c, o))))
+        out.append(
+            ("vad.conv%d.w" % i, _panels(w.transpose(2, 1, 0).reshape(taps * c, o)))
+        )
         out.append(("vad.conv%d.b" % i, g["conv%d.b" % i]))
-    out += [("vad.lstm.wx", _panels(g["wih"].T)), ("vad.lstm.wh", _panels(g["whh"].T)),
-            ("vad.lstm.b", g["bih"] + g["bhh"]), ("vad.head.w", g["head.w"].reshape(HIDDEN)),
-            ("vad.head.b", g["head.b"].reshape(1))]
+    out += [
+        ("vad.lstm.wx", _panels(g["wih"].T)),
+        ("vad.lstm.wh", _panels(g["whh"].T)),
+        ("vad.lstm.b", g["bih"] + g["bhh"]),
+        ("vad.head.w", g["head.w"].reshape(HIDDEN)),
+        ("vad.head.b", g["head.b"].reshape(1)),
+    ]
     with open(path, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
     return [(name, a.astype(np.float32)) for name, a in out], digest

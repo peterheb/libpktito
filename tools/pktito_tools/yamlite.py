@@ -4,6 +4,7 @@ scalars, flow `[]` and `{}` only when empty. Anything else is refused, not
 guessed at; the converter reads a few dozen keys out of the result and would
 rather stop than read a wrong one.
 """
+
 import re
 
 _INT = re.compile(r"^[-+]?[0-9]+$")
@@ -25,7 +26,12 @@ def _scalar(s):
     if len(s) >= 2 and s[0] == s[-1] == "'":
         return s[1:-1].replace("''", "'")
     if len(s) >= 2 and s[0] == s[-1] == '"':
-        return bytes(s[1:-1], "utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
+        return (
+            bytes(s[1:-1], "utf-8")
+            .decode("unicode_escape")
+            .encode("latin-1")
+            .decode("utf-8")
+        )
     if s[0] in "[{&*!|>%@`":
         raise ValueError("unsupported YAML scalar: %r" % s)
     if _INT.match(s):
@@ -49,7 +55,7 @@ def _split_key(line):
             k = line[:i].strip()
             if len(k) >= 2 and k[0] == k[-1] and k[0] in "'\"":
                 k = k[1:-1]
-            return k, line[i + 1:]
+            return k, line[i + 1 :]
     return None
 
 
@@ -58,7 +64,7 @@ def loads(text):
     for raw in text.splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        if "\t" in raw[:len(raw) - len(raw.lstrip())]:
+        if "\t" in raw[: len(raw) - len(raw.lstrip())]:
             raise ValueError("tab indentation")
         lines.append((len(raw) - len(raw.lstrip(" ")), raw.strip()))
     pos = [0]
@@ -69,8 +75,11 @@ def loads(text):
         first = lines[pos[0]][1]
         if first.startswith("- ") or first == "-":
             out = []
-            while pos[0] < len(lines) and lines[pos[0]][0] == indent and \
-                    (lines[pos[0]][1].startswith("- ") or lines[pos[0]][1] == "-"):
+            while (
+                pos[0] < len(lines)
+                and lines[pos[0]][0] == indent
+                and (lines[pos[0]][1].startswith("- ") or lines[pos[0]][1] == "-")
+            ):
                 item = lines[pos[0]][1][1:].strip()
                 pos[0] += 1
                 kv = _split_key(item) if item else None
@@ -78,8 +87,11 @@ def loads(text):
                     if item:
                         out.append(_scalar(item))
                     else:
-                        out.append(block(lines[pos[0]][0]) if pos[0] < len(lines)
-                                   and lines[pos[0]][0] > indent else None)
+                        out.append(
+                            block(lines[pos[0]][0])
+                            if pos[0] < len(lines) and lines[pos[0]][0] > indent
+                            else None
+                        )
                 else:
                     # "- key: value" opens a mapping whose further keys sit
                     # two columns in, under the key
@@ -110,8 +122,10 @@ def loads(text):
             pos[0] += 1
             if v.strip():
                 out[k] = _scalar(v)
-            elif pos[0] < len(lines) and (lines[pos[0]][0] > indent or (
-                    lines[pos[0]][0] == indent and lines[pos[0]][1].startswith("- "))):
+            elif pos[0] < len(lines) and (
+                lines[pos[0]][0] > indent
+                or (lines[pos[0]][0] == indent and lines[pos[0]][1].startswith("- "))
+            ):
                 out[k] = block(lines[pos[0]][0])
             else:
                 out[k] = None

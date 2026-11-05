@@ -4,16 +4,17 @@ core/pkf.h is the definition; this mirrors it. A change to one is a change
 to the other in the same commit, and the struct formats below are checked
 against the sizes the C asserts.
 """
+
 import hashlib
 import struct
 
 import numpy as np
 
-MAGIC = 0x01464B50                  # "PKF\1"
+MAGIC = 0x01464B50  # "PKF\1"
 VERSION = 1
 ALIGN = 64
 NAME, KEY = 48, 32
-QR, QG = 16, 4                      # a q8 panel's rows, a group's inputs
+QR, QG = 16, 4  # a q8 panel's rows, a group's inputs
 F32, Q8 = 0, 1
 TYPE_NAMES = {F32: "f32", Q8: "q8"}
 PARAM_U32, PARAM_I32, PARAM_F32 = 0, 1, 2
@@ -37,7 +38,10 @@ def quantize_q8(m):
     m = np.asarray(m, np.float64)
     rows, cols = m.shape
     if rows % QR or cols % 32:
-        raise ValueError("a q8 matrix is a multiple of 16 rows and 32 columns, not %dx%d" % (rows, cols))
+        raise ValueError(
+            "a q8 matrix is a multiple of 16 rows and 32 columns, not %dx%d"
+            % (rows, cols)
+        )
     s = np.abs(m).max(1) / 127
     q = np.rint(m / np.where(s == 0, 1, s)[:, None])
     q = np.clip(q, -127, 127).astype(np.int8)
@@ -48,7 +52,11 @@ def quantize_q8(m):
 def dequantize_q8(data, scale):
     """The float32 matrix a PK_Q8 tensor stands for."""
     rows, cols = data.shape
-    q = data.reshape(rows // QR, cols // QG, QR, QG).transpose(0, 2, 1, 3).reshape(rows, cols)
+    q = (
+        data.reshape(rows // QR, cols // QG, QR, QG)
+        .transpose(0, 2, 1, 3)
+        .reshape(rows, cols)
+    )
     return q.astype(np.float32) * scale[:, None]
 
 
@@ -59,19 +67,25 @@ def vocab_blob(pieces, types, punct):
     off = np.zeros(len(text) + 1, np.uint32)
     off[1:] = np.cumsum([len(t) for t in text])
     pb = punct.encode("utf-8")
-    return (struct.pack("<I", len(text)) + off.tobytes() + bytes(types) + b"".join(text)
-            + struct.pack("<I", len(pb)) + pb)
+    return (
+        struct.pack("<I", len(text))
+        + off.tobytes()
+        + bytes(types)
+        + b"".join(text)
+        + struct.pack("<I", len(pb))
+        + pb
+    )
 
 
 def read_vocab(blob):
     n = struct.unpack_from("<I", blob, 0)[0]
     off = np.frombuffer(blob, np.uint32, n + 1, 4)
-    types = list(blob[4 + 4 * (n + 1):4 + 4 * (n + 1) + n])
+    types = list(blob[4 + 4 * (n + 1) : 4 + 4 * (n + 1) + n])
     t0 = 4 + 4 * (n + 1) + n
-    pieces = [blob[t0 + off[i]:t0 + off[i + 1]].decode("utf-8") for i in range(n)]
+    pieces = [blob[t0 + off[i] : t0 + off[i + 1]].decode("utf-8") for i in range(n)]
     p0 = t0 + int(off[n])
     np_ = struct.unpack_from("<I", blob, p0)[0]
-    return pieces, types, blob[p0 + 4:p0 + 4 + np_].decode("utf-8")
+    return pieces, types, blob[p0 + 4 : p0 + 4 + np_].decode("utf-8")
 
 
 def meta_blob(meta):
@@ -79,7 +93,9 @@ def meta_blob(meta):
     for k, v in meta.items():
         k, v = str(k).encode("utf-8"), str(v).encode("utf-8")
         if not k or b"\0" in k or b"\0" in v:
-            raise ValueError("metadata %r: keys are non-empty and neither has a NUL" % k)
+            raise ValueError(
+                "metadata %r: keys are non-empty and neither has a NUL" % k
+            )
         out += k + b"\0" + v + b"\0"
     return bytes(out)
 
@@ -110,7 +126,9 @@ def write(path, arch, name, params, tensors, vocab, meta):
         d = list(dims) + [1] * (2 - ndim)
         want = d[0] * d[1] * (4 if typ == F32 else 1)
         if len(raw) != want:
-            raise ValueError("%s: %d bytes for %s %s" % (tname, len(raw), TYPE_NAMES[typ], dims))
+            raise ValueError(
+                "%s: %d bytes for %s %s" % (tname, len(raw), TYPE_NAMES[typ], dims)
+            )
         descs += TENSOR.pack(tname.encode(), typ, ndim, d[0], d[1], at, len(raw), 0, 0)
         payload.append((at, raw))
         at = _align(at + len(raw))
@@ -121,9 +139,24 @@ def write(path, arch, name, params, tensors, vocab, meta):
         sha.update(b"\0" * (off - pos))
         sha.update(raw)
         pos = off + len(raw)
-    head = HEADER.pack(MAGIC, VERSION, arch.encode(), name.encode(), len(params), len(tensors),
-                       params_off, tensors_off, vocab_off, len(vocab), meta_off, len(mblob),
-                       data_off, size, sha.digest(), b"")
+    head = HEADER.pack(
+        MAGIC,
+        VERSION,
+        arch.encode(),
+        name.encode(),
+        len(params),
+        len(tensors),
+        params_off,
+        tensors_off,
+        vocab_off,
+        len(vocab),
+        meta_off,
+        len(mblob),
+        data_off,
+        size,
+        sha.digest(),
+        b"",
+    )
     with open(path, "wb") as f:
         f.write(head + pblob + descs + vocab + mblob)
         f.write(b"\0" * (data_off - f.tell()))
@@ -140,8 +173,24 @@ class File:
     def __init__(self, path):
         self.buf = np.memmap(path, np.uint8, "r")
         b = self.buf
-        (magic, version, arch, name, n_params, n_tensors, params_off, tensors_off, vocab_off,
-         vocab_size, meta_off, meta_size, data_off, file_bytes, digest, _) = HEADER.unpack_from(b, 0)
+        (
+            magic,
+            version,
+            arch,
+            name,
+            n_params,
+            n_tensors,
+            params_off,
+            tensors_off,
+            vocab_off,
+            vocab_size,
+            meta_off,
+            meta_size,
+            data_off,
+            file_bytes,
+            digest,
+            _,
+        ) = HEADER.unpack_from(b, 0)
         if magic != MAGIC:
             raise ValueError("%s is not a .pkf file" % path)
         self.version, self.digest = version, digest.hex()
@@ -153,11 +202,15 @@ class File:
             self.params[k.rstrip(b"\0").decode()] = struct.unpack(fmt, v)[0]
         self.descs = {}
         for i in range(n_tensors):
-            nm, typ, ndim, d0, d1, off, nbytes, _, _ = TENSOR.unpack_from(b, tensors_off + i * TENSOR.size)
+            nm, typ, ndim, d0, d1, off, nbytes, _, _ = TENSOR.unpack_from(
+                b, tensors_off + i * TENSOR.size
+            )
             self.descs[nm.rstrip(b"\0").decode()] = (typ, ndim, (d0, d1), off, nbytes)
-        self.pieces, self.types, self.punct = read_vocab(bytes(b[vocab_off:vocab_off + vocab_size]))
+        self.pieces, self.types, self.punct = read_vocab(
+            bytes(b[vocab_off : vocab_off + vocab_size])
+        )
         self.meta = {}
-        parts = bytes(b[meta_off:meta_off + meta_size]).split(b"\0")[:-1]
+        parts = bytes(b[meta_off : meta_off + meta_size]).split(b"\0")[:-1]
         for k, v in zip(parts[0::2], parts[1::2]):
             self.meta[k.decode()] = v.decode()
 

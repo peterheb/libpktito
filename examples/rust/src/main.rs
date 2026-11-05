@@ -75,21 +75,40 @@ extern "C" {
     fn pk_model_load(path: *const c_char, err: *mut c_char, errlen: usize) -> *mut PkModel;
     fn pk_model_rate(m: *const PkModel) -> c_int;
     fn pk_model_free(m: *mut PkModel);
-    fn pk_wav_open(path: *const c_char, info: *mut PkWavInfo, err: *mut c_char, errlen: usize) -> *mut PkWav;
+    fn pk_wav_open(
+        path: *const c_char,
+        info: *mut PkWavInfo,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> *mut PkWav;
     fn pk_wav_read(w: *mut PkWav, out: *mut f32, n: usize) -> usize;
     fn pk_wav_close(w: *mut PkWav);
     fn pk_vad_new(m: *const PkModel) -> *mut PkVad;
     fn pk_vad_probs(v: *mut PkVad, x: *const f32, n: usize, probs: *mut f32);
     fn pk_vad_free(v: *mut PkVad);
     fn pk_seg_defaults(p: *mut PkSegParams);
-    fn pk_segments(probs: *const f32, n: usize, rate: c_int, n_samples: i64, p: *const PkSegParams,
-                   out: *mut PkSeg, cap: usize) -> usize;
-    fn pk_chunks(x: *const f32, speech: *const PkSeg, n_speech: usize, total: i64, max_len: i64,
-                 out: *mut PkSeg) -> usize;
+    fn pk_segments(
+        probs: *const f32,
+        n: usize,
+        rate: c_int,
+        n_samples: i64,
+        p: *const PkSegParams,
+        out: *mut PkSeg,
+        cap: usize,
+    ) -> usize;
+    fn pk_chunks(
+        x: *const f32,
+        speech: *const PkSeg,
+        n_speech: usize,
+        total: i64,
+        max_len: i64,
+        out: *mut PkSeg,
+    ) -> usize;
     fn pk_asr_new(m: *const PkModel, threads: c_int) -> *mut PkAsr;
     fn pk_asr_run(a: *mut PkAsr, x: *const f32, n: usize, toks: *mut *const PkTok) -> c_long;
     fn pk_asr_free(a: *mut PkAsr);
-    fn pk_text(m: *const PkModel, t: *const PkTok, n: usize, out: *mut c_char, cap: usize) -> usize;
+    fn pk_text(m: *const PkModel, t: *const PkTok, n: usize, out: *mut c_char, cap: usize)
+        -> usize;
 }
 
 /// A path as the library takes one: UTF-8 on every system, which on Unix is
@@ -121,7 +140,12 @@ fn main() -> ExitCode {
 
         // the whole recording, as float in [-1, 1]
         let mut info = PkWavInfo::default();
-        let w = pk_wav_open(c_path(&args[2]).as_ptr(), &mut info, err.as_mut_ptr(), err.len());
+        let w = pk_wav_open(
+            c_path(&args[2]).as_ptr(),
+            &mut info,
+            err.as_mut_ptr(),
+            err.len(),
+        );
         if w.is_null() || info.rate as usize != rate {
             if w.is_null() {
                 eprintln!("{}", CStr::from_ptr(err.as_ptr()).to_string_lossy());
@@ -157,9 +181,24 @@ fn main() -> ExitCode {
         sp.min_silence_ms = 32.0; // two of Silero's 32 ms frames
         sp.max_speech_s = 30.72 - 0.06 - 0.1; // a segment and Silero's 30 ms pads fit in a chunk
         let max_len = (30.72 * rate as f64) as usize;
-        let ns = pk_segments(probs.as_ptr(), frames, rate as c_int, n as i64, &sp, seg.as_mut_ptr(), seg.len());
+        let ns = pk_segments(
+            probs.as_ptr(),
+            frames,
+            rate as c_int,
+            n as i64,
+            &sp,
+            seg.as_mut_ptr(),
+            seg.len(),
+        );
         let mut chunk = vec![PkSeg::default(); 2 * ns + 2 + n / max_len];
-        let nc = pk_chunks(x.as_ptr(), seg.as_ptr(), ns, n as i64, max_len as i64, chunk.as_mut_ptr());
+        let nc = pk_chunks(
+            x.as_ptr(),
+            seg.as_ptr(),
+            ns,
+            n as i64,
+            max_len as i64,
+            chunk.as_mut_ptr(),
+        );
 
         // each chunk through the transcriber, as NeMo would hear it as a file
         let a = pk_asr_new(m, 0);
@@ -172,8 +211,12 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
             pk_text(m, t, nt as usize, text.as_mut_ptr(), text.len());
-            println!("{:.2} {:.2} {}", c.start as f64 / rate as f64, c.end as f64 / rate as f64,
-                     CStr::from_ptr(text.as_ptr()).to_string_lossy());
+            println!(
+                "{:.2} {:.2} {}",
+                c.start as f64 / rate as f64,
+                c.end as f64 / rate as f64,
+                CStr::from_ptr(text.as_ptr()).to_string_lossy()
+            );
         }
         pk_asr_free(a);
         pk_vad_free(v);

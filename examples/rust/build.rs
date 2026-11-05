@@ -7,8 +7,9 @@ fn main() {
     let dir = std::env::var("PKTITO_LIB_DIR")
         .unwrap_or_else(|_| format!("{}/../..", env!("CARGO_MANIFEST_DIR")));
     let out = std::env::var("OUT_DIR").unwrap();
-    std::fs::copy(format!("{dir}/libpktito.a"), format!("{out}/libpktito.a"))
-        .unwrap_or_else(|e| panic!("{dir}/libpktito.a: {e} (make libpktito.a at the top of the tree)"));
+    std::fs::copy(format!("{dir}/libpktito.a"), format!("{out}/libpktito.a")).unwrap_or_else(|e| {
+        panic!("{dir}/libpktito.a: {e} (make libpktito.a at the top of the tree)")
+    });
     println!("cargo:rustc-link-search=native={out}");
     println!("cargo:rustc-link-lib=static=pktito");
     println!("cargo:rustc-link-lib=m");

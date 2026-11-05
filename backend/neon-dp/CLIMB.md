@@ -10,12 +10,12 @@ Apple M4 Pro, 8 performance and 4 efficiency cores, macOS 27, Apple clang
 test.wav (60 s) whole, `--max-chunk 60`: 750 encoder frames, 232 tokens,
 best of five.
 
-| tree | threads | best | real time |
-|---|---|---|---|
-| 2b035b3, first SDOT kernel (8x4 tile, no column blocking) | 12 | 0.543 s | 110.6x |
-| 2997d4f, column blocks of 192 KB | 4 | 1.008 s | 59.5x |
-| | 8 | 0.512 s | 117.3x |
-| | 12 | 0.523 s | 114.7x |
+| tree                                                      | threads | best    | real time |
+| --------------------------------------------------------- | ------- | ------- | --------- |
+| 2b035b3, first SDOT kernel (8x4 tile, no column blocking) | 12      | 0.543 s | 110.6x    |
+| 2997d4f, column blocks of 192 KB                          | 4       | 1.008 s | 59.5x     |
+|                                                           | 8       | 0.512 s | 117.3x    |
+|                                                           | 12      | 0.523 s | 114.7x    |
 
 Column blocking moved nothing here (0.543 s at 12 threads before, 0.523 s
 after, inside the spread): the M4's 16 MB L2 per cluster holds a 750-column
@@ -26,17 +26,17 @@ threads: dynamic dealing gives them items, and they finish them late.
 
 The stage split at eight threads (`make PROFILE=1`, 0.509 s):
 
-| stage | ms | share |
-|---|---|---|
-| feed-forward (4 int8 products a layer, SiLU) | 234.1 | 44.3% |
+| stage                                                  | ms    | share |
+| ------------------------------------------------------ | ----- | ----- |
+| feed-forward (4 int8 products a layer, SiLU)           | 234.1 | 44.3% |
 | attention, float (scores, positions, softmax, context) | 114.3 | 21.7% |
-| q k v and the positions' projection | 71.5 | 13.5% |
-| convolution module's two products | 41.7 | 7.9% |
-| decoder | 16.2 | 3.1% |
-| attention output | 14.7 | 2.8% |
-| subsampling | 13.0 | 2.5% |
-| mel | 7.2 | 1.4% |
-| quantize, layer norms, GLU and depthwise, positions | 15.3 | 2.9% |
+| q k v and the positions' projection                    | 71.5  | 13.5% |
+| convolution module's two products                      | 41.7  | 7.9%  |
+| decoder                                                | 16.2  | 3.1%  |
+| attention output                                       | 14.7  | 2.8%  |
+| subsampling                                            | 13.0  | 2.5%  |
+| mel                                                    | 7.2   | 1.4%  |
+| quantize, layer norms, GLU and depthwise, positions    | 15.3  | 2.9%  |
 
 The feed-forward is 302 G multiply-adds in 234 ms: 1.29 T a second over
 eight cores, 161 G a core, about 56% of a P core's SDOT peak (four 128-bit
@@ -60,40 +60,40 @@ load, never throttled), 4 GB, Debian, gcc 14.2, `-march=armv8.2-a+dotprod
 repack split. check-c passes: every kernel ref's bits, both transcripts of
 test.wav byte for byte. Four threads.
 
-| test.wav | best of 5 | real time |
-|---|---|---|
-| whole (750 frames) | 4.934 s | 12.2x |
-| 30 s chunks (3) | 4.371 s | 13.7x, and 0.069 s of VAD |
+| test.wav           | best of 5 | real time                 |
+| ------------------ | --------- | ------------------------- |
+| whole (750 frames) | 4.934 s   | 12.2x                     |
+| 30 s chunks (3)    | 4.371 s   | 13.7x, and 0.069 s of VAD |
 
 The stage split, whole (`make PROFILE=1`):
 
-| stage | ms | share |
-|---|---|---|
-| feed-forward | 1969 | 39.8% |
-| attention products (scores, positions, softmax, context) | 891 | 18.0% |
-| q k v and the positions' projection | 544 | 11.0% |
-| conv pw1 pw2 | 338 | 6.8% |
-| subsampling | 330 | 6.7% |
-| attention repack | 285 | 5.8% |
-| quantize | 163 | 3.3% |
-| decoder | 128 | 2.6% |
-| attention out | 122 | 2.5% |
-| glu + depthwise | 80 | 1.6% |
-| layer norms | 77 | 1.6% |
-| mel, positions | 26 | 0.5% |
+| stage                                                    | ms   | share |
+| -------------------------------------------------------- | ---- | ----- |
+| feed-forward                                             | 1969 | 39.8% |
+| attention products (scores, positions, softmax, context) | 891  | 18.0% |
+| q k v and the positions' projection                      | 544  | 11.0% |
+| conv pw1 pw2                                             | 338  | 6.8%  |
+| subsampling                                              | 330  | 6.7%  |
+| attention repack                                         | 285  | 5.8%  |
+| quantize                                                 | 163  | 3.3%  |
+| decoder                                                  | 128  | 2.6%  |
+| attention out                                            | 122  | 2.5%  |
+| glu + depthwise                                          | 80   | 1.6%  |
+| layer norms                                              | 77   | 1.6%  |
+| mel, positions                                           | 26   | 0.5%  |
 
 The feed-forward is 302 G multiply-adds in 1.97 s: 38 G a core, 16 a cycle,
 half of SDOT's 32 (two 128-bit pipes). The attention's products run at
 about 3.7 FMAs a cycle of FMLA's 8. Three things stand out against the M4,
 whose split this resembles otherwise:
 
-* the repack is 5.8%, for moving 18 MB a layer: K's and P's panels are a
+- the repack is 5.8%, for moving 18 MB a layer: K's and P's panels are a
   transpose, written a float at a time with each store a cache line apart
   (core/encoder.c, repack_item);
-* the subsampling is 6.7%, where its arithmetic (7 G int8 multiply-adds and
+- the subsampling is 6.7%, where its arithmetic (7 G int8 multiply-adds and
   0.3 G float) should take about 80 ms: its 3x3 convolutions run channel
   group outermost, so a block's 2.3 MB of output is walked 64 times;
-* quantize is 3.3%, for one pass over each product's input.
+- quantize is 3.3%, for one pass over each product's input.
 
 Each is a kernel or a loop order; none changes a bit.
 
@@ -102,12 +102,12 @@ Each is a kernel or a loop order; none changes a bit.
 Same Pi 5, compiler and flags; four threads, best of five, check-c passing
 for each row (every transcript byte for byte, so none changes a bit).
 
-| tree | whole | 30 s chunks | repack | attention |
-|---|---|---|---|---|
-| 34ecaaa, the baseline above | 4.934 s | 4.371 s | 285 ms | 891 ms |
-| K's, V's and P's panels written a dimension's 16 keys at a time | 4.863 s | | 192 ms | |
-| no repack: V into panels by its product, K and P as written, each block's scores and position products transposed instead (rejected) | 5.064 s | 4.221 s | 0 | 1293 ms |
-| V into panels by its product; K and P transposed 16 keys at a time; the queries plus biases made a block at a time in att_item | 4.741 s | 4.169 s | 103 ms | 867 ms |
+| tree                                                                                                                                 | whole   | 30 s chunks | repack | attention |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------- | ----------- | ------ | --------- |
+| 34ecaaa, the baseline above                                                                                                          | 4.934 s | 4.371 s     | 285 ms | 891 ms    |
+| K's, V's and P's panels written a dimension's 16 keys at a time                                                                      | 4.863 s |             | 192 ms |           |
+| no repack: V into panels by its product, K and P as written, each block's scores and position products transposed instead (rejected) | 5.064 s | 4.221 s     | 0      | 1293 ms   |
+| V into panels by its product; K and P transposed 16 keys at a time; the queries plus biases made a block at a time in att_item       | 4.741 s | 4.169 s     | 103 ms | 867 ms    |
 
 The rejected row moved the transposes from K and P (T x dk a head) to the
 scores (T x 16 a block, T/16 blocks a head: T squared over 16 a head), and
@@ -129,24 +129,24 @@ pw1 pw2 338 (7.1%), quantize 161 (3.4%), decoder 126 (2.6%), attention out
 Same Pi 5, compiler and flags; four threads, best of five, check-c passing
 for each row.
 
-| tree | whole | 30 s chunks | subsampling |
-|---|---|---|---|
-| c00013c | 4.741 s | 4.169 s | 343 ms |
-| pk_k_conv3x3s2 a row at a time, 4 channels by 8 columns at once | 4.601 s | 4.026 s | 197 ms |
-| and the first stage made a window at a time, the 3 rows the second's next output row reads | 4.537 s | | 115 ms |
-| windows for 2, 3 and 4 output rows instead (rejected) | 4.547, 4.567, 4.585 s | | 129, 150, 165 ms |
-| every stage a row at a time, each keeping the 3 rows the next reads | 4.505 s | 3.920 s | 90 ms |
+| tree                                                                                       | whole                 | 30 s chunks | subsampling      |
+| ------------------------------------------------------------------------------------------ | --------------------- | ----------- | ---------------- |
+| c00013c                                                                                    | 4.741 s               | 4.169 s     | 343 ms           |
+| pk_k_conv3x3s2 a row at a time, 4 channels by 8 columns at once                            | 4.601 s               | 4.026 s     | 197 ms           |
+| and the first stage made a window at a time, the 3 rows the second's next output row reads | 4.537 s               |             | 115 ms           |
+| windows for 2, 3 and 4 output rows instead (rejected)                                      | 4.547, 4.567, 4.585 s |             | 129, 150, 165 ms |
+| every stage a row at a time, each keeping the 3 rows the next reads                        | 4.505 s               | 3.920 s     | 90 ms            |
 
 An instrumented build (not committed) timed each stage's calls inside the
 items, summed over the threads, a run:
 
-| ms of thread time | conv0 | dw1 | pw1 | dw2 | pw2 |
-|---|---|---|---|---|---|
-| c00013c, 4 threads | 510 | 562 | 130 | 64 | 32 |
-| the new kernel, 4 threads | 229 | 261 | 141 | 39 | 32 |
-| the new kernel, 1 thread | 79 | 69 | 92 | 12 | 22 |
-| first stage in windows, 4 threads | 82 | 78 | 142 | 30 | 28 |
-| first stage in windows, 1 thread | 70 | 44 | 91 | 11 | 22 |
+| ms of thread time                 | conv0 | dw1 | pw1 | dw2 | pw2 |
+| --------------------------------- | ----- | --- | --- | --- | --- |
+| c00013c, 4 threads                | 510   | 562 | 130 | 64  | 32  |
+| the new kernel, 4 threads         | 229   | 261 | 141 | 39  | 32  |
+| the new kernel, 1 thread          | 79    | 69  | 92  | 12  | 22  |
+| first stage in windows, 4 threads | 82    | 78  | 142 | 30  | 28  |
+| first stage in windows, 1 thread  | 70    | 44  | 91  | 11  | 22  |
 
 The old kernel ran a channel group outermost over the block: one chain of
 nine FMAs at a time, four cycles a link, and the block's whole input (2.3
@@ -204,12 +204,12 @@ gcc 14.2 spills in f32_tile: its scheduling before register allocation
 weight vectors of a step ahead of the sixteen accumulators, and the 4x4
 tile's loop stores and reloads them. Built without that pass:
 
-| build | feed-forward | attention | minute |
-|---|---|---|---|
-| -O3 | 1977 ms | 870 ms | 4.501-4.510 s |
-| -O3 -fno-schedule-insns, everything | 2270 ms | 728 ms | 4.812-4.819 s |
-| -O3, the inputs two at a time in f32_tile (no spill, but register moves at every back edge; rejected) | 1975 ms | 921 ms | 4.555 s |
-| -O3, the pass off for the float products only (pragma) | 1978 ms | 728 ms | 4.358 s |
+| build                                                                                                 | feed-forward | attention | minute        |
+| ----------------------------------------------------------------------------------------------------- | ------------ | --------- | ------------- |
+| -O3                                                                                                   | 1977 ms      | 870 ms    | 4.501-4.510 s |
+| -O3 -fno-schedule-insns, everything                                                                   | 2270 ms      | 728 ms    | 4.812-4.819 s |
+| -O3, the inputs two at a time in f32_tile (no spill, but register moves at every back edge; rejected) | 1975 ms      | 921 ms    | 4.555 s       |
+| -O3, the pass off for the float products only (pragma)                                                | 1978 ms      | 728 ms    | 4.358 s       |
 
 The int8 tile needs the pass and the float tile is hurt by it, so a
 gcc-only pragma turns it off around the float products: their 4x4 loop is
@@ -229,10 +229,10 @@ which a SiLU pass first read and wrote back in place. Now one pass takes
 a frame at a time through a 16 KB row of thread scratch, SiLU then
 quantize, and the array is read once and never written:
 
-| | feed-forward | quantize | minute | 30 s chunks |
-|---|---|---|---|---|
-| b325cd9 | 1978 ms | 163 ms | 4.358 s | 3.847 s |
-| SiLU in the quantize pass | 1827 ms | 213 ms | 4.244-4.248 s | 3.791 s |
+|                           | feed-forward | quantize | minute        | 30 s chunks |
+| ------------------------- | ------------ | -------- | ------------- | ----------- |
+| b325cd9                   | 1978 ms      | 163 ms   | 4.358 s       | 3.847 s     |
+| SiLU in the quantize pass | 1827 ms      | 213 ms   | 4.244-4.248 s | 3.791 s     |
 
 (The SiLU's arithmetic moved from the feed-forward's row of the profile
 to quantize's.) The 12900HK and the M4 Pro did not move, inside their
@@ -246,10 +246,10 @@ minute, that only the quantize after them read. Each now goes a frame at
 a time through the same row of thread scratch as the SiLU, norm then
 quantize; the last norm, whose output is the residual stream, stays.
 
-| | layer norms | quantize | minute | 30 s chunks |
-|---|---|---|---|---|
-| cfaf43a | 77 ms | 213 ms | 4.244-4.248 s | 3.791 s |
-| norms in the quantize passes | 13 ms | 219 ms | 4.186-4.189 s | 3.737 s |
+|                              | layer norms | quantize | minute        | 30 s chunks |
+| ---------------------------- | ----------- | -------- | ------------- | ----------- |
+| cfaf43a                      | 77 ms       | 213 ms   | 4.244-4.248 s | 3.791 s     |
+| norms in the quantize passes | 13 ms       | 219 ms   | 4.186-4.189 s | 3.737 s     |
 
 (The four norms' arithmetic is in quantize's row now.) The 12900HK and
 the M4 Pro did not move outside their spreads.
@@ -262,10 +262,10 @@ of blocks and a partial-sum buffer for ARMv8.0's chunks of 1024 inputs.
 For SDOT the tile stays 8 x 4, the column blocks 192 KB, and the chunks are
 compiled out. Same Pi 5, merged tree:
 
-| | minute | 30 s chunks |
-|---|---|---|
-| 1aab324 | 4.186-4.189 s | 3.737 s |
-| merged | 4.155-4.162 s | 3.714-3.718 s |
+|         | minute        | 30 s chunks   |
+| ------- | ------------- | ------------- |
+| 1aab324 | 4.186-4.189 s | 3.737 s       |
+| merged  | 4.155-4.162 s | 3.714-3.718 s |
 
 gemmbench, one A76 at 2.4 GHz, T 750: feed-forward up 19.2 MAC/cycle, down
 17.6, the attention's 19.0, conv pw1 19.1, all four 18.5; the L1-resident
@@ -354,18 +354,18 @@ bench` on test.wav in its default 30 s chunks (three), best of five; a vLLM
 worker resident and idle, load 0.13. check-c passes; the backend picked is
 neon-dp.
 
-| threads | on | best | real time |
-|---|---|---|---|
-| 20, the default (a core of every kind each) | any | 0.711-0.719 s | 83.4-84.3x |
-| 16 | any | 0.896 s | 67.0x |
-| 12 | any | 0.645 s | 93.0x |
-| 10 | any | 0.442 s | 135.8x |
-| 8 | any | 0.497 s | 120.7x |
-| 5 | any | 0.715 s | 84.0x |
-| 10 | the X925s (taskset) | 0.437 s | 137.4x |
-| 8 | the X925s | 0.474 s | 126.7x |
-| 5 | the X925s | 0.688 s | 87.2x |
-| 10 | the A725s | 1.267 s | 47.4x |
+| threads                                     | on                  | best          | real time  |
+| ------------------------------------------- | ------------------- | ------------- | ---------- |
+| 20, the default (a core of every kind each) | any                 | 0.711-0.719 s | 83.4-84.3x |
+| 16                                          | any                 | 0.896 s       | 67.0x      |
+| 12                                          | any                 | 0.645 s       | 93.0x      |
+| 10                                          | any                 | 0.442 s       | 135.8x     |
+| 8                                           | any                 | 0.497 s       | 120.7x     |
+| 5                                           | any                 | 0.715 s       | 84.0x      |
+| 10                                          | the X925s (taskset) | 0.437 s       | 137.4x     |
+| 8                                           | the X925s           | 0.474 s       | 126.7x     |
+| 5                                           | the X925s           | 0.688 s       | 87.2x      |
+| 10                                          | the A725s           | 1.267 s       | 47.4x      |
 
 The default gives up 1.6x. Ten threads, unpinned, land on the X925s and
 run as fast as pinned there. An A725 does a third of an X925's work here
@@ -384,16 +384,16 @@ faster; in 30 s chunks the 8 are, by 4%.
 
 `make PROFILE=1`, the bench above, tree c51b433, the stages that move:
 
-| stage | 10 threads | 20 threads |
-|---|---|---|
-| decoder | 16.9 ms | 183.2 ms |
-| quantize | 53.2 ms | 105.8 ms |
-| q k v pos | 59.1 ms | 84.1 ms |
-| glu + depthwise | 15.4 ms | 24.1 ms |
-| layer norms | 3.1 ms | 11.4 ms |
-| attention out | 11.9 ms | 16.5 ms |
-| feed-forward | 186.6 ms | 193.6 ms |
-| bench | 0.437 s | 0.662 s |
+| stage           | 10 threads | 20 threads |
+| --------------- | ---------- | ---------- |
+| decoder         | 16.9 ms    | 183.2 ms   |
+| quantize        | 53.2 ms    | 105.8 ms   |
+| q k v pos       | 59.1 ms    | 84.1 ms    |
+| glu + depthwise | 15.4 ms    | 24.1 ms    |
+| layer norms     | 3.1 ms     | 11.4 ms    |
+| attention out   | 11.9 ms    | 16.5 ms    |
+| feed-forward    | 186.6 ms   | 193.6 ms   |
+| bench           | 0.437 s    | 0.662 s    |
 
 The decoder's products past PK_DEC_SPLIT (2048 rows: the LSTM's 2560-row
 gate products, four a token) go to every worker: a job of a few
@@ -420,12 +420,12 @@ at 20 threads (183.2 before) and 17.3-20.3 at 10 (16.9); on two threads
 26-28 ms at either count, on eight 24-33 at 20 and 17-20 at 10, so four.
 `./pktito bench`, the trees built as they ship, interleaved, three rounds:
 
-| board, threads | before (c51b433) | after |
-|---|---|---|
-| GB10, 20 (its default) | 0.719-0.800 s | 0.573-0.580 s |
-| GB10, 10 (the X925s) | 0.435-0.438 s | 0.441-0.447 s |
-| 12900HK, 14 (its default) | 0.835-0.840 s | 0.835-0.838 s |
-| M4 Pro, 12 (its default; in use) | 0.515-0.529 s | 0.498-0.522 s |
+| board, threads                   | before (c51b433) | after         |
+| -------------------------------- | ---------------- | ------------- |
+| GB10, 20 (its default)           | 0.719-0.800 s    | 0.573-0.580 s |
+| GB10, 10 (the X925s)             | 0.435-0.438 s    | 0.441-0.447 s |
+| 12900HK, 14 (its default)        | 0.835-0.840 s    | 0.835-0.838 s |
+| M4 Pro, 12 (its default; in use) | 0.515-0.529 s    | 0.498-0.522 s |
 
 The GB10's default is 1.25-1.39x faster, short of the 0.50 s predicted:
 the other small jobs (quantize, the norms) still wait on the A725s. Ten
@@ -507,11 +507,11 @@ one kind, untouched.
 Result, kept. `./pktito bench`, each tree's default threads, interleaved,
 three rounds, against 61d7288 (H1):
 
-| board | before | after | the choice |
-|---|---|---|---|
-| GB10 | 0.570-0.581 s, 20 threads | 0.437-0.443 s | 10, the X925s, every run and every `-v` |
-| 12900HK | 0.836-0.840 s, 14 | 0.838-0.841 s | 14, every core, every run |
-| M4 Pro (in use) | | 0.466 s once | 8 in bench, 12 in one `-v`: 4% apart, near the 3% |
+| board           | before                    | after         | the choice                                        |
+| --------------- | ------------------------- | ------------- | ------------------------------------------------- |
+| GB10            | 0.570-0.581 s, 20 threads | 0.437-0.443 s | 10, the X925s, every run and every `-v`           |
+| 12900HK         | 0.836-0.840 s, 14         | 0.838-0.841 s | 14, every core, every run                         |
+| M4 Pro (in use) |                           | 0.466 s once  | 8 in bench, 12 in one `-v`: 4% apart, near the 3% |
 
 The GB10's default is 1.31x faster than H1's and 1.62x the 0.711-0.719 s
 it began the day at, as fast as its X925s pinned. The 12900HK keeps every
@@ -536,8 +536,7 @@ ARMv8.6's I8MM (optional from 8.2) adds SMMLA: a 2x8 matrix of signed
 bytes by another's transpose into a 2x2 of exact int32 sums, 32 MACs an
 instruction where SDOT's lane form does 16. Neoverse V1, V2 and V3
 (Graviton 3, 4 and 5), the X2 and later X cores with the A710 and later
-(the GB10's X925 and A725), and Apple's M2 and later have it; the A76 (Pi
-5) and the M1 do not. Wherever SMMLA issues as often as SDOT, the inner
+(the GB10's X925 and A725), and Apple's M2 and later have it; the A76 (Pi 5) and the M1 do not. Wherever SMMLA issues as often as SDOT, the inner
 loop's multiplies halve.
 
 The file's layout gives SMMLA's weight operand with one ZIP. A group is
@@ -604,27 +603,27 @@ the c8g holding all three, three interleaved rounds of `pktito bench`
 GMAC/s; the M4 Pro (in use, load 3 to 4) and the GB10 (idle) by
 pktito-mac, three interleaved rounds:
 
-| board | core | neon-dp | neon-i8mm | | q8bench |
-|---|---|---|---|---|---|
-| c6g.xlarge | Neoverse N1 | 18.9x | (no I8MM: passed over) | | |
-| c7g.xlarge | Neoverse V1 | 24.5x | 26.3x | +7.3% | 81.3 to 85.8 |
-| c8g.xlarge | Neoverse V2 | 30.7x | 32.0x | +4.2% | 103.8 to 110.3 |
-| c9g.xlarge | Neoverse V3 | 44.3x | 45.9x | +3.6% | 126.5 to 133.1 |
-| GB10, -t 10 | X925 and A725 | 136.3-137.9x | 138.3-139.8x | +1.4% | X925 202-204 to 209, A725 61.0 to 63.9 |
-| GB10, its X925s alone | X925 | 135.6-136.9x | 137.1-137.9x | +0.8% | |
-| GB10, -t 20 | X925 and A725 | 105.0-108.1x | 104.7-107.4x | level | |
-| M4 Pro | M4 | 131.9-134.1x | 113.4-115.7x | -12 to -15% | 182-186 to 148 |
+| board                 | core          | neon-dp      | neon-i8mm              |             | q8bench                                |
+| --------------------- | ------------- | ------------ | ---------------------- | ----------- | -------------------------------------- |
+| c6g.xlarge            | Neoverse N1   | 18.9x        | (no I8MM: passed over) |             |                                        |
+| c7g.xlarge            | Neoverse V1   | 24.5x        | 26.3x                  | +7.3%       | 81.3 to 85.8                           |
+| c8g.xlarge            | Neoverse V2   | 30.7x        | 32.0x                  | +4.2%       | 103.8 to 110.3                         |
+| c9g.xlarge            | Neoverse V3   | 44.3x        | 45.9x                  | +3.6%       | 126.5 to 133.1                         |
+| GB10, -t 10           | X925 and A725 | 136.3-137.9x | 138.3-139.8x           | +1.4%       | X925 202-204 to 209, A725 61.0 to 63.9 |
+| GB10, its X925s alone | X925          | 135.6-136.9x | 137.1-137.9x           | +0.8%       |                                        |
+| GB10, -t 20           | X925 and A725 | 105.0-108.1x | 104.7-107.4x           | level       |                                        |
+| M4 Pro                | M4            | 131.9-134.1x | 113.4-115.7x           | -12 to -15% | 182-186 to 148                         |
 
 (six columns on the M4 Pro: 117.0 and 118.4x, the product 155.)
 
 mmrate2.c, ns an instruction with 1, 4, 8 and 16 independent chains, one
 thread (1 is the latency; 16 the issue rate where the latency allows):
 
-| core | SDOT | SMMLA |
-|---|---|---|
-| Neoverse V2 (2.8 GHz) | 0.36, 0.17, 0.11, 0.097 | 0.36, 0.17, 0.10, 0.097 |
-| X925 (GB10) | 0.43, 0.12, 0.066, 0.047 | 0.44, 0.12, 0.065, 0.047 |
-| A725 (GB10) | 0.357, 0.179, 0.179, 0.179 | the same |
+| core                     | SDOT                          | SMMLA                           |
+| ------------------------ | ----------------------------- | ------------------------------- |
+| Neoverse V2 (2.8 GHz)    | 0.36, 0.17, 0.11, 0.097       | 0.36, 0.17, 0.10, 0.097         |
+| X925 (GB10)              | 0.43, 0.12, 0.066, 0.047      | 0.44, 0.12, 0.065, 0.047        |
+| A725 (GB10)              | 0.357, 0.179, 0.179, 0.179    | the same                        |
 | M4 Pro P-core (~4.5 GHz) | 0.67-0.72, 0.17, 0.087, 0.066 | 1.334, 0.333, 0.17, 0.131-0.135 |
 
 Where SMMLA issues as SDOT does (V2, X925, A725) it does twice the
@@ -675,13 +674,13 @@ the unit the q8 format leaves: microbenchmarks only, Apple clang 21,
 said, the M4 in use (load average 1.7 to 8). Their sources are kept with
 the session's notes, not in the tree.
 
-| loop | int8 multiply-adds a second |
-|---|---|
-| SDOT, 16 chains, 1 / 2 / 4 / 8 threads | 240-259 G / 497-504 G / 908-910 G / 1713-1804 G |
-| SMOPA (16 x 16 int32, 1024 a SMOPA), 4 tiles, 1 / 2 / 4 / 8 threads | 1984 G / 1957 G / 2254-2364 G / 3812-3829 G |
-| SMOPA, 8 a 32-input block, each tile then drained: rows to Z four at a time, SCVTF, FMLA, zeroed | 498 G |
-| the same with SME2's multi-vector forms (vgx4 array reads, SCVTF x4, FMLA vgx4 into a float tile), one scale vector or one a row | 620-633 G |
-| one tile filled while the other is drained (double-buffered), vgx4 | 728-729 G |
+| loop                                                                                                                             | int8 multiply-adds a second                     |
+| -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| SDOT, 16 chains, 1 / 2 / 4 / 8 threads                                                                                           | 240-259 G / 497-504 G / 908-910 G / 1713-1804 G |
+| SMOPA (16 x 16 int32, 1024 a SMOPA), 4 tiles, 1 / 2 / 4 / 8 threads                                                              | 1984 G / 1957 G / 2254-2364 G / 3812-3829 G     |
+| SMOPA, 8 a 32-input block, each tile then drained: rows to Z four at a time, SCVTF, FMLA, zeroed                                 | 498 G                                           |
+| the same with SME2's multi-vector forms (vgx4 array reads, SCVTF x4, FMLA vgx4 into a float tile), one scale vector or one a row | 620-633 G                                       |
+| one tile filled while the other is drained (double-buffered), vgx4                                                               | 728-729 G                                       |
 
 One thread fills a unit (2.0 T); the second cluster's makes 3.8 T with
 threads on both, about 2.2 times eight cores of SDOT. But the format's
@@ -720,19 +719,19 @@ at one.
 
 The PROFILE build at one thread, ms a run:
 
-| stage | c9g (neon-dp) | c8a (avx512-vnni) | c9g / c8a |
-|---|---|---|---|
-| feed-forward | 2508.2 | 825.6 | 3.04 |
-| q k v pos | 761.7 | 260.6 | 2.92 |
-| conv pw1 pw2 | 460.8 | 150.9 | 3.05 |
-| attention (float) | 437.4 | 150.6 | 2.90 |
-| quantize | 259.0 | 62.9 | 4.12 |
-| attention out | 157.8 | 50.2 | 3.14 |
-| subsampling | 126.3 | 46.3 | 2.73 |
-| glu + depthwise | 54.3 | 23.0 | 2.36 |
-| decoder | 39.0 | 25.5 | 1.53 |
-| mel | 17.5 | 18.4 | 0.95 |
-| the run | 4854 | 1631 | 2.98 |
+| stage             | c9g (neon-dp) | c8a (avx512-vnni) | c9g / c8a |
+| ----------------- | ------------- | ----------------- | --------- |
+| feed-forward      | 2508.2        | 825.6             | 3.04      |
+| q k v pos         | 761.7         | 260.6             | 2.92      |
+| conv pw1 pw2      | 460.8         | 150.9             | 3.05      |
+| attention (float) | 437.4         | 150.6             | 2.90      |
+| quantize          | 259.0         | 62.9              | 4.12      |
+| attention out     | 157.8         | 50.2              | 3.14      |
+| subsampling       | 126.3         | 46.3              | 2.73      |
+| glu + depthwise   | 54.3          | 23.0              | 2.36      |
+| decoder           | 39.0          | 25.5              | 1.53      |
+| mel               | 17.5          | 18.4              | 0.95      |
+| the run           | 4854          | 1631              | 2.98      |
 
 q8bench, one thread, the 1024 x 1024 attention product at T 750: 126.7
 GMAC/s on the V3, 407.0 on Zen 5 (the feed-forward's up 125.1 and
@@ -759,8 +758,8 @@ give DP and I8MM, no SVE and no SME. mmrate2.c as above, built by
 pktito-9950x with llvm-mingw 20261020 (clang 23.1.4), `-O2
 -march=armv8.6-a+i8mm -static -lpthread`, three runs, within 1%:
 
-| core | SDOT | SMMLA |
-|---|---|---|
+| core               | SDOT                                               | SMMLA                                              |
+| ------------------ | -------------------------------------------------- | -------------------------------------------------- |
 | Oryon (X1E-78-100) | 0.887-0.892, 0.221-0.223, 0.110-0.111, 0.073-0.074 | 1.178-1.197, 0.294-0.295, 0.147-0.148, 0.147-0.148 |
 
 SMMLA issues at half SDOT's rate with a longer latency, as on the M4: the
@@ -793,13 +792,13 @@ neon-dp and neon. `pktito-c bench` (test.wav through v2, best of 5), the
 two builds interleaved, four rounds, on AC with the laptop in use (Chrome
 playing media, 0.4 GB of 15.5 GB free), zone0 42 to 68 C, in seconds:
 
-| run | 1 | 2 | 3 | 4 |
-|---|---|---|---|---|
-| before, default: 4 threads | 1.029 | 1.507 | 1.095 | 1.256 |
+| run                         | 1     | 2     | 3     | 4     |
+| --------------------------- | ----- | ----- | ----- | ----- |
+| before, default: 4 threads  | 1.029 | 1.507 | 1.095 | 1.256 |
 | after, default: 8 each time | 0.677 | 1.243 | 0.876 | 0.665 |
-| after, -t 4 | 1.086 | 2.098 | 1.741 | 1.310 |
-| after, -t 8 | 0.694 | 1.231 | 1.223 | 1.205 |
-| after, -t 12 | 0.665 | 0.917 | 1.183 | 1.186 |
+| after, -t 4                 | 1.086 | 2.098 | 1.741 | 1.310 |
+| after, -t 8                 | 0.694 | 1.231 | 1.223 | 1.205 |
+| after, -t 12                | 0.665 | 0.917 | 1.183 | 1.186 |
 
 The default is 1.2 to 1.9x faster in every round. Four rounds of a static
 build of the same change earlier the same day, the first two moving from
@@ -875,12 +874,12 @@ kind's lead shrinks as a recording grows: 5-8% at 150 frames, 2.4-4.7% at
 `./pktito-c bench`, six rounds, the order reversed every other round,
 best of 5 and the threads each run kept:
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads             | best of 5, s                             |
+| --------------------- | ------------------- | ---------------------------------------- |
 | H3 (c42738d), default | 8, 8, 8, 12, 12, 12 | 0.474, 0.480, 0.484, 0.484, 0.485, 0.485 |
-| H4, default | 12 in all six | 0.460, 0.463, 0.473, 0.486, 0.490, 0.486 |
-| -t 8 | | 0.443, 0.615, 0.496, 0.508, 0.513, 0.513 |
-| -t 12 | | 0.494, 0.497, 0.482, 0.482, 0.484, 0.485 |
+| H4, default           | 12 in all six       | 0.460, 0.463, 0.473, 0.486, 0.490, 0.486 |
+| -t 8                  |                     | 0.443, 0.615, 0.496, 0.508, 0.513, 0.513 |
+| -t 12                 |                     | 0.494, 0.497, 0.482, 0.482, 0.484, 0.485 |
 
 -t 12 beat -t 8 in five rounds of six, the more as the machine got busier,
 and H4's default is level with it. Five more logged processes, normally
@@ -910,11 +909,11 @@ no other process had used more than 0.5 s of CPU in 3 s. Five rounds,
 the order of each pair reversed every other round. Best of 5, s,
 before / after:
 
-| run | 1 | 2 | 3 | 4 | 5 | median |
-|---|---|---|---|---|---|---|
+| run                    | 1             | 2             | 3             | 4             | 5             | median        |
+| ---------------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
 | default (8, every run) | 6.289 / 6.368 | 5.778 / 6.267 | 6.937 / 6.065 | 5.702 / 5.181 | 6.993 / 5.284 | 6.289 / 6.065 |
-| -t 8 | 6.324 / 6.409 | 5.271 / 5.977 | 6.010 / 5.835 | 6.522 / 5.346 | 5.418 / 6.948 | 6.010 / 5.977 |
-| -t 2 | 7.260 / 8.537 | 7.249 / 7.187 | 8.119 / 8.118 | 7.261 / 8.147 | 7.926 / 8.134 | 7.261 / 8.134 |
+| -t 8                   | 6.324 / 6.409 | 5.271 / 5.977 | 6.010 / 5.835 | 6.522 / 5.346 | 5.418 / 6.948 | 6.010 / 5.977 |
+| -t 2                   | 7.260 / 8.537 | 7.249 / 7.187 | 8.119 / 8.118 | 7.261 / 8.147 | 7.926 / 8.134 | 7.261 / 8.134 |
 
 The spread from run to run is about 13% either way, drifting slowly,
 and the best of 5 does not take it out. The -t 2 times fall near 7.2 or
@@ -946,12 +945,12 @@ performance governor, gcc 13.3, a vLLM container idle beside it.
 `./pktito-c bench`, test.wav through v2, six rounds, the order reversed
 every other round:
 
-| run | threads | best of 5, s |
-|---|---|---|
-| H3 (c42738d), default | 10 in all six | 0.438, 0.438, 0.441, 0.443, 0.448, 0.447 |
+| run                   | threads                | best of 5, s                             |
+| --------------------- | ---------------------- | ---------------------------------------- |
+| H3 (c42738d), default | 10 in all six          | 0.438, 0.438, 0.441, 0.443, 0.448, 0.447 |
 | H4 (79af521), default | 10, 20, 10, 10, 20, 10 | 0.441, 0.576, 0.445, 0.445, 0.567, 0.446 |
-| -t 10 | | 0.436, 0.438, 0.448, 0.440, 0.440, 0.444 |
-| -t 20 | | 0.586, 0.578, 0.603, 0.600, 0.561, 0.577 |
+| -t 10                 |                        | 0.436, 0.438, 0.448, 0.440, 0.440, 0.444 |
+| -t 20                 |                        | 0.586, 0.578, 0.603, 0.600, 0.561, 0.577 |
 
 H4 took the twenty in two runs of six and lost 30% in each, where H3
 kept the ten every time. Ten processes of the logging build, both races
@@ -960,10 +959,10 @@ within the 3% margin once, where a steady pass's layers have them 14 to
 46% ahead. Timed a layer at a time:
 
 | frames | -t 10, a layer | -t 20, a layer | in the race, the fast kind's | in the race, every core's |
-|---|---|---|---|---|
-| 150 | 3.4-4.7 ms | 5.4-7.5 | 3.4-5.2 | 4.6-8.9 |
-| 250 | 5.6-6.4 | 6.4-8.6 | 5.6-7.5 | 5.9-8.1 |
-| 348 | 7.7-9.1 | 8.4-10.7 | 7.6-9.1 | 7.8-10.4 |
+| ------ | -------------- | -------------- | ---------------------------- | ------------------------- |
+| 150    | 3.4-4.7 ms     | 5.4-7.5        | 3.4-5.2                      | 4.6-8.9                   |
+| 250    | 5.6-6.4        | 6.4-8.6        | 5.6-7.5                      | 5.9-8.1                   |
+| 348    | 7.7-9.1        | 8.4-10.7       | 7.6-9.1                      | 7.8-10.4                  |
 
 The pool's threads are not pinned, and a switch leaves them where they
 were. From twenty to ten, the ten that stay are on both kinds of core
@@ -1018,12 +1017,12 @@ every other round, best of 5 in seconds and the threads each run kept.
 
 The GB10 (gcc 13.3):
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads                | best of 5, s                             |
+| --------------------- | ---------------------- | ---------------------------------------- |
 | H3 (c42738d), default | 10, 10, 20, 10, 10, 10 | 0.435, 0.442, 0.561, 0.447, 0.443, 0.449 |
-| H6, default | 10 in all six | 0.444, 0.440, 0.445, 0.452, 0.448, 0.448 |
-| -t 10 | | 0.438, 0.443, 0.446, 0.447, 0.450, 0.447 |
-| -t 20 | | 0.573, 0.588, 0.592, 0.571, 0.577, 0.585 |
+| H6, default           | 10 in all six          | 0.444, 0.440, 0.445, 0.452, 0.448, 0.448 |
+| -t 10                 |                        | 0.438, 0.443, 0.446, 0.447, 0.450, 0.447 |
+| -t 20                 |                        | 0.573, 0.588, 0.592, 0.571, 0.577, 0.585 |
 
 Thirty more default runs of each: H6 kept the ten in all thirty, H3 in 26.
 Over the day's runs on the GB10, H3 took the twenty in 6 of 48, each about
@@ -1031,12 +1030,12 @@ Over the day's runs on the GB10, H3 took the twenty in 6 of 48, each about
 
 The M4 Pro (Apple clang 21, in use, load 2.4 rising to 8.9):
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads             | best of 5, s                             |
+| --------------------- | ------------------- | ---------------------------------------- |
 | H3 (c42738d), default | 12, 8, 8, 12, 12, 8 | 0.456, 0.467, 0.474, 0.486, 0.487, 0.510 |
-| H6, default | 12 in all six | 0.454, 0.453, 0.471, 0.484, 0.487, 0.487 |
-| -t 8 | | 0.442, 0.455, 0.485, 0.500, 0.509, 0.510 |
-| -t 12 | | 0.453, 0.453, 0.478, 0.480, 0.490, 0.488 |
+| H6, default           | 12 in all six       | 0.454, 0.453, 0.471, 0.484, 0.487, 0.487 |
+| -t 8                  |                     | 0.442, 0.455, 0.485, 0.500, 0.509, 0.510 |
+| -t 12                 |                     | 0.453, 0.453, 0.478, 0.480, 0.490, 0.488 |
 
 Twenty more H6 runs kept 12 in all twenty. -t 12 led -t 8 in four rounds
 of six, the more as the machine got busier, and H6's default is level with
@@ -1052,13 +1051,13 @@ The RG477V (MediaTek Dimensity 8300: four A510s, cpu_capacity 221, and
 four A715s, 996-1024; Android 14, on battery). Both builds' --json is
 test.v2.json. Five rounds, the order reversed every other round:
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads       | best of 5, s                      |
+| --------------------- | ------------- | --------------------------------- |
 | H3 (c42738d), default | 4, 8, 8, 4, 8 | 3.089, 3.613, 3.682, 3.299, 3.520 |
-| H6, default | 4, 8, 4, 8, 4 | 3.283, 3.533, 3.507, 3.769, 3.554 |
-| H3's build, -t 4 | | 3.240, 3.240, 3.372, 3.178, 3.306 |
-| H6's build, -t 4 | | 3.421, 3.116, 3.451, 3.423, 3.443 |
-| -t 8 | | 3.619, 3.372, 3.549, 3.740, 3.808 |
+| H6, default           | 4, 8, 4, 8, 4 | 3.283, 3.533, 3.507, 3.769, 3.554 |
+| H3's build, -t 4      |               | 3.240, 3.240, 3.372, 3.178, 3.306 |
+| H6's build, -t 4      |               | 3.421, 3.116, 3.451, 3.423, 3.443 |
+| -t 8                  |               | 3.619, 3.372, 3.549, 3.740, 3.808 |
 
 Ten more default runs of each: H6 took 8 in eight, H3 in two. Over
 fifteen, H6 kept the four in five and H3 in ten, where -t 4 beat -t 8 in
@@ -1105,12 +1104,12 @@ side, where H6's was twenty-four.
 
 H7, six rounds on the GB10:
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads                | best of 5, s                             |
+| --------------------- | ---------------------- | ---------------------------------------- |
 | H3 (c42738d), default | 20, 20, 10, 20, 10, 10 | 0.569, 0.561, 0.439, 0.594, 0.447, 0.443 |
-| H7, default | 10 in all six | 0.435, 0.437, 0.442, 0.442, 0.443, 0.443 |
-| -t 10 | | 0.437, 0.447, 0.447, 0.445, 0.443, 0.440 |
-| -t 20 | | 0.582, 0.592, 0.562, 0.593, 0.587, 0.568 |
+| H7, default           | 10 in all six          | 0.435, 0.437, 0.442, 0.442, 0.443, 0.443 |
+| -t 10                 |                        | 0.437, 0.447, 0.447, 0.445, 0.443, 0.440 |
+| -t 20                 |                        | 0.582, 0.592, 0.562, 0.593, 0.587, 0.568 |
 
 Thirty more of each: H7 kept the ten in 27, H3 in 26. Thirty logged races,
 all at 348 frames, put the X925s' median at 0.856 to 1.005 of every
@@ -1149,24 +1148,24 @@ test.v2.json.
 
 The GB10 (gcc 13.3), six rounds:
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads                | best of 5, s                             |
+| --------------------- | ---------------------- | ---------------------------------------- |
 | H3 (c42738d), default | 10, 10, 10, 10, 20, 10 | 0.435, 0.436, 0.438, 0.441, 0.587, 0.438 |
-| H8, default | 10 in all six | 0.436, 0.440, 0.436, 0.446, 0.440, 0.440 |
-| -t 10 | | 0.433, 0.432, 0.441, 0.435, 0.443, 0.440 |
-| -t 20 | | 0.573, 0.567, 0.575, 0.571, 0.590, 0.573 |
+| H8, default           | 10 in all six          | 0.436, 0.440, 0.436, 0.446, 0.440, 0.440 |
+| -t 10                 |                        | 0.433, 0.432, 0.441, 0.435, 0.443, 0.440 |
+| -t 20                 |                        | 0.573, 0.567, 0.575, 0.571, 0.590, 0.573 |
 
 Thirty more of each: H8 kept the ten in 29, H3 in 24. In all, 35 of 36
 and 29 of 36.
 
 The M4 Pro (Apple clang 21, in use, load 2.4 rising to 11), six rounds:
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads             | best of 5, s                             |
+| --------------------- | ------------------- | ---------------------------------------- |
 | H3 (c42738d), default | 8, 8, 8, 12, 12, 12 | 0.443, 0.466, 0.470, 0.472, 0.475, 0.477 |
-| H8, default | 8, then 12 in five | 0.442, 0.451, 0.463, 0.472, 0.474, 0.476 |
-| -t 8 | | 0.442, 0.450, 0.485, 0.490, 0.502, 0.502 |
-| -t 12 | | 0.450, 0.450, 0.473, 0.475, 0.478, 0.476 |
+| H8, default           | 8, then 12 in five  | 0.442, 0.451, 0.463, 0.472, 0.474, 0.476 |
+| -t 8                  |                     | 0.442, 0.450, 0.485, 0.490, 0.502, 0.502 |
+| -t 12                 |                     | 0.450, 0.450, 0.473, 0.475, 0.478, 0.476 |
 
 -t 8 led by 1.8% in the first round, where H8 took 8, and was level in
 the second; -t 12 led in the last four, by 2.5 to 5.2%, as the load rose.
@@ -1175,13 +1174,13 @@ Thirty more of each: H8 took 12 in all thirty, H3 8 in 29.
 
 The RG477V (on battery, 28-29 C throughout), five rounds:
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads       | best of 5, s                      |
+| --------------------- | ------------- | --------------------------------- |
 | H3 (c42738d), default | 4, 4, 8, 4, 8 | 3.625, 3.562, 3.422, 3.800, 3.645 |
-| H8, default | 4 in all five | 3.339, 3.636, 3.571, 3.935, 3.577 |
-| H3's build, -t 4 | | 3.326, 3.327, 3.961, 3.729, 3.638 |
-| H8's build, -t 4 | | 3.554, 3.549, 3.602, 3.789, 3.560 |
-| -t 8 | | 3.958, 3.789, 3.949, 3.819, 3.789 |
+| H8, default           | 4 in all five | 3.339, 3.636, 3.571, 3.935, 3.577 |
+| H3's build, -t 4      |               | 3.326, 3.327, 3.961, 3.729, 3.638 |
+| H8's build, -t 4      |               | 3.554, 3.549, 3.602, 3.789, 3.560 |
+| -t 8                  |               | 3.958, 3.789, 3.949, 3.819, 3.789 |
 
 -t 4 led -t 8 in every round, by 2.4 to 16%. Ten more of each: H8 kept
 the four in six, H3 in eight; over fifteen, eleven each. H3 had kept the
@@ -1191,13 +1190,13 @@ moves more from one session to the next than between the two rules.
 The Googlebook (2026-10-25, above; on AC, load 2.7 before the runs),
 five rounds:
 
-| run | threads | best of 5, s |
-|---|---|---|
-| H3 (c42738d), default | 8 in all five | 0.619, 0.782, 0.665, 0.757, 0.639 |
-| H8, default | 12 in all five | 0.583, 0.580, 0.579, 0.809, 0.882 |
-| H3's build, -t 8 | | 0.644, 0.655, 0.813, 0.640, 0.692 |
-| H8's build, -t 8 | | 0.658, 0.788, 0.650, 0.756, 0.648 |
-| -t 12 | | 0.602, 0.582, 0.594, 0.762, 0.823 |
+| run                   | threads        | best of 5, s                      |
+| --------------------- | -------------- | --------------------------------- |
+| H3 (c42738d), default | 8 in all five  | 0.619, 0.782, 0.665, 0.757, 0.639 |
+| H8, default           | 12 in all five | 0.583, 0.580, 0.579, 0.809, 0.882 |
+| H3's build, -t 8      |                | 0.644, 0.655, 0.813, 0.640, 0.692 |
+| H8's build, -t 8      |                | 0.658, 0.788, 0.650, 0.756, 0.648 |
+| -t 12                 |                | 0.602, 0.582, 0.594, 0.762, 0.823 |
 
 Ten more of each: H8 took 12 in all ten, H3 8 in all ten. -t 12 led by
 6.5 to 11% in the first three rounds and -t 8 by 16 and 21% in the last
@@ -1212,13 +1211,13 @@ The Galaxy S25 Ultra (SM-S938U1, Snapdragon 8 Elite: six Oryon cores at
 cpu_capacity 765, two at 1024; NDK r30's clang 21, on battery, 29 C
 rising to 34), five rounds:
 
-| run | threads | best of 5, s |
-|---|---|---|
+| run                   | threads       | best of 5, s                      |
+| --------------------- | ------------- | --------------------------------- |
 | H3 (c42738d), default | 8 in all five | 1.643, 1.705, 1.251, 1.930, 1.494 |
-| H8, default | 8 in all five | 1.336, 1.606, 1.789, 1.624, 1.755 |
-| H3's build, -t 2 | | 2.145, 4.547, 2.179, 2.223, 2.390 |
-| H8's build, -t 2 | | 3.818, 4.091, 2.447, 2.204, 2.794 |
-| -t 8 | | 1.687, 1.217, 1.231, 1.176, 2.297 |
+| H8, default           | 8 in all five | 1.336, 1.606, 1.789, 1.624, 1.755 |
+| H3's build, -t 2      |               | 2.145, 4.547, 2.179, 2.223, 2.390 |
+| H8's build, -t 2      |               | 3.818, 4.091, 2.447, 2.204, 2.794 |
+| -t 8                  |               | 1.687, 1.217, 1.231, 1.176, 2.297 |
 
 Ten more of each: both kept the eight in all ten. -t 8 led -t 2 in every
 round, by 4 to 70%, on a board whose -t 8 runs alone spread from 1.18 to
@@ -1261,11 +1260,11 @@ ThreadPowerThrottling 5 s in. Before each run, a check that no other
 process had used 1.0 s of CPU in 3 s; every cpu's busy share sampled once
 a second.
 
-| build | threads | best of 5, s | cpus busy, 0-3 / 4-11 | the busy threads |
-|---|---|---|---|---|
-| 98a54d1, before the opt-out | 8 | 9.01, 11.40, 11.36, 8.92 | 3.9 / 0.1 | all 8 system-managed (ControlMask 0) |
-| c42738d, the opt-out, H3's race | 8 | 5.79, 5.96, 6.24, 5.85 | 2.0 / 5.8-5.9 | all 8 ControlMask 1, StateMask 0 |
-| 79af521, H4's race | 12 | 4.94, 4.44, 4.73, 4.69 | 3.6 / 7.3-7.4 | all 12 opted out |
+| build                           | threads | best of 5, s             | cpus busy, 0-3 / 4-11 | the busy threads                     |
+| ------------------------------- | ------- | ------------------------ | --------------------- | ------------------------------------ |
+| 98a54d1, before the opt-out     | 8       | 9.01, 11.40, 11.36, 8.92 | 3.9 / 0.1             | all 8 system-managed (ControlMask 0) |
+| c42738d, the opt-out, H3's race | 8       | 5.79, 5.96, 6.24, 5.85   | 2.0 / 5.8-5.9         | all 8 ControlMask 1, StateMask 0     |
+| 79af521, H4's race              | 12      | 4.94, 4.44, 4.73, 4.69   | 3.6 / 7.3-7.4         | all 12 opted out                     |
 
 About 3 s into each pass, Windows had all of 98a54d1's pool on cpus 0-3.
 The opt-out spread c42738d's over the twelve, 1.72 times faster (medians
@@ -1285,10 +1284,10 @@ window closed; on AC (98%, Best performance), snappy warm from an
 8-minute window test just before. One round of `bench -m v2.pkf
 long10.wav`, default threads, a quiet check before each run:
 
-| build | threads | best of 5, s | cpus busy, 0-3 / 4-11 | the busy threads |
-|---|---|---|---|---|
-| 98a54d1, before the opt-out | 8 | 8.992 | 3.9 / 0.1 | all 8 system-managed |
-| c42738d, the opt-out | 8 | 6.412 | 2.0 / 5.8 | all 8 opted out |
+| build                       | threads | best of 5, s | cpus busy, 0-3 / 4-11 | the busy threads     |
+| --------------------------- | ------- | ------------ | --------------------- | -------------------- |
+| 98a54d1, before the opt-out | 8       | 8.992        | 3.9 / 0.1             | all 8 system-managed |
+| c42738d, the opt-out        | 8       | 6.412        | 2.0 / 5.8             | all 8 opted out      |
 
 The packing waits for neither the lock nor the screen: with the session
 unlocked and the screen on, Windows held the windowless process's pool
@@ -1320,12 +1319,12 @@ handed to a fresh window that was then focused or minimised, two rounds
 with the order alternating, timed from launch to all done; the cpus' busy
 shares after the first 3 s.
 
-| app | window | s | cpus busy, 0-3 / 4-11 |
-|---|---|---|---|
-| 0.9.2 | focused | 74.8, 85.9 | 3.4 / 2.8, 3.5 / 2.4 |
-| 0.9.2 | minimised | 357.4, 400.2 | 3.9 / 0.1, 3.9 / 0.0 |
-| 0.9.3, its process opted out | focused | 70.3, 69.5 | 3.4 / 3.0, 3.4 / 3.1 |
-| 0.9.3, its process opted out | minimised | 75.2, 75.1 | 3.4 / 2.8, 3.4 / 2.9 |
+| app                          | window    | s            | cpus busy, 0-3 / 4-11 |
+| ---------------------------- | --------- | ------------ | --------------------- |
+| 0.9.2                        | focused   | 74.8, 85.9   | 3.4 / 2.8, 3.5 / 2.4  |
+| 0.9.2                        | minimised | 357.4, 400.2 | 3.9 / 0.1, 3.9 / 0.0  |
+| 0.9.3, its process opted out | focused   | 70.3, 69.5   | 3.4 / 3.0, 3.4 / 3.1  |
+| 0.9.3, its process opted out | minimised | 75.2, 75.1   | 3.4 / 2.8, 3.4 / 2.9  |
 
 On AC the app never packed, focused or minimised (the screen-on entry).
 On battery 0.9.2's minimised window did, onto cpus 0-3, and took 4.7
@@ -1368,11 +1367,11 @@ as above, static builds from clang 21.1.8 and gcc 15.2 (cross-compiled,
 -mtune=cortex-a76), each build's --json test.v2.json byte for byte, not
 throttled.
 
-| build | clang 21 | gcc 15 |
-|---|---|---|
-| base | 3.845 s | 3.725 s |
-| base, 32 bytes along | +6.21% (+5.67 to +6.46) | +7.91% (+7.81 to +7.95) |
-| FCVTNS | +5.08% (+4.33 to +5.74) | +0.01% (-0.08 to +0.13) |
+| build                  | clang 21                | gcc 15                  |
+| ---------------------- | ----------------------- | ----------------------- |
+| base                   | 3.845 s                 | 3.725 s                 |
+| base, 32 bytes along   | +6.21% (+5.67 to +6.46) | +7.91% (+7.81 to +7.95) |
+| FCVTNS                 | +5.08% (+4.33 to +5.74) | +0.01% (-0.08 to +0.13) |
 | FCVTNS, 32 bytes along | -0.08% (-0.41 to +0.08) | -0.01% (-0.11 to +0.19) |
 
 gcc's tile is a clone, q8_cols.constprop.0. FCVTNS moved it 16 bytes,
@@ -1381,15 +1380,15 @@ clang, FCVTNS 32 bytes along put its loops back where base's are, and the
 5% went with them. `make PROFILE=1` on the clang pair, three runs each,
 medians:
 
-| stage | base, ms | FCVTNS, ms | |
-|---|---|---|---|
-| quantize | 218.6 | 203.2 | -7.0% |
-| feed-forward | 1889.5 | 2054.7 | +8.7% |
-| q k v pos | 576.9 | 600.3 | +4.1% |
-| attention out | 118.5 | 129.6 | +9.4% |
-| conv pw1 pw2 | 349.4 | 371.0 | +6.2% |
-| attention | 295.1 | 295.0 | 0.0% |
-| decoder | 140.3 | 138.8 | -1.1% |
+| stage         | base, ms | FCVTNS, ms |       |
+| ------------- | -------- | ---------- | ----- |
+| quantize      | 218.6    | 203.2      | -7.0% |
+| feed-forward  | 1889.5   | 2054.7     | +8.7% |
+| q k v pos     | 576.9    | 600.3      | +4.1% |
+| attention out | 118.5    | 129.6      | +9.4% |
+| conv pw1 pw2  | 349.4    | 371.0      | +6.2% |
+| attention     | 295.1    | 295.0      | 0.0%  |
+| decoder       | 140.3    | 138.8      | -1.1% |
 
 FCVTNS's own effect is the quantize stage's 15 ms, 0.4% of the run; the
 rest is the int8 products, the four stages that are 76% of it. So the
@@ -1417,7 +1416,7 @@ SCVTFs, the four columns' scales into one vector's lanes, and 8 FMLAs by
 element. The loop's head is at a 64-byte line (`.p2align 6`).
 
 The bits are ref's. A block's integer sums are exact, its sum is exact
-as a float (32 products of at most 128 * 127, under 2^24), and an FMLA
+as a float (32 products of at most 128 \* 127, under 2^24), and an FMLA
 by element is the fused multiply-add vfmaq_f32 is, block after block,
 ref's chain. The rest stays C: tiles of 1 to 3 columns, other block
 sizes (the decoder's), and each output's scale, bias and add. A64's
@@ -1444,11 +1443,11 @@ case, so the cases reach it), pi5c, six interleaved rounds, test.wav
 through v2, best of 5 at 4 threads, each build's --json test.v2.json byte
 for byte, not throttled:
 
-| build | clang 21 | gcc 15 |
-|---|---|---|
-| base | 3.845 s | 3.726 s |
-| the loop in assembly | 3.886 s, +1.13% (+0.96 to +1.25) | 3.893 s, +4.51% (+4.21 to +4.56) |
-| the same, its head 32 bytes along | 3.884 s, +1.07% | 3.896 s, +4.56% |
+| build                             | clang 21                         | gcc 15                           |
+| --------------------------------- | -------------------------------- | -------------------------------- |
+| base                              | 3.845 s                          | 3.726 s                          |
+| the loop in assembly              | 3.886 s, +1.13% (+0.96 to +1.25) | 3.893 s, +4.51% (+4.21 to +4.56) |
+| the same, its head 32 bytes along | 3.884 s, +1.07%                  | 3.896 s, +4.56%                  |
 
 It took the compiler out of it: the two builds were within 0.2% of each
 other, and the head 32 bytes along changed nothing. But it is slower than
@@ -1472,13 +1471,13 @@ the GB10 (gcc 13.3 and clang 18.1) and pi5c (its gcc 12.2). Interleaved
 rounds, test.wav through v2, best of 5 at the default threads, each
 build's --json test.v2.json byte for byte:
 
-| board | compiler | base | the loop in assembly | |
-|---|---|---|---|---|
-| pi5c, Pi 5, 4 threads, 6 rounds | clang 21.1 | 3.842 s | 3.657 s | -4.82% (-4.94 to -4.69) |
-| | gcc 15.2 | 3.726 s | 3.671 s | -1.46% (-1.56 to -1.31) |
-| GB10, 10 X925s, 6 rounds | clang 18.1 | 0.426 s | 0.429 s | +0.82% (-0.94 to +1.17) |
-| | gcc 13.3 | 0.441 s | 0.431 s | -2.27% (-3.17 to -1.37) |
-| M4 Pro, 12 threads, 6 rounds | Apple clang 21.0 | 0.456 s | 0.444 s | -2.23% (-3.36 to +1.73) |
+| board                           | compiler         | base    | the loop in assembly |                         |
+| ------------------------------- | ---------------- | ------- | -------------------- | ----------------------- |
+| pi5c, Pi 5, 4 threads, 6 rounds | clang 21.1       | 3.842 s | 3.657 s              | -4.82% (-4.94 to -4.69) |
+|                                 | gcc 15.2         | 3.726 s | 3.671 s              | -1.46% (-1.56 to -1.31) |
+| GB10, 10 X925s, 6 rounds        | clang 18.1       | 0.426 s | 0.429 s              | +0.82% (-0.94 to +1.17) |
+|                                 | gcc 13.3         | 0.441 s | 0.431 s              | -2.27% (-3.17 to -1.37) |
+| M4 Pro, 12 threads, 6 rounds    | Apple clang 21.0 | 0.456 s | 0.444 s              | -2.23% (-3.36 to +1.73) |
 
 pi5c's builds were cross-compiled static (clang 21.1.8, gcc 15.2); the
 GB10's and the M4 Pro's were built on the board. The M4 Pro was in use (a
@@ -1544,11 +1543,11 @@ archive, test.wav through v2, best of 5 at the default threads, 8
 interleaved rounds with 45 s of rest before each; every build's --json
 byte for byte the same.
 
-| device | SoC | the loop in assembly | |
-|---|---|---|---|
-| Galaxy Tab S7 FE (SM-T733) | Snapdragon 778G | -0.50% (-1.0 to -0.0) | base 3.216-3.243 s, new 3.205-3.231 s |
-| RG477V | Dimensity 8300 | -4.8% (-10.9 to +4.5) | noisy; the fastest of each 3.161 s and 3.096 s (-2.1%) |
-| Galaxy S25 Ultra | Snapdragon 8 Elite | no result | 1.10 s or 1.6 to 2.2 s in both builds, which looks like where the threads were placed, not the kernel; the fastest of each 1.096 s and 1.104 s (+0.7%) |
+| device                     | SoC                | the loop in assembly  |                                                                                                                                                        |
+| -------------------------- | ------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Galaxy Tab S7 FE (SM-T733) | Snapdragon 778G    | -0.50% (-1.0 to -0.0) | base 3.216-3.243 s, new 3.205-3.231 s                                                                                                                  |
+| RG477V                     | Dimensity 8300     | -4.8% (-10.9 to +4.5) | noisy; the fastest of each 3.161 s and 3.096 s (-2.1%)                                                                                                 |
+| Galaxy S25 Ultra           | Snapdragon 8 Elite | no result             | 1.10 s or 1.6 to 2.2 s in both builds, which looks like where the threads were placed, not the kernel; the fastest of each 1.096 s and 1.104 s (+0.7%) |
 
 Faster or level where a result could be had, as on the boards above.
 
@@ -1560,10 +1559,10 @@ best of 5 at the default threads, 8 interleaved rounds with 45 s of rest
 before each, every build's --json byte for byte the same. Both devices on
 AC, and each bench logged the phone's wake state: every one Awake.
 
-| device | SoC | the loop in assembly | |
-|---|---|---|---|
+| device                       | SoC                | the loop in assembly   |                                                                                                                                                                           |
+| ---------------------------- | ------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Galaxy S25 Ultra (SM-S938U1) | Snapdragon 8 Elite | -6.5% (-14.8 to +59.3) | faster in 7 rounds of 8 (-2.5 to -14.8); round 7's +59.3% is one bench of the new build at 1.913 s; else base 1.194-1.377 s, new 1.138-1.204 s; the fastest of each -4.7% |
-| XPS Googlebook | arm64, 12 cores | -0.86% (-2.1 to +1.0) | faster in 7 rounds of 8; base 0.520-0.532 s, new 0.516-0.525 s; the fastest of each -0.8% |
+| XPS Googlebook               | arm64, 12 cores    | -0.86% (-2.1 to +1.0)  | faster in 7 rounds of 8; base 0.520-0.532 s, new 0.516-0.525 s; the fastest of each -0.8%                                                                                 |
 
 The S25 Ultra's first run, 1.1 s or 1.6 to 2.2 s in both builds, was the
 phone asleep on battery, not where the threads were placed. Awake, the
@@ -1595,16 +1594,16 @@ the row's, the bias). Every output is ref's bits: 0 of 262,144
 different from ref's formula. Apple clang 21, the M4 Pro in use (load
 1.9 to 5.4), best of 7, multiply-adds a second:
 
-| threads | the stage | SMOPA on registers alone |
-|---|---|---|
-| 1 | 1331-1358 G | 2005-2009 G |
-| 2 | 2497-2533 G | 4004-4012 G |
-| 4, from a shared counter | 2647-2914 G (a static split: 1135) | 1223-1250 G |
-| 8, from a shared counter | 2298-2809 G (a static split: 1440, 2027) | 1424-1984 G |
-| 8: 1 SMOPA thread, the rest the tree's pk_k_gemm_q8 (SDOT) | 1765-1766 G | |
-| 8: 2, 3 or 4 SMOPA threads, the rest SDOT | 2447-2466 G | |
-| 8, all SDOT at blocks of 32 (33c5e7c's numerics) | 1342-1430 G | |
-| 8, all SDOT at a scale a row | 1262-1315 G | |
+| threads                                                    | the stage                                | SMOPA on registers alone |
+| ---------------------------------------------------------- | ---------------------------------------- | ------------------------ |
+| 1                                                          | 1331-1358 G                              | 2005-2009 G              |
+| 2                                                          | 2497-2533 G                              | 4004-4012 G              |
+| 4, from a shared counter                                   | 2647-2914 G (a static split: 1135)       | 1223-1250 G              |
+| 8, from a shared counter                                   | 2298-2809 G (a static split: 1440, 2027) | 1424-1984 G              |
+| 8: 1 SMOPA thread, the rest the tree's pk_k_gemm_q8 (SDOT) | 1765-1766 G                              |                          |
+| 8: 2, 3 or 4 SMOPA threads, the rest SDOT                  | 2447-2466 G                              |                          |
+| 8, all SDOT at blocks of 32 (33c5e7c's numerics)           | 1342-1430 G                              |                          |
+| 8, all SDOT at a scale a row                               | 1262-1315 G                              |                          |
 
 With its loads one thread gets two thirds of the unit's peak. The K loop
 in assembly, the next four groups' loads issued ahead of this four's
@@ -1645,17 +1644,17 @@ kernel 7.0.0-1019-nvidia; the loops are assembly, the same bytes under gcc
 13.3 and clang 18.1. Cycles an instruction, one chain (the latency) and
 the best rate a cycle:
 
-| instruction | X925, 1 chain | 8 | 16 | best a cycle | A725, 1 chain | best a cycle |
-|---|---|---|---|---|---|---|
-| SDOT by element; SVE SDOT indexed; SDOT vector, both | 1.06 | 0.27 | 0.19 | 5.16 | 1.00 | 2.00 |
-| SMMLA, NEON and SVE | 1.06 | 0.27 | 0.19 | 5.16 | 1.00 | 2.00 |
-| FMLA by element or vector; SVE FMLA indexed or predicated | 2.00 | 0.25 | 0.20 | 5.16 | 2.00 | 2.00 |
-| SCVTF, NEON and SVE | 4.00 | 0.62 | 0.51 | 2.00 | 4.00 | 0.50 |
-| FSUB, FADD, ZIP1 (NEON and SVE), ADD, ADDP | 2.00 | 0.25 | 0.19 | 5.16 | 2.00 | 2.00 |
-| MOVI #0, MOV, SVE DUP of #0 | | | | 5.16 | | 2.00 (MOVI #0: 4.00) |
-| LDR q, d or s, LD1R; SVE LD1B, LD1W, LD1RQB, LD1RW, LDR z | | | | 4.00 | | 2.7 to 3.0 |
-| LDP q | | | | 2.00 | | 1.00 |
-| SVE gather, LD1W of 4 words / LD1D of 2 | | | | 0.72 / 1.00 | | 0.27 / 0.41 |
+| instruction                                               | X925, 1 chain | 8    | 16   | best a cycle | A725, 1 chain | best a cycle         |
+| --------------------------------------------------------- | ------------- | ---- | ---- | ------------ | ------------- | -------------------- |
+| SDOT by element; SVE SDOT indexed; SDOT vector, both      | 1.06          | 0.27 | 0.19 | 5.16         | 1.00          | 2.00                 |
+| SMMLA, NEON and SVE                                       | 1.06          | 0.27 | 0.19 | 5.16         | 1.00          | 2.00                 |
+| FMLA by element or vector; SVE FMLA indexed or predicated | 2.00          | 0.25 | 0.20 | 5.16         | 2.00          | 2.00                 |
+| SCVTF, NEON and SVE                                       | 4.00          | 0.62 | 0.51 | 2.00         | 4.00          | 0.50                 |
+| FSUB, FADD, ZIP1 (NEON and SVE), ADD, ADDP                | 2.00          | 0.25 | 0.19 | 5.16         | 2.00          | 2.00                 |
+| MOVI #0, MOV, SVE DUP of #0                               |               |      |      | 5.16         |               | 2.00 (MOVI #0: 4.00) |
+| LDR q, d or s, LD1R; SVE LD1B, LD1W, LD1RQB, LD1RW, LDR z |               |      |      | 4.00         |               | 2.7 to 3.0           |
+| LDP q                                                     |               |      |      | 2.00         |               | 1.00                 |
+| SVE gather, LD1W of 4 words / LD1D of 2                   |               |      |      | 0.72 / 1.00  |               | 0.27 / 0.41          |
 
 Every SVE form runs at its NEON form's rate, to the third figure, on both
 cores. The SDOT chain's 1.06 cycles is the accumulator forwarded within a
@@ -1675,12 +1674,12 @@ copy fused into the destructive instruction after it, which makes SDOT,
 SMMLA and FMLA constructive. Cycles a pair, sixteen independent pairs of
 a register's start and one instruction into it:
 
-| pair | X925 | A725 |
-|---|---|---|
-| MOVI #0 + SDOT | 0.39 | 0.50 |
+| pair                     | X925 | A725 |
+| ------------------------ | ---- | ---- |
+| MOVI #0 + SDOT           | 0.39 | 0.50 |
 | MOVPRFX + SDOT (indexed) | 0.20 | 1.00 |
-| MOVPRFX + SMMLA | 0.20 | 0.50 |
-| MOV + SMMLA | 0.39 | 1.00 |
+| MOVPRFX + SMMLA          | 0.20 | 0.50 |
+| MOV + SMMLA              | 0.39 | 1.00 |
 | MOVPRFX + FMLA (indexed) | 0.20 | 1.00 |
 
 The X925 fuses MOVPRFX with all three; the A725 with SMMLA alone, and
@@ -1703,21 +1702,21 @@ each), every output checked bit for bit against ref's chain (acc =
 fmaf((float)s, d, acc)) before it is timed; three processes on each core,
 within 0.3%. Cycles a 1024 multiply-adds (a block of 32 inputs):
 
-| loop | X925 | A725 |
-|---|---|---|
-| the tree's SDOT loop (q8_blocks4_qb32) | 19.29-19.33 | 41.77-41.85 |
-| the same, MOVI and SCVTF as a MOV of M and an FSUB (below) | 19.05 | 44.18 |
-| the same, MOVI and SCVTF as MOVPRFX of M and an FSUB | 17.52-17.54 | 46.25-46.29 |
-| SMMLA, weights in its order, A by ZIP; MOVI and SCVTF | 12.88 | 31.88 |
-| the same; MOVPRFX of M and FSUB | 12.15-12.16 | 30.06-30.07 |
-| SMMLA, A by LDR d and LD1 {.d}[1]; MOVI and SCVTF | 14.11-14.15 | 33.31-33.32 |
-| the same; MOV of M and FSUB | 14.40-14.42 | 33.65 |
-| the same; MOVPRFX of M and FSUB | 13.15-13.19 | 30.45 |
-| A by ZIP, MOVPRFX; each block's scales into vectors in the loop | 12.51-12.52 | 30.12-30.14 |
-| the same, the weights ZIPped in the loop from the file's order | 15.38-15.43 | 37.13-37.15 |
-| the same as the last but one at blocks of 64 (the fast mode) | 10.77-10.78 | 25.11-25.12 |
-| the same, MOVI and SCVTF | 11.15-11.18 | 26.35-26.37 |
-| the half panel's weights put in SMMLA's order, a block's 256 bytes | 8.11 | 12.42 |
+| loop                                                               | X925        | A725        |
+| ------------------------------------------------------------------ | ----------- | ----------- |
+| the tree's SDOT loop (q8_blocks4_qb32)                             | 19.29-19.33 | 41.77-41.85 |
+| the same, MOVI and SCVTF as a MOV of M and an FSUB (below)         | 19.05       | 44.18       |
+| the same, MOVI and SCVTF as MOVPRFX of M and an FSUB               | 17.52-17.54 | 46.25-46.29 |
+| SMMLA, weights in its order, A by ZIP; MOVI and SCVTF              | 12.88       | 31.88       |
+| the same; MOVPRFX of M and FSUB                                    | 12.15-12.16 | 30.06-30.07 |
+| SMMLA, A by LDR d and LD1 {.d}[1]; MOVI and SCVTF                  | 14.11-14.15 | 33.31-33.32 |
+| the same; MOV of M and FSUB                                        | 14.40-14.42 | 33.65       |
+| the same; MOVPRFX of M and FSUB                                    | 13.15-13.19 | 30.45       |
+| A by ZIP, MOVPRFX; each block's scales into vectors in the loop    | 12.51-12.52 | 30.12-30.14 |
+| the same, the weights ZIPped in the loop from the file's order     | 15.38-15.43 | 37.13-37.15 |
+| the same as the last but one at blocks of 64 (the fast mode)       | 10.77-10.78 | 25.11-25.12 |
+| the same, MOVI and SCVTF                                           | 11.15-11.18 | 26.35-26.37 |
+| the half panel's weights put in SMMLA's order, a block's 256 bytes | 8.11        | 12.42       |
 
 The SDOT loop's 19.3 cycles in L1 is q8bench's at T 256 in 64-row slices
 (207-210 GMAC/s on one X925 under gcc 13.3 and clang 18.1, 19.1 cycles):
@@ -1732,8 +1731,7 @@ c+1 r, c+1 r+1]: 32 SMMLAs a block where SDOT takes 64. A block's sums
 start at M = 0x4B400000 (MOVPRFX, the first SMMLA into each), so that a
 sum s is held as M + s, which as a float is 12582912 + s exactly while |s|
 < 2^22 (a block of 64 inputs is at most 64 x 127 x 128 = 1,040,384); an
-FSUB of 12582912.0f leaves s exactly, the float SCVTF would give, +0.0 for
-0. Then one FMLA by a vector of the block's scales, [d_c d_c d_c+1
+FSUB of 12582912.0f leaves s exactly, the float SCVTF would give, +0.0 for 0. Then one FMLA by a vector of the block's scales, [d_c d_c d_c+1
 d_c+1], two LD1Rs and a ZIP1 a pair: each lane is one output's ref chain,
 and the floats are taken apart into columns once, at the tile's end. Of
 the 1.54 times, MOVPRFX is 5 to 6% (12.88 to 12.15, 31.88 to 30.06), the
@@ -1815,14 +1813,14 @@ with NDK r30's clang for Android.
 
 q8bench on one X925 (taskset -c 5), T 256 in 64-row slices, GMAC/s:
 
-| product | qb | gcc 13.3, neon-dp | neon-sve | clang 18.1, neon-dp | neon-sve |
-|---|---|---|---|---|---|
-| ff up 4096 x 1024 | 32 | 207.0 | 292.1 | 207.8 | 296.1 |
-| | 64 | 223.8 | 333.9 | 228.6 | 331.9 |
-| ff down 1024 x 4096 | 32 | 193.9 | 289.5 | 193.9 | 291.4 |
-| | 64 | 200.3 | 329.6 | 201.0 | 332.9 |
-| attention q 1024 x 1024 | 32 | 209.2 | 295.7 | 210.2 | 300.3 |
-| | 64 | 226.3 | 333.9 | 231.2 | 342.0 |
+| product                 | qb  | gcc 13.3, neon-dp | neon-sve | clang 18.1, neon-dp | neon-sve |
+| ----------------------- | --- | ----------------- | -------- | ------------------- | -------- |
+| ff up 4096 x 1024       | 32  | 207.0             | 292.1    | 207.8               | 296.1    |
+|                         | 64  | 223.8             | 333.9    | 228.6               | 331.9    |
+| ff down 1024 x 4096     | 32  | 193.9             | 289.5    | 193.9               | 291.4    |
+|                         | 64  | 200.3             | 329.6    | 201.0               | 332.9    |
+| attention q 1024 x 1024 | 32  | 209.2             | 295.7    | 210.2               | 300.3    |
+|                         | 64  | 226.3             | 333.9    | 231.2               | 342.0    |
 
 On one A725 (CPU 0, gcc): ff up 65.4 to 88.9 at 32 and 71.2 to 103.7 at
 64, ff down 65.4 to 91.7 and 71.5 to 109.2, attention q 64.8 to 88.9 and
@@ -1832,14 +1830,14 @@ to 90 on the A725: in range at 32, 2 to 3% short at 64, the A725 above.
 By columns, q8bench on one X925 (gcc), a call of all T columns,
 neon-sve's GMAC/s against neon-dp's, at blocks of 32 / 64:
 
-| T | ff up | ff down | attention q |
-|---|---|---|---|
-| 4 | +0.6 / +0.2% | +3.0 / -0.2% | -0.7 / +0.8% |
-| 8 | -0.2 / +3.3% | -6.8 / -4.1% | +5.7 / +8.3% |
-| 12 | +11.1 / +16.3% | +7.6 / +13.8% | +15.2 / +20.1% |
-| 16 | +18.9 / +24.2% | +16.8 / +24.3% | +21.4 / +27.7% |
-| 24 | +26.2 / +31.9% | +28.7 / +37.8% | +28.7 / +36.5% |
-| 60 | +34.0 / +41.6% | +42.9 / +54.9% | +35.4 / +42.6% |
+| T   | ff up          | ff down        | attention q    |
+| --- | -------------- | -------------- | -------------- |
+| 4   | +0.6 / +0.2%   | +3.0 / -0.2%   | -0.7 / +0.8%   |
+| 8   | -0.2 / +3.3%   | -6.8 / -4.1%   | +5.7 / +8.3%   |
+| 12  | +11.1 / +16.3% | +7.6 / +13.8%  | +15.2 / +20.1% |
+| 16  | +18.9 / +24.2% | +16.8 / +24.3% | +21.4 / +27.7% |
+| 24  | +26.2 / +31.9% | +28.7 / +37.8% | +28.7 / +36.5% |
+| 60  | +34.0 / +41.6% | +42.9 / +54.9% | +35.4 / +42.6% |
 | 128 | +39.7 / +46.2% | +49.5 / +64.6% | +40.3 / +47.3% |
 | 256 | +41.1 / +47.7% | +47.4 / +64.5% | +41.2 / +48.4% |
 
@@ -1856,19 +1854,19 @@ parent (d2c70f0) built the same way; the vLLM worker idle throughout,
 about 3% of one core in every run of both builds (its CPU ticks, logged
 for each). The paired change within each round, its median and range:
 
-| run | compiler | base | neon-sve | change |
-|---|---|---|---|---|
-| default (ten X925s), 6 rounds | gcc 13.3 | 0.383-0.392 s | 0.324-0.332 s | -15.4% (-17.1 to -14.0) |
-| | clang 18.1 | 0.380-0.392 s, and 0.489 | 0.319-0.329 s | -16.8% (-32.9 to -13.9) |
-| one X925 (taskset -c 5, -t 1), 6 rounds | gcc 13.3 | 2.990-2.994 s | 2.276-2.293 s | -23.7% (-24.0 to -23.3) |
-| | clang 18.1 | 2.953-2.958 s | 2.238-2.257 s | -24.1% (-24.3 to -23.6) |
-| --fast, default, 4 rounds | gcc 13.3 | 0.372-0.387 s | 0.303-0.311 s | -19.4% (-21.1 to -18.3) |
-| | clang 18.1 | 0.370-0.376 s | 0.300-0.307 s | -19.1% (-20.0 to -17.0) |
-| --fast, one X925, 4 rounds | gcc 13.3 | 2.844-2.851 s | 2.082-2.101 s | -26.7% (-26.8 to -26.2) |
-| | clang 18.1 | 2.791-2.794 s | 2.042-2.055 s | -26.7% (-26.8 to -26.4) |
-| -t 20, 4 rounds | gcc 13.3 | 0.506-0.519 s | 0.445-0.468 s | -11.2% (-13.1 to -7.7) |
-| | clang 18.1 | 0.496-0.509 s | 0.442-0.457 s | -11.5% (-12.5 to -7.9) |
-| one A725 (taskset -c 0, -t 1), 3 rounds | gcc 13.3 | 9.153-9.163 s | 7.274-7.280 s | -20.6% (-20.6 to -20.5) |
+| run                                     | compiler   | base                     | neon-sve      | change                  |
+| --------------------------------------- | ---------- | ------------------------ | ------------- | ----------------------- |
+| default (ten X925s), 6 rounds           | gcc 13.3   | 0.383-0.392 s            | 0.324-0.332 s | -15.4% (-17.1 to -14.0) |
+|                                         | clang 18.1 | 0.380-0.392 s, and 0.489 | 0.319-0.329 s | -16.8% (-32.9 to -13.9) |
+| one X925 (taskset -c 5, -t 1), 6 rounds | gcc 13.3   | 2.990-2.994 s            | 2.276-2.293 s | -23.7% (-24.0 to -23.3) |
+|                                         | clang 18.1 | 2.953-2.958 s            | 2.238-2.257 s | -24.1% (-24.3 to -23.6) |
+| --fast, default, 4 rounds               | gcc 13.3   | 0.372-0.387 s            | 0.303-0.311 s | -19.4% (-21.1 to -18.3) |
+|                                         | clang 18.1 | 0.370-0.376 s            | 0.300-0.307 s | -19.1% (-20.0 to -17.0) |
+| --fast, one X925, 4 rounds              | gcc 13.3   | 2.844-2.851 s            | 2.082-2.101 s | -26.7% (-26.8 to -26.2) |
+|                                         | clang 18.1 | 2.791-2.794 s            | 2.042-2.055 s | -26.7% (-26.8 to -26.4) |
+| -t 20, 4 rounds                         | gcc 13.3   | 0.506-0.519 s            | 0.445-0.468 s | -11.2% (-13.1 to -7.7)  |
+|                                         | clang 18.1 | 0.496-0.509 s            | 0.442-0.457 s | -11.5% (-12.5 to -7.9)  |
+| one A725 (taskset -c 0, -t 1), 3 rounds | gcc 13.3   | 9.153-9.163 s            | 7.274-7.280 s | -20.6% (-20.6 to -20.5) |
 
 The base's 0.489 under clang is a run whose race took the twenty threads;
 neon-sve kept the ten in all twelve default runs, and the fast mode both
@@ -1882,16 +1880,16 @@ range, one thread in the middle of its.
 Where it went, `make PROFILE=1` (gcc), three interleaved runs of each,
 the median ms a run:
 
-| stage | default, base | neon-sve | | one X925, base | neon-sve | |
-|---|---|---|---|---|---|---|
-| feed-forward | 191.3 | 155.7 | -18.6% | 1661.1 | 1211.2 | -27.1% |
-| q k v pos | 64.9 | 52.0 | -19.9% | 478.9 | 344.3 | -28.1% |
-| conv pw1 pw2 | 34.1 | 27.0 | -20.8% | 282.4 | 202.9 | -28.2% |
-| attention out | 12.4 | 10.1 | -18.5% | 95.1 | 69.0 | -27.4% |
-| subsampling | 10.8 | 10.1 | -6.5% | 79.8 | 70.6 | -11.5% |
-| decoder | 5.1 | 3.7 | | 33.8 | 33.9 | |
-| the rest | 91.7 | 87.2 | | 363.7 | 363.8 | |
-| sum | 410.3 | 345.8 | -15.7% | 2994.8 | 2295.7 | -23.3% |
+| stage         | default, base | neon-sve |        | one X925, base | neon-sve |        |
+| ------------- | ------------- | -------- | ------ | -------------- | -------- | ------ |
+| feed-forward  | 191.3         | 155.7    | -18.6% | 1661.1         | 1211.2   | -27.1% |
+| q k v pos     | 64.9          | 52.0     | -19.9% | 478.9          | 344.3    | -28.1% |
+| conv pw1 pw2  | 34.1          | 27.0     | -20.8% | 282.4          | 202.9    | -28.2% |
+| attention out | 12.4          | 10.1     | -18.5% | 95.1           | 69.0     | -27.4% |
+| subsampling   | 10.8          | 10.1     | -6.5%  | 79.8           | 70.6     | -11.5% |
+| decoder       | 5.1           | 3.7      |        | 33.8           | 33.9     |        |
+| the rest      | 91.7          | 87.2     |        | 363.7          | 363.8    |        |
+| sum           | 410.3         | 345.8    | -15.7% | 2994.8         | 2295.7   | -23.3% |
 
 (the rest: mel, positions, layer norms, quantize, attention, glu and
 depthwise, none of them changed; at ten threads they move by the pool's
@@ -1905,12 +1903,12 @@ where one thread makes one. The hypothesis put the copy at 4% of a call
 at ten threads from its 8.1 cycles a block in L1. On spark-9eba, `make PROFILE=1` (gcc),
 four interleaved rounds at the default, best of 5:
 
-| build | best of 5 | the int8 stages, median ms |
-|---|---|---|
-| neon-sve | 0.331-0.337 s | 249.5 |
-| the copy made once a thread and never again (wrong sums: every 4-column tile reads a stale buffer, and none reads the weights) | 0.291-0.297 s | 215.7 |
-| a prefetch of the next panel's 16 rows (PRFM PLDL2KEEP, all of them before the panel's first tile) | 0.328-0.336 s | |
-| a prefetch 2 KB ahead in the copy (PLDL1STRM) | 0.330-0.337 s | |
+| build                                                                                                                          | best of 5     | the int8 stages, median ms |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------- | -------------------------- |
+| neon-sve                                                                                                                       | 0.331-0.337 s | 249.5                      |
+| the copy made once a thread and never again (wrong sums: every 4-column tile reads a stale buffer, and none reads the weights) | 0.291-0.297 s | 215.7                      |
+| a prefetch of the next panel's 16 rows (PRFM PLDL2KEEP, all of them before the panel's first tile)                             | 0.328-0.336 s |                            |
+| a prefetch 2 KB ahead in the copy (PLDL1STRM)                                                                                  | 0.330-0.337 s |                            |
 
 So the copy, with the read of the weights from memory it makes, costs
 12% of a ten-thread run, three times its cost in L1, and neither prefetch
@@ -1975,13 +1973,13 @@ the first are wrong (cases at T 8 to 26), and a ZIP1 of the wrong group
 q8bench on one X925 (gcc), GMAC/s against the commit before (4e6a9c5),
 whose T 4 is SDOT's tile, at blocks of 32 / 64:
 
-| T | ff up | ff down | attention q |
-|---|---|---|---|
-| 4 | +14.1 / +11.8% | -1.2 / +3.9% | +8.6 / +15.6% |
-| 8 | +18.3 / +20.5% | +25.0 / +23.4% | +20.0 / +21.8% |
-| 12 | +13.3 / +15.2% | +18.5 / +17.7% | +13.1 / +15.7% |
-| 60 | +2.6 / +3.4% | +3.5 / +2.1% | +2.5 / +2.7% |
-| 256 | -0.6 / +0.8% | +0.4 / -1.6% | +0.3 / +1.4% |
+| T   | ff up          | ff down        | attention q    |
+| --- | -------------- | -------------- | -------------- |
+| 4   | +14.1 / +11.8% | -1.2 / +3.9%   | +8.6 / +15.6%  |
+| 8   | +18.3 / +20.5% | +25.0 / +23.4% | +20.0 / +21.8% |
+| 12  | +13.3 / +15.2% | +18.5 / +17.7% | +13.1 / +15.7% |
+| 60  | +2.6 / +3.4%   | +3.5 / +2.1%   | +2.5 / +2.7%   |
+| 256 | -0.6 / +0.8%   | +0.4 / -1.6%   | +0.3 / +1.4%   |
 
 At T 8 the down product, -6.8% against neon-dp before, is now 15.6% over
 it (205.3 GMAC/s to 177.6).
@@ -1993,18 +1991,18 @@ both builds took twenty threads, and two one-thread runs). spark-9eba has
 no clang. The clip is test.wav's first 1.5 s (24000 samples, "And says,
 How do I get to Dublin?", 9 tokens):
 
-| run | board, compiler | rounds | 4e6a9c5 | the first tile's copy | change, median (range) | faster in |
-|---|---|---|---|---|---|---|
-| test.wav, default (ten X925s) | spark-a80d, gcc 13.3 | 10 | 0.323-0.332 s | 0.318-0.327 s | -2.3% (-3.9 to +1.2) | 9 |
-| | spark-a80d, clang 18.1 | 18 | 0.320-0.334 s | 0.315-0.326 s | -2.5% (-4.0 to +0.3) | 17 |
-| | spark-9eba, gcc 13.3 | 8 | 0.326-0.336 s | 0.322-0.333 s | -0.8% (-2.7 to +0.6) | 6 |
-| test.wav --fast, default | spark-9eba, gcc 13.3 | 8 | 0.305-0.319 s | 0.299-0.311 s | -2.7% (-3.5 to +0.7) | 7 |
-| | spark-a80d, clang 18.1 | 8 | 0.304-0.310 s | 0.296-0.304 s | -1.8% (-3.3 to -0.7) | 8 |
-| test.wav, one X925 | spark-a80d, gcc 13.3 | 4 | 2.281-2.291 s | 2.283-2.295 s | +0.0% (-0.1 to +0.4) | 2 |
-| | spark-a80d, clang 18.1 | 6 | 2.237-2.256 s | 2.237-2.248 s | -0.0% (-0.6 to +0.1) | 3 |
-| the clip, one X925 | spark-a80d, gcc 13.3 | 4 | 0.078 s | 0.076-0.077 s | -2.6% (-2.6 to -1.3) | 4 |
-| | spark-9eba, gcc 13.3 | 4 | 0.077-0.078 s | 0.075-0.076 s | -1.9% (-2.6 to -1.3) | 4 |
-| | spark-a80d, clang 18.1 | 8 | 0.077-0.078 s | 0.075 s | -2.6% (-3.8 to -2.6) | 8 |
+| run                           | board, compiler        | rounds | 4e6a9c5       | the first tile's copy | change, median (range) | faster in |
+| ----------------------------- | ---------------------- | ------ | ------------- | --------------------- | ---------------------- | --------- |
+| test.wav, default (ten X925s) | spark-a80d, gcc 13.3   | 10     | 0.323-0.332 s | 0.318-0.327 s         | -2.3% (-3.9 to +1.2)   | 9         |
+|                               | spark-a80d, clang 18.1 | 18     | 0.320-0.334 s | 0.315-0.326 s         | -2.5% (-4.0 to +0.3)   | 17        |
+|                               | spark-9eba, gcc 13.3   | 8      | 0.326-0.336 s | 0.322-0.333 s         | -0.8% (-2.7 to +0.6)   | 6         |
+| test.wav --fast, default      | spark-9eba, gcc 13.3   | 8      | 0.305-0.319 s | 0.299-0.311 s         | -2.7% (-3.5 to +0.7)   | 7         |
+|                               | spark-a80d, clang 18.1 | 8      | 0.304-0.310 s | 0.296-0.304 s         | -1.8% (-3.3 to -0.7)   | 8         |
+| test.wav, one X925            | spark-a80d, gcc 13.3   | 4      | 2.281-2.291 s | 2.283-2.295 s         | +0.0% (-0.1 to +0.4)   | 2         |
+|                               | spark-a80d, clang 18.1 | 6      | 2.237-2.256 s | 2.237-2.248 s         | -0.0% (-0.6 to +0.1)   | 3         |
+| the clip, one X925            | spark-a80d, gcc 13.3   | 4      | 0.078 s       | 0.076-0.077 s         | -2.6% (-2.6 to -1.3)   | 4         |
+|                               | spark-9eba, gcc 13.3   | 4      | 0.077-0.078 s | 0.075-0.076 s         | -1.9% (-2.6 to -1.3)   | 4         |
+|                               | spark-a80d, clang 18.1 | 8      | 0.077-0.078 s | 0.075 s               | -2.6% (-3.8 to -2.6)   | 8         |
 
 The clip at the default threads is not in the table: both builds took
 twenty threads there and ran 21 to 36 ms, the bench's millisecond as
@@ -2040,12 +2038,12 @@ not have kept it; whoever weighs it differently can take it back to
 test.wav through v2, best of 5, four interleaved rounds, the vLLM worker
 idle; both builds' default kept the ten X925s in every run:
 
-| run | compiler | d2c70f0 | 6381086 | change, median (range) |
-|---|---|---|---|---|
-| default | gcc 13.3 | 0.388-0.398 s | 0.320-0.324 s | -17.5% (-19.4 to -17.1) |
-| | clang 18.1 | 0.385-0.390 s | 0.316-0.324 s | -17.0% (-18.6 to -16.8) |
-| one X925 | gcc 13.3 | 2.992-2.999 s | 2.288-2.292 s | -23.6% (-23.6 to -23.5) |
-| | clang 18.1 | 2.952-2.955 s | 2.239-2.249 s | -24.0% (-24.2 to -23.9) |
+| run      | compiler   | d2c70f0       | 6381086       | change, median (range)  |
+| -------- | ---------- | ------------- | ------------- | ----------------------- |
+| default  | gcc 13.3   | 0.388-0.398 s | 0.320-0.324 s | -17.5% (-19.4 to -17.1) |
+|          | clang 18.1 | 0.385-0.390 s | 0.316-0.324 s | -17.0% (-18.6 to -16.8) |
+| one X925 | gcc 13.3   | 2.992-2.999 s | 2.288-2.292 s | -23.6% (-23.6 to -23.5) |
+|          | clang 18.1 | 2.952-2.955 s | 2.239-2.249 s | -24.0% (-24.2 to -23.9) |
 
 A minute of speech in 0.32 s at the default, 187 times real time, where
 neon-dp takes 0.39, 154 times.
@@ -2061,6 +2059,7 @@ bench was test.wav through v2, best of 5, rotated a place each round, 6
 rounds at the default threads and 4 on one core (taskset -c 1, -t 1).
 
 The bits:
+
 - kcheck, 1906 cases, gives ref's bits on neon-sve, neon-dp and neon
   under both compilers on c7g, c8g and c9g, and on neon-dp and neon on
   c6g. There neon-sve is skipped: "this CPU has no i8mm".
@@ -2074,21 +2073,22 @@ The bits:
 The change against d2c70f0, median (range). Every SVE row is faster in
 every round:
 
-| instance | core, SVE | run | gcc 13.3 | clang 18.1 |
-|---|---|---|---|---|
-| c6g, Graviton2 | Neoverse N1, none | default | +0.1% (+0.0 to +0.1) | +0.1% (-0.1 to +0.1) |
-| | | one core | +0.0% (-0.1 to +0.0) | -0.1% (-0.1 to -0.0) |
-| c7g, Graviton3 | Neoverse V1, 256 bits | default | -11.7% (-11.9 to -11.6) | -12.0% (-12.1 to -11.8) |
-| | | one core | -11.9% (-12.1 to -11.8) | -12.0% (-12.1 to -11.5) |
-| | at 128 bits | default | -15.6% (-15.9 to -15.6) | -15.9% (-16.2 to -15.7) |
-| | | one core | -13.6% (-13.8 to -13.5) | -13.7% (-13.7 to -13.6) |
-| c8g, Graviton4 | Neoverse V2, 128 bits | default | -12.7% (-12.8 to -12.6) | -12.5% (-12.7 to -12.5) |
-| | | one core | -17.2% (-17.3 to -16.9) | -17.6% (-17.7 to -17.6) |
-| c9g, Graviton5 | Neoverse V3, 128 bits | default | -13.3% (-13.6 to -13.3) | -14.0% (-14.0 to -13.7) |
-| | | one core | -15.8% (-15.9 to -15.6) | -15.6% (-15.7 to -15.6) |
+| instance       | core, SVE             | run      | gcc 13.3                | clang 18.1              |
+| -------------- | --------------------- | -------- | ----------------------- | ----------------------- |
+| c6g, Graviton2 | Neoverse N1, none     | default  | +0.1% (+0.0 to +0.1)    | +0.1% (-0.1 to +0.1)    |
+|                |                       | one core | +0.0% (-0.1 to +0.0)    | -0.1% (-0.1 to -0.0)    |
+| c7g, Graviton3 | Neoverse V1, 256 bits | default  | -11.7% (-11.9 to -11.6) | -12.0% (-12.1 to -11.8) |
+|                |                       | one core | -11.9% (-12.1 to -11.8) | -12.0% (-12.1 to -11.5) |
+|                | at 128 bits           | default  | -15.6% (-15.9 to -15.6) | -15.9% (-16.2 to -15.7) |
+|                |                       | one core | -13.6% (-13.8 to -13.5) | -13.7% (-13.7 to -13.6) |
+| c8g, Graviton4 | Neoverse V2, 128 bits | default  | -12.7% (-12.8 to -12.6) | -12.5% (-12.7 to -12.5) |
+|                |                       | one core | -17.2% (-17.3 to -16.9) | -17.6% (-17.7 to -17.6) |
+| c9g, Graviton5 | Neoverse V3, 128 bits | default  | -13.3% (-13.6 to -13.3) | -14.0% (-14.0 to -13.7) |
+|                |                       | one core | -15.8% (-15.9 to -15.6) | -15.6% (-15.7 to -15.6) |
 
 c6g is the control: both builds run neon-dp there. The fastest of each,
 under clang:
+
 - c7g: 0.617 -> 0.543 s at the default, and 0.518 at 128 bits. On one
   core, 7.015 -> 6.171 s, and 6.054 at 128 bits.
 - c8g: 0.479 -> 0.419 s at the default. On one core, 5.624 -> 4.630 s.
@@ -2122,9 +2122,9 @@ as picked and neon-dp by PKTITO_KERNELS ran back to back in each of 6
 rounds, with the vLLM worker idle (16 to 18 of its CPU ticks a pair of
 runs):
 
-| compiler | neon-dp | neon-sve | change, median (range) |
-|---|---|---|---|
-| gcc 13.3 | 0.348-0.356 s | 0.307-0.312 s | -12.4% (-13.5 to -11.5) |
+| compiler   | neon-dp       | neon-sve      | change, median (range)  |
+| ---------- | ------------- | ------------- | ----------------------- |
+| gcc 13.3   | 0.348-0.356 s | 0.307-0.312 s | -12.4% (-13.5 to -11.5) |
 | clang 18.1 | 0.346-0.352 s | 0.301-0.306 s | -12.7% (-14.0 to -12.1) |
 
 Before the lanes (2026-11-02 above, the ten X925s) it was 0.388-0.398

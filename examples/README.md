@@ -4,13 +4,13 @@ The library from the outside. transcribe.c is a whole program against it in
 a page: a WAV or AIFF file to its transcript, cut at its silences. The others
 are the same program in another language, and print what it prints:
 
-| | | through | links | needs |
-|---|---|---|---|---|
-| C | transcribe.c | | libpktito.a | `make examples/transcribe` |
-| Python | python/transcribe.py | ctypes | libpktito.so | Python 3.8, its standard library |
-| Go | go/main.go | cgo | libpktito.a | Go 1.21 and a C compiler |
-| Rust | rust/src/main.rs | `extern "C"` | libpktito.a | Rust 1.73, no crates |
-| Node | node/transcribe.mjs | koffi 3 | libpktito.so | Node, and `npm install` there |
+|        |                      | through      | links        | needs                            |
+| ------ | -------------------- | ------------ | ------------ | -------------------------------- |
+| C      | transcribe.c         |              | libpktito.a  | `make examples/transcribe`       |
+| Python | python/transcribe.py | ctypes       | libpktito.so | Python 3.8, its standard library |
+| Go     | go/main.go           | cgo          | libpktito.a  | Go 1.21 and a C compiler         |
+| Rust   | rust/src/main.rs     | `extern "C"` | libpktito.a  | Rust 1.73, no crates             |
+| Node   | node/transcribe.mjs  | koffi 3      | libpktito.so | Node, and `npm install` there    |
 
 Go and Rust link the archive, `make libpktito.a`, into one binary that needs
 nothing beside it but the model, as ./pktito-c does. Python and Node can

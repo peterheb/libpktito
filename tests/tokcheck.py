@@ -12,13 +12,16 @@ holds ./tests/tokcheck's text to that, character for character. It needs
 the sentencepiece package (NeMo brings it); tools/pktito_tools/spm.py is
 checked against it on the way.
 """
+
 import os
 import random
 import re
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools")
+)
 from pktito_tools import convert, nemo, spm  # noqa: E402
 
 
@@ -40,7 +43,11 @@ def main():
     rng = random.Random(1234)
     special = [i for i in range(V) if ours.types[i] != spm.NORMAL]
     space = [i for i in range(V) if ours.pieces[i] == spm.SPACE]
-    pun = [i for i in range(V) if ours.pieces[i] and all(c in punct for c in ours.pieces[i])]
+    pun = [
+        i
+        for i in range(V)
+        if ours.pieces[i] and all(c in punct for c in ours.pieces[i])
+    ]
     seqs = [[i] for i in range(V)]
     for _ in range(n):
         L = rng.randint(1, 40)
@@ -60,20 +67,30 @@ def main():
     for s in seqs:
         text = sp.decode_pieces([sp.id_to_piece(i) for i in s])
         if ours.decode(s) != text:
-            print("tokcheck: spm.py differs from sentencepiece on %s: %r vs %r" % (s, ours.decode(s), text))
+            print(
+                "tokcheck: spm.py differs from sentencepiece on %s: %r vs %r"
+                % (s, ours.decode(s), text)
+            )
             return 1
         want.append(pat.sub(r"\2", text))
     inp = "".join(" ".join(map(str, s)) + "\n" for s in seqs)
-    r = subprocess.run([tok, pkf_path], input=inp.encode(), stdout=subprocess.PIPE, check=True)
+    r = subprocess.run(
+        [tok, pkf_path], input=inp.encode(), stdout=subprocess.PIPE, check=True
+    )
     got = r.stdout.decode("utf-8").split("\n")[:-1]
     bad = [(s, g, w) for s, g, w in zip(seqs, got, want) if g != w]
     if len(got) != len(want) or bad:
         for s, g, w in bad[:5]:
             print("tokcheck: FAIL %s\n   C:    %r\n   NeMo: %r" % (s, g, w))
-        print("tokcheck: %d of %d differ" % (len(bad) + abs(len(got) - len(want)), len(want)))
+        print(
+            "tokcheck: %d of %d differ"
+            % (len(bad) + abs(len(got) - len(want)), len(want))
+        )
         return 1
-    print("tokcheck: %s: %d sequences (every piece alone and %d random), NeMo's text every time"
-          % (os.path.basename(pkf_path), len(seqs), n))
+    print(
+        "tokcheck: %s: %d sequences (every piece alone and %d random), NeMo's text every time"
+        % (os.path.basename(pkf_path), len(seqs), n)
+    )
     return 0
 
 

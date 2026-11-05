@@ -9,6 +9,7 @@ uses with stand-ins that build numpy arrays, and refuses every other one,
 so a checkpoint cannot run code through it: find_class is the whole of
 what pickle can call.
 """
+
 import collections
 import pickle
 import zipfile
@@ -17,9 +18,15 @@ import numpy as np
 
 # torch's storage classes, by the name the pickle uses, and their dtype
 _STORAGES = {
-    "FloatStorage": np.float32, "DoubleStorage": np.float64, "HalfStorage": np.float16,
-    "LongStorage": np.int64, "IntStorage": np.int32, "ShortStorage": np.int16,
-    "CharStorage": np.int8, "ByteStorage": np.uint8, "BoolStorage": np.bool_,
+    "FloatStorage": np.float32,
+    "DoubleStorage": np.float64,
+    "HalfStorage": np.float16,
+    "LongStorage": np.int64,
+    "IntStorage": np.int32,
+    "ShortStorage": np.int16,
+    "CharStorage": np.int8,
+    "ByteStorage": np.uint8,
+    "BoolStorage": np.bool_,
     "BFloat16Storage": "bf16",
 }
 
@@ -31,6 +38,7 @@ class _Storage:
 
 class _Ref:
     """A storage named by a persistent id, read when a tensor needs it."""
+
     def __init__(self, zf, prefix, key, dtype):
         self.zf, self.name, self.dtype = zf, "%s/data/%s" % (prefix, key), dtype
         self.arr = None
@@ -46,7 +54,9 @@ class _Ref:
         return self.arr
 
 
-def _rebuild_tensor_v2(storage, offset, size, stride, requires_grad=False, hooks=None, meta=None):
+def _rebuild_tensor_v2(
+    storage, offset, size, stride, requires_grad=False, hooks=None, meta=None
+):
     a = storage.array()
     size, stride = tuple(int(s) for s in size), tuple(int(s) for s in stride)
     n = 1
@@ -58,7 +68,11 @@ def _rebuild_tensor_v2(storage, offset, size, stride, requires_grad=False, hooks
     if offset < 0 or last >= a.size or any(st < 0 for st in stride):
         raise ValueError("a tensor reaches outside its storage")
     view = np.lib.stride_tricks.as_strided(
-        a[offset:], shape=size, strides=tuple(st * a.itemsize for st in stride), writeable=False)
+        a[offset:],
+        shape=size,
+        strides=tuple(st * a.itemsize for st in stride),
+        writeable=False,
+    )
     return np.array(view)
 
 
@@ -80,12 +94,18 @@ class _Unpickler(pickle.Unpickler):
             return _rebuild_parameter
         if module == "torch" and name in _STORAGES:
             return _Storage(_STORAGES[name])
-        raise pickle.UnpicklingError("%s.%s is not something a state dict holds" % (module, name))
+        raise pickle.UnpicklingError(
+            "%s.%s is not something a state dict holds" % (module, name)
+        )
 
     def persistent_load(self, pid):
         # ('storage', storage type, key, location, numel)
-        if not (isinstance(pid, tuple) and len(pid) == 5 and pid[0] == "storage"
-                and isinstance(pid[1], _Storage)):
+        if not (
+            isinstance(pid, tuple)
+            and len(pid) == 5
+            and pid[0] == "storage"
+            and isinstance(pid[1], _Storage)
+        ):
             raise pickle.UnpicklingError("unexpected persistent id %r" % (pid,))
         key = str(pid[2])
         if key not in self.refs:

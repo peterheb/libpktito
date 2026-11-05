@@ -24,6 +24,7 @@ it: the checkpoint's repo, file, commit and sha256, its licence (CC-BY-4.0,
 whose attribution the notice carries), the VAD's source and licence (MIT),
 and this converter's own stamp.
 """
+
 import datetime
 import hashlib
 import os
@@ -46,8 +47,13 @@ def punctuation(pieces):
     from in a transcript."""
     out = set()
     for p in pieces:
-        if (p.startswith("[") and p.endswith("]")) or (p.startswith("<") and p.endswith(">")) \
-                or p.startswith("##") or p.startswith(spm.SPACE) or not p.strip():
+        if (
+            (p.startswith("[") and p.endswith("]"))
+            or (p.startswith("<") and p.endswith(">"))
+            or p.startswith("##")
+            or p.startswith(spm.SPACE)
+            or not p.strip()
+        ):
             continue
         out |= {c for c in p if unicodedata.category(c).startswith("P")}
     return "".join(sorted(out))
@@ -99,7 +105,9 @@ def revision(path):
             line = f.readline().strip()
     except OSError:
         return ""
-    return line if len(line) == 40 and all(c in "0123456789abcdef" for c in line) else ""
+    return (
+        line if len(line) == 40 and all(c in "0123456789abcdef" for c in line) else ""
+    )
 
 
 def sha256_file(path):
@@ -113,8 +121,12 @@ def sha256_file(path):
 def git_sha():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
-        r = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        r = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--short", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return r.stdout.decode().strip() if r.returncode == 0 else ""
@@ -152,8 +164,11 @@ def layout(canonical, a):
                 q8(name, np.concatenate([arr, np.zeros((pad, arr.shape[1]))]))
             else:
                 f32(name, np.concatenate([arr, np.zeros(pad)]))
-        elif arr.ndim == 2 and name not in ("mel.fb", "dec.embed") and not name.endswith(
-                (".conv0.w", ".dw1.w", ".dw2.w", "conv.dw")):
+        elif (
+            arr.ndim == 2
+            and name not in ("mel.fb", "dec.embed")
+            and not name.endswith((".conv0.w", ".dw1.w", ".dw2.w", "conv.dw"))
+        ):
             q8(name, arr)
         else:
             f32(name, arr)
@@ -166,7 +181,10 @@ def convert(src, vad_src, dst, log=print):
     a = canon.arch(nm.config)
     sp = spm.Model(nm.tokenizer_model())
     if len(sp.pieces) != a["vocab"]:
-        raise ValueError("the tokenizer has %d pieces and the decoder %d" % (len(sp.pieces), a["vocab"]))
+        raise ValueError(
+            "the tokenizer has %d pieces and the decoder %d"
+            % (len(sp.pieces), a["vocab"])
+        )
     if 6 in sp.types:
         raise ValueError("the tokenizer has byte pieces, which pktito does not decode")
     log("  read %s: %d tensors" % (os.path.basename(src), len(nm.state)))
@@ -182,11 +200,17 @@ def convert(src, vad_src, dst, log=print):
     name = os.path.splitext(os.path.basename(src))[0]
     card = os.path.join(os.path.dirname(src), "README.md")
     fm = front_matter(card)
-    n_params = sum(int(np.prod(arr.shape)) for _, arr in canonical if not _.startswith(("mel.", "pos.")))
-    meta = {"family": "Parakeet TDT",
-            "params": "%.0fM" % (n_params / 1e6),
-            "source": "nvidia/" + name,
-            "source_file": os.path.basename(src)}
+    n_params = sum(
+        int(np.prod(arr.shape))
+        for _, arr in canonical
+        if not _.startswith(("mel.", "pos."))
+    )
+    meta = {
+        "family": "Parakeet TDT",
+        "params": "%.0fM" % (n_params / 1e6),
+        "source": "nvidia/" + name,
+        "source_file": os.path.basename(src),
+    }
     rev = revision(src)
     if rev:
         meta["revision"] = rev
@@ -195,18 +219,24 @@ def convert(src, vad_src, dst, log=print):
     if fm.get("license"):
         meta["license"] = fm["license"]
     meta["credit"] = "NVIDIA"
-    meta["notice"] = ("%s by NVIDIA, https://huggingface.co/nvidia/%s, licensed CC-BY-4.0 "
-                      "(creativecommons.org/licenses/by/4.0). This file holds its weights "
-                      "rounded to int8 and rearranged by pktito-tools." % (name, name))
+    meta["notice"] = (
+        "%s by NVIDIA, https://huggingface.co/nvidia/%s, licensed CC-BY-4.0 "
+        "(creativecommons.org/licenses/by/4.0). This file holds its weights "
+        "rounded to int8 and rearranged by pktito-tools." % (name, name)
+    )
     langs = card_languages(card)
     if langs:
         meta["languages"] = langs
     meta["nemo_version"] = str(nm.config.get("nemo_version", ""))
-    meta["vad"] = "Silero VAD (github.com/snakers4/silero-vad), MIT, Copyright (c) 2020-present Silero Team"
+    meta["vad"] = (
+        "Silero VAD (github.com/snakers4/silero-vad), MIT, Copyright (c) 2020-present Silero Team"
+    )
     meta["vad_source_file"] = os.path.basename(vad_src)
     meta["vad_sha256"] = vad_sha
-    meta["recipe"] = ("convert: matrices q8 (int8, a scale a row); activations int8 in "
-                      "blocks of 32 (encoder) or a row (decoder, joint)")
+    meta["recipe"] = (
+        "convert: matrices q8 (int8, a scale a row); activations int8 in "
+        "blocks of 32 (encoder) or a row (decoder, joint)"
+    )
     sha = git_sha()
     meta["converter"] = "pktito-tools %s%s" % (__version__, " " + sha if sha else "")
     meta["converted"] = datetime.date.today().isoformat()
@@ -214,5 +244,8 @@ def convert(src, vad_src, dst, log=print):
 
     vocab = pkf.vocab_blob(sp.pieces, sp.types, punctuation(sp.pieces))
     size = pkf.write(dst, ARCH, name, params, tensors, vocab, meta)
-    log("  wrote %s: %d tensors, %.1f MB, in %.0f s" % (dst, len(tensors), size / 1e6, time.time() - t0))
+    log(
+        "  wrote %s: %d tensors, %.1f MB, in %.0f s"
+        % (dst, len(tensors), size / 1e6, time.time() - t0)
+    )
     return dst

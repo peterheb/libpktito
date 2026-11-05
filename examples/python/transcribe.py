@@ -15,12 +15,27 @@ their C types, from core/pktito.h and core/wav.h, and a program of your own
 does the same for the ones it calls. `make check-ffi` holds its transcript to
 ./pktito-c's.
 """
+
 import ctypes
 import os
 import sys
 from array import array
-from ctypes import (POINTER, Structure, byref, c_char_p, c_double, c_float, c_int, c_int32,
-                    c_int64, c_long, c_size_t, c_uint32, c_uint64, c_void_p)
+from ctypes import (
+    POINTER,
+    Structure,
+    byref,
+    c_char_p,
+    c_double,
+    c_float,
+    c_int,
+    c_int32,
+    c_int64,
+    c_long,
+    c_size_t,
+    c_uint32,
+    c_uint64,
+    c_void_p,
+)
 from pathlib import Path
 
 PK_VAD_SAMPLES = 512
@@ -29,16 +44,26 @@ PK_VAD_SAMPLES = 512
 # The structs the calls pass, field for field as the headers declare them:
 # ctypes lays a Structure out as the C compiler does, padding and all.
 class pk_wav_info(Structure):
-    _fields_ = [("rate", c_uint32), ("channels", c_uint32), ("format", c_uint32),
-                ("bytes", c_uint32), ("frames", c_uint64)]
+    _fields_ = [
+        ("rate", c_uint32),
+        ("channels", c_uint32),
+        ("format", c_uint32),
+        ("bytes", c_uint32),
+        ("frames", c_uint64),
+    ]
 
 
 class pk_seg_params(Structure):
-    _fields_ = [("threshold", c_double), ("neg_threshold", c_double),
-                ("min_speech_ms", c_double), ("max_speech_s", c_double),
-                ("min_silence_ms", c_double), ("speech_pad_ms", c_double),
-                ("min_silence_at_max_speech_ms", c_double),
-                ("use_max_poss_sil_at_max_speech", c_int)]
+    _fields_ = [
+        ("threshold", c_double),
+        ("neg_threshold", c_double),
+        ("min_speech_ms", c_double),
+        ("max_speech_s", c_double),
+        ("min_silence_ms", c_double),
+        ("speech_pad_ms", c_double),
+        ("min_silence_at_max_speech_ms", c_double),
+        ("use_max_poss_sil_at_max_speech", c_int),
+    ]
 
 
 class pk_seg(Structure):
@@ -55,26 +80,38 @@ def load():
     pointer, and passes a Python int as an int, which a size_t or int64_t
     argument reads garbage beside. The opaque handles (pk_model *, pk_asr *,
     ...) are c_void_p: None when C returns NULL."""
-    name = {"darwin": "libpktito.dylib", "win32": "libpktito.dll"}.get(sys.platform, "libpktito.so")
-    lib = ctypes.CDLL(os.environ.get("PKTITO_LIB") or str(Path(__file__).resolve().parents[2] / name))
+    name = {"darwin": "libpktito.dylib", "win32": "libpktito.dll"}.get(
+        sys.platform, "libpktito.so"
+    )
+    lib = ctypes.CDLL(
+        os.environ.get("PKTITO_LIB") or str(Path(__file__).resolve().parents[2] / name)
+    )
     floats, segs = POINTER(c_float), POINTER(pk_seg)
     for fn, restype, argtypes in [
-        ("pk_model_load",   c_void_p, [c_char_p, c_char_p, c_size_t]),
-        ("pk_model_rate",   c_int,    [c_void_p]),
-        ("pk_model_free",   None,     [c_void_p]),
-        ("pk_wav_open",     c_void_p, [c_char_p, POINTER(pk_wav_info), c_char_p, c_size_t]),
-        ("pk_wav_read",     c_size_t, [c_void_p, floats, c_size_t]),
-        ("pk_wav_close",    None,     [c_void_p]),
-        ("pk_vad_new",      c_void_p, [c_void_p]),
-        ("pk_vad_probs",    None,     [c_void_p, floats, c_size_t, floats]),
-        ("pk_vad_free",     None,     [c_void_p]),
-        ("pk_seg_defaults", None,     [POINTER(pk_seg_params)]),
-        ("pk_segments",     c_size_t, [floats, c_size_t, c_int, c_int64, POINTER(pk_seg_params), segs, c_size_t]),
-        ("pk_chunks",       c_size_t, [floats, segs, c_size_t, c_int64, c_int64, segs]),
-        ("pk_asr_new",      c_void_p, [c_void_p, c_int]),
-        ("pk_asr_run",      c_long,   [c_void_p, floats, c_size_t, POINTER(POINTER(pk_tok))]),
-        ("pk_asr_free",     None,     [c_void_p]),
-        ("pk_text",         c_size_t, [c_void_p, POINTER(pk_tok), c_size_t, c_char_p, c_size_t]),
+        ("pk_model_load", c_void_p, [c_char_p, c_char_p, c_size_t]),
+        ("pk_model_rate", c_int, [c_void_p]),
+        ("pk_model_free", None, [c_void_p]),
+        ("pk_wav_open", c_void_p, [c_char_p, POINTER(pk_wav_info), c_char_p, c_size_t]),
+        ("pk_wav_read", c_size_t, [c_void_p, floats, c_size_t]),
+        ("pk_wav_close", None, [c_void_p]),
+        ("pk_vad_new", c_void_p, [c_void_p]),
+        ("pk_vad_probs", None, [c_void_p, floats, c_size_t, floats]),
+        ("pk_vad_free", None, [c_void_p]),
+        ("pk_seg_defaults", None, [POINTER(pk_seg_params)]),
+        (
+            "pk_segments",
+            c_size_t,
+            [floats, c_size_t, c_int, c_int64, POINTER(pk_seg_params), segs, c_size_t],
+        ),
+        ("pk_chunks", c_size_t, [floats, segs, c_size_t, c_int64, c_int64, segs]),
+        ("pk_asr_new", c_void_p, [c_void_p, c_int]),
+        ("pk_asr_run", c_long, [c_void_p, floats, c_size_t, POINTER(POINTER(pk_tok))]),
+        ("pk_asr_free", None, [c_void_p]),
+        (
+            "pk_text",
+            c_size_t,
+            [c_void_p, POINTER(pk_tok), c_size_t, c_char_p, c_size_t],
+        ),
     ]:
         f = getattr(lib, fn)
         f.restype, f.argtypes = restype, argtypes
@@ -125,7 +162,9 @@ def main(argv):
     sp = pk_seg_params()
     pk.pk_seg_defaults(byref(sp))
     sp.min_silence_ms = 32  # two of Silero's 32 ms frames
-    sp.max_speech_s = 30.72 - 0.06 - 0.1  # a segment and Silero's 30 ms pads fit in a chunk
+    sp.max_speech_s = (
+        30.72 - 0.06 - 0.1
+    )  # a segment and Silero's 30 ms pads fit in a chunk
     max_len = int(30.72 * rate)
     ns = pk.pk_segments(probs, frames, rate, n, byref(sp), seg, len(seg))
     chunk = (pk_seg * (2 * ns + 2 + n // max_len))()
@@ -137,7 +176,9 @@ def main(argv):
     a = pk.pk_asr_new(m, 0)
     t = POINTER(pk_tok)()
     text = ctypes.create_string_buffer(65536)
-    sys.stdout.reconfigure(encoding="utf-8")  # the text's bytes, as C prints them, whatever the code page
+    sys.stdout.reconfigure(
+        encoding="utf-8"
+    )  # the text's bytes, as C prints them, whatever the code page
     for c in chunk[:nc]:
         nt = pk.pk_asr_run(a, view(x, c.start, c.end), c.end - c.start, byref(t))
         if nt < 0:

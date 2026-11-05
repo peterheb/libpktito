@@ -53,6 +53,7 @@ one for the classes it names:
 A rule "att8" makes the attention's own three products int8 as well
 (attention_int8 says how).
 """
+
 import argparse
 import json
 import math
@@ -72,9 +73,19 @@ def read_wav(path):
     return a.astype(np.float32)
 
 
-FINE = {"att.q": "qkv", "att.k": "qkv", "att.v": "qkv", "att.pos": "pos", "att.o": "o",
-        "ff1.up": "ffup", "ff2.up": "ffup", "ff1.down": "ffdown", "ff2.down": "ffdown",
-        "conv.pw1": "pw1", "conv.pw2": "pw2"}
+FINE = {
+    "att.q": "qkv",
+    "att.k": "qkv",
+    "att.v": "qkv",
+    "att.pos": "pos",
+    "att.o": "o",
+    "ff1.up": "ffup",
+    "ff2.up": "ffup",
+    "ff1.down": "ffdown",
+    "ff2.down": "ffdown",
+    "conv.pw1": "pw1",
+    "conv.pw2": "pw2",
+}
 ENC = set(FINE.values()) | {"subout"}
 
 
@@ -130,13 +141,13 @@ def q_w4k(W):
     """ggml's q4_K, by its reference quantizer's simple form: each 32 gets
     a scale and a min fitted by least squares over its range, quantized to
     6 bits against fp16 super-scales."""
-    B = _blocks(W, 32)                                   # [r][nb][32]
+    B = _blocks(W, 32)  # [r][nb][32]
     lo = np.minimum(B.min(2), 0)
     hi = B.max(2)
     sc = (hi - lo) / 15
     sc[sc == 0] = 1
     mn = -lo
-    S = sc.reshape(W.shape[0], -1, 8)                    # super-blocks of 8 x 32
+    S = sc.reshape(W.shape[0], -1, 8)  # super-blocks of 8 x 32
     M = mn.reshape(W.shape[0], -1, 8)
     ds = _f16(S.max(2, keepdims=True) / 63)
     dm = _f16(M.max(2, keepdims=True) / 63)
@@ -164,6 +175,7 @@ def a8b(n):
         d = np.abs(B).max(-1, keepdims=True) / 127
         d[d == 0] = 1
         return (np.rint(B / d) * d).reshape(s)
+
     return q
 
 
@@ -203,7 +215,7 @@ def attention_int8(x, pe, w, q, a):
     scp = np.zeros(sc.shape[:-1] + (Tp,), np.float32)
     scp[..., :T] = sc
     scq = a8b(32)(scp)[..., :T]
-    Vt = _rows8(V.transpose(1, 2, 0))                 # [H][dk][T]: a dim's values over the keys
+    Vt = _rows8(V.transpose(1, 2, 0))  # [H][dk][T]: a dim's values over the keys
     o = (scq @ Vt.transpose(0, 2, 1)).transpose(1, 0, 2).reshape(T, D)
     return mm(o.astype(np.float32), w, q + "att.o")
 
@@ -221,7 +233,11 @@ def parse(cfg):
             rule, cl = rule.split("@")
             on = set(cl.split("/"))
         wq, _, aq = rule.partition("+")
-        if wq not in WQ or (aq and aq not in AQ) or not on <= ENC | {"enc", "sub", "dec", "joint"}:
+        if (
+            wq not in WQ
+            or (aq and aq not in AQ)
+            or not on <= ENC | {"enc", "sub", "dec", "joint"}
+        ):
             raise SystemExit("unknown configuration %r" % cfg)
         rules.append((WQ[wq], AQ.get(aq), on))
     return rules
@@ -246,6 +262,7 @@ def setup(w32, cfg):
         if act.get(name):
             x = act[name](x).astype(np.float32)
         return x @ w[name].T
+
     return wd, mm
 
 
@@ -260,7 +277,7 @@ def path_logp(enc, w, a, trace):
     total = 0.0
     for t, k, di in trace:
         z = dec.joint(fproj[t], g).astype(np.float64)
-        zt, zd = z[:V + 1], z[V + 1:]
+        zt, zd = z[: V + 1], z[V + 1 :]
         total += zt[k] - zt.max() - math.log(np.exp(zt - zt.max()).sum())
         total += zd[di] - zd.max() - math.log(np.exp(zd - zd.max()).sum())
         if k != V:
@@ -273,7 +290,9 @@ def main():
     ap.add_argument("nemo")
     ap.add_argument("corpus", nargs="+")
     ap.add_argument("--configs", default="w8row+a8row,w8b32+a8b32,w4b32+a8b32")
-    ap.add_argument("--limit", type=int, default=0, help="recordings per corpus directory")
+    ap.add_argument(
+        "--limit", type=int, default=0, help="recordings per corpus directory"
+    )
     ap.add_argument("--json", help="write every transcript here")
     args = ap.parse_args()
 
@@ -286,17 +305,26 @@ def main():
         with open(os.path.join(d, "refs.tsv"), encoding="utf-8") as f:
             rows = [line.rstrip("\n").split("\t", 1) for line in f if line.strip()]
         if args.limit:
-            rows = rows[:args.limit]
+            rows = rows[: args.limit]
         files += [(os.path.join(d, n), t) for n, t in rows]
-    print("%s: %d recordings, %.1f minutes" % (os.path.basename(args.nemo), len(files),
-          sum(len(read_wav(p)) for p, _ in files) / 16000 / 60), flush=True)
+    print(
+        "%s: %d recordings, %.1f minutes"
+        % (
+            os.path.basename(args.nemo),
+            len(files),
+            sum(len(read_wav(p)) for p, _ in files) / 16000 / 60,
+        ),
+        flush=True,
+    )
 
     float_attention = reference.attention
 
     def run(cfg, base=None):
         wd, mm = setup(w32, cfg)
         reference.mm = mm
-        reference.attention = attention_int8 if "att8" in cfg.split(";") else float_attention
+        reference.attention = (
+            attention_int8 if "att8" in cfg.split(";") else float_attention
+        )
         out = []
         t0 = time.time()
         for i, (path, ref) in enumerate(files):
@@ -313,24 +341,46 @@ def main():
                 b = base[i]
                 r["logp"] = path_logp(enc, wd, a, b["trace"])
                 r["dlogp"] = (r["logp"] - b["logp"]) / len(b["trace"])
-                r["encerr"] = float(np.linalg.norm(enc - b["enc"]) / np.linalg.norm(b["enc"]))
+                r["encerr"] = float(
+                    np.linalg.norm(enc - b["enc"]) / np.linalg.norm(b["enc"])
+                )
             out.append(r)
         return out, time.time() - t0
 
     base, dt = run("f32")
     e, n = wer.wer([(r["ref"], r["text"]) for r in base])
-    print("%-22s WER %5.2f%% (%d/%d)  %6.0fs" % ("f32", 100 * e / n, e, n, dt), flush=True)
+    print(
+        "%-22s WER %5.2f%% (%d/%d)  %6.0fs" % ("f32", 100 * e / n, e, n, dt), flush=True
+    )
     results = {"f32": [{"file": r["file"], "text": r["text"]} for r in base]}
     for cfg in [c for c in args.configs.split(",") if c]:
         res, dt = run(cfg, base)
         e, n = wer.wer([(r["ref"], r["text"]) for r in res])
         changed = sum(r["text"] != b["text"] for r, b in zip(res, base))
         d = np.array([r["dlogp"] for r in res])
-        t = d.mean() / (d.std(ddof=1) / math.sqrt(len(d))) if len(d) > 1 and d.std() > 0 else 0
-        print("%-22s WER %5.2f%% (%d/%d)  changed %3d  dlogp %+.5f  t %6.1f  enc err %.4f  %6.0fs" % (
-            cfg, 100 * e / n, e, n, changed, d.mean(), t, np.mean([r["encerr"] for r in res]), dt),
-            flush=True)
-        results[cfg] = [{"file": r["file"], "text": r["text"], "dlogp": r["dlogp"]} for r in res]
+        t = (
+            d.mean() / (d.std(ddof=1) / math.sqrt(len(d)))
+            if len(d) > 1 and d.std() > 0
+            else 0
+        )
+        print(
+            "%-22s WER %5.2f%% (%d/%d)  changed %3d  dlogp %+.5f  t %6.1f  enc err %.4f  %6.0fs"
+            % (
+                cfg,
+                100 * e / n,
+                e,
+                n,
+                changed,
+                d.mean(),
+                t,
+                np.mean([r["encerr"] for r in res]),
+                dt,
+            ),
+            flush=True,
+        )
+        results[cfg] = [
+            {"file": r["file"], "text": r["text"], "dlogp": r["dlogp"]} for r in res
+        ]
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=0)

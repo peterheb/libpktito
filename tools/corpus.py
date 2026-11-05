@@ -21,6 +21,7 @@ recording at its silences costs against hearing it whole.
 LibriSpeech is FLAC, which ffmpeg decodes (or afconvert on macOS); FLEURS
 is WAV already and needs nothing.
 """
+
 import argparse
 import os
 import shutil
@@ -31,8 +32,21 @@ import tarfile
 
 def _flac_to_wav(src, dst):
     if shutil.which("ffmpeg"):
-        cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", src, "-ac", "1", "-ar", "16000",
-               "-sample_fmt", "s16", dst]
+        cmd = [
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            src,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-sample_fmt",
+            "s16",
+            dst,
+        ]
     elif shutil.which("afconvert"):
         cmd = ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", src, dst]
     else:
@@ -65,6 +79,7 @@ def librispeech(root, out, per_speaker):
 
 def _read_wav16(path):
     import wave
+
     with wave.open(path) as w:
         return w.readframes(w.getnframes())
 
@@ -72,9 +87,10 @@ def _read_wav16(path):
 def longform(root, out, seconds, count):
     import tempfile
     import wave
+
     os.makedirs(out, exist_ok=True)
     refs = []
-    gap = b"\0\0" * 4800                                      # 0.3 s at 16 kHz
+    gap = b"\0\0" * 4800  # 0.3 s at 16 kHz
     tmp = tempfile.mkdtemp()
     for spk in sorted(os.listdir(root), key=lambda s: int(s) if s.isdigit() else 0):
         if len(refs) >= count:
@@ -112,7 +128,7 @@ def fleurs(tsv, tar, out, count):
         for line in f:
             cols = line.rstrip("\n").split("\t")
             if len(cols) >= 3:
-                rows[cols[1]] = cols[2]          # the file name and its raw transcription
+                rows[cols[1]] = cols[2]  # the file name and its raw transcription
     names = sorted(rows)
     if count:
         step = max(1, len(names) // count)

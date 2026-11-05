@@ -150,8 +150,7 @@ the VAD (core/vad.c). A finite sample of any size is safe too, though it is
 not heard as anything useful. The VAD clamps samples to +-1e6, which keeps its
 STFT finite. In the encoder's features a sample past about 1e17 overflows the
 power spectrum to infinity and its log-mel to NaN, and the subsampling's first
-ReLU (`v > 0 ? v : 0`, and its vector forms, which agree for a NaN) makes that
-0. tests/pkfcheck runs 1e30 and -3e38 samples through the engine.
+ReLU (`v > 0 ? v : 0`, and its vector forms, which agree for a NaN) makes that 0. tests/pkfcheck runs 1e30 and -3e38 samples through the engine.
 
 A model stores only finite floats, but hostile finite weights can still make
 an intermediate overflow. An int8 quantizer turns a block containing a NaN or
@@ -192,11 +191,11 @@ UndefinedBehaviorSanitizer.
 bytes, streaming resampler, the segment, chunk and caption state machines,
 and inference over the tiny model with hostile weights and audio.
 They run the same code as the library under AddressSanitizer and
-UndefinedBehaviorSanitizer.  The byte readers start from small valid files and
+UndefinedBehaviorSanitizer. The byte readers start from small valid files and
 mutate them without a grammar; the state-machine target constructs inputs that
-keep the public functions' pointer, capacity and ordering contracts.  `make
+keep the public functions' pointer, capacity and ordering contracts. `make
 fuzz-replay` runs every input in the corpora once, and `make fuzz-smoke`
-runs a short coverage-guided campaign.  tests/fuzz/README.md has the targets,
+runs a short coverage-guided campaign. tests/fuzz/README.md has the targets,
 their oracles and the longer-running command.
 
 A parser bug gets a case in its corpus in the change that fixes it, and the

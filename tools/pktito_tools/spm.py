@@ -14,12 +14,19 @@ three settings, from sentencepiece_model.proto:
 decode() is sentencepiece's DecodeIds as its C++ spells it, written out so
 that the C detokenizer (core/tokens.c) has a definition to be held to.
 """
+
 from .onnxpb import fields
 
 NORMAL, UNKNOWN, CONTROL, USER_DEFINED, UNUSED, BYTE = 1, 2, 3, 4, 5, 6
-TYPE_NAMES = {NORMAL: "normal", UNKNOWN: "unknown", CONTROL: "control",
-              USER_DEFINED: "user", UNUSED: "unused", BYTE: "byte"}
-SPACE = "▁"          # the piece's spelling of a space
+TYPE_NAMES = {
+    NORMAL: "normal",
+    UNKNOWN: "unknown",
+    CONTROL: "control",
+    USER_DEFINED: "user",
+    UNUSED: "unused",
+    BYTE: "byte",
+}
+SPACE = "▁"  # the piece's spelling of a space
 
 
 class Model:
@@ -37,7 +44,9 @@ class Model:
                     elif ff == 3 and wwt == 0:
                         typ = vv
                 if typ not in TYPE_NAMES:
-                    raise ValueError("piece %d has unknown type %d" % (len(self.pieces), typ))
+                    raise ValueError(
+                        "piece %d has unknown type %d" % (len(self.pieces), typ)
+                    )
                 self.pieces.append(piece)
                 self.types.append(typ)
             elif f == 2 and wt == 2:
@@ -78,8 +87,11 @@ class Model:
             if typ == UNKNOWN:
                 s = self.unk_surface
             else:
-                if bos_ws and (self.add_dummy_prefix or self.remove_extra_whitespaces) \
-                        and piece.startswith(SPACE):
+                if (
+                    bos_ws
+                    and (self.add_dummy_prefix or self.remove_extra_whitespaces)
+                    and piece.startswith(SPACE)
+                ):
                     piece = piece[1:]
                     seen = not self.remove_extra_whitespaces
                 s = piece.replace(SPACE, " ")
