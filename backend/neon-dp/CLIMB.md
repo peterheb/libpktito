@@ -2182,3 +2182,45 @@ Both slowed across the rounds as the laptop warmed (neon-dp 0.319 to
 0.346 s, neon-sve 0.283 to 0.293), and the margin held: spark-a80d's
 -12.4% (gcc 13.3) and -12.7% (clang 18.1) under Linux with the lanes
 (2026-11-03 above).
+
+## 2026-11-06 - SMMLA on the Galaxy S24's and S25's cores (a measurement)
+
+Both phones' kernels report DP, I8MM and BF16 and no SVE (/proc/cpuinfo's
+Features), so neon-sve is never picked there and their int8 product is
+neon-dp's. Whether a NEON SMMLA loop could serve them turns on the
+2026-10-24 entry's question, whether SMMLA issues as SDOT does. mmrate2.c
+as above, built by NDK r30's clang 21 (`-O2 -march=armv8.6-a+i8mm`; each
+loop holds its 1, 4, 8 or 16 SDOTs or SMMLAs and no others), run by
+android-9950x through adb, pinned to one CPU at a time with taskset, three
+runs a CPU, the first of which warms the clock and is left out: the Galaxy
+S24 Ultra (SM-S928U1, SM8650: two A520s, five A720s and an X4) on AC at
+27 C, and the Galaxy S25 Ultra (SM-S938U1, SM8750: eight second-generation
+Oryon cores, every CPU part 0x001) on battery at 27 C. ns an instruction
+with 1, 4, 8 and 16 chains, and a run's SMMLA over its SDOT at 16:
+
+| core                                    | SDOT                                               | SMMLA                                              | SMMLA / SDOT |
+| --------------------------------------- | -------------------------------------------------- | -------------------------------------------------- | ------------ |
+| A520 (S24 cpu0-1)                       | 1.799-1.817, 0.447-0.471, 0.223-0.232, 0.224-0.232 | 1.784-1.826, 0.445-0.450, 0.279-0.280, 0.223-0.225 | 0.96-1.00    |
+| A720 (S24 cpu2-4)                       | 0.319-0.389, 0.160-0.161, 0.160-0.161, 0.160       | 0.318-0.322, 0.160-0.161, 0.160-0.161, 0.160       | 1.00         |
+| A720 (S24 cpu5-6, their clock low)      | 0.847-0.851, 0.425-0.427, 0.424-0.425, 0.425       | 0.847-0.853, 0.425-0.426, 0.424-0.425, 0.424-0.425 | 1.00         |
+| X4 (S24 cpu7)                           | 0.361-0.415, 0.127-0.156, 0.082-0.090, 0.074       | 0.296-0.299, 0.074-0.147, 0.082-0.095, 0.074       | 1.00         |
+| Oryon (S25 cpu0-5)                      | 0.899-1.214, 0.214-0.298, 0.142-0.197, 0.144-0.206 | 0.854-1.165, 0.214-0.296, 0.143-0.178, 0.143-0.186 | 0.90-1.05    |
+| Oryon (S25 cpu6-7)                      | 0.785-0.986, 0.196-0.197, 0.088-0.089, 0.056-0.057 | 0.748-0.753, 0.197, 0.089-0.090, 0.056             | 0.98-1.00    |
+| Oryon (snappy's X1E-78-100, 2026-10-25) | 0.887-0.892, 0.221-0.223, 0.110-0.111, 0.073-0.074 | 1.178-1.197, 0.294-0.295, 0.147-0.148, 0.147-0.148 | 2.0          |
+
+SMMLA issues at SDOT's rate on every one of these cores, with the same
+latency or less: twice SDOT's multiply-adds a cycle, as on the V2, X925
+and A725 (2026-10-24), and not as on snappy's first-generation Oryon,
+where it issues at half. The A520 and the X4 need more than 8 chains to
+reach it (the A520's SMMLA 0.279-0.280 at 8, its SDOT 0.223-0.232). The
+clocks read before the runs are not the runs' own, so the ratio, both
+instructions in one run, is the measurement; the S25's cpu0-5 moved clock
+within runs (2.75 to 3.53 GHz read), which spreads theirs.
+
+What these cores could take is neon-sve's int8 loop without its one SVE
+instruction: SMMLA on weights in its order, a block in 12.88 cycles to
+SDOT's 19.3 on the X925 and 31.88 to 41.8 on the A725 without MOVPRFX (the
+2026-11-02 probe). Untried. Without SVE as the gate it needs another way
+to keep off the cores where SMMLA issues at half: Apple's M cores and the
+first-generation Oryon (2026-10-24, 2026-10-25). The outputs are kept with
+the session's notes.
