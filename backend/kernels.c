@@ -24,6 +24,12 @@ const pk_kernels *const pk_kernels_built[] = {
 #ifdef PK_HAVE_neon_sve
     &pk_kernels_neon_sve,
 #endif
+/* neon-i8mm after it, the same loop for the cores with I8MM and no SVE,
+ * where its probe finds SMMLA as fast as SDOT (backend/neon-dp/CLIMB.md,
+ * 2026-11-06) */
+#ifdef PK_HAVE_neon_i8mm
+    &pk_kernels_neon_i8mm,
+#endif
 #ifdef PK_HAVE_neon_dp
     &pk_kernels_neon_dp,
 #endif
@@ -56,8 +62,12 @@ const pk_kernels *pk_kernels_pick(char *why, size_t whylen) {
         if (want && *want && strcmp(want, (*k)->id))
             continue;
         const char *lack = pk_os_cpu_lacks((*k)->needs);
-        if (!lack)
+        /* a probe passes a backend by where it would be slower than the
+         * next, unless PKTITO_KERNELS asks for it */
+        if (!lack && ((want && *want) || !(*k)->usable || (*k)->usable()))
             return *k;
+        if (!lack)
+            continue;
         if (want && *want) {
             if (why && whylen)
                 snprintf(why, whylen, "PKTITO_KERNELS=%s uses %s, which this CPU does not have",

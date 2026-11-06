@@ -1,6 +1,6 @@
 /* The NEON backends: AArch64's SIMD, for every ARMv8 core from the A53 up.
  *
- * This file is three backends. Built as backend/neon it asks for ARMv8.0
+ * This file is four backends. Built as backend/neon it asks for ARMv8.0
  * and nothing more, which is what the A53 (Pi 3, Zero 2 W) and the A72 (Pi
  * 4) have; built as backend/neon-dp (that directory's kernels.c includes
  * this one with PK_NEON_DOTPROD) it multiplies int8 with SDOT, ARMv8.2's
@@ -8,7 +8,9 @@
  * cores have; built as backend/neon-sve (PK_NEON_SVE as well) its 4-column
  * tiles multiply with I8MM's SMMLA on weights put in SMMLA's order, for the
  * cores with SVE and I8MM (measured on the GB10's X925 and A725; Neoverse
- * V1 to V3 have both as well).
+ * V1 to V3 have both as well); and built as backend/neon-i8mm
+ * (PK_NEON_I8MM) the same, without SVE, for the cores with I8MM alone
+ * where SMMLA issues as SDOT does (the Galaxy S24's and S25's).
  * The int8 product is the only kernel where they differ: the rest is fp32,
  * the same instructions on every core.
  *
@@ -18,12 +20,18 @@
  * lanes and run ref's scalar chain in each, down to the exp polynomial.
  */
 #include "kernels.h"
+#include "os.h"
 #include "pkf.h"
 #include "vmath.h"
 
 #include <arm_neon.h>
 #include <math.h>
 #include <string.h>
+
+/* neon-sve and neon-i8mm: the 4-column tiles on SMMLA (q8_mm4) */
+#if defined(PK_NEON_SVE) || defined(PK_NEON_I8MM)
+#define PK_NEON_MM 1
+#endif
 
 /* ---------------------------------------------------------- vector math --- */
 
@@ -642,7 +650,7 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
 #undef Q8_SDOT8
 #endif
 
-#ifdef PK_NEON_SVE
+#ifdef PK_NEON_MM
 /* The 4-column tile's blocks of 32 or 64 inputs on SMMLA, I8MM's product of
  * a 2x8 int8 matrix by another's transpose: 32 multiply-adds an
  * instruction where SDOT by lane does 16, and issued as often as SDOT on
@@ -684,7 +692,12 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
  * the loop was measured at 128 bits, the GB10's. It asks for SVE and I8MM
  * itself (.arch_extension), and the file is compiled with neon-dp's flags,
  * so that no compiler puts SVE in the other kernels' C: neon-sve is
- * neon-dp but for this loop. */
+ * neon-dp but for this loop.
+ *
+ * neon-i8mm's first SMMLA is NEON's, after a MOV of M into the
+ * accumulator: two issues where MOVPRFX's pair is one on the X925, 12.88
+ * cycles a block of 32 to 12.15, and 31.88 to 30.06 on the A725 (the
+ * 2026-11-02 probe without MOVPRFX). The same sums in the same lanes. */
 
 /* B for a k-step, from the copy: two LDPs into v b0 - b3 */
 #define MM_LDB(b0, b1, b2, b3)                                                \
@@ -715,7 +728,13 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
 
 /* m += A x B; a block's first, its sum started at M */
 #define MM_MLA(m, a, b) "smmla v" m ".4s, v" a ".16b, v" b ".16b\n\t"
+#ifdef PK_NEON_SVE
 #define MM_MLA0(m, a, b) "movprfx z" m ", z12\n\t" "smmla z" m ".s, z" a ".b, z" b ".b\n\t"
+#define MM_ARCH ".arch_extension sve\n\t" ".arch_extension i8mm\n\t"
+#else
+#define MM_MLA0(m, a, b) "mov v" m ".16b, v12.16b\n\t" MM_MLA(m, a, b)
+#define MM_ARCH ".arch_extension i8mm\n\t"
+#endif
 
 /* a k-step's eight SMMLAs: A_0 and A_1 in a0, a1, B_0 - B_3 in b0 - b3 */
 #define MM_STEP(MLA, a0, a1, b0, b1, b2, b3)                                  \
@@ -747,7 +766,7 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
     MM_FMA("30", "22", "14") MM_FMA("31", "23", "14")
 
 /* the loop's head on a 64-byte line, but on Windows (the SDOT loop's
- * comment says why; neon-sve is not picked there, but is built) */
+ * comment says why) */
 #ifndef _WIN32
 #define MM_ALIGN ".p2align 6\n"
 #else
@@ -759,8 +778,7 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
  * in SMMLA's order) */
 #define MM_LOOP(BLOCK)                                                                   \
     __asm__ volatile(                                                                    \
-        ".arch_extension sve\n\t"                                                        \
-        ".arch_extension i8mm\n\t"                                                       \
+        MM_ARCH                                                                          \
         "mov %w[m], #0x4b400000\n\t"                                                     \
         "dup v12.4s, %w[m]\n\t"                                                          \
         "movi v24.4s, #0\n\t" "movi v25.4s, #0\n\t" "movi v26.4s, #0\n\t"                \
@@ -829,6 +847,7 @@ void q8_mm4(float32x4_t f[4][2], const int8_t *g, int8_t *c, const int8_t *const
 #undef MM_SUB
 #undef MM_16
 #undef MM_STEP
+#undef MM_ARCH
 #undef MM_MLA0
 #undef MM_MLA
 #undef MM_LDA
@@ -860,7 +879,7 @@ static __attribute__((noinline)) int8_t *mm_buf(void) {
  * from part, where the chunk before left them, unless it is the first, and
  * leaves them there unless it is the last - the same chain of fused
  * multiply-adds, in the same order, stored and reloaded exactly. part is
- * NC columns of 8 floats. mm, on neon-sve, is the half panel's copy in
+ * NC columns of 8 floats. mm, on neon-sve and neon-i8mm, is the half panel's copy in
  * SMMLA's order (q8_cols), for a 4-column tile that takes every block: the
  * tile makes it if make is set, and reads it if not. */
 static inline __attribute__((always_inline))
@@ -880,7 +899,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
     }
     const int8_t *x[4];
     for (int c = 0; c < NC; c++) x[c] = a->q + (size_t)(t0 + c) * n;
-#ifdef PK_NEON_SVE
+#ifdef PK_NEON_MM
     if (NC == 4 && mm) {
         const float *d[4];
         for (int c = 0; c < 4; c++) d[c] = a->d + (size_t)(t0 + c) * nb;
@@ -1003,13 +1022,14 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h,
  * A53s share 512 KB of L2, and at 48 KB (12 columns of 4096) the ff down
  * product ran 8% faster at four threads than at 192 KB, and no slower alone
  * (CLIMB.md, 2026-10-20, H3). neon-sve copies each half panel once a
- * column block, so its block is a call's columns at any thread count:
+ * column block, so its block (and neon-i8mm's) is a call's columns at any
+ * thread count:
  * 1 MB, 256 columns of 4096 inputs, where pk_gemm's calls on test.wav
  * are of 48 to 60 columns at ten threads (whole twelves, a product's last
  * call fewer) and about 250 at one; its cores have 512 KB (the A725) to
  * 2 MB (the X925) of L2 a core. */
 #ifndef PK_Q8_BLOCK_BYTES
-#if defined(PK_NEON_SVE)
+#if defined(PK_NEON_MM)
 #define PK_Q8_BLOCK_BYTES (1024 * 1024)
 #elif defined(PK_NEON_DOTPROD)
 #define PK_Q8_BLOCK_BYTES (192 * 1024)
@@ -1028,7 +1048,7 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
      * they get somewhere real to not touch, which keeps gcc's
      * -Warray-bounds from reasoning about a null one */
     float none[4 * 8];
-#ifdef PK_NEON_SVE
+#ifdef PK_NEON_MM
     /* a half panel's copy in SMMLA's order for a block of enough columns,
      * its 4-column tiles on it */
     int8_t *mm = NULL;
@@ -1046,7 +1066,7 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
 #define Q8_TILE(NC, MM, MAKE)                                                           \
     q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, b0, b1,                              \
             ph ? ph + (size_t)(t - c0) * 8 : none, first, last, MM, MAKE, NC)
-#ifdef PK_NEON_SVE
+#ifdef PK_NEON_MM
             /* the first tile makes the copy, the rest read it */
             if (mm)
                 for (int make = 1; t + 4 <= c1; t += 4, make = 0) Q8_TILE(4, mm, make);
@@ -1601,6 +1621,50 @@ static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uin
         }
 }
 
+#ifdef PK_NEON_I8MM
+/* Whether SMMLA issues as SDOT does on the calling thread's core: each in
+ * 16 chains, 4096 rounds of 16, the best of 5 runs, the two alternating so
+ * that a clock still rising slows both alike. SMMLA's time over SDOT's was
+ * 0.96 to 1.05 on the S24's and S25's cores and 2.0 on the first
+ * Snapdragon X's Oryon (backend/neon-dp/CLIMB.md, 2026-11-06), where
+ * neon-dp's SDOT loop is the faster; 1.5 parts them. About 0.1 to 0.6 ms. */
+#define RATE_16(OP)                                                                   \
+    OP("0") OP("1") OP("2") OP("3") OP("4") OP("5") OP("6") OP("7")                  \
+    OP("8") OP("9") OP("10") OP("11") OP("12") OP("13") OP("14") OP("15")
+#define RATE_SMMLA(r) "smmla v" r ".4s, v16.16b, v17.16b\n\t"
+#define RATE_SDOT(r) "sdot v" r ".4s, v16.16b, v17.16b\n\t"
+#define RATE_RUN(OP)                                                                  \
+    __asm__ volatile(".arch_extension i8mm\n\t"                                       \
+                     "1:\n\t" RATE_16(OP) "subs %w[n], %w[n], #1\n\t"                 \
+                     "b.ne 1b\n\t"                                                    \
+                     : [n] "+r"(n)                                                    \
+                     :                                                                \
+                     : "cc", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8",    \
+                       "v9", "v10", "v11", "v12", "v13", "v14", "v15")
+
+static int smmla_as_sdot(void) {
+    double mm = 1e9, dot = 1e9;
+    for (int run = 0; run < 5; run++) {
+        uint32_t n = 4096;
+        const double t0 = pk_os_now();
+        RATE_RUN(RATE_SDOT);
+        const double t1 = pk_os_now();
+        n = 4096;
+        RATE_RUN(RATE_SMMLA);
+        const double t2 = pk_os_now();
+        if (t1 - t0 < dot)
+            dot = t1 - t0;
+        if (t2 - t1 < mm)
+            mm = t2 - t1;
+    }
+    return mm < 1.5 * dot;
+}
+#undef RATE_RUN
+#undef RATE_SDOT
+#undef RATE_SMMLA
+#undef RATE_16
+#endif
+
 #if defined(PK_NEON_SVE)
 /* SVE for the loop's MOVPRFX, and as where SMMLA issues as SDOT does: the
  * cores with I8MM and no SVE, Apple's M cores and Snapdragon X's Oryon,
@@ -1612,6 +1676,15 @@ static const char *const needs[] = { "asimddp", "sve", "i8mm", "svei8mm", NULL }
 const pk_kernels pk_kernels_neon_sve = {
     .id = "neon-sve",
     .name = "neon-sve (NEON, SVE and I8MM: SMMLA int8, fp32)",
+#elif defined(PK_NEON_I8MM)
+/* I8MM without SVE, and SMMLA as fast as SDOT by its probe: the S24's and
+ * S25's cores, not Apple's M cores or the first Snapdragon X's Oryon. A
+ * core with SVE takes neon-sve, before it. */
+static const char *const needs[] = { "asimddp", "i8mm", NULL };
+const pk_kernels pk_kernels_neon_i8mm = {
+    .id = "neon-i8mm",
+    .name = "neon-i8mm (NEON and I8MM: SMMLA int8, fp32)",
+    .usable = smmla_as_sdot,
 #elif defined(PK_NEON_DOTPROD)
 static const char *const needs[] = { "asimddp", NULL };
 const pk_kernels pk_kernels_neon_dp = {

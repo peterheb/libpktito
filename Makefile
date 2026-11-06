@@ -1,13 +1,14 @@
 # pktito
 #
 #   make                          ./pktito-c for this machine's family, every backend in it:
-#                                 neon-sve, neon-dp and neon on AArch64; amx-int8, avx512-vnni,
-#                                 avx2-vnni and avx2 on x86-64; and ref. The CPU picks one
-#                                 when it runs.
+#                                 neon-sve, neon-i8mm, neon-dp and neon on AArch64; amx-int8,
+#                                 avx512-vnni, avx2-vnni and avx2 on x86-64; and ref. The CPU
+#                                 picks one when it runs.
 #   make BACKEND=<name>           that backend alone, with ref:
 #                                 neon     ARMv8.0 NEON: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
 #                                 neon-dp  ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
 #                                 neon-sve     and SVE + I8MM's SMMLA: the GB10 (X925, A725)
+#                                 neon-i8mm    and I8MM's SMMLA, no SVE: Snapdragon 8 phones
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
 #                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
@@ -33,7 +34,7 @@
 CC ?= cc
 
 # The backends. A build holds every one of the machine's family that the
-# compiler can make - neon-sve, neon-dp and neon on AArch64; amx-int8,
+# compiler can make - neon-sve, neon-i8mm, neon-dp and neon on AArch64; amx-int8,
 # avx512-vnni, avx2-vnni and avx2 on x86-64 - each compiled with its own
 # instruction set, and ref; the rest of the tree takes the family's
 # baseline. Which runs is the CPU's to say, at run time
@@ -43,7 +44,7 @@ CC ?= cc
 UNAME_M := $(shell uname -m)
 UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
-  FAMILY := neon-sve neon-dp neon
+  FAMILY := neon-sve neon-i8mm neon-dp neon
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
   FAMILY := amx-int8 avx512-vnni avx2-vnni avx2
 endif
@@ -71,6 +72,9 @@ endif
 # loop's kind of instruction, which an assembler older than I8MM (binutils
 # 2.34) cannot take; such a build goes without it.
 ISA_neon-sve := $(ISA_neon-dp)
+# neon-i8mm is the same loop without its SVE instruction, for the cores with
+# I8MM and no SVE; the same flags, and its probe NEON's SMMLA.
+ISA_neon-i8mm := $(ISA_neon-dp)
 ISA_avx2 := -mavx2 -mfma
 ISA_avx2-vnni := -mavx2 -mfma -mavxvnni
 ISA_avx512-vnni := -mavx2 -mfma -mavx512f -mavx512vnni -mavx512vl
@@ -78,6 +82,7 @@ ISA_amx-int8 := $(ISA_avx512-vnni) -mamx-tile -mamx-int8
 
 PROBE := int x;
 PROBE_neon-sve := void f(void) { __asm__(".arch_extension sve\n.arch_extension i8mm\nmovprfx z0, z1\nsmmla z0.s, z1.b, z2.b"); }
+PROBE_neon-i8mm := void f(void) { __asm__(".arch_extension i8mm\nsmmla v0.4s, v1.16b, v2.16b"); }
 can_build = $(shell printf '%s\n' '$(or $(PROBE_$(1)),$(PROBE))' | $(CC) $(ISA_$(1)) -x c -c -o /dev/null - 2>/dev/null && echo $(1))
 BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(call can_build,$(b)))))
 
