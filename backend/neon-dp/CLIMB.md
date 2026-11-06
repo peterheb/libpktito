@@ -2224,3 +2224,47 @@ SDOT's 19.3 on the X925 and 31.88 to 41.8 on the A725 without MOVPRFX (the
 to keep off the cores where SMMLA issues at half: Apple's M cores and the
 first-generation Oryon (2026-10-24, 2026-10-25). The outputs are kept with
 the session's notes.
+
+## 2026-11-06 - neon-i8mm: neon-sve's int8 loop without SVE, for the cores with I8MM and none (hypothesis)
+
+The S24's and S25's cores issue SMMLA at SDOT's rate (the entry above) and
+report I8MM but no SVE, so they run neon-dp's SDOT loop. A backend
+neon-i8mm would give them neon-sve's loop with its one SVE instruction
+taken out. A block's first SMMLA into each accumulator becomes a MOV of M
+(v12) and NEON's SMMLA, where neon-sve has MOVPRFX and SVE's SMMLA. That
+is the 2026-11-02 probe's form: 12.88 cycles a block of 32 inputs on the
+X925 and 31.88 on the A725, against neon-sve's 12.15 and 30.06 and the
+SDOT loop's 19.3 and 41.8. The loop asks for I8MM itself
+(.arch_extension), as neon-sve's asks for SVE and I8MM, and the file
+takes neon-dp's flags. Its sums are the same integers in the same lanes
+as neon-sve's, so its bits are ref's.
+
+I8MM alone does not make the gate. Apple's M cores that have it and the
+first-generation Oryon issue SMMLA at half SDOT's rate (2026-10-24,
+2026-10-25), where this loop would lose to neon-dp's, and a list of CPU
+parts would miss the cores to come. So neon-i8mm also needs a
+measurement. When the backends are picked, a probe of its own times 16
+chains of SMMLA against 16 of SDOT on the calling thread, for a few
+hundred microseconds. It passes neon-i8mm by where SMMLA takes over 1.5
+times SDOT's time an instruction: the phones' cores measured 0.96 to
+1.05, snappy's X1E-78-100 2.0. The probe is backend code, so core/ stays
+without intrinsics: backend/kernels.h's table gets an optional `usable`,
+which pk_kernels_pick asks after a backend's needs. neon-i8mm goes after
+neon-sve and before neon-dp, so a core with SVE keeps neon-sve.
+
+Expected: on the S24 and S25, pktito-c bench under neon-i8mm takes about
+10 to 15% less time than under PKTITO_KERNELS=neon-dp at the default
+threads. That is neon-sve's gain on the X925 less MOVPRFX's part of it.
+Less on the A520s, which reach SMMLA's rate only past 8 chains, where the
+loop has 8 accumulators. Kept if:
+
+- tests/kcheck gives ref's bits under neon-i8mm: under qemu-aarch64
+  here, then on both phones (android-9950x);
+- pktito-c bench moves by more than the run-to-run spread on both phones,
+  under two compilers (two NDKs' clang);
+- the probe takes neon-i8mm on both phones and passes it by on snappy.
+
+Also to be measured, outside the decision: Graviton3 (c7g),
+PKTITO_KERNELS=neon-i8mm against neon-sve at VL 256. The V1 runs neon-sve
+4.5% slower at 256 than at 128 (2026-11-02, the Graviton entry), and the
+NEON loop has no instruction whose speed the VL can move.
