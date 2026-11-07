@@ -2401,3 +2401,28 @@ its own (PKTITO-16).
 Kept: -12.4 to -12.5% on the S24 and -21.5% on the S25 under both
 compilers, at ref's bits. The gate is right on the M4, but for a reason
 that does not tell it from snappy.
+
+## 2026-11-07 - neon-sve at 128 bits where a core's SVE is wider (hypothesis)
+
+Graviton3's V1 runs SVE at 256 bits by Linux's default. There neon-sve's
+loop is 4.8 to 5.1% slower at 16 threads, and 1.7 to 1.9% slower on one,
+than at 128 (the neon-i8mm result above, and the 2026-11-02 Graviton
+entry's 4.5%). The bits are the same: the loop's sums are its low 128
+bits at any length.
+
+Linux sets a thread's vector length (prctl's PR_SVE_SET_VL), so the
+library can run its own threads at 128 without changing the machine's.
+pk_os_unthrottle already readies the threads that run the library's work.
+It would also set 128 where the length is longer, and pk_os_rethrottle
+would put the caller's thread back. A pool worker keeps 128; the caller's
+thread has it for the calls that pk_os_unthrottle wraps. That costs two
+prctl calls a pk_asr_run on such a core, one where SVE is 128 bits
+already, and none without SVE.
+
+Expected on a c7g.4xlarge at the default 256: against main, -4.8 to -5.1%
+at 16 threads and -1.7 to -1.9% on one. That is what main gives at 128 set
+by the sysctl. Nothing changes on cores whose SVE is 128 bits (the GB10,
+Graviton4 and 5) or that have none.
+
+Kept if the bench moves past its spread under gcc and clang, and kcheck
+and check-c pass at 256 and at 128.
