@@ -10,7 +10,8 @@
  * cores with SVE and I8MM (measured on the GB10's X925 and A725; Neoverse
  * V1 to V3 have both as well); and built as backend/neon-i8mm
  * (PK_NEON_I8MM) the same, without SVE, for the cores with I8MM alone
- * where SMMLA issues as SDOT does (the Galaxy S24's and S25's).
+ * where its tile is the faster (the Galaxy S24's big cores and S25's, the
+ * first Snapdragon X's).
  * The int8 product is the only kernel where they differ: the rest is fp32,
  * the same instructions on every core.
  *
@@ -1622,69 +1623,91 @@ static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uin
 }
 
 #ifdef PK_NEON_I8MM
-/* Whether SMMLA issues as SDOT does on the calling thread's core: each in
- * 16 chains, 4096 rounds of 16, the best of 5 runs, the two alternating so
- * that a clock still rising slows both alike. SMMLA's time over SDOT's was
- * 0.96 to 1.05 on the S24's and S25's cores and 2.0 on the first
- * Snapdragon X's Oryon (backend/neon-dp/CLIMB.md, 2026-11-06), where
- * neon-dp's SDOT loop is the faster; 1.5 parts them. About 0.1 to 0.6 ms. */
-#define RATE_16(OP)                                                                   \
-    OP("0") OP("1") OP("2") OP("3") OP("4") OP("5") OP("6") OP("7")                  \
-    OP("8") OP("9") OP("10") OP("11") OP("12") OP("13") OP("14") OP("15")
-#define RATE_SMMLA(r) "smmla v" r ".4s, v16.16b, v17.16b\n\t"
-#define RATE_SDOT(r) "sdot v" r ".4s, v16.16b, v17.16b\n\t"
-#define RATE_RUN(OP)                                                                  \
-    __asm__ volatile(".arch_extension i8mm\n\t"                                       \
-                     "1:\n\t" RATE_16(OP) "subs %w[n], %w[n], #1\n\t"                 \
-                     "b.ne 1b\n\t"                                                    \
-                     : [n] "+r"(n)                                                    \
-                     :                                                                \
-                     : "cc", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8",    \
-                       "v9", "v10", "v11", "v12", "v13", "v14", "v15")
+/* Whether the SMMLA tile is the faster on the calling thread's core: q8_mm4
+ * on a copy and the SDOT loop on the file's order, 16 blocks of 32 inputs
+ * of zeros (8, 4 and 2 KB, in L1), 64 calls a time. SMMLA's rate alone does
+ * not part the cores: it is half SDOT's on snappy's Oryon and on the M4
+ * both, where neon-i8mm is 10 to 13% faster and 8 to 10% slower. An SMMLA
+ * leaves Oryon two of its four SIMD pipes for the tile's other
+ * instructions, and the M4 none (backend/neon-dp/CLIMB.md, 2026-11-07). */
+enum { PROBE_NB = 16 };
 
-static int smmla_as_sdot(void) {
-    double mm = 1e9, dot = 1e9;
-    for (int run = 0; run < 5; run++) {
-        uint32_t n = 4096;
-        const double t0 = pk_os_now();
-        RATE_RUN(RATE_SDOT);
-        const double t1 = pk_os_now();
-        n = 4096;
-        RATE_RUN(RATE_SMMLA);
-        const double t2 = pk_os_now();
-        if (t1 - t0 < dot)
-            dot = t1 - t0;
-        if (t2 - t1 < mm)
-            mm = t2 - t1;
-    }
-    return mm < 1.5 * dot;
+/* the weights in the file's order (g) and in SMMLA's (mm), and 4 columns'
+ * activations (x) and scales (d) */
+typedef struct {
+    _Alignas(64) int8_t g[PROBE_NB * 512], mm[PROBE_NB * 256], x[4][PROBE_NB * 32];
+    float d[4][PROBE_NB];
+} probe_data;
+
+static double tile_time(const probe_data *p, int smmla) {
+    const int8_t *x[4] = { p->x[0], p->x[1], p->x[2], p->x[3] };
+    const float *d[4] = { p->d[0], p->d[1], p->d[2], p->d[3] };
+    float32x4_t f[4][2];
+    const double t0 = pk_os_now();
+    if (smmla)
+        for (int i = 0; i < 64; i++)
+            q8_mm4(f, p->mm, NULL, x, d, PROBE_NB, 32);
+    else
+        for (int i = 0; i < 64; i++)
+            q8_blocks4_qb32(f, p->g, x, d, PROBE_NB);
+    return pk_os_now() - t0;
 }
-#undef RATE_RUN
-#undef RATE_SDOT
-#undef RATE_SMMLA
-#undef RATE_16
+
+/* The SMMLA tile's time over SDOT's: SDOT, SMMLA, SMMLA, SDOT a run, so
+ * that a clock rising or falling through the four slows both alike, and
+ * the median of 5 runs, past one that a migration or an interrupt cut
+ * into. Timed SDOT then SMMLA, the best of 5 of each, it read 8% low on a
+ * cold M5 core whose clock moved: 1.08 for its 1.17
+ * (backend/neon-dp/CLIMB.md, 2026-11-07). */
+static double mm_tile_ratio(const probe_data *p) {
+    double r[5];
+    for (int run = 0; run < 5; run++) {
+        const double a = tile_time(p, 0);
+        const double b = tile_time(p, 1);
+        const double c = tile_time(p, 1);
+        const double d = tile_time(p, 0);
+        r[run] = (b + c) / (a + d);
+    }
+    for (int i = 1; i < 5; i++) /* sorted, for the median */
+        for (int j = i; j > 0 && r[j] < r[j - 1]; j--) {
+            const double t = r[j];
+            r[j] = r[j - 1];
+            r[j - 1] = t;
+        }
+    return r[2];
+}
+
+/* The data on the stack, and written. On Linux, static zeros never written
+ * are all one page of zeros, and where a core's L1 sets reach past a 4 KB
+ * page's bits (the A720's), a line read at two addresses moves between
+ * sets. Read so, the S24's A520 put the SMMLA tile at 0.58 to 1.09 of
+ * SDOT's, by where a build had put the arrays, and written, at 1.16 in
+ * every run (backend/neon-dp/CLIMB.md, 2026-11-07). Production's weights
+ * and activations are never that page. */
+static int mm_tile_faster(void) {
+    probe_data p;
+    memset(&p, 0, sizeof p);
+    return mm_tile_ratio(&p) < 1.0;
+}
 #endif
 
 #if defined(PK_NEON_SVE)
-/* SVE for the loop's MOVPRFX, and as where SMMLA issues as SDOT does: the
- * cores with I8MM and no SVE, Apple's M cores and Snapdragon X's Oryon,
- * issue it at half SDOT's rate (backend/neon-dp/CLIMB.md, 2026-10-24 and
- * 2026-10-25), and pass this by. SVE is named first, so that the reason
- * given for passing one by is the SVE it lacks, not an I8MM that its
- * system is not asked about (macOS's, core/os.c) */
+/* SVE for the loop's MOVPRFX. A core with I8MM and no SVE has neon-i8mm's
+ * loop, where its probe finds it the faster; SVE is named first, so that
+ * such a core is told the SVE it lacks */
 static const char *const needs[] = { "asimddp", "sve", "i8mm", "svei8mm", NULL };
 const pk_kernels pk_kernels_neon_sve = {
     .id = "neon-sve",
     .name = "neon-sve (NEON, SVE and I8MM: SMMLA int8, fp32)",
 #elif defined(PK_NEON_I8MM)
-/* I8MM without SVE, and SMMLA as fast as SDOT by its probe: the S24's and
- * S25's cores, not Apple's M cores or the first Snapdragon X's Oryon. A
- * core with SVE takes neon-sve, before it. */
+/* I8MM without SVE, and its tile the faster by its probe: the S24's big
+ * cores, the S25's and the first Snapdragon X's, not the M4's or the S24's
+ * A520s. A core with SVE takes neon-sve, before it. */
 static const char *const needs[] = { "asimddp", "i8mm", NULL };
 const pk_kernels pk_kernels_neon_i8mm = {
     .id = "neon-i8mm",
     .name = "neon-i8mm (NEON and I8MM: SMMLA int8, fp32)",
-    .usable = smmla_as_sdot,
+    .usable = mm_tile_faster,
 #elif defined(PK_NEON_DOTPROD)
 static const char *const needs[] = { "asimddp", NULL };
 const pk_kernels pk_kernels_neon_dp = {

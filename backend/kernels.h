@@ -244,7 +244,9 @@ typedef struct {
                                        "svei8mm" (SVE's SMMLA) */
     int (*usable)(void);            /* NULL, or a probe of what the needs cannot say:
                                        nonzero if the backend is worth running on
-                                       this core (neon-i8mm's, SMMLA's rate) */
+                                       the core it runs on, of the fastest kind
+                                       (pk_os_on_fast_cores; neon-i8mm's times its
+                                       tile against SDOT's) */
     void (*quantize)(pk_act *a, const float *x, size_t xs);
     void (*gemm_q8)(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                     uint32_t rows, const pk_act *a, int add);
@@ -275,11 +277,12 @@ extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_
 /* This build's backends, the fastest first and ref last, NULL-ended. */
 extern const pk_kernels *const pk_kernels_built[];
 
-/* The backend that runs: the first of pk_kernels_built whose needs this CPU
- * meets and whose probe, if it has one, says yes; or the one the
- * environment's PKTITO_KERNELS names, probe or not (to compare them; not a
- * setting anyone should need). NULL, with the reason in why, when
- * PKTITO_KERNELS names one the build lacks or the CPU cannot run. */
+/* The backend that runs, chosen on the first call and kept: the first of
+ * pk_kernels_built whose needs this CPU meets and whose probe, if it has
+ * one, says yes; or the one the environment's PKTITO_KERNELS names, probe
+ * or not (to compare them; not a setting anyone should need). NULL, with
+ * the reason in why, when PKTITO_KERNELS names one the build lacks or the
+ * CPU cannot run. */
 const pk_kernels *pk_kernels_pick(char *why, size_t whylen);
 
 /* The name of the backend in use, for `pktito-c bench`. */
