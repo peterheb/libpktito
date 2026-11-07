@@ -41,6 +41,16 @@
 #ifdef __linux__
 #include <sched.h>
 #endif
+#if defined(__linux__) && defined(__aarch64__)
+#include <sys/prctl.h>
+#ifndef PR_SVE_SET_VL /* Linux 4.15's */
+#define PR_SVE_SET_VL 50
+#define PR_SVE_GET_VL 51
+#endif
+#ifndef PR_SVE_VL_LEN_MASK
+#define PR_SVE_VL_LEN_MASK 0xffff
+#endif
+#endif
 
 /* --------------------------------------------------------------- paths --- */
 
@@ -253,8 +263,33 @@ double pk_os_now(void) {
 }
 
 void pk_os_stdio(void) {}
-pk_os_throttle pk_os_unthrottle(void) { return (pk_os_throttle){ 0, 0 }; }
+
+#if defined(__linux__) && defined(__aarch64__)
+/* SVE at 128 bits where the thread's length is longer. The library's one
+ * SVE loop, neon-sve's int8 product, was written and measured at 128 (the
+ * GB10's). A Neoverse V1 (Graviton3) runs it 4.8% faster so than at its
+ * default 256 at 16 threads, and 1.8 to 1.9% on one, to the same bits
+ * (backend/neon-dp/CLIMB.md, 2026-11-07). Linux sets the length a thread
+ * at a time, so the rest of a host's process keeps its own. */
+pk_os_throttle pk_os_unthrottle(void) {
+    static const char *const sve[] = { "sve", NULL };
+    pk_os_throttle was = { 0, 0, 0 };
+    if (!pk_os_cpu_lacks(sve)) {
+        const int vl = prctl(PR_SVE_GET_VL, 0, 0, 0, 0);
+        if (vl > 0 && (vl & PR_SVE_VL_LEN_MASK) > 16 && prctl(PR_SVE_SET_VL, 16, 0, 0, 0) >= 0)
+            was.sve = vl;
+    }
+    return was;
+}
+
+void pk_os_rethrottle(pk_os_throttle was) {
+    if (was.sve)
+        prctl(PR_SVE_SET_VL, (unsigned long)was.sve, 0, 0, 0);
+}
+#else
+pk_os_throttle pk_os_unthrottle(void) { return (pk_os_throttle){ 0, 0, 0 }; }
 void pk_os_rethrottle(pk_os_throttle was) { (void)was; }
+#endif
 
 #elif defined(PK_WINDOWS)
 
@@ -358,9 +393,9 @@ int pk_os_fast_cores(void) { return cores(1); }
 pk_os_throttle pk_os_unthrottle(void) {
     HANDLE t = GetCurrentThread();
     THREAD_POWER_THROTTLING_STATE s = { THREAD_POWER_THROTTLING_CURRENT_VERSION, 0, 0 };
-    pk_os_throttle was = { 0, 0 };
+    pk_os_throttle was = { 0, 0, 0 };
     if (GetThreadInformation(t, ThreadPowerThrottling, &s, sizeof s))
-        was = (pk_os_throttle){ s.ControlMask, s.StateMask };
+        was = (pk_os_throttle){ s.ControlMask, s.StateMask, 0 };
     s.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
     s.StateMask = 0;
     SetThreadInformation(t, ThreadPowerThrottling, &s, sizeof s);
@@ -451,7 +486,7 @@ double pk_os_now(void) {
 }
 
 void pk_os_stdio(void) {}
-pk_os_throttle pk_os_unthrottle(void) { return (pk_os_throttle){ 0, 0 }; }
+pk_os_throttle pk_os_unthrottle(void) { return (pk_os_throttle){ 0, 0, 0 }; }
 void pk_os_rethrottle(pk_os_throttle was) { (void)was; }
 
 #endif

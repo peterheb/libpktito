@@ -39,15 +39,20 @@ int pk_os_cores(void);
  * them where the cores are of one kind or the OS does not say. */
 int pk_os_fast_cores(void);
 
-/* The calling thread out of the operating system's power throttling where
- * it has one: on Windows the EcoQoS its heuristics give the threads of a
- * process without a window, which it confines to the cores it calls
- * efficient. Nothing elsewhere. pk_os_rethrottle, given what it returns,
- * puts the thread back as it was. A pool worker stays out; the caller's
- * thread is out for a pk_asr_run, whose every job it runs a share of, for
- * a pk_vad_probs, which runs on it alone, and for a pk_model_load or a
- * pk_model_from_bytes, whose checks do. */
-typedef struct { unsigned long control, state; } pk_os_throttle;
+/* The calling thread out of what the operating system would hold the
+ * library's work back with. On Windows that is the EcoQoS its heuristics
+ * give the threads of a process without a window, which it confines to the
+ * cores it calls efficient. On Linux it is an SVE vector length past 128
+ * bits, where neon-sve's loop runs slower (core/os.c). Nothing elsewhere.
+ * pk_os_rethrottle, given what it returns, puts the thread back as it was.
+ * A pool worker stays out; the caller's thread is out for a pk_asr_run,
+ * whose every job it runs a share of, for a pk_vad_probs, which runs on it
+ * alone, and for a pk_model_load or a pk_model_from_bytes, whose checks do.
+ * A function of the caller's that one of them calls runs as the thread is. */
+typedef struct {
+    unsigned long control, state; /* Windows' throttling masks */
+    int sve;                      /* the SVE length that Linux had, if changed */
+} pk_os_throttle;
 pk_os_throttle pk_os_unthrottle(void);
 void pk_os_rethrottle(pk_os_throttle was);
 

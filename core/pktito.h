@@ -66,8 +66,8 @@ typedef struct pk_model pk_model;
  * UTF-8 on every system: on Windows it is opened as UTF-16, so a model in
  * a user folder whose name is past ASCII loads whatever the process's
  * code page, and bytes that are not UTF-8 are refused, never read in the
- * code page instead. The checks run on the calling thread, which on
- * Windows is out of power throttling for the call, as for a pk_asr_run. */
+ * code page instead. The checks run on the calling thread, readied for the
+ * call as for a pk_asr_run. */
 pk_model *pk_model_load(const char *path, char *err, size_t errlen);
 
 /* The same from a copy the caller holds - a file embedded in a binary, or
@@ -144,10 +144,10 @@ typedef struct {
  * its working memory with the length: a minute is about 60 MB. Long
  * recordings are pk_chunks' business.
  *
- * The calling thread does a share of the work. On Windows it is out of the
- * power throttling the system gives a process without a window for the
- * call, as the transcriber's own threads are for good, and leaves as it
- * came (core/os.h). */
+ * The calling thread does a share of the work. For the call it is out of
+ * the power throttling Windows gives a process without a window, and runs
+ * SVE at 128 bits where Linux gives it more, as the transcriber's own
+ * threads are for good; it leaves as it came (core/os.h). */
 long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks);
 
 /* A stretch of a recording, in samples; end is exclusive. */
@@ -319,8 +319,8 @@ void    pk_vad_free(pk_vad *v);
 #define PK_VAD_SAMPLES 512      /* a frame: 32 ms at 16 kHz */
 
 /* P(speech) for the next frame, or for n consecutive frames x[n * 512] ->
- * probs[n] (the same bits, several times quicker; on Windows out of power
- * throttling for the call, as pk_asr_run is). */
+ * probs[n] (the same bits, several times quicker; the calling thread
+ * readied for the call as pk_asr_run's is). */
 float pk_vad_prob(pk_vad *v, const float *frame);
 void  pk_vad_probs(pk_vad *v, const float *x, size_t n, float *probs);
 
