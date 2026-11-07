@@ -2268,3 +2268,136 @@ Also to be measured, outside the decision: Graviton3 (c7g),
 PKTITO_KERNELS=neon-i8mm against neon-sve at VL 256. The V1 runs neon-sve
 4.5% slower at 256 than at 128 (2026-11-02, the Graviton entry), and the
 NEON loop has no instruction whose speed the VL can move.
+
+## 2026-11-07 - neon-i8mm: neon-sve's int8 loop without SVE, for the cores with I8MM and none (result: kept)
+
+e7b432d, as the hypothesis above has it. kcheck, 1906 cases, gives ref's
+bits under neon-i8mm, neon-dp and neon:
+
+- under qemu-aarch64 here, with aarch64-linux-gnu-gcc 15.2, NDK r30's
+  clang 21.0.0 and NDK r27d's clang 18.0.4;
+- on both phones under both NDKs (android-9950x, through adb), where
+  check-c passes and test.wav's v2 and v3 transcripts under neon-i8mm,
+  picked, are ref's;
+- on snappy, with llvm-mingw's clang 23.1.2 (kcheck alone);
+- on the M4 mini, with Apple clang 21.0.0 (macOS asked for I8MM, below),
+  where check-c passes and test.wav's v2 transcript under neon-i8mm,
+  named, is ref's;
+- on Graviton3, under gcc 13.3 and clang 18.1, at SVE's 256 bits and 128
+  (below).
+
+test.wav through v2, pktito-c bench (best of 5) at the default 8 threads.
+The probe's pick and PKTITO_KERNELS=neon-dp ran back to back in each of 6
+rounds, the order alternating. The phones were on AC, at 29.6 to 31.3 C
+when each run began:
+
+| phone     | compiler      | neon-dp       | neon-i8mm     | change, median (range)  |
+| --------- | ------------- | ------------- | ------------- | ----------------------- |
+| S24 Ultra | r30 clang 21  | 1.955-2.251 s | 1.869-1.965 s | -12.5% (-12.7 to -4.4)  |
+| S24 Ultra | r27d clang 18 | 2.139-2.455 s | 1.883-2.154 s | -12.4% (-16.6 to -11.4) |
+| S25 Ultra | r30 clang 21  | 1.471-1.828 s | 1.129-1.451 s | -21.5% (-30.9 to -19.5) |
+| S25 Ultra | r27d clang 18 | 1.612-1.808 s | 1.254-1.441 s | -21.5% (-29.1 to -19.9) |
+
+The probe took neon-i8mm on both phones in every round. The S24 is in the
+expected 10 to 15%, and the S25's second-generation Oryon is past it.
+
+snappy (X1E-78-100, Windows 11, on AC and idle). The probe passes
+neon-i8mm by, so neon-dp is picked, as the hypothesis wanted. But
+neon-i8mm, named, was the faster in every pair:
+
+- 12 threads (the default), 3 rounds: neon-dp 0.397-0.445 s, neon-i8mm
+  0.357-0.400 s, -10.1% (-10.3 to -9.3);
+- one thread, 3 rounds: 3.981-3.992 s against 3.456-3.458 s, -13.3%
+  (-13.4 to -13.2).
+
+The premise that the loop would lose at half SDOT's rate does not hold on
+the first-generation Oryon.
+
+The M4 mini (base M4, macOS 26.4.1), from a scratch copy whose core/os.c
+answers i8mm from hw.optional.arm.FEAT_I8MM. The tree's macOS cpu_has asks
+only for the dot product, so neon-i8mm is never picked on a Mac or named
+there. The probe passes neon-i8mm by, and here it is the slower:
+
+- 10 threads (the default), 6 rounds: neon-dp 0.576-0.580 s, neon-i8mm
+  0.623-0.627 s, +8.0% (+7.6 to +8.7);
+- one thread, 4 rounds: 3.100-3.102 s against 3.398 s, +9.5% (+9.5 to
+  +9.6).
+
+Why the two differ, when mmrate2 has SMMLA at half SDOT's rate on both
+(2.0)? mix.c times 16 independent SMMLA or SDOT chains a round with K
+independent other instructions mixed in, in cycles from a chain of
+dependent adds. Best of 7, three runs within 1% on each. The M4 mini held
+4.42 GHz and snappy 3.41 to 3.42 throughout (mix.c: Apple clang 21.0.0
+and llvm-mingw's clang 23.1.2, -O2):
+
+| a round                      | M4                 | snappy           |
+| ---------------------------- | ------------------ | ---------------- |
+| 16 SMMLA                     | 8.9                | 8.0              |
+| 16 SMMLA + 8 / 16 / 32 ZIP1  | 10.9 / 12.2 / 16.3 | 8.0 / 8.0 / 13.4 |
+| 16 SMMLA + 16 FSUB           | 12.2-12.3          | 8.0              |
+| 16 SMMLA + 16 MOV or MOVI #0 | 8.8-9.0            | 8.0-8.1          |
+| 16 SDOT                      | 4.3-4.4            | 4.0              |
+| 16 SDOT + 16 ZIP1 or SCVTF   | 8.1-8.2            | 8.2-8.3          |
+| 16 SDOT + 16 MOVI #0         | 4.3-4.5            | 8.0              |
+| 16 ZIP1, FSUB or SCVTF alone | 4.0                | 4.0              |
+| 16 MOV alone                 | 2.0                | 2.25             |
+| 16 MOVI #0 alone             | 2.0                | 4.0              |
+
+On the M4 an SMMLA takes two of the four SIMD issue slots, so whatever is
+mixed in adds what it takes alone. MOV and MOVI #0 are free there (8 a
+cycle alone, handled at rename). On snappy's Oryon an SMMLA takes one slot
+on two of the four pipes, and the other two run up to 16 other
+instructions a round beside them for nothing. MOVI #0 takes a slot there.
+A block of 32 inputs counts as follows:
+
+- the M4: the SMMLA tile's 32 SMMLAs take 64 slots and its 10 ZIPs, 8
+  FSUBs and 8 FMLAs 26, 90 in all; the SDOT tile's 64 SDOTs, 8 SCVTFs and
+  8 FMLAs take 80, its MOVIs free. That is 12.5% more, where the M4
+  measured +8 to +10% on the whole.
+- Oryon: the SMMLA tile's 32 SMMLAs take 16 cycles on their two pipes,
+  with the other 26 beside them; the SDOT tile's 88 slots, its MOVIs
+  included, take 22. That is about a quarter less, where snappy measured
+  -10 to -13% on the whole.
+
+So the probe measures the one thing the two cores share, SMMLA's rate
+alone. What parts them is what the rest of the tile can issue beside it.
+A gate that times the two tiles themselves, in L1 on the calling thread,
+would take neon-i8mm on snappy and keep it off the M4 by measurement, with
+no platform's system left unasked. That is untried, a hypothesis of its
+own (PKTITO-15 on the release board).
+
+Graviton3 (c7g.4xlarge, 16 Neoverse V1 cores, Ubuntu 24.04), outside the
+decision. Linux's default vector length there is 256 bits, and 128 was
+set through /proc/sys/abi/sve_default_vector_length. Under gcc 13.3 and
+clang 18.1, at 256 and at 128:
+
+- check-c passes, kcheck giving ref's bits under all four NEON backends;
+- test.wav's v2 transcript is ref's under neon-sve, neon-i8mm and neon-dp;
+- the pick is neon-sve.
+
+pktito-c bench, best of 5, the four in turn, the order rotated each
+round: 6 rounds at the default 16 threads, 4 on one core (taskset):
+
+| threads | compiler   | neon-sve, 256 | neon-sve, 128 | neon-i8mm     | neon-dp       |
+| ------- | ---------- | ------------- | ------------- | ------------- | ------------- |
+| 16      | gcc 13.3   | 0.543-0.545 s | 0.518-0.520 s | 0.541-0.542 s | 0.623-0.626 s |
+| 16      | clang 18.1 | 0.539-0.544 s | 0.513-0.515 s | 0.535-0.540 s | 0.619-0.621 s |
+| 1       | gcc 13.3   | 6.289-6.294 s | 6.183-6.189 s | 6.379-6.387 s | 7.137-7.145 s |
+| 1       | clang 18.1 | 6.227-6.238 s | 6.112-6.123 s | 6.318-6.342 s | 7.068-7.074 s |
+
+Paired by round, under gcc and clang:
+
+- neon-i8mm against neon-sve at 256: -0.5 and -0.8% at 16 threads, +1.5
+  and +1.5% on one. Level.
+- neon-i8mm against neon-sve at 128: +4.4 and +4.6%, +3.2 and +3.4%.
+- neon-sve at 128 against 256: -4.8 and -5.1%, -1.7 and -1.9%, the
+  2026-11-02 entry's 4.5%.
+
+So neon-i8mm does not take back the V1's loss at 256 bits. neon-sve at
+128 is the V1's fastest, by 4.4 to 5.1% at its threads. Getting it would
+mean neon-sve's threads at 128 bits (prctl's PR_SVE_SET_VL), a change of
+its own (PKTITO-16).
+
+Kept: -12.4 to -12.5% on the S24 and -21.5% on the S25 under both
+compilers, at ref's bits. The gate is right on the M4, but for a reason
+that does not tell it from snappy.
