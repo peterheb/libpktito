@@ -2550,3 +2550,112 @@ miss, and recorded.
 
 Kept if the picks are those, and check-c passes on both phones, the M4
 mini, snappy and the 9950X.
+
+## 2026-11-07 - neon-i8mm's gate: the two tiles timed, not SMMLA's rate (result: kept)
+
+a38ee90, the three hypotheses above: the two tiles timed; on memory the
+probe has written, on its stack; on the fastest kind of core, from a
+thread of its own. Three more changes came from the first measurements.
+
+The clock. macOS's CLOCK_MONOTONIC steps by a microsecond, where its
+CLOCK_MONOTONIC_RAW and CLOCK_UPTIME_RAW step by 41 ns (the M4 mini, macOS
+26.4.1). The probe's sections take 4 to 5 us on an M4 P core, so its
+ratios there came out as 5/4 and 6/5. pk_os_now now reads CLOCK_UPTIME_RAW
+on macOS, which stops in sleep as Linux's CLOCK_MONOTONIC does.
+
+The order. As the first hypothesis had it (SDOT then SMMLA a run, the best
+of 5 of each), the probe read up to 10% low and 7% high on a cold M5 core.
+A clock that moves within its 0.1 to 0.25 ms favours whichever tile runs
+second. The probe now runs SDOT, SMMLA, SMMLA, SDOT a run, so that a clock
+rising or falling through the four slows both alike, and takes the median
+of 5 runs' ratios, past a run that a migration or an interrupt cut into.
+12 cold processes of each, interleaved a second apart (tilens2, which
+includes backend/neon/kernels.c; static zeros, which macOS and Windows
+read as written data: the second hypothesis's table, and snappy's below):
+
+| board, thread            | SDOT, SMMLA: best of 5 | SDOT, SMMLA, SMMLA, SDOT: median of 5 | its time     |
+| ------------------------ | ---------------------- | ------------------------------------- | ------------ |
+| M4 mini, default QoS     | 1.072-1.091            | 1.044-1.070                           | 0.38-0.81 ms |
+| M4 mini, background QoS  | 1.053-1.082            | 1.062-1.065                           | 0.46-0.81 ms |
+| M5 Ultra, default QoS    | 1.059-1.248            | 1.173-1.190                           | 0.24-0.47 ms |
+| M5 Ultra, background QoS | 1.073-1.260            | 1.174-1.187                           | 0.38-0.55 ms |
+| snappy                   | 0.797-0.855            | 0.788-0.816                           | 0.13 ms      |
+
+Once a process. pk_model_load's check of PKTITO_KERNELS made the pick and
+dropped it, and the kernels made it again at their first call: in a
+pktito-c run on the M4 mini, the probe ran eleven times, ten of them at
+once, one on each of the first job's threads, each keeping its own
+verdict. On cores of two kinds those could differ. The first
+pk_model_load's choice is now the one kept (backend/kernels.c), so the
+probe runs once.
+
+The fastest cores. pk_os_on_fast_cores (core/os.c) on a GB10, from a test
+that prints where its function runs: unpinned, on a thread held to the ten
+X925s (CPUs 5-9 and 15-19), the caller's mask as it was; under taskset -c
+0-6, on the two X925s; under taskset -c 0-4, the A725s alone, on the
+calling thread.
+
+On the phones the fastest kind, by cpu_capacity, is the S24's X4 alone
+(cpu7 at 1024, its A720s 897 and 842, its A520s 369) and the S25's two
+4.47 GHz cores (cpu6-7 at 1024, cpu0-5 765). pktito-c info's pick, from
+the tree with the change (android-9950x, ~/i8mm-phone-logs/s24-probe- and
+s25-probe-5c480a7.txt):
+
+- unpinned, 5 runs on each phone: neon-i8mm every time;
+- the S24 under taskset, 3 runs a core: neon-dp on the A520 (cpu0), and
+  neon-i8mm on cpu2, cpu5 and cpu7;
+- the S25 under taskset: neon-i8mm on cpu0 and cpu6.
+
+The whole model on one of the S24's cores, one thread, best of 5, in one
+round of neon-dp, neon-i8mm, neon-i8mm, neon-dp, on AC after cooling to
+30.2 C (s24-onecore-5c480a7.txt):
+
+| S24 core    | neon-dp          | neon-i8mm        | first pair | the round |
+| ----------- | ---------------- | ---------------- | ---------- | --------- |
+| A520 (cpu0) | 23.629, 23.620 s | 24.784, 24.769 s | +4.9%      | +4.9%     |
+| X4 (cpu7)   | 4.927, 5.356 s   | 4.663, 4.747 s   | -5.4%      | -8.5%     |
+
+The A520's verdict holds for the model: neon-dp is the faster there, by
+about a third of its tile's 16%. The X4's second neon-dp run began at
+31.5 C, the round's warmest, so the first pair's -5.4% is the safer
+figure.
+
+The verdicts:
+
+- snappy (X1E-78-100, Windows 11, on AC) picks neon-i8mm, in 5 runs of 5
+  of pktito-c info. tilens3, 6 cold processes a mode, reads 0.796 to
+  0.822 on static zeros, 0.807 to 0.815 on written data and 0.801 to
+  0.816 on the stack, in 0.12 to 0.22 ms: Windows reads its never-written
+  zeros as written ones. pktito-c bench, best of 5, on the tree before
+  the second and third hypotheses (a38ee90's kernels, and the same pick):
+  with a 45 s rest before each run, in 3 rounds of neon-dp, neon-i8mm,
+  neon-i8mm, neon-dp at the default 12 threads, neon-dp 0.395-0.402 s and
+  neon-i8mm 0.356-0.369 s, -8.2, -10.3 and -9.9% by round. On one thread,
+  3 rounds: 4.003-4.016 s against 3.479-3.510 s, -12.5 to -13.1%. Back to
+  back without the rest, the second run of each pair at 12 threads slowed
+  as the laptop heated, whichever came second.
+- The M4 mini keeps neon-dp. With the probe's data written, it reads 1.079
+  to 1.087 on its E cores (default and background QoS) and 1.113 to 1.127
+  on its P cores (after 0.3 s of work), the same in every mode.
+- The M5 Ultra keeps neon-dp: 1.173 to 1.190 cold, as above.
+- The S24 picks neon-i8mm, on its X4: at its 8 threads 12.5% faster than
+  neon-dp (the neon-i8mm entry above). A process held to its A520s keeps
+  neon-dp, 4.9% faster there.
+- The S25 picks neon-i8mm on every core: 21.5% faster at 8 threads (the
+  same entry).
+
+check-c passes with no warning on the 9950X, the M4 mini (Apple clang
+21.0.0), pi5a (gcc 14.2) and both phones (android-9950x, NDK r27d's clang
+18.0.4: kcheck's 1906 cases at ref's bits under neon-i8mm, neon-dp and
+neon, and test.wav's v2 and v3 transcripts ref's). check-c.ps1 passes on
+rtxspark and snappy (llvm-mingw's clang 23.1.2). make check passes on
+the 9950X, at the WER of main's. The tree cross-compiles with no warning
+under aarch64-linux-gnu-gcc 15.2, NDK r27d's clang 18.0.4 and
+llvm-mingw's clang 23.1.2.
+
+Kept: neon-i8mm where its tile is the faster on the fastest cores a
+process may use: snappy (8 to 10% at 12 threads, 13% on one), the S24
+(12.5% at its 8 threads) and the S25 (21.5%). neon-dp where SDOT's tile
+is: the M4, the M5, and the S24 held to its A520s (4.9%). The probe runs
+once a process, in under a millisecond, and every backend gives ref's
+bits.
