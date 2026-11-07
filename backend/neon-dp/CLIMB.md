@@ -2495,3 +2495,58 @@ Kept if the written arrays read alike in both places, every phone core
 reads below 1 cold, and pktito-c's pick is neon-i8mm on each phone core
 alone and unpinned. The M4 mini (default and background QoS) and snappy
 must keep their verdicts, and kcheck and check-c must pass as before.
+
+## 2026-11-07 - neon-i8mm's probe on the fastest cores, from a thread of its own (hypothesis)
+
+The entry above's kit, tilens3, cold. Each core ran 6 processes a mode,
+interleaved a second apart (the phones through android-9950x, on AC and
+idle; the M4 mini on AC):
+
+| core                        | zeros, a page's start | zeros, 2 KB along | written, at the start | written, along | on the stack |
+| --------------------------- | --------------------- | ----------------- | --------------------- | -------------- | ------------ |
+| S24, A520 cpu0              | 0.800-0.908           | 0.953-1.038       | 1.159-1.169           | 1.162-1.180    | 1.157-1.171  |
+| S24, A720 cpu2              | 0.566-0.573           | 0.562-0.570       | 0.806-0.807           | 0.806-0.809    | 0.800-0.809  |
+| S24, A720 cpu5              | 0.563-0.571           | 0.542-0.579       | 0.802-0.808           | 0.807-0.808    | 0.805-0.808  |
+| S24, X4 cpu7                | 0.510-0.513           | 0.504-0.513       | 0.838-0.841           | 0.838-0.843    | 0.838-0.844  |
+| S25, cpu0                   | 0.699-0.710           | 0.710-0.722       | 0.730-0.733           | 0.731-0.732    | 0.731-0.734  |
+| S25, cpu6                   | 0.751-0.769           | 0.728-0.746       | 0.728-0.740           | 0.721-0.731    | 0.730-0.733  |
+| M4 mini, background QoS (E) | 1.081-1.082           | 1.079-1.082       | 1.080-1.082           | 1.080-1.087    | 1.081-1.082  |
+| M4 mini, after 0.3 s (P)    | 1.112-1.123           | 1.118-1.126       | 1.118-1.127           | 1.115-1.126    | 1.113-1.123  |
+
+Written, the ratios no longer move with the arrays' place: the zero page
+had moved them. The M4's are the same in every mode. But the expectation
+that every phone core reads below 1 was wrong. The A520 reads 1.16 in
+every process, its SDOT tile 14% the faster, which the zero page had
+hidden. The S24's A720s and X4 read 0.80 to 0.84, so its cores of two
+kinds disagree. The S25's are unmoved, at 0.72 to 0.74.
+
+Unpinned on the S24, the stack read the A520's 1.17 in 1 process of 6.
+The pick goes where the loading thread happens to be. On an A520 it keeps
+neon-dp, and the S24's whole run at 8 threads is 12.5% slower on that
+(the neon-i8mm entry above).
+
+The proposal: the probe's answer is the process's, and the fast cores do
+most of a run's work, so ask it there. On Linux the probe runs on a thread
+of its own, held by sched_setaffinity to the fastest kind of core the
+process may use (the cores pk_os_fast_cores counts), and the caller waits
+for it. The caller's own thread is left as it was. Setting its mask and
+back would leave it a mask of its own, the cores it had at that moment,
+which Linux keeps (6.2 and later) through the process's later cpusets:
+Android moves an app between them as it goes to the background and back.
+
+- Where the cores are of one kind, the probe runs on the calling thread,
+  as now.
+- A process that may run only on the A520s (taskset, or Android's
+  background cpuset) probes there, and keeps neon-dp.
+- Elsewhere than Linux, the calling thread, as now: the M4's two kinds
+  agree.
+
+Expected: unpinned, both phones pick neon-i8mm every time. Pinned to one
+core, the pick is that core's: neon-dp on the A520, neon-i8mm on the
+A720s, the X4 and the S25's cores. Nobody has run the whole model on the
+A520 alone. One thread there should run neon-dp faster than neon-i8mm, if
+the probe's tiles in L1 stand for its run; if not, that case is a known
+miss, and recorded.
+
+Kept if the picks are those, and check-c passes on both phones, the M4
+mini, snappy and the 9950X.
