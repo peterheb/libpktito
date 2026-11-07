@@ -2440,3 +2440,58 @@ and S25's cores, where SMMLA issues at SDOT's rate. So:
 Kept if the verdicts are those on every core named, and snappy's pick
 moves past its spread against neon-dp. kcheck and check-c must pass as
 before on each.
+
+## 2026-11-07 - neon-i8mm's probe on memory it has written (hypothesis)
+
+The phones' first timings of the probe above disagree with each other.
+Three builds of the same loops, timed the same way (SDOT then SMMLA a run,
+the best of 5 of each), read three ratios on each core, pinned:
+
+| core           | tilens, its main's loops | tilens, the probe's function | tilens2, 8 cold processes |
+| -------------- | ------------------------ | ---------------------------- | ------------------------- |
+| S24, A520 cpu0 | 0.580-0.646              | 1.061, 1.092                 | 0.802-0.874               |
+| S24, A720 cpu2 | 0.427-0.433              | 0.551, 0.559                 | 0.555-0.575               |
+| S24, A720 cpu5 | 0.427-0.432              | 0.543, 0.554                 | 0.567-0.584               |
+| S24, X4 cpu7   | 0.576-0.583              | 0.504, 0.505                 | 0.516-0.525               |
+| S25, cpu0      | 0.484-0.492              | 0.675, 0.684                 | 0.720-0.739               |
+| S25, cpu6      | 0.347-0.365              | 0.702, 0.706                 | 0.601-0.655               |
+
+tilens's two columns come from the same two processes. Each build is
+steady from run to run, so it is the build that moves the ratio. On the
+A520 one build would keep neon-i8mm off. tilens2's other estimator, the
+probe's now, reads 0.805 to 0.888 there.
+
+The loops are the same instructions in every build, their heads on a
+64-byte line. What differs is where their data sits. The arrays are
+static zeros the probe never writes, and Linux maps each such page, read
+before it is written, to its one page of zeros. So every 4 KB page of the
+arrays is the same memory, and each 64-byte line of it is read through as
+many addresses as the arrays have pages.
+
+The A720's L1 data cache chooses a line's set by virtual address bits 6
+to 12 or 13 (4 ways of 32 or 64 KB), where a 4 KB page fixes only bits 0
+to 11. It holds a line in one set at a time ("VIPT behaving as PIPT", its
+manual), so a line read through two addresses in two sets moves between
+them. Which lines move, and how often a call, follows from where each
+binary's linker put the arrays.
+
+What production reads is never that page: the weights come from the
+model file, and the activations and the copy are written for each call.
+
+The change: the probe's 14.6 KB go on the stack of the thread it times,
+written with zeros before the timing, so that each of its pages is memory
+of its own, as production's are. pk_os_fast_cores already holds 16 KB
+there on Linux.
+
+Expected: written, the ratios no longer move with the arrays' place, and
+every phone core reads below 1. tilens3 times backend/neon/kernels.c's
+own probe, with the change, on its data in five places:
+
+- static zeros never written, at a page's start and 2 KB along;
+- the same two, written first;
+- on the stack, as the probe now runs.
+
+Kept if the written arrays read alike in both places, every phone core
+reads below 1 cold, and pktito-c's pick is neon-i8mm on each phone core
+alone and unpinned. The M4 mini (default and background QoS) and snappy
+must keep their verdicts, and kcheck and check-c must pass as before.
