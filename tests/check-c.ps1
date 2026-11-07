@@ -93,6 +93,19 @@ foreach ($v in @(@('v2', $V2), @('v3', $V3))) {
     Remove-Item tests\t.json
 }
 
+# check-c.sh's --stream at 8 and 48 kHz, against the same samples resampled first
+$s = 'tests\streamcheck'
+foreach ($hz in 8000, 48000) {
+    cmd /c "tests\streamcheck.exe tests\data\test.wav $hz $s-in.wav $s-16k.wav"
+    $ok = -not $LASTEXITCODE
+    if ($ok) { cmd /c "pktito-c.exe --stream --json -m `"$Model`" $s-in.wav > $s-in.json"; $ok = -not $LASTEXITCODE }
+    if ($ok) { cmd /c "pktito-c.exe --stream --json -m `"$Model`" $s-16k.wav > $s-16k.json"; $ok = -not $LASTEXITCODE }
+    $ok = $ok -and ((Get-Item "$s-in.json").Length -gt 0) -and (same "$s-in.json" "$s-16k.json")
+    if (-not $ok) { "pktito-c --stream: FAIL at $hz Hz - not the lines of the same samples resampled first"; exit 1 }
+    "pktito-c --stream: test.wav at $hz Hz, resampled as it streams, as resampled first"
+}
+Remove-Item "$s-in.wav", "$s-16k.wav", "$s-in.json", "$s-16k.json"
+
 # Line by line, as PowerShell gives a program's output, without the line
 # ends (examples/transcribe writes the C runtime's CR LF) and less the two
 # times it puts before a chunk's text, then joined: the example writes a

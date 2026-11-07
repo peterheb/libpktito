@@ -49,6 +49,17 @@ for v in v2 v3; do f=models/parakeet-tdt-0.6b-$v.pkf
     && echo "test.wav: $v transcript in the fast mode is ref's" \
     || { echo "test.wav: FAIL - $v --fast transcript differs from tests/data/test.$v.fast.json"; exit 1; }
 done
+# --stream resamples as it reads: at 8 kHz (a telephone's) and 48 kHz (most
+# microphones'), the lines of the same samples resampled first
+s=tests/streamcheck
+for hz in 8000 48000; do
+  ./tests/streamcheck tests/data/test.wav $hz $s-in.wav $s-16k.wav \
+    && ./pktito-c --stream --json -m "$MODEL" $s-in.wav > $s-in.json && [ -s $s-in.json ] \
+    && ./pktito-c --stream --json -m "$MODEL" $s-16k.wav | cmp -s - $s-in.json \
+    && echo "pktito-c --stream: test.wav at $hz Hz, resampled as it streams, as resampled first" \
+    || { echo "pktito-c --stream: FAIL at $hz Hz - not the lines of the same samples resampled first"; exit 1; }
+done
+rm -f $s-in.wav $s-16k.wav $s-in.json
 # the example writes a chunk a line, the CLI a sentence: the words held in order
 ./examples/transcribe "$MODEL" tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- | tr -s '\n' ' ' > tests/example.out
 ./pktito-c --no-context --no-retry -m "$MODEL" tests/data/test.wav | tr -s '\n' ' ' | cmp -s - tests/example.out \

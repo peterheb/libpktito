@@ -745,16 +745,19 @@ static int stream(const opts *o, pk_model *m) {
      * since then, for the cut */
     size_t cap = (size_t)max_len + 4 * rate, have = 0, pcap = cap / PK_VAD_SAMPLES + 2;
     float *buf = malloc(cap * sizeof *buf), *probs = malloc(pcap * sizeof *probs);
-    float *in = malloc(PK_VAD_SAMPLES * sizeof *in), *rsout = NULL;
+    /* in is the next frame at the model's rate; raw, a read at the file's
+     * rate on its way to the resampler */
+    float *in = malloc(PK_VAD_SAMPLES * sizeof *in), *raw = NULL, *rsout = NULL;
     size_t rsn = 0, rspos = 0;
     if (rs) {
         size_t room = pk_resample_room(rs, PK_VAD_SAMPLES);
         if (room > SIZE_MAX / sizeof *rsout)
             die("%s: resampling needs too many samples", o->in);
+        raw = malloc(PK_VAD_SAMPLES * sizeof *raw);
         rsout = malloc(room * sizeof *rsout);
     }
     char *text = malloc(1 << 16);
-    if (!v || !buf || !probs || !in || (rs && !rsout) || !text)
+    if (!v || !buf || !probs || !in || (rs && (!raw || !rsout)) || !text)
         die("out of memory");
     int64_t base = 0, start = -1, frame_at = 0;
     double fs = pk_model_frame_seconds(m);
@@ -787,8 +790,9 @@ static int stream(const opts *o, pk_model *m) {
         while (got < PK_VAD_SAMPLES) {
             if (rs) {
                 if (rspos == rsn) {
-                    size_t r = pk_wav_read(w, in, PK_VAD_SAMPLES);
-                    rsn = r ? pk_resample(rs, in, r, rsout) : pk_resample_flush(rs, rsout);
+                    /* into raw: a refill can come mid-frame, with in part full */
+                    size_t r = pk_wav_read(w, raw, PK_VAD_SAMPLES);
+                    rsn = r ? pk_resample(rs, raw, r, rsout) : pk_resample_flush(rs, rsout);
                     rspos = 0;
                     if (!r && !rsn) { done = 1; break; }
                 }
@@ -863,6 +867,7 @@ static int stream(const opts *o, pk_model *m) {
     free(buf);
     free(probs);
     free(in);
+    free(raw);
     free(rsout);
     free(text);
     return 0;

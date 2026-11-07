@@ -200,7 +200,7 @@ models/%.pkf:
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
 TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck \
-         tests/pathcheck tests/transcheck tests/sentcheck
+         tests/pathcheck tests/transcheck tests/sentcheck tests/streamcheck
 BENCHES := tests/q8bench tests/gemmbench tests/spinbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
@@ -223,6 +223,9 @@ tests/pathcheck: tests/pathcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pathcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/wavcheck: tests/wavcheck.c core/wav.o core/os.o
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/wavcheck.c core/wav.o core/os.o $(LDLIBS)
+tests/streamcheck: tests/streamcheck.c core/wav.o core/resample.o core/os.o $(BACK_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/streamcheck.c core/wav.o core/resample.o core/os.o \
+	  $(BACK_OBJ) $(LDLIBS)
 # capcheck includes core/captions.c itself, for its static parts, and
 # langcheck core/language.c
 tests/capcheck: tests/capcheck.c core/captions.c core/language.c core/langwords.h core/pktito.h
@@ -255,10 +258,12 @@ benches: $(BENCHES)
 # test.v2.json and test.v3.json, which ref wrote, and in the fast mode's
 # test.v2.fast.json and test.v3.fast.json: every backend on every machine
 # computes the same ones (backend/kernels.h), and this is where a board
-# that does not would say so. A model file that is not there is
-# skipped, with a line. The commands are tests/check-c.sh, so that a board
-# without make, Android over adb, runs the same ones, and tests/check-c.ps1
-# runs them on Windows without MSYS2.
+# that does not would say so. --stream, which resamples as it reads, must
+# print for test.wav at 8 and 48 kHz what it prints for the same samples
+# resampled first (tests/streamcheck writes the pairs). A model file that is
+# not there is skipped, with a line. The commands are tests/check-c.sh, so
+# that a board without make, Android over adb, runs the same ones, and
+# tests/check-c.ps1 runs them on Windows without MSYS2.
 check-c: pktito-c $(TESTS) examples/transcribe
 	@MODEL=$(MODEL) sh tests/check-c.sh
 
