@@ -2401,3 +2401,42 @@ its own (PKTITO-16).
 Kept: -12.4 to -12.5% on the S24 and -21.5% on the S25 under both
 compilers, at ref's bits. The gate is right on the M4, but for a reason
 that does not tell it from snappy.
+
+## 2026-11-07 - neon-i8mm's gate: the two tiles timed, not SMMLA's rate (hypothesis)
+
+The entry above found the gate wrong on snappy. Its probe of SMMLA's rate
+sees 2.0 on snappy's Oryon and on the M4 alike, and passes neon-i8mm by on
+both. But neon-i8mm is 10 to 13% faster on the one and 8 to 10% slower on
+the other. mix.c says why: what parts them is whether the tile's other
+instructions issue beside SMMLA, and a rate alone cannot see that.
+
+This probe measures the thing decided instead: the two 4-column tiles
+themselves, timed on the calling thread when the backends are picked.
+
+- q8_mm4 runs on a half panel's copy in SMMLA's order, and neon-dp's SDOT
+  loop on the file's order.
+- Each takes 16 blocks of 32 inputs, on zeros: 8, 4 and 2 KB, in L1.
+- 64 calls make a run, the two alternate, and the best of 5 is taken.
+- neon-i8mm runs where the SMMLA tile is the faster.
+
+Its time is about the old probe's, a few tenths of a millisecond. The
+kernels are unchanged, so every bit is.
+
+macOS's cpu_has learns i8mm (hw.optional.arm.FEAT_I8MM). Apple's cores are
+then kept off by the probe's measurement, not by a system left unasked,
+and the neon-sve comment that leans on that goes.
+
+Expected, from mix.c's counts: the SMMLA tile is 12.5% slower than SDOT's
+on the M4 and about a quarter faster on snappy. It is faster on the S24's
+and S25's cores, where SMMLA issues at SDOT's rate. So:
+
+- snappy picks neon-i8mm, and its bench runs the 10 to 13% faster that the
+  entry above measured with it named;
+- the M4 keeps neon-dp, on its P cores and on its E cores (taskpolicy -b),
+  which mix.c has not measured;
+- the phones keep neon-i8mm on each kind of core, pinned: the S24's A520,
+  A720 and X4, and the S25's two clusters.
+
+Kept if the verdicts are those on every core named, and snappy's pick
+moves past its spread against neon-dp. kcheck and check-c must pass as
+before on each.
