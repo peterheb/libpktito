@@ -2426,3 +2426,44 @@ Graviton4 and 5) or that have none.
 
 Kept if the bench moves past its spread under gcc and clang, and kcheck
 and check-c pass at 256 and at 128.
+
+## 2026-11-07 - neon-sve at 128 bits where a core's SVE is wider (result: kept)
+
+55fcdcc, as the hypothesis above has it. On Linux, pk_os_unthrottle sets
+the calling thread's SVE length to 128 bits where it is longer, and
+pk_os_rethrottle puts it back. A pool worker keeps 128; the caller's
+thread has it for the call.
+
+Graviton3 (c7g.4xlarge, 16 Neoverse V1 cores, Ubuntu 24.04), 1c7dfc7 and
+the change, each under gcc 13.3 and clang 18.1. With the length at
+Linux's default 256 bits and at 128 (the sysctl):
+
+- check-c passes, kcheck giving ref's bits under all four NEON backends;
+- test.wav's v2 transcript under neon-sve, picked, is ref's.
+
+pktito-c bench (best of 5), the four in turn, the order rotated each
+round: 6 rounds at the default 16 threads, 4 on one core (taskset):
+
+| threads | compiler   | 1c7dfc7, 256  | change, 256   | 1c7dfc7, 128  | change, 128   |
+| ------- | ---------- | ------------- | ------------- | ------------- | ------------- |
+| 16      | gcc 13.3   | 0.543-0.545 s | 0.517-0.518 s | 0.517-0.520 s | 0.517-0.520 s |
+| 16      | clang 18.1 | 0.538-0.541 s | 0.512-0.514 s | 0.513-0.514 s | 0.512-0.515 s |
+| 1       | gcc 13.3   | 6.272-6.288 s | 6.159-6.168 s | 6.154-6.172 s | 6.166-6.184 s |
+| 1       | clang 18.1 | 6.202-6.220 s | 6.095-6.120 s | 6.092-6.131 s | 6.090-6.095 s |
+
+Paired by round, under gcc and clang:
+
+- the change against 1c7dfc7 at 256: -4.8 and -4.8% at 16 threads (-5.2
+  to -4.6 in all), -1.9 and -1.8% on one (-2.1 to -1.3);
+- the change at 256 against 1c7dfc7 at 128: +0.0 and -0.1% at 16 threads,
+  -0.1 and +0.1% on one. The change gives what the sysctl gave;
+- at 128, where the length is only asked, the change against 1c7dfc7:
+  +0.0 and -0.1%, +0.2 and -0.1%. The one prctl a call costs nothing seen.
+
+The Windows and plain-C builds give pk_os_throttle's new field as well:
+os.c compiles without a warning under llvm-mingw's clang 23.1.2 (arm64 and
+x64) and mingw-w64 gcc 13. With two fields in their initializers, -Wextra
+gave three warnings.
+
+Kept: -4.8% at 16 threads and -1.8 to -1.9% on one under both compilers,
+past spreads of 0.6% and 0.3%, at ref's bits.
