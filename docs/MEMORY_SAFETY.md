@@ -7,7 +7,8 @@ WAV or an AIFF can come down a pipe from anywhere; a sample can be anything a fl
 below are the review contract for the code that turns those bytes into sizes,
 pointers and arithmetic: core/model.c, core/wav.c and the front ends of
 core/mel.c and core/vad.c. vadito's rules are the model, and these are the
-same rules at pktito's size.
+same rules at pktito's size. A build with QNN=1 reads a fourth thing, the
+NPU's compiled graph, under the same rules (The NPU's graph file, below).
 
 ## Copy, then check, then point
 
@@ -88,11 +89,64 @@ Byte-valid is not model-valid. The binder then:
   check: every byte is a valid one), the position frequencies to be in (0, 1],
   the two FFTs' twiddles to be the cosines and sines they must be, and the
   VAD's window to be Hann;
-- holds the vocabulary's count to the vocab param.
+- holds the vocabulary's count to the vocab param;
+- in a build with ANE=1 (the ane fork's) or QNN=1, takes the param
+  encoder_coreml, u32 1 and nothing else, as a slim file's (`pktito-tools
+slim`), whose encoder is a Core ML model's or the NPU's compiled graph:
+  then binds none of the encoder's tensors and, as for any tensor it did not
+  bind, refuses a file holding one. A build with neither refuses the param
+  as one it does not know.
 
 A refused file is refused at load, with a message, never on the first
 recording. A format change extends `pk_pkf_validate` and tests/pkfcheck.c in
 the same change.
+
+## The NPU's graph file
+
+A build with QNN=1 (the qnn fork's, for Android on a Snapdragon) reads the
+encoder's graph compiled for the phone's NPU: the app downloads it for its
+chip, and the CLI takes it from `$PKTITO_QNN_CACHE`. The file is a 616-byte
+header, then QNN's binary of the context (core/qnn.c's cache_head).
+read_cache measures the file and copies the header into a local struct.
+Before QNN sees a byte of the binary, check_head holds the header to these:
+
+- **the magic and the key**: the magic PK_QNN_GRAPH, and the key (the
+  model's checkpoint and conversion, the length and the layers), each
+  exactly what this build writes for this model, padded with zeros to the
+  end of its field. A graph of another model, length or layers is refused,
+  and so is one of an older format.
+- **the strings**: the chip, made and built, each NUL-terminated within its
+  field and NUL-padded. A chip of another Hexagon than this NPU's is
+  refused, and the message names both.
+- **the inputs and output**:
+  - each name NUL-terminated within its 16 bytes, NUL-padded and not empty;
+  - no name or id twice;
+  - each rank and shape exactly those of pktito's own buffer for it
+    (io_shape: the features [1][T0][n_mels][1], the masks, the stream
+    [T3][d_model]), with the dims past the rank zero.
+- **the binary's size**: at least a byte and under 4 GiB, and with the
+  header's 616 exactly the file's length. All of this is known before
+  anything is allocated. The bound is checked first, so the sum can't wrap.
+
+Byte-valid is not graph-valid. What follows the header is QNN's: its
+contextCreateFromBinary parses the binary, and pktito can't check what the
+binary holds, so it is trusted input, like a model file's weights.
+
+- The ids are the binary's word too. QNN gave them when it compiled the
+  graph, and the header keeps them for the read; they are held to nothing
+  but being six, all different. QNN holds each run's tensors to the
+  binary's own ids and shapes. On the S24, given an id the binary hasn't
+  or two ids swapped, QNN 2.51 refused every run ("Expected Tensor ID: 1
+  not found in user-provided tensors", "Tensor ID 2 dim 1 mismatch.
+  1536 != 768"), and the CPU's encoder ran each chunk instead. QNN
+  matches nothing by the names (tools/qnn/CLIMB.md, "A header's ids and
+  names, on the NPU").
+- QNN does not check the binary whole. With the binary's first byte
+  changed, QNN read it; with its first 32 bytes changed, QNN refused it.
+- The app downloads a graph only from its catalog, and keeps the file only
+  if its size and SHA-256 match the catalog's.
+- The CLI should be given only a graph it compiled itself, or one whose
+  SHA-256 the user has checked against the catalog's.
 
 ## The WAV and AIFF files
 
@@ -186,6 +240,21 @@ past the end of the file up to 2^32 - 1, and every bit of two files' headers
 flipped. Disabling any one of the AIFF parser's checks makes a case fail.
 `make check-sanitize` runs both under AddressSanitizer and
 UndefinedBehaviorSanitizer.
+
+In a build with QNN=1, tests/pkfcheck.c also writes the graph's header with
+a writer of its own, from the description above, and runs pk_qnn_check, the
+same checks check_head makes for read_cache, on:
+
+- the header whole;
+- the header cut at every length, each cut in a buffer of its own;
+- each field wrong, one at a time, in a way that only its own check
+  refuses;
+- the binary's size a byte short, a byte long and none;
+- a 4 GiB binary in a file to match.
+
+Disabling any one of check_head's checks makes a case fail. With the
+cut-header check off, ASan sees the read past the buffer. `make
+check-sanitize QNN=1 QNN_SDK=…` runs these cases too.
 
 `make fuzz` builds Clang/libFuzzer targets for the model bytes, WAV and AIFF
 bytes, streaming resampler, the segment, chunk and caption state machines,

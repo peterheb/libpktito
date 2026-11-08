@@ -1,5 +1,6 @@
 *.o
 *.d
+/build.opts
 /pktito
 /pktito-c
 /build/

@@ -1,4 +1,4 @@
-"""pktito-tools convert | tiny | info | ref"""
+"""pktito-tools convert | tiny | info | ref | slim"""
 
 import argparse
 import sys
@@ -62,6 +62,13 @@ def main(argv=None):
     r = sub.add_parser("ref", help="transcribe 16 kHz WAVs with the float64 reference")
     r.add_argument("model", help=".nemo or .pkf")
     r.add_argument("wav", nargs="+")
+    s = sub.add_parser(
+        "slim",
+        help="a .pkf without its encoder, for an accelerator's: the ane fork's "
+        "Core ML model, or the NPU's graph compiled ahead of time (core/qnn.h)",
+    )
+    s.add_argument("file")
+    s.add_argument("dst")
     a = ap.parse_args(argv)
 
     if a.cmd == "convert":
@@ -120,4 +127,9 @@ def main(argv=None):
             for p in punct:
                 text = text.replace(" " + p, p)
             print(text)
+    elif a.cmd == "slim":
+        from . import pkf
+
+        size = pkf.slim(a.file, a.dst)
+        print("%s: %d bytes" % (a.dst, size))
     return 0

@@ -138,6 +138,52 @@ HAVE := $(foreach b,$(BACKENDS),-DPK_HAVE_$(subst -,_,$(b)))
 $(foreach b,$(BACKENDS),$(eval backend/$(b)/kernels.o backend/$(b)/kernels.pic.o: CFLAGS += $(ISA_$(b))))
 backend/kernels.o backend/kernels.pic.o: CFLAGS += $(HAVE)
 
+# make ANE=1 (macOS 15 or later): the encoder on the Neural Engine through
+# Core ML, for a transcriber given a compiled model (--ane, pk_asr_use_ane):
+# core/ane.h, tools/ane/encoder.py
+ifeq ($(ANE),1)
+  LIB_OBJ += core/ane.o
+  CFLAGS += -DPK_ANE
+  LDLIBS += -framework CoreML -framework Foundation
+endif
+core/ane.o: core/ane.m core/ane.h
+	$(CC) $(CFLAGS) -fobjc-arc $(PLATFLAGS) $(INC) -c $< -o $@
+
+# make QNN=1 QNN_SDK=<Qualcomm's AI Runtime SDK> (Android on a Snapdragon):
+# the encoder on the Hexagon NPU through QNN, for a transcriber asked for
+# it (--qnn, pk_asr_use_qnn): core/qnn.h. QNN's libraries are loaded at
+# run time, so only core/qnn.o sees the SDK's headers, and the SDK's own
+# files (Qualcomm's license: in an application, not on their own) stay out
+# of this tree.
+ifeq ($(QNN),1)
+  LIB_OBJ += core/qnn.o
+  CFLAGS += -DPK_QNN
+  ifeq ($(filter MINGW% MSYS% UCRT% CLANG%,$(UNAME_S)),)
+    LDLIBS += -ldl
+  endif
+  # the commit qnn.o is built from goes into each graph it writes (made),
+  # "-dirty" where the tree has changes; qnn.o isn't made again for a new
+  # commit alone, so a build that writes the app's graphs starts from make
+  # clean
+  QNN_COMMIT := $(shell git describe --always --dirty --exclude '*' 2>/dev/null)
+endif
+# with the SDK's headers, and for `make QNN=1 shared` its .pic.o too
+QNN_CC = $(CC) $(filter-out -Wpedantic,$(CFLAGS)) $(PLATFLAGS) $(INC) -I$(QNN_SDK)/include/QNN \
+         -DPK_COMMIT='"$(QNN_COMMIT)"' -MMD -MP
+core/qnn.o: core/qnn.c
+	$(QNN_CC) -c $< -o $@
+core/qnn.pic.o: core/qnn.c
+	$(QNN_CC) $(PIC) -c $< -o $@
+
+# The objects hold the options they were compiled with (-DPK_ANE, -DPK_QNN):
+# build.opts names them, rewritten only when they change, so that a build
+# with others compiles its objects again rather than link the last build's
+# (a plain build after a QNN=1 one: undefined pk_qnn_*)
+BUILD_OPTS := ANE=$(ANE) QNN=$(QNN)
+build.opts: FORCE
+	@[ "$$(cat $@ 2> /dev/null)" = "$(BUILD_OPTS)" ] || echo "$(BUILD_OPTS)" > $@
+FORCE:
+
 .DEFAULT_GOAL := pktito-c
 
 pktito-c: core/cli.o $(LIB_OBJ)
@@ -186,6 +232,7 @@ examples/transcribe: examples/transcribe.c libpktito.a
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -MMD -MP -c $< -o $@
 
 -include $(LIB_OBJ:.o=.d) $(SH_OBJ:.o=.d) core/cli.d
+$(LIB_OBJ) $(SH_OBJ) core/cli.o: build.opts
 
 # ---------------------------------------------------------------- models ----
 
@@ -310,8 +357,18 @@ check: check-c check-python
 # and UBSan, on the same corpora, against backend/ref. Apart from check-c
 # because not every board's compiler ships the sanitizer runtimes.
 SAN := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
-check-sanitize:
-	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/pkfcheck-san \
+# with ANE=1 or QNN=1, the slim file's cases too (tests/pkfcheck.c):
+# core/ane.m or core/qnn.c under the sanitizers beside the rest
+ifeq ($(ANE),1)
+  SAN_ANE := -DPK_ANE tests/ane-san.o
+endif
+ifeq ($(QNN),1)
+  SAN_QNN := -DPK_QNN -I$(QNN_SDK)/include/QNN core/qnn.c
+endif
+tests/ane-san.o: core/ane.m core/ane.h
+	$(CC) $(SAN) -std=c11 -fobjc-arc -DPK_ANE $(PLATFLAGS) $(INC) -c core/ane.m -o $@
+check-sanitize: $(if $(filter 1,$(ANE)),tests/ane-san.o)
+	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) $(SAN_ANE) $(SAN_QNN) -o tests/pkfcheck-san \
 	  tests/pkfcheck.c $(LIB_SRC) backend/ref/kernels.c backend/kernels.c $(LDLIBS)
 	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/wavcheck-san \
 	  tests/wavcheck.c core/wav.c core/os.c $(LDLIBS)
@@ -445,11 +502,11 @@ NDK ?=
 adb:
 	@NDK="$(NDK)" TESTS="$(TESTS)" MODEL="$(MODEL)" BENCH="$(BENCH)" BACKEND="$(BACKEND)" sh tests/adb.sh
 
-.PHONY: models shared check-c check-sanitize check-math check-ffi fuzz fuzz-corpus fuzz-smoke fuzz-run fuzz-max fuzz-replay remote adb clean benches
+.PHONY: FORCE models shared check-c check-sanitize check-math check-ffi fuzz fuzz-corpus fuzz-smoke fuzz-run fuzz-max fuzz-replay remote adb clean benches
 
 clean:
-	rm -f pktito-c pktito libpktito.a libpktito.so libpktito.dylib libpktito.dll examples/transcribe
+	rm -f pktito-c pktito libpktito.a libpktito.so libpktito.dylib libpktito.dll examples/transcribe build.opts
 	rm -f core/*.o core/*.d backend/*.o backend/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
-	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
+	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/ane-san.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM tests/pathcheck-* build/android-*
 	rm -f $(FUZZ_BINS) $(FUZZ_DIR)/seeds   # not the corpora a campaign grew

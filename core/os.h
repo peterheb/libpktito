@@ -29,6 +29,11 @@ void pk_unmap(const unsigned char *p, size_t size);
  * for a path that is not UTF-8. */
 FILE *pk_os_fopen(const char *path, const char *mode);
 
+/* rename and remove, the same: 0, or -1 with errno set. pk_os_rename
+ * replaces a file already at to, which Windows' rename refuses to. */
+int pk_os_rename(const char *from, const char *to);
+int pk_os_remove(const char *path);
+
 /* Cores this process may use: what -t defaults from. 1 when unknown. */
 int pk_os_cores(void);
 

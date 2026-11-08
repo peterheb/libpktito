@@ -13,6 +13,13 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef PK_ANE
+#include "ane.h"
+#include <dispatch/dispatch.h>
+#endif
+#ifdef PK_QNN
+#include "qnn.h"
+#endif
 
 static size_t up16z(size_t x) { return (x + 15) & ~(size_t)15; }
 
@@ -141,6 +148,69 @@ int pk_asr_threads(const pk_asr *a) { return a->wide; }
 
 void pk_asr_set_fast_mode(pk_asr *a, int on) { a->qb64 = on != 0; }
 
+int pk_asr_use_ane(pk_asr *a, const char *path, char *err, size_t errlen) {
+#ifdef PK_ANE
+    pk_ane *e = NULL;
+    if (path && !(e = pk_ane_open(path, a->m, err, errlen)))
+        return -1;
+    pk_ane_free(a->ane);
+    a->ane = e;
+    return 0;
+#else
+    (void)a;
+    (void)path;
+    if (err && errlen)
+        snprintf(err, errlen, "this pktito was built without ANE=1");
+    return -1;
+#endif
+}
+
+int pk_asr_ane_warm(pk_asr *a, char *err, size_t errlen) {
+#ifdef PK_ANE
+    if (!a->ane) {
+        if (err && errlen)
+            snprintf(err, errlen, "no Core ML model given");
+        return -1;
+    }
+    return pk_ane_warm(a->ane, err, errlen);
+#else
+    (void)a;
+    if (err && errlen)
+        snprintf(err, errlen, "this pktito was built without ANE=1");
+    return -1;
+#endif
+}
+
+int pk_asr_use_qnn(pk_asr *a, int on, const char *cache, char *err, size_t errlen) {
+#ifdef PK_QNN
+    pk_qnn *e = NULL;
+    if (on && !(e = pk_qnn_open(a->m, 0, cache, err, errlen)))
+        return -1;
+    pk_qnn_free(a->qnn);
+    a->qnn = e;
+    return 0;
+#else
+    (void)a;
+    (void)on;
+    (void)cache;
+    if (err && errlen)
+        snprintf(err, errlen, "this pktito was built without QNN=1");
+    return -1;
+#endif
+}
+
+int pk_qnn_chip(char *chip, size_t cap, char *err, size_t errlen) {
+#ifdef PK_QNN
+    return pk_qnn_target(chip, cap, err, errlen);
+#else
+    (void)chip;
+    (void)cap;
+    if (err && errlen)
+        snprintf(err, errlen, "this pktito was built without QNN=1");
+    return -1;
+#endif
+}
+
 void pk_asr_free(pk_asr *a) {
     if (!a)
         return;
@@ -150,6 +220,16 @@ void pk_asr_free(pk_asr *a) {
     free(a->lane);
     pk_vad_free(a->vad);
     pk_pool_free(a->pool);
+#ifdef PK_ANE
+    pk_ane_free(a->ane);
+    for (int k = 0; k < 4; k++) {
+        free(a->ane_feat[k]);
+        free(a->ane_x[k]);
+    }
+#endif
+#ifdef PK_QNN
+    pk_qnn_free(a->qnn);
+#endif
     free(a->tws);
     free(a->mem);
     free(a->dh);
@@ -165,13 +245,18 @@ void pk_asr_free(pk_asr *a) {
 }
 
 /* A chunk up to its search: its features, the encoder, and the joint's
- * encoder half of its frames, into f. Returns its encoder frames. */
-static uint32_t encode(pk_asr *a, const float *x, size_t n, float *f) {
+ * encoder half of its frames, into f. Returns its encoder frames, or -1
+ * where the encoder can't run: a slim model's with no accelerator's
+ * encoder given, the accelerator failing it, or an input longer than it
+ * takes. */
+static long encode(pk_asr *a, const float *x, size_t n, float *f) {
     const size_t T0 = pk_mel_frames(a->m, n);
     if (T0 == 0)
         return 0;
     PROF(PK_P_MEL, pk_mel(a, x, n));
     uint32_t Te = pk_encode(a, (uint32_t)T0);
+    if (!Te)
+        return -1;
     PROF(PK_P_DEC, pk_joint_frames(a, Te, f));
     return Te;
 }
@@ -185,9 +270,10 @@ long pk_asr_run(pk_asr *a, const float *x, size_t n, const pk_tok **toks) {
     if (T0 > UINT32_MAX / 4 || reserve(a, T0))
         return -1;
     pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
-    uint32_t Te = encode(a, x, n, a->fproj[0]);
-    long nt;
-    PROF(PK_P_DEC, nt = pk_decode(a, Te, a->fproj[0], 1));
+    const long Te = encode(a, x, n, a->fproj[0]);
+    long nt = -1;
+    if (Te >= 0)
+        PROF(PK_P_DEC, nt = pk_decode(a, (uint32_t)Te, a->fproj[0], 1));
     pk_os_rethrottle(was);
     *toks = a->toks;
     return nt;
@@ -284,9 +370,9 @@ static void lane_job(void *arg, int item, int thread) {
         const size_t i = atomic_fetch_add_explicit(&r->next, 1, memory_order_relaxed);
         if (i >= r->n)
             break;
-        const uint32_t Te = encode(l, r->x + r->c[i].start, (size_t)(r->c[i].end - r->c[i].start),
-                                   l->fproj[0]);
-        const long nt = pk_decode(l, Te, l->fproj[0], 1);
+        const long Te = encode(l, r->x + r->c[i].start, (size_t)(r->c[i].end - r->c[i].start),
+                               l->fproj[0]);
+        const long nt = Te < 0 ? -1 : pk_decode(l, (uint32_t)Te, l->fproj[0], 1);
         pk_tok *t = nt > 0 ? malloc((size_t)nt * sizeof *t) : NULL;
         if (nt < 0 || (nt > 0 && !t)) {
             free(t);
@@ -392,6 +478,26 @@ static void search_aside(void *arg) {
  * and shares its memory with the search's reads, it gives back some of
  * that: all but 0.2 to 0.4% of it on a Pi 5's four cores, 0.6 to 0.7% on
  * a Pi 4's and 0.8% on a Pi 3's (backend/avx2/CLIMB.md, 2026-10-28). */
+#ifdef PK_ANE
+static int ane_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, size_t most,
+                      int depth, pk_each_fn each, void *arg);
+
+/* The Neural Engine's calls a run keeps in flight: two. AliceBench v2,
+ * one process, best of three (2 of 2 on the M4 Pro), x real time:
+ *   M5 Ultra (two Neural Engines): 1 380, 2 656, 3 642, 4 631
+ *   M4 Pro (one):                  1 341, 2 359, 3 359
+ * the transcript the same at each (tools/ane/CLIMB.md, 2026-11-02). Two
+ * keep both of the Ultra's busy, a chunk every 31 ms; one Neural Engine
+ * gains 5% from the CPU's side of a call hidden behind the other's.
+ * PKTITO_ANE_INFLIGHT (1 to 4, 1 the one-at-a-time path) is for measuring
+ * a chip again. */
+static int ane_depth(void) {
+    const char *v = getenv("PKTITO_ANE_INFLIGHT");
+    const int d = v ? atoi(v) : 2;
+    return d < 1 ? 1 : d > 4 ? 4 : d;
+}
+#endif
+
 int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
                        pk_each_fn each, void *arg) {
     size_t most = 0;
@@ -403,33 +509,162 @@ int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
         return -1;
     if (n == 0)
         return 0;
-    int k = lanes_for(a, c, n);
+#ifdef PK_ANE
+    if (a->ane && n > 1 && ane_depth() > 1)
+        return ane_chunks(a, x, c, n, most, ane_depth(), each, arg);
+#endif
+    /* one lane with the Neural Engine or the NPU: a lane's transcriber has
+     * the CPU's encoder, so a chunk's bits would be the lane's it fell to */
+    int k = a->ane || a->qnn ? 1 : lanes_for(a, c, n);
     if (k > 1 && (k = lanes_ready(a, k, most)) > 1)
         return run_lanes(a, x, c, n, k, each, arg);
     pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
-    uint32_t Te = encode(a, x + c[0].start, (size_t)(c[0].end - c[0].start), a->fproj[0]);
-    int rc = 0;
+    long Te = encode(a, x + c[0].start, (size_t)(c[0].end - c[0].start), a->fproj[0]);
+    int rc = Te < 0 ? -1 : 0;
     for (size_t i = 0; i < n && rc == 0; i++) {
         const float *f = a->fproj[i % 2];
         long nt;
         if (i + 1 < n) {
-            search_job s = { a, Te, f, 0 };
+            search_job s = { a, (uint32_t)Te, f, 0 };
             pk_pool_aside(a->pool, search_aside, &s);
             Te = encode(a, x + c[i + 1].start, (size_t)(c[i + 1].end - c[i + 1].start),
                         a->fproj[(i + 1) % 2]);
             PROF(PK_P_DEC, pk_pool_join(a->pool));
             nt = s.n;
         } else {
-            PROF(PK_P_DEC, nt = pk_decode(a, Te, f, 1));
+            PROF(PK_P_DEC, nt = pk_decode(a, (uint32_t)Te, f, 1));
         }
         if (nt < 0)
             rc = -1;
         else
             rc = each(arg, i, a->toks, nt, a->fproj[i % 2]);
+        if (rc == 0 && Te < 0)          /* the next chunk's encoder could not run */
+            rc = -1;
     }
     pk_os_rethrottle(was);
     return rc;
 }
+
+#ifdef PK_ANE
+/* A chunk's call to the Neural Engine, in a slot of its own */
+typedef struct {
+    pk_asr *a;
+    int slot, cpu;                   /* cpu: longer than the Core ML model takes */
+    uint32_t T0;
+    long Te;
+    dispatch_semaphore_t done;
+} ane_call;
+
+static void ane_call_run(void *arg) {
+    ane_call *k = arg;
+    const uint32_t Te = pk_ane_encode_in(k->a->ane, k->slot, k->a->ane_feat[k->slot], k->T0,
+                                         k->a->ane_x[k->slot]);
+    k->Te = Te ? (long)Te : -1;
+    dispatch_semaphore_signal(k->done);
+}
+
+/* chunk j's features on this thread, and its call sent off */
+static void ane_send(pk_asr *a, const float *x, const pk_seg *c, ane_call *k) {
+    const size_t n = (size_t)(c->end - c->start);
+    k->T0 = (uint32_t)pk_mel_frames(a->m, n);
+    k->cpu = k->T0 > pk_ane_frames(a->ane);
+    if (k->T0 == 0 || k->cpu) {
+        k->Te = 0;
+        dispatch_semaphore_signal(k->done);
+        return;
+    }
+    PROF(PK_P_MEL, pk_mel(a, x + c->start, n));
+    memcpy(a->ane_feat[k->slot], a->feat, (size_t)k->T0 * a->m->n_mels * sizeof(float));
+    dispatch_async_f(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), k, ane_call_run);
+}
+
+/* chunk j's call waited for, and its encoder frames through the joint's
+ * encoder half into f, on this thread, in order; its frames, -1 if not */
+static long ane_take(pk_asr *a, const float *x, const pk_seg *c, ane_call *k, float *f) {
+    dispatch_semaphore_wait(k->done, DISPATCH_TIME_FOREVER);
+    if (k->cpu)
+        return encode(a, x + c->start, (size_t)(c->end - c->start), f);
+    if (k->Te > 0) {
+        memcpy(a->x, a->ane_x[k->slot], (size_t)k->Te * a->m->d_model * sizeof(float));
+        PROF(PK_P_DEC, pk_joint_frames(a, (uint32_t)k->Te, f));
+    }
+    return k->Te;
+}
+
+/* pk_run_chunks_with with depth of the Neural Engine's calls in flight: a
+ * chip of two Neural Engines (the M5 Ultra's H11ANE and H11ANE1) runs two
+ * chunks' at once, where one call at a time left the second idle; AliceBench
+ * v2 on it as separate processes, 1 380x, 2 756x, 3 842x, 4 868x
+ * (libpktito, 2026-11-02). Each chunk's features are made here and its
+ * call sent off; the joint and the search take the chunks in order, as the
+ * one-at-a-time path does, the search beside the next chunk's joint, so the
+ * tokens are that path's. */
+static int ane_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, size_t most,
+                      int depth, pk_each_fn each, void *arg) {
+    const pk_model *m = a->m;
+    /* each slot's buffers, for the longest chunk yet: kept on pk_asr */
+    if (a->ane_cap < most) {
+        for (int k = 0; k < 4; k++) {
+            free(a->ane_feat[k]);
+            free(a->ane_x[k]);
+            a->ane_feat[k] = a->ane_x[k] = NULL;
+        }
+        a->ane_cap = most;
+    }
+    size_t Tc = a->ane_cap;
+    for (int i = 0; i < 3; i++)
+        Tc = (Tc + 1) / 2;
+    for (int k = 0; k < depth; k++) {
+        if (!a->ane_feat[k])
+            a->ane_feat[k] = malloc(a->ane_cap * m->n_mels * sizeof(float));
+        if (!a->ane_x[k])
+            a->ane_x[k] = malloc(Tc * m->d_model * sizeof(float));
+        if (!a->ane_feat[k] || !a->ane_x[k])
+            return -1;
+    }
+    ane_call call[4];
+    for (int k = 0; k < depth; k++)
+        call[k] = (ane_call){ a, k, 0, 0, 0, dispatch_semaphore_create(0) };
+    pk_os_throttle was = pk_os_unthrottle();
+    size_t sent = 0;
+    for (; sent < n && sent < (size_t)depth; sent++)
+        ane_send(a, x, &c[sent], &call[sent % depth]);
+    long Te = ane_take(a, x, &c[0], &call[0], a->fproj[0]);
+    int rc = Te < 0 ? -1 : 0;
+    size_t i = 0;
+    for (; i < n && rc == 0; i++) {
+        const float *f = a->fproj[i % 2];
+        long nt;
+        if (i + 1 < n) {
+            search_job s = { a, (uint32_t)Te, f, 0 };
+            pk_pool_aside(a->pool, search_aside, &s);
+            /* chunk i's slot is free: chunk i + depth's call goes out */
+            if (sent < n) {
+                ane_send(a, x, &c[sent], &call[sent % depth]);
+                sent++;
+            }
+            Te = ane_take(a, x, &c[i + 1], &call[(i + 1) % depth], a->fproj[(i + 1) % 2]);
+            PROF(PK_P_DEC, pk_pool_join(a->pool));
+            nt = s.n;
+        } else {
+            PROF(PK_P_DEC, nt = pk_decode(a, (uint32_t)Te, f, 1));
+        }
+        if (nt < 0)
+            rc = -1;
+        else
+            rc = each(arg, i, a->toks, nt, a->fproj[i % 2]);
+        if (rc == 0 && Te < 0)
+            rc = -1;
+    }
+    /* the calls still out, which hold their slots' buffers, waited for */
+    for (size_t j = i + 1; j < sent; j++)
+        dispatch_semaphore_wait(call[j % depth].done, DISPATCH_TIME_FOREVER);
+    for (int k = 0; k < depth; k++)
+        dispatch_release(call[k].done);
+    pk_os_rethrottle(was);
+    return rc;
+}
+#endif
 
 /* pk_asr_run_chunks' fn as an each: each chunk with its place and the
  * run's progress */
@@ -465,8 +700,8 @@ int32_t pk_frame_of(const pk_model *m, int64_t sample) {
 }
 
 long pk_retry_run(pk_asr *a, const float *x, size_t n, float *spare) {
-    const uint32_t Te = encode(a, x, n, spare);
-    return pk_decode(a, Te, spare, 1);
+    const long Te = encode(a, x, n, spare);
+    return Te < 0 ? -1 : pk_decode(a, (uint32_t)Te, spare, 1);
 }
 
 const char *pk_backend(void) { return pk_k_name(); }

@@ -37,6 +37,14 @@
 
 #include <math.h>
 #include <string.h>
+#ifdef PK_ANE
+#include "ane.h"
+#endif
+#ifdef PK_QNN
+#include "qnn.h"
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 /* The encoder's activation blocks for an input of n: 32 (README, "Why
  * int8"), or 64 in the caller's fast mode where n is whole blocks of 64,
@@ -593,6 +601,33 @@ uint32_t pk_encode(pk_asr *a, uint32_t T0) {
     const uint32_t C = m->sub_channels, F3 = m->n_mels / 8, D = m->d_model;
     if (!T0)
         return 0;
+#ifdef PK_ANE
+    /* the Neural Engine's, for an input its longest function takes; a slim
+     * model's is the only one it has (0: the caller's -1) */
+    if (a->ane && T0 <= pk_ane_frames(a->ane)) {
+        const uint32_t Te = pk_ane_encode(a->ane, a->feat, T0, a->x);
+        if (Te)
+            return Te;
+    }
+#endif
+#ifdef PK_QNN
+    /* the NPU's, for an input its graph takes; a longer one the CPU's, a
+     * slim model's none. PKTITO_QNN_CHECK=1 runs the CPU's too and says
+     * how far apart they are, keeping the NPU's (a slim model has no CPU's
+     * to check against) */
+    float *npu = NULL;
+    if (a->qnn && T0 <= pk_qnn_frames(a->qnn)) {
+        const uint32_t Te = pk_qnn_encode(a->qnn, a->feat, T0, a->x);
+        if (Te && (m->encoder_coreml || !getenv("PKTITO_QNN_CHECK")))
+            return Te;
+        if (Te && (npu = malloc((size_t)Te * D * sizeof *npu)))
+            memcpy(npu, a->x, (size_t)Te * D * sizeof *npu);
+    }
+#endif
+    /* a slim model's encoder is an accelerator's or none (0: the caller's
+     * -1) */
+    if (m->encoder_coreml)
+        return 0;
     sub_job sj = { a, T0, T1, T2, T3 };
     PROF(PK_P_SUB, pk_par(a, sub_item, &sj, (int)((T3 + PK_SUB_BLOCK - 1) / PK_SUB_BLOCK));
                    pk_quantize(a, &a->act, a->s5, (size_t)F3 * C, T3, F3 * C, qb(a, F3 * C));
@@ -602,6 +637,39 @@ uint32_t pk_encode(pk_asr *a, uint32_t T0) {
     PROF(PK_P_POS, pk_par(a, pos_item, &pj, (int)((2 * T3 - 1 + 15) / 16));
                    pk_quantize(a, &a->ape, a->pe, D, 2 * T3 - 1, D, qb(a, D)));
 
+#ifdef PK_QNN
+    /* a check of a graph through fewer layers: the CPU's through as many */
+    if (npu && pk_qnn_layers(a->qnn) < m->n_layers)
+        for (uint32_t i = 0; i < pk_qnn_layers(a->qnn); i++)
+            layer(a, &m->layers[i], T3);
+    else
+#endif
     layers(a, T3);
+#ifdef PK_QNN
+    if (npu) {
+        /* each frame's cosine to the CPU's, and the largest difference */
+        double worst = 1, sum = 0, maxd = 0;
+        size_t bad = 0;
+        for (uint32_t t = 0; t < T3; t++) {
+            double xy = 0, xx = 0, yy = 0;
+            for (uint32_t d = 0; d < D; d++) {
+                const double u = npu[(size_t)t * D + d], v = a->x[(size_t)t * D + d];
+                if (!isfinite(u))
+                    bad++;
+                xy += u * v, xx += u * u, yy += v * v;
+                if (fabs(u - v) > maxd)
+                    maxd = fabs(u - v);
+            }
+            const double cs = xy / sqrt(xx * yy + 1e-30);
+            sum += cs;
+            if (cs < worst)
+                worst = cs;
+        }
+        fprintf(stderr, "qnn check: %u frames, cosine to the CPU's mean %.6f, worst %.6f, max |diff| %.4g,"
+                " %zu not finite\n", T3, sum / T3, worst, maxd, bad);
+        memcpy(a->x, npu, (size_t)T3 * D * sizeof *npu);
+        free(npu);
+    }
+#endif
     return T3;
 }

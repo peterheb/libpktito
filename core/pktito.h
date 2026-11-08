@@ -84,6 +84,12 @@ const char *pk_model_meta(const pk_model *m, const char *key);
 /* The i-th metadata pair, for listing: 0, or -1 past the last. */
 int pk_model_meta_at(const pk_model *m, int i, const char **key, const char **value);
 
+/* 0 for a slim model file (`pktito-tools slim`; a build with ANE=1 or
+ * QNN=1 loads one), which leaves its encoder out for an accelerator's: it
+ * transcribes only with the encoder pk_asr_use_ane or pk_asr_use_qnn gives
+ * it, and without one pk_asr_run returns -1. 1 for every other. */
+int pk_model_has_encoder(const pk_model *m);
+
 /* The architecture's numbers, for printing (`pktito-c info`). */
 typedef struct {
     size_t   file_bytes;
@@ -128,6 +134,52 @@ int     pk_asr_threads(const pk_asr *a);
  * computes the same bits in either mode. */
 void    pk_asr_set_fast_mode(pk_asr *a, int on);
 
+/* The encoder on Apple's Neural Engine (the ane fork, built with ANE=1;
+ * macOS 15, iOS 18): the compiled Core ML model tools/ane/encoder.py makes,
+ * at path, or with NULL the CPU's again. It must have been made from the
+ * model's own checkpoint (both name its SHA-256). An input longer than its
+ * longest function still takes the CPU's encoder, where the model has one
+ * (pk_model_has_encoder). Its arithmetic is fp16, not the int8 every
+ * backend computes the same bits of: a transcript can differ from
+ * pktito's, and from one chip's to another's. 0, or -1 with why in err. */
+int     pk_asr_use_ane(pk_asr *a, const char *path, char *err, size_t errlen);
+
+/* The Neural Engine's encoder loaded and run once, on silence, now rather
+ * than at the first input that needs it: Core ML compiles it for this
+ * device the first time (16 s on an M1 iPad), and keeps that for the build
+ * of the app. 0, or -1 if there is none or this device can't run it, with
+ * Core ML's why in err: where a slim model's can't, the caller's way on is
+ * the full model file, whose encoder is pktito's own. */
+int     pk_asr_ane_warm(pk_asr *a, char *err, size_t errlen);
+
+/* The encoder on Qualcomm's Hexagon NPU (a build with QNN=1; Android on a
+ * Snapdragon), on: a graph built from the model's own weights
+ * (core/qnn.h), which QNN compiles now, in a minute or two (94 to 114 s
+ * on a Galaxy S24 Ultra, tools/qnn/CLIMB.md); with cache a path, the
+ * compiled graph is kept there and read back the next time, in a second
+ * or two.
+ * Off (on 0) the CPU's again. An input longer than its 30.72 s still
+ * takes the CPU's encoder. A slim model's (pk_model_has_encoder 0) is
+ * the graph in cache alone, compiled ahead of time for this chip (on a
+ * PC, PKTITO_QNN_TARGET: tools/qnn/CLIMB.md), and with no CPU encoder an
+ * input longer than the graph's is not transcribed. Where QNN refuses the
+ * graph there - made for another chip, or by a QNN this one does not
+ * read - err says so and the QNN that made it, for the caller to fetch
+ * the graph again. Its arithmetic is fp16 against the model's int8
+ * weights, not the int8 every backend computes the same bits of: a
+ * transcript can differ from pktito's, and from one chip's to another's.
+ * 0, or -1 with why in err. */
+int     pk_asr_use_qnn(pk_asr *a, int on, const char *cache, char *err, size_t errlen);
+
+/* The NPU here as QNN describes it to a PC that compiles a graph for it
+ * (PKTITO_QNN_TARGET): "57,75,8,1,0", the SoC's number in QNN's table,
+ * its Hexagon's version, its VTCM in MB, and whether it has DLBC and a
+ * signed PD, into chip, cap bytes; for the caller to fetch the graph
+ * compiled for this chip, which pk_asr_use_qnn reads. 0, or -1 where QNN
+ * finds none (a PC's QNN has no NPU to ask) or the build has no QNN, with
+ * why in err. */
+int     pk_qnn_chip(char *chip, size_t cap, char *err, size_t errlen);
+
 /* One token of a transcript: a piece of the vocabulary, the encoder frame
  * it was emitted at, and the number of frames TDT says it lasts. */
 typedef struct {
@@ -138,7 +190,9 @@ typedef struct {
  * utterance: the whole of it through the encoder at once, as NeMo's
  * transcribe() does with a file. *toks points at the tokens, which belong to
  * the transcriber and last until its next call. Returns their count, or -1
- * if memory runs out. A sample that is not finite is read as 0.
+ * if memory runs out or the encoder can't run (a slim model's with no
+ * accelerator's encoder given, the accelerator failing it, or an input
+ * longer than it takes). A sample that is not finite is read as 0.
  *
  * The encoder's attention costs grow with the square of the length, and
  * its working memory with the length: a minute is about 60 MB. Long
@@ -185,10 +239,12 @@ typedef int (*pk_chunk_fn)(void *arg, const pk_chunk_out *c);
  * none would; fn has the chunks in order as before. AliceBench's chapters
  * ran 1.22 times as fast this way on a 9950X's 16 threads and 2.03 times on
  * an M5 Ultra's 36, and a Pi's four threads keep one lane (README, "How
- * fast"). The working memory is the longest chunk's, and a second chunk's
- * joint half, 1 MB at 30 s, for each lane: about 45 MB a lane at 30.72 s.
- * Returns 0, 1 when fn stopped it, or -1 if memory runs out (fn has then
- * seen the chunks before). */
+ * fast"). A transcriber with the Neural Engine (pk_asr_use_ane) keeps one
+ * lane, its chunks on the Neural Engine two at a time (core/asr.c,
+ * ane_chunks). The working memory is the longest chunk's, and a second
+ * chunk's joint half, 1 MB at 30 s, for each lane: about 45 MB a lane at
+ * 30.72 s. Returns 0, 1 when fn stopped it, or -1 if memory runs out or the
+ * encoder can't run, as pk_asr_run's (fn has then seen the chunks before). */
 int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
                       void *arg);
 
@@ -211,10 +267,11 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
  *
  * fn has each chunk as soon as it is done, and o NULL is
  * pk_transcribe_defaults'. Returns 0 when every chunk is done, 1 when fn
- * stopped it, and -1 if memory runs out or max_chunk_s is under a second.
- * Besides the transcriber's working memory, which is the longest chunk's
- * for each chunk run at once, and its VAD's, which it keeps (0.85 MB a
- * thread), the call holds about 2% of the recording's own size. */
+ * stopped it, and -1 if memory runs out, the encoder can't run (pk_asr_run)
+ * or max_chunk_s is under a second. Besides the transcriber's working
+ * memory, which is the longest chunk's for each chunk run at once, and its
+ * VAD's, which it keeps (0.85 MB a thread), the call holds about 2% of the
+ * recording's own size. */
 typedef struct {
     double max_chunk_s;         /* 30.72: the most the encoder hears at once (README, "Long recordings") */
     int    retry;               /* 1: speech the model wrote nothing for heard again */

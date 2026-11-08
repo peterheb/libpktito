@@ -166,6 +166,38 @@ def write(path, arch, name, params, tensors, vocab, meta):
     return size
 
 
+def is_encoder(name):
+    """A tensor of the encoder's: the subsampling's, or a layer's (l0. to
+    l23. in Parakeet)"""
+    head = name.split(".", 1)[0]
+    return head == "sub" or (head[:1] == "l" and head[1:].isdigit())
+
+
+def slim(src, dst):
+    """src's model without its encoder, for an accelerator's that brings its
+    own weights: the ane fork's Core ML model (tools/ane/encoder.py), or
+    the NPU's graph compiled from src ahead of time (core/qnn.h). The param
+    encoder_coreml says so, and every other param, table, tensor and
+    metadata pair is src's, byte for byte, so that a transcript is the full
+    file's with the same encoder, and the NPU's graph of src is found by
+    the checkpoint and conversion they both name. Returns dst's size."""
+    f = File(src)
+    if "encoder_coreml" in f.params:
+        raise ValueError("%s is slim already" % src)
+    params = list(f.params.items()) + [("encoder_coreml", 1)]
+    tensors = [
+        (name, typ, list(dims[:ndim]), f.raw(name))
+        for name, (typ, ndim, dims, off, nbytes) in f.descs.items()
+        if not is_encoder(name)
+    ]
+    vocab = vocab_blob(f.pieces, f.types, f.punct)
+    b = f.buf
+    head = HEADER.unpack_from(b, 0)
+    if bytes(b[head[8] : head[8] + head[9]]) != vocab:
+        raise ValueError("%s: its vocabulary is not this writer's" % src)
+    return write(dst, f.arch, f.name, params, tensors, vocab, f.meta)
+
+
 class File:
     """A .pkf read back: header fields, params, tensors (as numpy views),
     vocabulary and metadata."""

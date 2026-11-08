@@ -18,7 +18,13 @@
  *              extra, of the wrong shape or type or with a value that is not
  *              finite; a param missing, unknown, of the wrong kind or out of
  *              range; a twiddle, position frequency or window wrong; a finite
- *              extreme weight whose arithmetic overflows; the vocabulary's count off
+ *              extreme weight whose arithmetic overflows; the vocabulary's count off;
+ *              the slim file, loaded by a build with ANE=1 or QNN=1 and
+ *              refused by one with neither, and every way it can be wrong;
+ *              the chip its graph for the NPU is fetched for
+ *   graph      in a build with QNN=1, the header of the NPU's compiled
+ *              graph (pk_qnn_check): taken whole, cut at every length,
+ *              and each field wrong in a way only its own check refuses
  *   flipped    random bits of everything before the tensor data changed,
  *              20,000 times over, and the engine run on what still loads
  *   engine     the tiny model through pk_asr_run, pk_text, the VAD and
@@ -39,6 +45,9 @@
 #include "vmath.h"
 #include "pktito.h"
 #include "wav.h"
+#ifdef PK_QNN
+#include "qnn.h"
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -731,6 +740,297 @@ static void meaning_cases(void) {
     }
 }
 
+/* 1 if name is an encoder's tensor: the subsampling's, or a layer's */
+static int encoder_tensor(const char *name) {
+    const size_t head = strcspn(name, ".");
+    return (head == 3 && !strncmp(name, "sub", 3))
+        || (head > 1 && name[0] == 'l' && strspn(name + 1, "0123456789") == head - 1);
+}
+
+/* The slim file (pktito-tools slim): the tiny model without its encoder's
+ * tensors, and the param encoder_coreml 1. A build with ANE=1 or QNN=1
+ * loads it, and with no accelerator's encoder given runs nothing:
+ * pk_asr_run returns -1; with QNN=1 the NPU asked for with no compiled
+ * graph's file is refused before QNN's libraries are looked for. A build
+ * with neither refuses the param as one it does not know. Every build
+ * refuses the param with another value or kind, and a slim file that
+ * holds an encoder's tensor or lacks another of the model's. */
+static void slim_cases(void) {
+    model s = g_m;
+    s.nt = 0;
+    for (int i = 0; i < g_m.nt; i++)
+        if (!encoder_tensor(g_m.t[i].name))
+            s.t[s.nt++] = g_m.t[i];
+    memset(&s.p[s.np], 0, sizeof s.p[0]);
+    strcpy(s.p[s.np].key, "encoder_coreml");
+    s.p[s.np].kind = PK_PARAM_U32;
+    s.p[s.np].v.u = 1;
+    s.np++;
+#if defined(PK_ANE) || defined(PK_QNN)
+    {
+        size_t n;
+        unsigned char *p = build(&s, &n);
+        char err[256] = "";
+        pk_model *m = pk_model_from_bytes(p, n, err, sizeof err);
+        g_cases++;
+        if (!m) {
+            FAIL("a slim file: %s", err);
+        } else {
+            static float x[16000];
+            for (size_t i = 0; i < sizeof x / sizeof x[0]; i++)
+                x[i] = 0.1f * sinf(0.05f * (float)i);
+            pk_asr *a = pk_asr_new(m, 2);
+            const pk_tok *t;
+            g_cases++;
+            if (pk_model_has_encoder(m))
+                FAIL("a slim file: an encoder of its own");
+            else if (!a || pk_asr_run(a, x, sizeof x / sizeof x[0], &t) != -1)
+                FAIL("a slim file with no accelerator's encoder: pk_asr_run did not refuse");
+#ifdef PK_QNN
+            g_cases++;
+            if (a && pk_asr_use_qnn(a, 1, NULL, err, sizeof err) != -1)
+                FAIL("a slim file, the NPU with no compiled graph's file: not refused");
+#endif
+            pk_asr_free(a);
+            pk_model_free(m);
+        }
+        free(p);
+        pk_model *full = pk_model_from_bytes(g_file, g_n, err, sizeof err);
+        g_cases++;
+        if (!full || !pk_model_has_encoder(full))
+            FAIL("the tiny model: no encoder of its own");
+        pk_model_free(full);
+    }
+#else
+    expect_model("a slim file, in a build without ANE=1 or QNN=1", &s, 0);
+#endif
+    /* the chip a slim file's graph is fetched for (pk_qnn_chip): none in a
+     * build without QNN=1, nor where QNN finds no NPU, as on a PC, each
+     * with why; on a phone PKTITO_QNN_TARGET's five numbers */
+    {
+        char chip[64] = "", why[256] = "";
+        unsigned v[5];
+        g_cases++;
+        if (pk_qnn_chip(chip, sizeof chip, why, sizeof why) == 0
+                ? sscanf(chip, "%u,%u,%u,%u,%u", &v[0], &v[1], &v[2], &v[3], &v[4]) != 5
+                : !why[0])
+            FAIL("pk_qnn_chip: neither a chip nor why (\"%s\")", chip);
+    }
+    model e = s;
+    e.p[e.np - 1].v.u = 2;
+    expect_model("encoder_coreml 2", &e, 0);
+    e = s;
+    e.p[e.np - 1].kind = PK_PARAM_F32;
+    e.p[e.np - 1].v.f = 1;
+    expect_model("encoder_coreml a float", &e, 0);
+    static const char *keep[] = { "l1.att.k", "l1.att.k.scale", "sub.conv0.b" };
+    for (size_t i = 0; i < sizeof keep / sizeof keep[0]; i++) {
+        e = s;
+        e.t[e.nt++] = g_m.t[find_tensor(&g_m, keep[i])];
+        char what[96];
+        snprintf(what, sizeof what, "a slim file with %s", keep[i]);
+        expect_model(what, &e, 0);
+    }
+    static const char *drop[] = { "dec.embed", "joint.out.w", "pos.freq", "mel.fb", "vad.lstm.b" };
+    for (size_t i = 0; i < sizeof drop / sizeof drop[0]; i++) {
+        e = s;
+        int k = find_tensor(&e, drop[i]);
+        memmove(&e.t[k], &e.t[k + 1], (size_t)(e.nt - k - 1) * sizeof e.t[0]);
+        e.nt--;
+        char what[96];
+        snprintf(what, sizeof what, "a slim file without %s", drop[i]);
+        expect_model(what, &e, 0);
+    }
+}
+
+/* -------------------------------------------------------- the NPU's graph --- */
+
+#ifdef PK_QNN
+/* A compiled graph's file (docs/MEMORY_SAFETY.md, "The NPU's graph
+ * file"): its header as that describes it, 616 bytes, little-endian, then
+ * QNN's binary, which pk_qnn_check never reads, so a few bytes stand for
+ * it */
+typedef struct {
+    char magic[32], key[176], chip[32], made[64], built[64], names[6][16];
+    uint32_t id[6], rank[6], dims[6][4];
+    uint64_t bytes;
+} graph_head;
+_Static_assert(sizeof(graph_head) == 616, "the graph file's header");
+
+#define GRAPH_BIN 40
+
+/* the header of m's graph for T0 frames, compiled for chip: its key the
+ * model's checkpoint and converter from its metadata, else digest, its
+ * data's SHA-256 */
+static void graph_write(graph_head *h, const pk_model *m, const uint8_t digest[32], uint32_t T0,
+                        const char *chip) {
+    const uint32_t T1 = (T0 + 1) / 2, T2 = (T1 + 1) / 2, T3 = (T2 + 1) / 2;
+    const uint32_t shape[6][4] = { { 1, T0, m->n_mels, 1 }, { 1, T1, 1, 1 }, { 1, T2, 1, 1 },
+                                   { T3, 1 },               { 1, 1, T3 },    { T3, m->d_model } };
+    static const uint32_t rank[6] = { 4, 4, 4, 2, 3, 2 };
+    memset(h, 0, sizeof *h);
+    strcpy(h->magic, "pktito-qnn-graph 2");
+    const char *src = pk_model_meta(m, "source_sha256"), *conv = pk_model_meta(m, "converter");
+    if (src && conv) {
+        snprintf(h->key, sizeof h->key, "%s %s %u %u", src, conv, T0, m->n_layers);
+    } else {
+        char hex[65];
+        for (int i = 0; i < 32; i++)
+            snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+        snprintf(h->key, sizeof h->key, "%s %u %u", hex, T0, m->n_layers);
+    }
+    snprintf(h->chip, sizeof h->chip, "%s", chip);
+    strcpy(h->made, "pktito 0.1.0 pkfcheck");
+    strcpy(h->built, "v2.51.0.260929181845");
+    for (int k = 0; k < 6; k++) {
+        snprintf(h->names[k], sizeof h->names[k], "t%d", k < 5 ? k : 5522);
+        h->id[k] = k < 5 ? (uint32_t)k + 1 : 3398;
+        h->rank[k] = rank[k];
+        memcpy(h->dims[k], shape[k], sizeof shape[k]);
+    }
+    h->bytes = GRAPH_BIN;
+}
+
+/* pk_qnn_check on the first n bytes of h, in a file of size bytes: taken
+ * (want 1) or refused with a reason (want 0). The n bytes are a buffer of
+ * their own, so that a check that read past them is ASan's to see */
+static void expect_graph(const char *what, const pk_model *m, uint32_t frames, const char *chip,
+                         const graph_head *h, size_t n, uint64_t size, int want) {
+    unsigned char *p = malloc(n ? n : 1);
+    memcpy(p, h, n);
+    char err[256] = "";
+    g_cases++;
+    const int taken = pk_qnn_check(m, frames, chip, p, n, size, err, sizeof err) == 0;
+    if (taken != want)
+        FAIL("%s: %s", what, taken ? "taken" : err);
+    else if (!taken && !err[0])
+        FAIL("%s: refused without a reason", what);
+    free(p);
+}
+
+/* The checks before QNN sees a graph's binary, on the tiny model's graph:
+ * the header taken whole; cut at every length; and each field wrong, one
+ * at a time, in a way only its own check refuses - the magic and the key
+ * a bit off anywhere, the strings unterminated or with a byte after their
+ * end, another Hexagon's chip, a name empty or another's, an id another's,
+ * each rank and dim off, and the binary's size against what follows the
+ * header, and past 4 GiB with the file to match */
+static void graph_cases(void) {
+    char err[256], what[96];
+    pk_model *m = pk_model_from_bytes(g_file, g_n, err, sizeof err);
+    g_cases++;
+    if (!m) {
+        FAIL("the tiny model, for its graph: %s", err);
+        return;
+    }
+    static const char chip[] = "57,75,8,1,0";
+    const uint64_t size = sizeof(graph_head) + GRAPH_BIN;
+    graph_head h0, h;
+    graph_write(&h0, m, g_m.digest, 3072, chip);
+#define GRAPH(why, on, stmt) do { h = h0; stmt; expect_graph(why, m, 0, on, &h, sizeof h, size, 0); } while (0)
+
+    expect_graph("a graph", m, 0, chip, &h0, sizeof h0, size, 1);
+    expect_graph("a graph, where QNN names no chip", m, 0, NULL, &h0, sizeof h0, size, 1);
+    expect_graph("a graph, on another SoC of its Hexagon", m, 0, "99,75,8,1,0", &h0, sizeof h0, size, 1);
+    h = h0;
+    memset(h.chip, 0, sizeof h.chip);
+    expect_graph("a graph that names no chip", m, 0, chip, &h, sizeof h, size, 1);
+    GRAPH("a graph of another Hexagon's", "69,79,8,1,0", (void)0);
+
+    for (size_t n = 0; n < sizeof h0; n++)
+        expect_graph("a header cut short", m, 0, chip, &h0, n, n, 0);
+    expect_graph("a header cut short of the file", m, 0, chip, &h0, sizeof h0 - 1, size, 0);
+    expect_graph("a header longer than its file", m, 0, chip, &h0, sizeof h0, sizeof h0 - 1, 0);
+    expect_graph("a binary a byte short", m, 0, chip, &h0, sizeof h0, size - 1, 0);
+    expect_graph("a binary a byte long", m, 0, chip, &h0, sizeof h0, size + 1, 0);
+
+    for (size_t i = 0; i < sizeof h0.magic; i++)
+        GRAPH("the magic a bit off", chip, h.magic[i] ^= 1);
+    GRAPH("graph 1's magic", chip, h.magic[17] = '1');
+    for (size_t i = 0; i < sizeof h0.key; i++)
+        GRAPH("the key a bit off", chip, h.key[i] ^= 1);
+    graph_write(&h, m, g_m.digest, 3000, chip);
+    expect_graph("a graph for 3000 frames, read for 3072", m, 0, chip, &h, sizeof h, size, 0);
+    expect_graph("a graph for 3000 frames, read for 3000", m, 3000, chip, &h, sizeof h, size, 1);
+
+    GRAPH("the chip unterminated", NULL, memset(h.chip, '7', sizeof h.chip));
+    GRAPH("the chip with a byte after it", NULL, h.chip[sizeof h.chip - 1] = '7');
+    GRAPH("made unterminated", chip, memset(h.made, 'x', sizeof h.made));
+    GRAPH("made with a byte after it", chip, h.made[sizeof h.made - 1] = 'x');
+    GRAPH("built unterminated", chip, memset(h.built, 'x', sizeof h.built));
+    GRAPH("built with a byte after it", chip, h.built[sizeof h.built - 1] = 'x');
+
+    for (int k = 0; k < 6; k++) {
+        snprintf(what, sizeof what, "input or output %d's name empty", k);
+        GRAPH(what, chip, memset(h.names[k], 0, sizeof h.names[k]));
+        snprintf(what, sizeof what, "input or output %d's name unterminated", k);
+        GRAPH(what, chip, memset(h.names[k], 'n', sizeof h.names[k]));
+        snprintf(what, sizeof what, "input or output %d's name with a byte after it", k);
+        GRAPH(what, chip, h.names[k][sizeof h.names[k] - 1] = 'n');
+        for (int j = 0; j < k; j++) {
+            snprintf(what, sizeof what, "input or output %d with %d's name", k, j);
+            GRAPH(what, chip, memcpy(h.names[k], h.names[j], sizeof h.names[k]));
+            snprintf(what, sizeof what, "input or output %d with %d's id", k, j);
+            GRAPH(what, chip, h.id[k] = h.id[j]);
+        }
+        const uint32_t r = h0.rank[k], ranks[] = { 0, r - 1, r + 1, 5, UINT32_MAX };
+        for (size_t i = 0; i < sizeof ranks / sizeof ranks[0]; i++) {
+            snprintf(what, sizeof what, "input or output %d of rank %u", k, ranks[i]);
+            GRAPH(what, chip, h.rank[k] = ranks[i]);
+        }
+        for (int j = 0; j < 4; j++) {
+            const uint32_t v = h0.dims[k][j], vs[] = { v + 1, v ? v - 1 : 2, UINT32_MAX };
+            for (size_t i = 0; i < sizeof vs / sizeof vs[0]; i++) {
+                snprintf(what, sizeof what, "input or output %d's dim %d %u, not %u", k, j, vs[i], v);
+                GRAPH(what, chip, h.dims[k][j] = vs[i]);
+            }
+        }
+    }
+
+    GRAPH("a binary of no bytes", chip, h.bytes = 0);
+    GRAPH("a binary a byte shorter than the file's", chip, h.bytes = GRAPH_BIN - 1);
+    GRAPH("a binary a byte longer than the file's", chip, h.bytes = GRAPH_BIN + 1);
+    GRAPH("a binary of 2^64 - 1 bytes", chip, h.bytes = UINT64_MAX);
+    h = h0;
+    h.bytes = 0;
+    expect_graph("a header alone that says so", m, 0, chip, &h, sizeof h, sizeof h, 0);
+    h.bytes = (uint64_t)1 << 32;
+    expect_graph("a binary of 4 GiB, the file to match", m, 0, chip, &h, sizeof h, sizeof h + h.bytes, 0);
+    h.bytes = ((uint64_t)1 << 32) - 1;
+    expect_graph("a binary of 4 GiB less a byte, the file to match", m, 0, chip, &h, sizeof h,
+                 sizeof h + h.bytes, 1);
+
+    /* a model keyed by its checkpoint and converter, as the converter
+     * writes it: its graph taken, and one keyed by its data refused */
+    static const char named[] = "source_sha256\0"
+                                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\0"
+                                "converter\0pktito-tools 0.1.0 pkfcheck\0";
+    unsigned char *meta = malloc(g_m.meta_n + sizeof named - 1);
+    memcpy(meta, g_m.meta, g_m.meta_n);
+    memcpy(meta + g_m.meta_n, named, sizeof named - 1);
+    model e = g_m;
+    e.meta = meta;
+    e.meta_n = g_m.meta_n + sizeof named - 1;
+    size_t n;
+    unsigned char *p = build(&e, &n);
+    pk_model *mk = pk_model_from_bytes(p, n, err, sizeof err);
+    g_cases++;
+    if (!mk || !pk_model_meta(mk, "converter")) {
+        FAIL("the tiny model with its checkpoint and converter: %s", mk ? "no converter" : err);
+    } else {
+        graph_write(&h, mk, g_m.digest, 3072, chip);
+        expect_graph("a graph keyed by its model's checkpoint", mk, 0, chip, &h, sizeof h, size, 1);
+        expect_graph("a graph keyed by the data, of a model with a checkpoint", mk, 0, chip, &h0, sizeof h0,
+                     size, 0);
+    }
+    pk_model_free(mk);
+    free(p);
+    free(meta);
+    pk_model_free(m);
+#undef GRAPH
+}
+#endif
+
 /* ------------------------------------------------------------- the engine --- */
 
 /* 1 if s[0..n) is well-formed UTF-8 */
@@ -1002,7 +1302,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    int at = 0, valid, trunc, corrupt, meaning, engine;
+    int at = 0, valid, trunc, corrupt, meaning, graph, engine;
     valid_cases(argv[1]);
     valid = g_cases - at, at = g_cases;
     truncated_cases();
@@ -1014,7 +1314,12 @@ int main(int argc, char **argv) {
     meta_cases();
     corrupt = g_cases - at, at = g_cases;
     meaning_cases();
+    slim_cases();
     meaning = g_cases - at, at = g_cases;
+#ifdef PK_QNN
+    graph_cases();
+#endif
+    graph = g_cases - at, at = g_cases;
     pk_model *m = pk_model_from_bytes(g_file, g_n, err, sizeof err);
     if (m) {
         engine_cases(m, 1);
@@ -1024,8 +1329,8 @@ int main(int argc, char **argv) {
     flip_cases();
     if (argc > 2)
         write_wav(argv[2]);
-    printf("pkfcheck: valid %d, truncated %d, corrupt %d, meaning %d, engine %d, flipped %d\n",
-           valid, trunc, corrupt, meaning, engine, g_cases - at);
+    printf("pkfcheck: valid %d, truncated %d, corrupt %d, meaning %d, graph %d, engine %d, flipped %d\n",
+           valid, trunc, corrupt, meaning, graph, engine, g_cases - at);
 
     free(g_file);
     if (g_bad) {

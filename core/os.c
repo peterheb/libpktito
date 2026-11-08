@@ -102,9 +102,44 @@ FILE *pk_os_fopen(const char *path, const char *mode) {
     return f;
 }
 
+int pk_os_rename(const char *from, const char *to) {
+    wchar_t *wfrom, *wto;
+    int e = widen(from, &wfrom);
+    if (!e && (e = widen(to, &wto)) != 0)
+        free(wfrom);
+    if (e) {
+        errno = e;
+        return -1;
+    }
+    const DWORD why = MoveFileExW(wfrom, wto, MOVEFILE_REPLACE_EXISTING) ? 0 : GetLastError();
+    free(wfrom);
+    free(wto);
+    if (why) {
+        errno = why == ERROR_FILE_NOT_FOUND || why == ERROR_PATH_NOT_FOUND ? ENOENT : EACCES;
+        return -1;
+    }
+    return 0;
+}
+
+int pk_os_remove(const char *path) {
+    wchar_t *w;
+    int e = widen(path, &w);
+    if (e) {
+        errno = e;
+        return -1;
+    }
+    const int r = _wremove(w);
+    e = errno;
+    free(w);
+    errno = e;
+    return r;
+}
+
 #else /* a path is the bytes the system takes, and those are the UTF-8 */
 
 FILE *pk_os_fopen(const char *path, const char *mode) { return fopen(path, mode); }
+int pk_os_rename(const char *from, const char *to) { return rename(from, to); }
+int pk_os_remove(const char *path) { return remove(path); }
 
 #endif
 

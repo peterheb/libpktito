@@ -491,6 +491,24 @@ static int bind_layer(pk_file *f, pk_model *m, uint32_t i, pk_layer *L) {
 static int bind(pk_file *f, pk_model *m) {
     if (bind_params(f, m))
         return -1;
+#if defined(PK_ANE) || defined(PK_QNN)
+    /* A slim file (pktito-tools slim): the model with its encoder's tensors
+     * left out - the subsampling and the layers, 612 MB of a v2 file's 624 -
+     * for an encoder that brings its own weights: a Core ML model's
+     * (tools/ane/encoder.py), given to a transcriber with pk_asr_use_ane, or
+     * the NPU's graph compiled ahead of time, read from pk_asr_use_qnn's
+     * cache. The param's name is the ane fork's, whose encoder came first;
+     * the file is the same for both. One that holds any of the encoder's
+     * tensors anyway is refused below, as holding what is not the model's.
+     * A build with neither refuses the param itself, as one it does not
+     * know: a file it could not run. */
+    pk_param q;
+    if (param(f, "encoder_coreml", &q)) {
+        if (q.kind != PK_PARAM_U32 || q.v.u != 1)
+            return fail(f->err, f->errlen, "param encoder_coreml is not 1");
+        m->encoder_coreml = 1;
+    }
+#endif
     const uint32_t C = m->sub_channels, D = m->d_model, P = m->pred_hidden, J = m->joint_hidden;
     const uint32_t N = m->n_fft, bins = N / 2 + 1;
     const float *wfile, *fc, *fs;
@@ -499,14 +517,16 @@ static int bind(pk_file *f, pk_model *m) {
         || f32t(f, "mel.fft.cos", N / 2, 1, &fc) || f32t(f, "mel.fft.sin", N / 2, 1, &fs)
         || check_twiddles(f, "the features", fc, fs, N)
         || f32t(f, "pos.freq", D / 2, 1, &m->pos_freq)
-        || check_pos_freq(f, m->pos_freq, D / 2)
-        || f32t(f, "sub.conv0.w", C, 9, &m->conv0_w) || f32t(f, "sub.conv0.b", C, 1, &m->conv0_b)
-        || f32t(f, "sub.dw1.w", C, 9, &m->dw1_w) || f32t(f, "sub.dw1.b", C, 1, &m->dw1_b)
-        || q8t(f, "sub.pw1.w", C, C, &m->sub_pw1) || f32t(f, "sub.pw1.b", C, 1, &m->pw1_b)
-        || f32t(f, "sub.dw2.w", C, 9, &m->dw2_w) || f32t(f, "sub.dw2.b", C, 1, &m->dw2_b)
-        || q8t(f, "sub.pw2.w", C, C, &m->sub_pw2) || f32t(f, "sub.pw2.b", C, 1, &m->pw2_b)
-        || q8t(f, "sub.out.w", D, C * (m->n_mels / 8), &m->sub_out)
-        || f32t(f, "sub.out.b", D, 1, &m->out_b))
+        || check_pos_freq(f, m->pos_freq, D / 2))
+        return -1;
+    if (!m->encoder_coreml
+        && (f32t(f, "sub.conv0.w", C, 9, &m->conv0_w) || f32t(f, "sub.conv0.b", C, 1, &m->conv0_b)
+            || f32t(f, "sub.dw1.w", C, 9, &m->dw1_w) || f32t(f, "sub.dw1.b", C, 1, &m->dw1_b)
+            || q8t(f, "sub.pw1.w", C, C, &m->sub_pw1) || f32t(f, "sub.pw1.b", C, 1, &m->pw1_b)
+            || f32t(f, "sub.dw2.w", C, 9, &m->dw2_w) || f32t(f, "sub.dw2.b", C, 1, &m->dw2_b)
+            || q8t(f, "sub.pw2.w", C, C, &m->sub_pw2) || f32t(f, "sub.pw2.b", C, 1, &m->pw2_b)
+            || q8t(f, "sub.out.w", D, C * (m->n_mels / 8), &m->sub_out)
+            || f32t(f, "sub.out.b", D, 1, &m->out_b)))
         return -1;
 
     /* the window centred in n_fft, as torch.stft pads a shorter one; the
@@ -515,9 +535,9 @@ static int bind(pk_file *f, pk_model *m) {
     m->rev = calloc(N / 2, sizeof *m->rev);
     m->mel_lo = calloc(m->n_mels, sizeof *m->mel_lo);
     m->mel_n = calloc(m->n_mels, sizeof *m->mel_n);
-    m->layers = calloc(m->n_layers, sizeof *m->layers);
+    m->layers = m->encoder_coreml ? NULL : calloc(m->n_layers, sizeof *m->layers);
     m->lstm = calloc(m->pred_layers, sizeof *m->lstm);
-    if (!m->window || !m->rev || !m->mel_lo || !m->mel_n || !m->layers || !m->lstm)
+    if (!m->window || !m->rev || !m->mel_lo || !m->mel_n || (!m->layers && !m->encoder_coreml) || !m->lstm)
         return fail(f->err, f->errlen, "out of memory");
     memcpy(m->window + (N - m->win_length) / 2, wfile, m->win_length * sizeof(float));
     bitrev(m->rev, N / 2);
@@ -535,7 +555,7 @@ static int bind(pk_file *f, pk_model *m) {
         m->mel_n[b] = hi - lo;
     }
 
-    for (uint32_t i = 0; i < m->n_layers; i++)
+    for (uint32_t i = 0; i < m->n_layers && !m->encoder_coreml; i++)
         if (bind_layer(f, m, i, &m->layers[i]))
             return -1;
 
@@ -726,6 +746,7 @@ void pk_model_free(pk_model *m) {
 }
 
 const char *pk_model_name(const pk_model *m) { return m->name; }
+int pk_model_has_encoder(const pk_model *m) { return !m->encoder_coreml; }
 
 void pk_model_describe(const pk_model *m, pk_model_info *out) {
     memset(out, 0, sizeof *out);

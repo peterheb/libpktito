@@ -119,6 +119,10 @@ static const char *usage =
     "                      ./models or in models/ beside pktito-c)\n"
     "  -t, --threads N     threads (default: one per core)\n"
     "      --fast          up to 7% faster; transcripts may differ slightly\n"
+    "      --ane MODEL     encoder on the Neural Engine: a compiled Core ML model\n"
+    "                      (tools/ane/encoder.py; needs a build with ANE=1)\n"
+    "      --qnn           encoder on a Snapdragon NPU (needs a build with QNN=1);\n"
+    "                      $PKTITO_QNN_CACHE: file for the compiled graph\n"
     "      --max-chunk S   longest chunk, in seconds (30.72); longer audio is cut\n"
     "                      at pauses\n"
     "      --no-retry      don't retranscribe speech that gave no words\n"
@@ -133,9 +137,9 @@ static const char *usage =
 enum { SUBS_SRT = 1, SUBS_VTT = 2 };
 
 typedef struct {
-    const char *cmd, *in, *model;
+    const char *cmd, *in, *model, *ane;
     const char **ins;                /* every input file; in is the first */
-    int nin, threads, json, subs, verbose, stream, fast, no_retry, no_context;   /* subs: SUBS_SRT or SUBS_VTT */
+    int nin, threads, json, subs, verbose, stream, fast, no_retry, no_context, qnn;   /* subs: SUBS_SRT or SUBS_VTT */
     double max_chunk, pause_ms;
 } opts;
 
@@ -193,6 +197,8 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--vtt")) o->subs = SUBS_VTT;
         else if (!strcmp(a, "--stream")) o->stream = 1;
         else if (!strcmp(a, "--fast")) o->fast = 1;
+        else if (!strcmp(a, "--ane")) { if (!v) die("%s wants a Core ML model", a); o->ane = v; i++; }
+        else if (!strcmp(a, "--qnn")) o->qnn = 1;
         else if (!strcmp(a, "--no-retry")) o->no_retry = 1;
         else if (!strcmp(a, "--no-context")) o->no_context = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
@@ -260,7 +266,25 @@ static pk_asr *asr_new(const opts *o, const pk_model *m) {
     if (!a)
         die("out of memory");
     pk_asr_set_fast_mode(a, o->fast);
+    char err[512];
+    if (o->ane && pk_asr_use_ane(a, o->ane, err, sizeof err))
+        die("%s: %s", o->ane, err);
+    if (o->qnn && pk_asr_use_qnn(a, 1, utf8_getenv("PKTITO_QNN_CACHE"), err, sizeof err))
+        die("--qnn: %s", err);
+    if (!o->ane && !o->qnn && !pk_model_has_encoder(m))
+        die("%s leaves its encoder out for an accelerator's: give it with --ane (a Core ML model) "
+            "or --qnn (the NPU's graph, in $PKTITO_QNN_CACHE)", pk_model_name(m));
     return a;
+}
+
+/* A transcription's -1: memory run out, or, in a slim model, which has no
+ * encoder of its own to fall back on, the accelerator's failing or taking
+ * no chunk that long */
+static void run_failed(const pk_model *m) {
+    if (!pk_model_has_encoder(m))
+        die("the encoder could not run: %s leaves its own out, and the accelerator's failed or takes "
+            "no chunk this long (--max-chunk)", pk_model_name(m));
+    die("out of memory");
 }
 
 /* The whole file as 16 kHz mono float */
@@ -663,7 +687,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     to.context = !o->no_context;
     const double t0 = pk_os_now();
     if (pk_asr_transcribe(a, x, n, &to, print_chunk, &out) < 0)
-        die("out of memory");
+        run_failed(m);
     const double asr_s = pk_os_now() - t0 - out.printing;
     *asr_total += asr_s;
     if (o->json)
@@ -770,7 +794,7 @@ static int stream(const opts *o, pk_model *m) {
         /* an end the iterator found before a forced cut is no stretch */             \
         if (e0 <= s0) break;                                                          \
         long nt = pk_asr_run(a, buf + (s0 - base), (size_t)(e0 - s0), &t);            \
-        if (nt < 0) die("out of memory");                                             \
+        if (nt < 0) run_failed(m);                                                    \
         size_t len = pk_text(m, t, (size_t)nt, text, 1 << 16);                        \
         if (len) {                                                                    \
             if (o->json) {                                                            \
@@ -936,7 +960,7 @@ static int bench(const opts *o, pk_model *m) {
         double t0 = pk_os_now();
         ntok = 0;
         if (pk_asr_run_chunks(a, x, c, nc, count_tokens, &ntok))
-            die("out of memory");
+            run_failed(m);
         double dt = pk_os_now() - t0;
         best = dt < best ? dt : best;
     }
