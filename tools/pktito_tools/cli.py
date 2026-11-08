@@ -65,7 +65,7 @@ def main(argv=None):
     s = sub.add_parser(
         "slim",
         help="a .pkf without its encoder, for an accelerator's: the ane fork's "
-        "Core ML model, or the NPU's graph compiled ahead of time (core/qnn.h)",
+        "Core ML model, or the NPU's graph compiled ahead of time (npu/qnn.h)",
     )
     s.add_argument("file")
     s.add_argument("dst")

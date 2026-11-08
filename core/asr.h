@@ -65,14 +65,14 @@ struct pk_asr {
      * activations in blocks of 64 where an input allows, not 32 */
     int qb64;
     /* The encoder on the Neural Engine, where the caller gave a Core ML
-     * model (pk_asr_use_ane; make ANE=1): core/ane.h */
+     * model (pk_asr_use_ane; make ANE=1): npu/ane.h */
     struct pk_ane *ane;
     /* the Neural Engine's calls in flight (asr.c, ane_chunks): each slot's
      * features in and encoder frames out, ane_cap feature frames each */
     float *ane_feat[4], *ane_x[4];
     size_t ane_cap;
     /* The encoder on Qualcomm's NPU, where the caller asked for it
-     * (pk_asr_use_qnn; make QNN=1): core/qnn.h */
+     * (pk_asr_use_qnn; make QNN=1): npu/qnn.h */
     struct pk_qnn *qnn;
     /* A recording's chunks several at once (core/asr.c, run_lanes): at
      * most `lanes`, lane j > 0 a transcriber of its own on this one's

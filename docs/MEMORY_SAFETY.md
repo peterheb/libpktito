@@ -106,7 +106,7 @@ the same change.
 A build with QNN=1 (the qnn fork's, for Android on a Snapdragon) reads the
 encoder's graph compiled for the phone's NPU: the app downloads it for its
 chip, and the CLI takes it from `$PKTITO_QNN_CACHE`. The file is a 616-byte
-header, then QNN's binary of the context (core/qnn.c's cache_head).
+header, then QNN's binary of the context (npu/qnn.c's cache_head).
 read_cache measures the file and copies the header into a local struct.
 Before QNN sees a byte of the binary, check_head holds the header to these:
 

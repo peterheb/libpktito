@@ -1,13 +1,15 @@
 # tools/ane: the climb
 
 Dated records of what was measured, on which machine, for the encoder on
-the Neural Engine (encoder.py's program, core/ane.m's loading): append-only.
+the Neural Engine (encoder.py's program, npu/ane.m's loading): append-only.
 A later section may supersede an earlier one, but the earlier one stays,
 rejected hypotheses included.
 
 The entries dated before 2026-11-08 were measured on pktito's ane fork. Its
 history was squashed into the commit that brought this file to main, so the
-commits they name are the fork's and are not in this repository.
+commits they name are the fork's and are not in this repository. The
+fork kept the Core ML loading in core/ane.m, as they name it; it is
+npu/ane.m here.
 
 # 2026-10-31 - the first program, and the position term
 

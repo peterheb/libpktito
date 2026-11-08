@@ -1,13 +1,15 @@
 # tools/qnn: the climb
 
 Dated records of what was measured, on which machine, for the encoder on
-Qualcomm's Hexagon NPU (core/qnn.c's graph, built with QNN=1): append-only.
+Qualcomm's Hexagon NPU (npu/qnn.c's graph, built with QNN=1): append-only.
 A later section may supersede an earlier one, but the earlier one stays,
 rejected hypotheses included.
 
 The entries dated before 2026-11-08 were measured on pktito's ane fork. Its
 history was squashed into the commit that brought this file to main, so the
-commits they name are the fork's and are not in this repository.
+commits they name are the fork's and are not in this repository. The
+fork kept the graph's builder in core/qnn.c, as they name it; it is
+npu/qnn.c here.
 
 # 2026-11-02 - the first graph
 

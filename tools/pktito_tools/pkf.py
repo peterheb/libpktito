@@ -176,7 +176,7 @@ def is_encoder(name):
 def slim(src, dst):
     """src's model without its encoder, for an accelerator's that brings its
     own weights: the ane fork's Core ML model (tools/ane/encoder.py), or
-    the NPU's graph compiled from src ahead of time (core/qnn.h). The param
+    the NPU's graph compiled from src ahead of time (npu/qnn.h). The param
     encoder_coreml says so, and every other param, table, tensor and
     metadata pair is src's, byte for byte, so that a transcript is the full
     file's with the same encoder, and the NPU's graph of src is found by

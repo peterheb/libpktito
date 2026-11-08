@@ -1,4 +1,4 @@
-/* core/ane.h through Core ML. The model's functions are the encoder whole
+/* npu/ane.h through Core ML. The model's functions are the encoder whole
  * ("f3072") or in parts run one after another ("f3072p0", "f3072p1", ...:
  * tools/ane/encoder.py --parts), each taking one length or several (Core
  * ML's enumerated shapes, the lengths its mask input lists), and a function

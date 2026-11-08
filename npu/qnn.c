@@ -1,4 +1,4 @@
-/* core/qnn.h through QNN's C API. The graph is core/encoder.c's arithmetic
+/* npu/qnn.h through QNN's C API. The graph is core/encoder.c's arithmetic
  * written as QNN ops, with the HTP's layout: the subsampling's images
  * [1][time][frequency][channels], as encoder.c's rows already are, and
  * then the stream [T][d_model]. Each matrix is a FullyConnected op on the

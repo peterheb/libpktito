@@ -78,7 +78,7 @@ def run(models, feat, dtype):
     parts = models[Tb]
     tabs = {}
     if parts[0].tables:
-        # as core/ane.m makes them: turn_tables from the model's frequencies
+        # as npu/ane.m makes them: turn_tables from the model's frequencies
         D = parts[0].tables
         pe, cos, sin, _ = turn_tables(
             sub_lengths(Tb)[-1],

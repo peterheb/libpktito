@@ -128,7 +128,7 @@ ifeq ($(PROFILE),1)
   CFLAGS += -DPK_PROFILE
 endif
 
-INC := -Icore -Ibackend
+INC := -Icore -Ibackend -Inpu
 LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/decoder.c \
            core/tokens.c core/asr.c core/transcribe.c core/vad.c core/segment.c core/wav.c core/resample.c core/captions.c core/sentences.c \
            core/language.c
@@ -140,23 +140,23 @@ backend/kernels.o backend/kernels.pic.o: CFLAGS += $(HAVE)
 
 # make ANE=1 (macOS 15 or later): the encoder on the Neural Engine through
 # Core ML, for a transcriber given a compiled model (--ane, pk_asr_use_ane):
-# core/ane.h, tools/ane/encoder.py
+# npu/ane.h, tools/ane/encoder.py
 ifeq ($(ANE),1)
-  LIB_OBJ += core/ane.o
+  LIB_OBJ += npu/ane.o
   CFLAGS += -DPK_ANE
   LDLIBS += -framework CoreML -framework Foundation
 endif
-core/ane.o: core/ane.m core/ane.h
+npu/ane.o: npu/ane.m npu/ane.h
 	$(CC) $(CFLAGS) -fobjc-arc $(PLATFLAGS) $(INC) -c $< -o $@
 
 # make QNN=1 QNN_SDK=<Qualcomm's AI Runtime SDK> (Android on a Snapdragon):
 # the encoder on the Hexagon NPU through QNN, for a transcriber asked for
-# it (--qnn, pk_asr_use_qnn): core/qnn.h. QNN's libraries are loaded at
-# run time, so only core/qnn.o sees the SDK's headers, and the SDK's own
+# it (--qnn, pk_asr_use_qnn): npu/qnn.h. QNN's libraries are loaded at
+# run time, so only npu/qnn.o sees the SDK's headers, and the SDK's own
 # files (Qualcomm's license: in an application, not on their own) stay out
 # of this tree.
 ifeq ($(QNN),1)
-  LIB_OBJ += core/qnn.o
+  LIB_OBJ += npu/qnn.o
   CFLAGS += -DPK_QNN
   ifeq ($(filter MINGW% MSYS% UCRT% CLANG%,$(UNAME_S)),)
     LDLIBS += -ldl
@@ -170,9 +170,9 @@ endif
 # with the SDK's headers, and for `make QNN=1 shared` its .pic.o too
 QNN_CC = $(CC) $(filter-out -Wpedantic,$(CFLAGS)) $(PLATFLAGS) $(INC) -I$(QNN_SDK)/include/QNN \
          -DPK_COMMIT='"$(QNN_COMMIT)"' -MMD -MP
-core/qnn.o: core/qnn.c
+npu/qnn.o: npu/qnn.c
 	$(QNN_CC) -c $< -o $@
-core/qnn.pic.o: core/qnn.c
+npu/qnn.pic.o: npu/qnn.c
 	$(QNN_CC) $(PIC) -c $< -o $@
 
 # The objects hold the options they were compiled with (-DPK_ANE, -DPK_QNN):
@@ -358,15 +358,15 @@ check: check-c check-python
 # because not every board's compiler ships the sanitizer runtimes.
 SAN := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 # with ANE=1 or QNN=1, the slim file's cases too (tests/pkfcheck.c):
-# core/ane.m or core/qnn.c under the sanitizers beside the rest
+# npu/ane.m or npu/qnn.c under the sanitizers beside the rest
 ifeq ($(ANE),1)
   SAN_ANE := -DPK_ANE tests/ane-san.o
 endif
 ifeq ($(QNN),1)
-  SAN_QNN := -DPK_QNN -I$(QNN_SDK)/include/QNN core/qnn.c
+  SAN_QNN := -DPK_QNN -I$(QNN_SDK)/include/QNN npu/qnn.c
 endif
-tests/ane-san.o: core/ane.m core/ane.h
-	$(CC) $(SAN) -std=c11 -fobjc-arc -DPK_ANE $(PLATFLAGS) $(INC) -c core/ane.m -o $@
+tests/ane-san.o: npu/ane.m npu/ane.h
+	$(CC) $(SAN) -std=c11 -fobjc-arc -DPK_ANE $(PLATFLAGS) $(INC) -c npu/ane.m -o $@
 check-sanitize: $(if $(filter 1,$(ANE)),tests/ane-san.o)
 	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) $(SAN_ANE) $(SAN_QNN) -o tests/pkfcheck-san \
 	  tests/pkfcheck.c $(LIB_SRC) backend/ref/kernels.c backend/kernels.c $(LDLIBS)
@@ -506,7 +506,7 @@ adb:
 
 clean:
 	rm -f pktito-c pktito libpktito.a libpktito.so libpktito.dylib libpktito.dll examples/transcribe build.opts
-	rm -f core/*.o core/*.d backend/*.o backend/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
+	rm -f core/*.o core/*.d npu/*.o npu/*.d backend/*.o backend/*.d backend/*/*.o backend/*/*.d tests/*.o tests/*.d $(TESTS) $(PYTESTS) $(BENCHES)
 	rm -f tests/*-san tests/pktito-tsan tests/tsan-*.o tests/ane-san.o tests/*.tmp tests/pkfcheck.wav tests/pkfcheck.json
 	rm -rf tests/*.dSYM tests/pathcheck-* build/android-*
 	rm -f $(FUZZ_BINS) $(FUZZ_DIR)/seeds   # not the corpora a campaign grew

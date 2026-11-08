@@ -154,7 +154,7 @@ int     pk_asr_ane_warm(pk_asr *a, char *err, size_t errlen);
 
 /* The encoder on Qualcomm's Hexagon NPU (a build with QNN=1; Android on a
  * Snapdragon), on: a graph built from the model's own weights
- * (core/qnn.h), which QNN compiles now, in a minute or two (94 to 114 s
+ * (npu/qnn.h), which QNN compiles now, in a minute or two (94 to 114 s
  * on a Galaxy S24 Ultra, tools/qnn/CLIMB.md); with cache a path, the
  * compiled graph is kept there and read back the next time, in a second
  * or two.
