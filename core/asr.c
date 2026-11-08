@@ -199,6 +199,42 @@ int pk_asr_use_qnn(pk_asr *a, int on, const char *cache, char *err, size_t errle
 #endif
 }
 
+static int ends_with(const char *s, size_t n, const char *suffix) {
+    const size_t k = strlen(suffix);
+    return n >= k && !memcmp(s + n - k, suffix, k);
+}
+
+static int refuse(char *err, size_t errlen, const char *why) {
+    if (err && errlen)
+        snprintf(err, errlen, "%s", why);
+    return -1;
+}
+
+int pk_asr_use_encoder(pk_asr *a, const char *path, char *err, size_t errlen) {
+    char p[4096];
+    size_t n = path ? strlen(path) : 0;
+    while (n > 1 && (path[n - 1] == '/' || path[n - 1] == '\\'))    /* a folder given with its slash */
+        n--;
+    if (!n || n >= sizeof p)
+        return refuse(err, errlen, n ? "path too long" : "no path");
+    memcpy(p, path, n);
+    p[n] = 0;
+    if (ends_with(p, n, ".mlmodelc"))
+        return pk_asr_use_ane(a, p, err, errlen);
+    if (ends_with(p, n, ".qnn")) {
+        /* a graph that isn't there would have pk_asr_use_qnn compile one
+         * from the whole model and write it there, 714 MB in a minute or
+         * two: what --qnn asks for, and not what naming a file does */
+        FILE *f = pk_os_fopen(p, "rb");
+        if (!f)
+            return refuse(err, errlen, "no such file");
+        fclose(f);
+        return pk_asr_use_qnn(a, 1, p, err, errlen);
+    }
+    return refuse(err, errlen, ends_with(p, n, ".aar") ? "a Core ML model still in its archive: aa extract it first"
+                                                       : "not an encoder: a Core ML model (.mlmodelc) or a QNN graph (.qnn)");
+}
+
 int pk_qnn_chip(char *chip, size_t cap, char *err, size_t errlen) {
 #ifdef PK_QNN
     return pk_qnn_target(chip, cap, err, errlen);

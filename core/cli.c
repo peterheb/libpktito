@@ -5,6 +5,7 @@
  *   pktito-c --srt talk.wav             subtitles, or --vtt as WebVTT: pk_captions' cues
  *   pktito-c bench talk.wav             how fast this machine transcribes it
  *   pktito-c info                       the model file: where it came from
+ *   pktito-c models                     the files for this machine, and where to get them
  *
  * A file is read (mean of the channels; another rate is brought to 16 kHz)
  * and transcribed by pk_asr_transcribe, the library's high-level path: a
@@ -17,6 +18,7 @@
  */
 #include "pktito.h"
 #include "asr.h"
+#include "editions.h"
 #include "os.h"
 #include "resample.h"
 #include "wav.h"
@@ -113,16 +115,20 @@ static const char *usage =
     "       pktito-c segments [options] FILE  speech start and end times (s)\n"
     "       pktito-c probs [options] FILE     speech probability of each 32 ms frame\n"
     "       pktito-c info [options]           describe the model\n"
+    "       pktito-c models [--all]           the model files for this machine, and\n"
+    "                                         where to get them; --all every one\n"
     "FILE is WAV or AIFF, or - for stdin; several print a line each: name, tab, text.\n"
     "\n"
-    "  -m, --model FILE    model (default: $PKTITO_MODEL, else the only .pkf in\n"
-    "                      ./models or in models/ beside pktito-c)\n"
+    "  -m, --model FILE    model (default: $PKTITO_MODEL, else the only model in\n"
+    "                      ./models or in models/ beside pktito-c, in its edition\n"
+    "                      for this machine where that is all there: pktito-c models)\n"
     "  -t, --threads N     threads (default: one per core)\n"
     "      --fast          up to 7% faster; transcripts may differ slightly\n"
-    "      --ane MODEL     encoder on the Neural Engine: a compiled Core ML model\n"
-    "                      (tools/ane/encoder.py; needs a build with ANE=1)\n"
-    "      --qnn           encoder on a Snapdragon NPU (needs a build with QNN=1);\n"
-    "                      $PKTITO_QNN_CACHE: file for the compiled graph\n"
+    "      --npu FILE      the encoder on an NPU: a Core ML model (.mlmodelc) on the\n"
+    "                      Neural Engine (a build with ANE=1), or a QNN graph (.qnn)\n"
+    "                      on a Snapdragon (QNN=1); a slim model's is found beside it\n"
+    "      --qnn           with QNN=1, the NPU's graph built here from the whole\n"
+    "                      model, in a minute or two, and kept in $PKTITO_QNN_CACHE\n"
     "      --max-chunk S   longest chunk, in seconds (30.72); longer audio is cut\n"
     "                      at pauses\n"
     "      --no-retry      don't retranscribe speech that gave no words\n"
@@ -137,9 +143,9 @@ static const char *usage =
 enum { SUBS_SRT = 1, SUBS_VTT = 2 };
 
 typedef struct {
-    const char *cmd, *in, *model, *ane;
+    const char *cmd, *in, *model, *npu;
     const char **ins;                /* every input file; in is the first */
-    int nin, threads, json, subs, verbose, stream, fast, no_retry, no_context, qnn;   /* subs: SUBS_SRT or SUBS_VTT */
+    int nin, threads, json, subs, verbose, stream, fast, no_retry, no_context, qnn, all;   /* subs: SUBS_SRT or SUBS_VTT */
     double max_chunk, pause_ms;
 } opts;
 
@@ -197,14 +203,15 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--vtt")) o->subs = SUBS_VTT;
         else if (!strcmp(a, "--stream")) o->stream = 1;
         else if (!strcmp(a, "--fast")) o->fast = 1;
-        else if (!strcmp(a, "--ane")) { if (!v) die("%s wants a Core ML model", a); o->ane = v; i++; }
+        else if (!strcmp(a, "--npu")) { if (!v) die("%s wants an encoder: a .mlmodelc or a .qnn", a); o->npu = v; i++; }
+        else if (!strcmp(a, "--all")) o->all = 1;
         else if (!strcmp(a, "--qnn")) o->qnn = 1;
         else if (!strcmp(a, "--no-retry")) o->no_retry = 1;
         else if (!strcmp(a, "--no-context")) o->no_context = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
         else if (!o->nin && !strcmp(o->cmd, "text") && (!strcmp(a, "bench") || !strcmp(a, "info")
-                 || !strcmp(a, "segments") || !strcmp(a, "probs")))
+                 || !strcmp(a, "segments") || !strcmp(a, "probs") || !strcmp(a, "models")))
             o->cmd = a;
         else o->ins[o->nin++] = a;
     }
@@ -216,64 +223,197 @@ static void parse(int argc, char **argv, opts *o) {
         die("one input file for %s", o->subs ? subs : o->stream ? "--stream" : o->cmd);
     if (o->stream && o->subs)
         die("--stream or %s, not both", subs);
-    if (!o->in && strcmp(o->cmd, "info")) {
+    if (o->all && strcmp(o->cmd, "models"))
+        die("--all is for pktito-c models");
+    if (!o->in && strcmp(o->cmd, "info") && strcmp(o->cmd, "models")) {
         fputs(usage, stderr);
         exit(1);
     }
 }
 
 /* -m, $PKTITO_MODEL, or the one .pkf in ./models/ or models/ beside argv[0] */
-static pk_model *load_model(const char *flag, const char *argv0) {
-    static const char *names[] = { "parakeet-tdt-0.6b-v3.pkf", "parakeet-tdt-0.6b-v2.pkf" };
-    char err[512], path[4096], found[2][4096];
-    int nfound = 0;
-    const char *p = flag ? flag : utf8_getenv("PKTITO_MODEL");
-    if (!p) {
-        const char *slash = strrchr(argv0, '/');
-#ifdef _WIN32
-        const char *back = strrchr(argv0, '\\');    /* Windows' own separator */
-        if (back && (!slash || back > slash))
-            slash = back;
+/* What this build runs: the CPU's editions always, an NPU's where it was
+ * built with that NPU's code (make ANE=1, QNN=1) */
+static int can_run(const ed_edition *e) {
+#ifdef PK_ANE
+    if (e->kind == ED_COREML)
+        return 1;
 #endif
-        int dir = slash ? (int)(slash - argv0) : 0;
-        for (int d = 0; d < 2 && !nfound; d++)
-            for (int i = 0; i < 2; i++) {
-                if (d == 0)
-                    snprintf(path, sizeof path, "models/%s", names[i]);
+#ifdef PK_QNN
+    if (e->kind == ED_QNN)
+        return 1;
+#endif
+    return e->kind == ED_CPU;
+}
+
+static char qnn_why[256];    /* why QNN named no chip, for pktito-c models */
+
+static int qnn_chip(char *chip, unsigned cap) {
+    return pk_qnn_chip(chip, cap, qnn_why, sizeof qnn_why);
+}
+
+/* this machine as models.json's rule sees it, asked once: with QNN=1 QNN
+ * loads its library to name the NPU's chip */
+static const ed_device *device(void) {
+    static ed_device d;
+    static int asked;
+    if (!asked)
+        ed_this_device(&d, qnn_chip), asked = 1;
+    return &d;
+}
+
+/* an edition's encoder as it sits in a models folder: a Core ML model
+ * unpacked from its archive into the folder it names without .aar, as
+ * pktito-app unpacks it; a graph as it downloads */
+static void encoder_name(const ed_edition *e, char *out, size_t cap) {
+    const char *f = e->encoder.file;
+    size_t n = strlen(f);
+    if (e->kind == ED_COREML && n > 4 && !strcmp(f + n - 4, ".aar"))
+        n -= 4;
+    snprintf(out, cap, "%.*s", (int)n, f);
+}
+
+/* path's size, or -1 where it can't be opened */
+static long long file_size(const char *path) {
+    FILE *f = pk_os_fopen(path, "rb");
+    if (!f)
+        return -1;
+    long long n = fseek(f, 0, SEEK_END) ? 0 : (long long)ftell(f);
+    fclose(f);
+    return n;
+}
+
+/* e's encoder at path: a Core ML model is a folder, there once its
+ * model.mil is */
+static int encoder_here(const ed_edition *e, const char *path) {
+    char mil[4608 + 16];
+    if (e->kind != ED_COREML)
+        return file_size(path) >= 0;
+    snprintf(mil, sizeof mil, "%s/model.mil", path);
+    return file_size(mil) >= 0;
+}
+
+/* where path's last slash is, Windows' backslash too, or NULL */
+static const char *last_slash(const char *path) {
+    const char *slash = strrchr(path, '/');
+#ifdef _WIN32
+    const char *back = strrchr(path, '\\');
+    if (back && (!slash || back > slash))
+        slash = back;
+#endif
+    return slash;
+}
+
+/* models/ in the working directory, then models/ beside pktito-c */
+static void models_dir(int i, const char *argv0, char *out, size_t cap) {
+    const char *slash = last_slash(argv0);
+    if (i == 0 || !slash)
+        snprintf(out, cap, "models/");
+    else
+        snprintf(out, cap, "%.*s/models/", (int)(slash - argv0), argv0);
+}
+
+/* which of m's files dir holds for edition e: 2 its own all, 1 some, 0 none */
+static int edition_here(const ed_edition *e, const char *dir) {
+    char p[4608], name[512];
+    snprintf(p, sizeof p, "%s%s", dir, e->model.file);
+    int n = file_size(p) >= 0;
+    if (!e->encoder.file)
+        return 2 * n;
+    encoder_name(e, name, sizeof name);
+    snprintf(p, sizeof p, "%s%s", dir, name);
+    n += encoder_here(e, p);
+    return n == 2 ? 2 : n > 0;
+}
+
+static const char *model_path;    /* the model file, as loaded */
+
+/* The model where neither -m nor $PKTITO_MODEL names one: in ./models,
+ * else models/ beside pktito-c, each of models.json's models in its edition
+ * for this machine where that edition is all there (a slim file and its
+ * encoder), else its whole .pkf, the CPU's; one model, or -m says which */
+static const char *find_model(const char *argv0, char *found, size_t cap) {
+    char dir[4096], p[4608], slim_alone[4608] = "";
+    for (int d = 0; d < 2; d++) {
+        models_dir(d, argv0, dir, sizeof dir);
+        int n = 0;
+        for (int i = 0; i < ed_n_models; i++) {
+            const ed_model *m = &ed_catalog[i];
+            char pick[4608] = "";
+            snprintf(p, sizeof p, "%s%s-slim.pkf", dir, m->name);
+            if (file_size(p) >= 0) {
+                const ed_edition *e = ed_choose(m, device(), can_run);
+                if (e->kind != ED_CPU && edition_here(e, dir) == 2)
+                    snprintf(pick, sizeof pick, "%s", p);
                 else
-                    snprintf(path, sizeof path, "%.*s%smodels/%s", dir, argv0, slash ? "/" : "", names[i]);
-                FILE *f = pk_os_fopen(path, "rb");
-                if (f) {
-                    fclose(f);
-                    snprintf(found[nfound++], sizeof found[0], "%s", path);
-                }
+                    snprintf(slim_alone, sizeof slim_alone, "%s", p);
             }
-        if (nfound == 0)
-            die("no model: -m FILE.pkf, or put one in models/ (README, \"Try it\", makes one)");
-        if (nfound > 1)
-            die("two models, %s and %s: say which with -m", found[0], found[1]);
-        p = found[0];
+            snprintf(p, sizeof p, "%s%s.pkf", dir, m->name);
+            if (!pick[0] && file_size(p) >= 0)
+                snprintf(pick, sizeof pick, "%s", p);
+            if (pick[0] && n++)
+                die("two models, %s and %s: say which with -m", found, pick);
+            if (pick[0])
+                snprintf(found, cap, "%s", pick);
+        }
+        if (n)
+            return found;
     }
+    if (slim_alone[0])
+        die("%s runs only with its NPU's encoder beside it, in a build with that NPU: pktito-c models says "
+            "what runs here, and where to get it", slim_alone);
+    die("no model: -m FILE.pkf, or one in models/ (pktito-c models says where to get one; README, \"Try it\", "
+        "makes one)");
+    return NULL;
+}
+
+static pk_model *load_model(const char *flag, const char *argv0) {
+    static char found[4608];
+    char err[512];
+    const char *p = flag ? flag : utf8_getenv("PKTITO_MODEL");
+    if (!p)
+        p = find_model(argv0, found, sizeof found);
     pk_model *m = pk_model_load(p, err, sizeof err);
     if (!m)
-        die("%s", err);
+        die("%s%s", err, strstr(err, "slim model file") ? " (pktito-c models says what runs here)" : "");
+    model_path = p;
     return m;
 }
 
-/* A transcriber on -t's threads, in --fast's mode */
-static pk_asr *asr_new(const opts *o, const pk_model *m) {
+/* A slim model's encoder, beside it: its edition's for this machine, as
+ * pktito-c models names it */
+static const char *slim_encoder(const pk_model *m, char *out, size_t cap) {
+    const ed_model *cm = ed_find(pk_model_name(m));
+    const ed_edition *e = cm ? ed_choose(cm, device(), can_run) : NULL;
+    if (!e || e->kind == ED_CPU)
+        die("%s is a slim model file, which runs only on an NPU, and this pktito-c runs none here: the whole "
+            "model runs on the CPU (pktito-c models)", model_path);
+    char name[512];
+    encoder_name(e, name, sizeof name);
+    const char *slash = last_slash(model_path);
+    snprintf(out, cap, "%.*s%s", slash ? (int)(slash - model_path + 1) : 0, model_path, name);
+    if (!encoder_here(e, out))
+        die("%s runs with its encoder for %s, %s, beside it, or one given with --npu (pktito-c models says "
+            "where to get it)", model_path, e->about, name);
+    return out;
+}
+
+/* A transcriber for m, its encoder on the NPU where --npu names one, or the
+ * model is slim and its edition's sits beside it; the VAD alone (encodes
+ * 0) takes none */
+static pk_asr *asr_new(const opts *o, const pk_model *m, int encodes) {
     pk_asr *a = pk_asr_new(m, o->threads);
     if (!a)
         die("out of memory");
     pk_asr_set_fast_mode(a, o->fast);
-    char err[512];
-    if (o->ane && pk_asr_use_ane(a, o->ane, err, sizeof err))
-        die("%s: %s", o->ane, err);
-    if (o->qnn && pk_asr_use_qnn(a, 1, utf8_getenv("PKTITO_QNN_CACHE"), err, sizeof err))
+    char err[512], here[4608];
+    const char *npu = o->npu;
+    if (encodes && !npu && !o->qnn && !pk_model_has_encoder(m))
+        npu = slim_encoder(m, here, sizeof here);
+    if (encodes && npu && pk_asr_use_encoder(a, npu, err, sizeof err))
+        die("%s: %s", npu, err);
+    if (encodes && o->qnn && pk_asr_use_qnn(a, 1, utf8_getenv("PKTITO_QNN_CACHE"), err, sizeof err))
         die("--qnn: %s", err);
-    if (!o->ane && !o->qnn && !pk_model_has_encoder(m))
-        die("%s leaves its encoder out for an accelerator's: give it with --ane (a Core ML model) "
-            "or --qnn (the NPU's graph, in $PKTITO_QNN_CACHE)", pk_model_name(m));
     return a;
 }
 
@@ -713,7 +853,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
 }
 
 static int transcribe(const opts *o, pk_model *m) {
-    pk_asr *a = asr_new(o, m);
+    pk_asr *a = asr_new(o, m, 1);
     double audio_s = 0, asr_s = 0;
     int many = o->nin > 1;
     if (o->json)
@@ -758,7 +898,7 @@ static int stream(const opts *o, pk_model *m) {
     if (info.rate != (uint32_t)rate && !(rs = pk_resampler_new(info.rate, (uint32_t)rate)))
         die("%s: cannot resample from %u Hz", o->in, (unsigned)info.rate);
     pk_vad *v = pk_vad_new(m);
-    pk_asr *a = asr_new(o, m);
+    pk_asr *a = asr_new(o, m, 1);
     pk_seg_params sp;
     pk_seg_defaults(&sp);
     sp.min_silence_ms = o->pause_ms;
@@ -950,7 +1090,7 @@ static int bench(const opts *o, pk_model *m) {
     uint32_t from;
     const double rs_s = bench_resample(o->in, rate, &from);
     float *x = read_audio(o->in, rate, &n, o);
-    pk_asr *a = asr_new(o, m);
+    pk_asr *a = asr_new(o, m, 1);
     size_t nc;
     double vad_s;
     pk_seg *c = chunks_of(a, m, x, n, o->max_chunk, &nc, &vad_s);
@@ -997,7 +1137,7 @@ static int vad(const opts *o, pk_model *m) {
     size_t n;
     const int rate = pk_model_rate(m);
     float *x = read_audio(o->in, rate, &n, o);
-    pk_asr *a = asr_new(o, m);
+    pk_asr *a = asr_new(o, m, 0);
     const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, cap = 2 * frames + 1;
     if (!strcmp(o->cmd, "probs")) {
         float *probs = malloc((frames + 1) * sizeof *probs);
@@ -1017,6 +1157,127 @@ static int vad(const opts *o, pk_model *m) {
     }
     pk_asr_free(a);
     free(x);
+    return 0;
+}
+
+/* the command that fetches f into the working directory */
+static void fetch(const ed_part *f) {
+#ifdef _WIN32
+    printf("    curl.exe -fLO %s%.12s/%s\n", ed_base, f->sha256, f->file);    /* PowerShell's curl is another */
+#else
+    printf("    curl -fLO %s%.12s/%s\n", ed_base, f->sha256, f->file);
+#endif
+}
+
+static void runs_on(const ed_edition *e) {
+    if (e->kind == ED_COREML)
+        printf("macOS %d or iOS %d, or later; a build with ANE=1", e->macos[0], e->ios[0]);
+    else if (e->kind == ED_QNN) {
+        printf("QNN's chip %s, on ", e->chip);
+        for (const char *const *s = e->systems; *s; s++)
+            printf("%s%s", s == e->systems ? "" : " or ", *s);
+        printf("; a build with QNN=1");
+    } else
+        printf("every build");
+}
+
+/* f in dir, where it is there and not the size models.json gives it: an
+ * older file, or another */
+static void check_size(const char *dir, const ed_part *f) {
+    char p[4608];
+    snprintf(p, sizeof p, "%s%s", dir, f->file);
+    const long long n = file_size(p);
+    if (n >= 0 && (unsigned long long)n != f->bytes)
+        printf("  %s is %lld bytes, not models.json's %llu: an older file, or another\n", p, n,
+               (unsigned long long)f->bytes);
+}
+
+/* pktito-c models: for each model, the edition this machine runs with this
+ * build (models.json's fit and choose), the commands that fetch it into
+ * models/, and how much of it is there; with --all every edition, what it
+ * runs on, and its files' SHA-256s */
+static int models(const opts *o, const char *argv0) {
+    const ed_device *d = device();
+    int ane = 0, qnn = 0;
+#ifdef PK_ANE
+    ane = 1;
+#endif
+#ifdef PK_QNN
+    qnn = 1;
+#endif
+    printf("This machine: %s", d->system);
+    if (d->os[0])
+        printf(" %d.%d", d->os[0], d->os[1]);
+    if (d->qnn[0])
+        printf(", its NPU %s to QNN", d->qnn);
+    printf(". This pktito-c runs the CPU's editions%s%s.\n", ane ? " and Apple's Neural Engine's (ANE=1)" : "",
+           qnn ? " and Snapdragon NPUs' (QNN=1)" : "");
+    if (qnn && !d->qnn[0])
+        printf("QNN finds no NPU here: %s\n", qnn_why);
+    /* what another build would run here, as far as this one can tell */
+    const ed_edition *coreml = NULL;
+    for (int i = 0; i < ed_catalog[0].n_editions; i++)
+        if (ed_catalog[0].editions[i].kind == ED_COREML)
+            coreml = &ed_catalog[0].editions[i];
+    if (coreml && !strcmp(d->system, "macos") && !ed_fit(coreml, d))
+        printf("Apple's Neural Engine's editions need macOS %d or later.\n", coreml->macos[0]);
+    else if (coreml && !ane && ed_fit(coreml, d))
+        printf("A build with ANE=1 (make ANE=1) runs Apple's Neural Engine's editions here instead.\n");
+#if defined(__aarch64__) || defined(_M_ARM64)
+    if (!qnn && (!strcmp(d->system, "windows") || !strcmp(d->system, "android")))
+        printf("On a Snapdragon, a build with QNN=1 asks QNN for the NPU's chip, and runs its edition\n"
+               "(README, \"The Neural Engine and NPUs\").\n");
+#endif
+    for (int i = 0; i < ed_n_models; i++) {
+        const ed_model *m = &ed_catalog[i];
+        if (o->all) {
+            printf("\n%s, %s\n", m->name, m->about);
+            for (int k = 0; k < m->n_editions; k++) {
+                const ed_edition *e = &m->editions[k];
+                printf("  %-13s %s: ", e->id, e->about);
+                runs_on(e);
+                printf("%s%s\n", e->note ? "; " : "", e->note ? e->note : "");
+                for (int f = 0; f < 1 + !!e->encoder.file; f++) {
+                    const ed_part *p = f ? &e->encoder : &e->model;
+                    printf("    %s%.12s/%s\n      %.1f MB, SHA-256 %s\n", ed_base, p->sha256, p->file, p->bytes / 1e6,
+                           p->sha256);
+                }
+            }
+            continue;
+        }
+        const ed_edition *e = ed_choose(m, d, can_run);
+        const uint64_t bytes = e->model.bytes + (e->encoder.file ? e->encoder.bytes : 0);
+        printf("\n%s (%s): the %s edition, for %s, %.0f MB\n", m->name, m->about, e->id, e->about, bytes / 1e6);
+        fetch(&e->model);
+        if (e->encoder.file)
+            fetch(&e->encoder);
+        if (e->kind == ED_COREML) {
+            char name[512];
+            encoder_name(e, name, sizeof name);
+            printf("    mkdir %s && aa extract -i %s -d %s && rm %s\n", name, e->encoder.file, name, e->encoder.file);
+        }
+        if (e->kind == ED_CPU)
+            printf("  or make models, which converts NVIDIA's checkpoint to the same file (README, \"Try it\")\n");
+        char dir[4096];
+        int state = 0, at = 0;
+        for (int k = 0; k < 2 && state < 2; k++) {
+            models_dir(k, argv0, dir, sizeof dir);
+            const int s = edition_here(e, dir);
+            if (s > state)
+                state = s, at = k;
+        }
+        models_dir(at, argv0, dir, sizeof dir);
+        if (state == 2)
+            printf("  all here, in %s\n", dir);
+        else
+            printf(state ? "  some of it here, in %s\n" : "  not here yet\n", dir);
+        check_size(dir, &e->model);
+        if (e->kind == ED_QNN)
+            check_size(dir, &e->encoder);
+    }
+    if (!o->all)
+        printf("\nRun each model's lines in models/, where you run pktito-c or beside it, and\n"
+               "pktito-c finds it there. Every edition, and each file's SHA-256: pktito-c models --all\n");
     return 0;
 }
 
@@ -1051,6 +1312,11 @@ int main(int argc, char **argv) {
     if (!(argv = utf8_args(&argc, argv)))
         die("cannot read the command line");
     parse(argc, argv, &o);
+    if (!strcmp(o.cmd, "models")) {
+        const int rc = models(&o, argv[0]);
+        free(o.ins);
+        return rc;
+    }
     pk_model *m = load_model(o.model, argv[0]);
     int rc = !strcmp(o.cmd, "bench") ? bench(&o, m) : !strcmp(o.cmd, "info") ? info(m)
            : !strcmp(o.cmd, "segments") || !strcmp(o.cmd, "probs") ? vad(&o, m)

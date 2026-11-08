@@ -134,9 +134,20 @@ int     pk_asr_threads(const pk_asr *a);
  * computes the same bits in either mode. */
 void    pk_asr_set_fast_mode(pk_asr *a, int on);
 
-/* The encoder on Apple's Neural Engine (the ane fork, built with ANE=1;
- * macOS 15, iOS 18): the compiled Core ML model tools/ane/encoder.py makes,
- * at path, or with NULL the CPU's again. It must have been made from the
+/* The encoder in path on the accelerator it was made for, by its suffix: a
+ * compiled Core ML model (a .mlmodelc folder, as models.json's
+ * .mlmodelc.aar unpacks) on Apple's Neural Engine, in a build with ANE=1,
+ * or a QNN graph (.qnn) on a Snapdragon's NPU, in a build with QNN=1
+ * (pk_asr_use_ane and pk_asr_use_qnn below). A slim model, which has no
+ * encoder of its own (pk_model_has_encoder 0), runs only with one. Its
+ * arithmetic is fp16, not the int8 every backend computes the same bits
+ * of. 0, or -1 with why in err: path is neither, or is not there, or this
+ * build has no such accelerator, or the accelerator refuses it. */
+int     pk_asr_use_encoder(pk_asr *a, const char *path, char *err, size_t errlen);
+
+/* The encoder on Apple's Neural Engine (a build with ANE=1; macOS 15,
+ * iOS 18): the compiled Core ML model tools/ane/encoder.py makes, at path,
+ * or with NULL the CPU's again. It must have been made from the
  * model's own checkpoint (both name its SHA-256). An input longer than its
  * longest function still takes the CPU's encoder, where the model has one
  * (pk_model_has_encoder). Its arithmetic is fp16, not the int8 every
@@ -152,8 +163,8 @@ int     pk_asr_use_ane(pk_asr *a, const char *path, char *err, size_t errlen);
  * the full model file, whose encoder is pktito's own. */
 int     pk_asr_ane_warm(pk_asr *a, char *err, size_t errlen);
 
-/* The encoder on Qualcomm's Hexagon NPU (a build with QNN=1; Android on a
- * Snapdragon), on: a graph built from the model's own weights
+/* The encoder on Qualcomm's Hexagon NPU (a build with QNN=1; Android or
+ * Windows on a Snapdragon), on: a graph built from the model's own weights
  * (npu/qnn.h), which QNN compiles now, in a minute or two (94 to 114 s
  * on a Galaxy S24 Ultra, tools/qnn/CLIMB.md); with cache a path, the
  * compiled graph is kept there and read back the next time, in a second

@@ -90,12 +90,12 @@ Byte-valid is not model-valid. The binder then:
   the two FFTs' twiddles to be the cosines and sines they must be, and the
   VAD's window to be Hann;
 - holds the vocabulary's count to the vocab param;
-- in a build with ANE=1 (the ane fork's) or QNN=1, takes the param
+- in a build with ANE=1 or QNN=1, takes the param
   encoder_coreml, u32 1 and nothing else, as a slim file's (`pktito-tools
 slim`), whose encoder is a Core ML model's or the NPU's compiled graph:
   then binds none of the encoder's tensors and, as for any tensor it did not
-  bind, refuses a file holding one. A build with neither refuses the param
-  as one it does not know.
+  bind, refuses a file holding one. A build with neither refuses a file
+  with the param, as a slim file it cannot run, before binding a tensor.
 
 A refused file is refused at load, with a message, never on the first
 recording. A format change extends `pk_pkf_validate` and tests/pkfcheck.c in
@@ -103,9 +103,9 @@ the same change.
 
 ## The NPU's graph file
 
-A build with QNN=1 (the qnn fork's, for Android on a Snapdragon) reads the
-encoder's graph compiled for the phone's NPU: the app downloads it for its
-chip, and the CLI takes it from `$PKTITO_QNN_CACHE`. The file is a 616-byte
+A build with QNN=1 (Android or Windows on a Snapdragon) reads the
+encoder's graph compiled for the chip's NPU: the app downloads it for its
+chip, and the CLI takes it with `--npu FILE` or from `$PKTITO_QNN_CACHE`. The file is a 616-byte
 header, then QNN's binary of the context (npu/qnn.c's cache_head).
 read_cache measures the file and copies the header into a local struct.
 Before QNN sees a byte of the binary, check_head holds the header to these:

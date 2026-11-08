@@ -497,17 +497,22 @@ static int bind(pk_file *f, pk_model *m) {
      * for an encoder that brings its own weights: a Core ML model's
      * (tools/ane/encoder.py), given to a transcriber with pk_asr_use_ane, or
      * the NPU's graph compiled ahead of time, read from pk_asr_use_qnn's
-     * cache. The param's name is the ane fork's, whose encoder came first;
+     * cache. The param's name is the Neural Engine's, whose encoder came first;
      * the file is the same for both. One that holds any of the encoder's
-     * tensors anyway is refused below, as holding what is not the model's.
-     * A build with neither refuses the param itself, as one it does not
-     * know: a file it could not run. */
+     * tensors anyway is refused below, as holding what is not the model's. */
     pk_param q;
     if (param(f, "encoder_coreml", &q)) {
         if (q.kind != PK_PARAM_U32 || q.v.u != 1)
             return fail(f->err, f->errlen, "param encoder_coreml is not 1");
         m->encoder_coreml = 1;
     }
+#else
+    /* A build with neither runs no slim file, and says so by name, where
+     * otherwise the first encoder tensor it lacks would be all it said */
+    pk_param q;
+    if (param(f, "encoder_coreml", &q))
+        return fail(f->err, f->errlen,
+                    "a slim model file, whose encoder is an NPU's: it loads in a build with ANE=1 or QNN=1");
 #endif
     const uint32_t C = m->sub_channels, D = m->d_model, P = m->pred_hidden, J = m->joint_hidden;
     const uint32_t N = m->n_fft, bins = N / 2 + 1;

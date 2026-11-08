@@ -20,6 +20,7 @@ run ./tests/wavcheck tests/wavcheck.tmp
 run ./tests/pathcheck $TINY
 run ./tests/capcheck
 run ./tests/langcheck
+run ./tests/editioncheck tests/editions.tsv
 run ./tests/chunkcheck
 run ./tests/transcheck "$MODEL" tests/data/test.wav
 run ./tests/sentcheck "$MODEL" tests/data/test.wav

@@ -1,0 +1,24 @@
+# Every device we know of, as its platform describes it, and the edition of
+# each model in models.json that it runs: models.json's fit and choose, as
+# core/editions.c and pktito-app's editions.rs compute them, and both test
+# suites read this file (tests/editioncheck here). A line is a description,
+# the system (Rust's std::env::consts::OS), its version as major.minor
+# (Android's SDK level, 0), QNN's name for its NPU (- for none), then an
+# edition id for each model the header names, tab-separated.
+device	system	os	qnn	parakeet-tdt-0.6b-v2	parakeet-tdt-0.6b-v3
+an M1-M5 Mac	macos	15.0	-	coreml	coreml
+a Mac on macOS 14	macos	14.7	-	cpu	cpu
+a Mac on macOS 12	macos	12.0	-	cpu	cpu
+an iPhone 16e (A18)	ios	26.7	-	coreml	coreml
+an M1 iPad	ios	26.5	-	coreml	coreml
+the S24	android	36.0	57,75,8,1,0	qnn-sm8650	qnn-sm8650
+the S25	android	36.0	69,79,8,1,0	qnn-sm8750	qnn-sm8750
+the S26	android	36.0	87,81,8,1,0	qnn-sm8850	qnn-sm8850
+an SM8845, which takes the S26's graph and never the X2's	android	36.0	97,81,8,1,0	qnn-sm8850	qnn-sm8850
+the Googlebook (X1E80100)	android	37.0	60,73,8,1,1	qnn-x1e80100	qnn-x1e80100
+an Android phone with no NPU	android	34.0	-	cpu	cpu
+snappy (X1E, its QNN naming no SoC)	windows	0.0	2147483647,73,8,1,1	qnn-x1e80100	qnn-x1e80100
+an X2 Elite	windows	0.0	2147483647,81,8,1,1	qnn-sc8480xp	qnn-sc8480xp
+the 7c (no NPU QNN runs)	windows	0.0	-	cpu	cpu
+an x86 PC	windows	0.0	-	cpu	cpu
+a Pi	linux	0.0	-	cpu	cpu

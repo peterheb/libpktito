@@ -1,6 +1,6 @@
 /* The encoder on Qualcomm's Hexagon NPU (HTP) through QNN, Qualcomm's AI
- * Engine Direct (make QNN=1 QNN_SDK=<the SDK's folder>; Android on a
- * Snapdragon). The graph is built here from the model's own weights: its
+ * Engine Direct (make QNN=1 QNN_SDK=<the SDK's folder>; Android or Windows
+ * on a Snapdragon). The graph is built here from the model's own weights: its
  * int8 matrices, a scale an output row, every other tensor from the
  * file's floats; the NPU's arithmetic on the activations is fp16,
  * not ref's, and not the same bits on every chip (Qualcomm's documentation

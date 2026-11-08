@@ -752,7 +752,7 @@ static int encoder_tensor(const char *name) {
  * loads it, and with no accelerator's encoder given runs nothing:
  * pk_asr_run returns -1; with QNN=1 the NPU asked for with no compiled
  * graph's file is refused before QNN's libraries are looked for. A build
- * with neither refuses the param as one it does not know. Every build
+ * with neither refuses the file, saying it is a slim one. Every build
  * refuses the param with another value or kind, and a slim file that
  * holds an encoder's tensor or lacks another of the model's. */
 static void slim_cases(void) {
@@ -803,6 +803,18 @@ static void slim_cases(void) {
     }
 #else
     expect_model("a slim file, in a build without ANE=1 or QNN=1", &s, 0);
+    {
+        size_t n;
+        unsigned char *p = build(&s, &n);
+        char err[256] = "";
+        pk_model *m = pk_model_from_bytes(p, n, err, sizeof err);
+        g_cases++;
+        if (m || !strstr(err, "slim model file"))
+            FAIL("a slim file, in a build without ANE=1 or QNN=1: refused as %s, not as a slim file",
+                 m ? "nothing" : err);
+        pk_model_free(m);
+        free(p);
+    }
 #endif
     /* the chip a slim file's graph is fetched for (pk_qnn_chip): none in a
      * build without QNN=1, nor where QNN finds no NPU, as on a PC, each

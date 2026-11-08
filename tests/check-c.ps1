@@ -37,6 +37,7 @@ run 'tests\wavcheck.exe tests\wavcheck.tmp'
 run "tests\pathcheck.exe $tiny"
 run 'tests\capcheck.exe'
 run 'tests\langcheck.exe'
+run 'tests\editioncheck.exe tests\editions.tsv'
 run 'tests\chunkcheck.exe'
 run "tests\transcheck.exe `"$Model`" tests\data\test.wav"
 run "tests\sentcheck.exe `"$Model`" tests\data\test.wav"

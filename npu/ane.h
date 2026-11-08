@@ -4,7 +4,7 @@
  * length (3072 feature frames by default) or several. It stands in for
  * core/encoder.c on an input that fits its longest length. Its arithmetic
  * is fp16, not ref's, and not the same bits on every chip, which is why it
- * is this fork's and not pktito's. Internal. */
+ * is a build option, and not one of pktito's backends. Internal. */
 #ifndef PK_ANE_H
 #define PK_ANE_H
 

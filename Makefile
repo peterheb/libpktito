@@ -139,7 +139,7 @@ $(foreach b,$(BACKENDS),$(eval backend/$(b)/kernels.o backend/$(b)/kernels.pic.o
 backend/kernels.o backend/kernels.pic.o: CFLAGS += $(HAVE)
 
 # make ANE=1 (macOS 15 or later): the encoder on the Neural Engine through
-# Core ML, for a transcriber given a compiled model (--ane, pk_asr_use_ane):
+# Core ML, for a transcriber given a compiled model (--npu, pk_asr_use_encoder):
 # npu/ane.h, tools/ane/encoder.py
 ifeq ($(ANE),1)
   LIB_OBJ += npu/ane.o
@@ -149,9 +149,10 @@ endif
 npu/ane.o: npu/ane.m npu/ane.h
 	$(CC) $(CFLAGS) -fobjc-arc $(PLATFLAGS) $(INC) -c $< -o $@
 
-# make QNN=1 QNN_SDK=<Qualcomm's AI Runtime SDK> (Android on a Snapdragon):
-# the encoder on the Hexagon NPU through QNN, for a transcriber asked for
-# it (--qnn, pk_asr_use_qnn): npu/qnn.h. QNN's libraries are loaded at
+# make QNN=1 QNN_SDK=<Qualcomm's AI Runtime SDK> (Android or Windows on a
+# Snapdragon): the encoder on the Hexagon NPU through QNN, for a
+# transcriber given a graph (--npu, pk_asr_use_encoder) or asked to build
+# one (--qnn, pk_asr_use_qnn): npu/qnn.h. QNN's libraries are loaded at
 # run time, so only npu/qnn.o sees the SDK's headers, and the SDK's own
 # files (Qualcomm's license: in an application, not on their own) stay out
 # of this tree.
@@ -186,7 +187,8 @@ FORCE:
 
 .DEFAULT_GOAL := pktito-c
 
-pktito-c: core/cli.o $(LIB_OBJ)
+# pktito-c's own beside the library: models.json's editions (core/editions.h)
+pktito-c: core/cli.o core/editions.o core/catalog.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 libpktito.a: $(LIB_OBJ)
@@ -252,7 +254,7 @@ models/%.pkf:
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
 TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck \
-         tests/pathcheck tests/transcheck tests/sentcheck tests/streamcheck
+         tests/pathcheck tests/transcheck tests/sentcheck tests/streamcheck tests/editioncheck
 BENCHES := tests/q8bench tests/gemmbench tests/spinbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
@@ -284,6 +286,10 @@ tests/capcheck: tests/capcheck.c core/captions.c core/language.c core/langwords.
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/capcheck.c core/language.c $(LDLIBS)
 tests/langcheck: tests/langcheck.c core/language.c core/langwords.h core/pktito.h
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/langcheck.c $(LDLIBS)
+# editioncheck holds core/editions.c to tests/editions.tsv, which pktito-app's
+# own copy of the rule reads too
+tests/editioncheck: tests/editioncheck.c core/editions.c core/catalog.c core/editions.h
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/editioncheck.c core/editions.c core/catalog.c $(LDLIBS)
 
 # The int8 product alone, for the kernel climbs, and not part of any check:
 # q8bench on one thread (backend/avx2/CLIMB.md's numbers), gemmbench over
@@ -335,6 +341,7 @@ tests/segcheck: tests/segcheck.c core/segment.o
 tests/rscheck: tests/rscheck.c core/resample.o core/os.o $(BACK_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/rscheck.c core/resample.o core/os.o $(BACK_OBJ) $(LDLIBS)
 check-python: pktito-c $(PYTESTS)
+	@$(PYTHON) tools/catalog.py --check || exit 1
 	@if [ -n "$(SILERO)" ]; then SILERO=$(SILERO) $(PYNEMO) -W ignore tests/segcheck.py tests/segcheck || exit 1; \
 	else echo "segcheck: no silero-vad checkout in $(SRC) - skipped"; fi
 	@$(PYNEMO) -W ignore tests/rscheck.py tests/rscheck || exit 1

@@ -19,6 +19,7 @@
 /tests/chunkcheck
 /tests/transcheck
 /tests/sentcheck
+/tests/editioncheck
 /tests/fftcheck
 /examples/transcribe
 __pycache__/

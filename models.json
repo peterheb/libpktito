@@ -1,0 +1,373 @@
+{
+  "base": "https://models.pktito.net/",
+  "models": [
+    {
+      "name": "parakeet-tdt-0.6b-v2",
+      "about": "English",
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v2.pkf",
+            "bytes": 624480196,
+            "sha256": "8bfa6750b83cd7c447bad82057c7a12473563b72b3d35487fcca6da0786d83c7",
+            "made": {
+              "by": "pktito-tools convert, as pktito 22fa0b1 writes it"
+            }
+          }
+        },
+        {
+          "id": "coreml",
+          "about": "Apple's Neural Engine",
+          "runtime": {
+            "kind": "coreml",
+            "macos": [15, 0],
+            "ios": [18, 0]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v2-slim.pkf",
+            "bytes": 12115524,
+            "sha256": "e582eb76db19e9fba4d9e15d45ce041dd9a230bac3c2970643aa6808bf966acb",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v2-encoder.mlmodelc.aar",
+            "bytes": 546910291,
+            "sha256": "70272da7508aff518225caeaea3f0dc7dedb5bf0cc829da72876c9ecae5159a1",
+            "made": {
+              "by": "tools/ane/encoder.py, then aa archive",
+              "with": "coremltools 9.0, Xcode 27.2",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8650",
+          "about": "the Snapdragon 8 Gen 3 (Galaxy S24)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "57,75,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v2-slim.pkf",
+            "bytes": 12115524,
+            "sha256": "e582eb76db19e9fba4d9e15d45ce041dd9a230bac3c2970643aa6808bf966acb",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v2-sm8650.qnn",
+            "bytes": 714506856,
+            "sha256": "3f690d2cdd0ad6dc3b805f627f5c8e0b7701af20135bc275ebcc8f55877263a1",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8750",
+          "about": "the Snapdragon 8 Elite (Galaxy S25)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "69,79,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v2-slim.pkf",
+            "bytes": 12115524,
+            "sha256": "e582eb76db19e9fba4d9e15d45ce041dd9a230bac3c2970643aa6808bf966acb",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v2-sm8750.qnn",
+            "bytes": 713568872,
+            "sha256": "40a5b75f37954b528f04944c57096ba0215783cea23b50ef659a981b5995456c",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8850",
+          "about": "the Snapdragon 8 Elite Gen 5 (Galaxy S26)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "87,81,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v2-slim.pkf",
+            "bytes": 12115524,
+            "sha256": "e582eb76db19e9fba4d9e15d45ce041dd9a230bac3c2970643aa6808bf966acb",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v2-sm8850.qnn",
+            "bytes": 714412648,
+            "sha256": "08388c7f4b9cbb562330111ed6e0b026d00512168cee589b04578f50673b1aff",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-04"
+            }
+          }
+        },
+        {
+          "id": "qnn-x1e80100",
+          "about": "the Snapdragon X Elite (X1E80100)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "60,73,8,1,1",
+            "systems": ["android", "windows"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v2-slim.pkf",
+            "bytes": 12115524,
+            "sha256": "e582eb76db19e9fba4d9e15d45ce041dd9a230bac3c2970643aa6808bf966acb",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v2-x1e80100.qnn",
+            "bytes": 714523240,
+            "sha256": "dab2d4d69028caba976c0b82316f83ad49bd3d4bac01b39992cd66904d216513",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sc8480xp",
+          "about": "the Snapdragon X2 Elite",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "88,81,8,1,1",
+            "systems": ["windows"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v2-slim.pkf",
+            "bytes": 12115524,
+            "sha256": "e582eb76db19e9fba4d9e15d45ce041dd9a230bac3c2970643aa6808bf966acb",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v2-sc8480xp.qnn",
+            "bytes": 714445416,
+            "sha256": "726db8ecde7934510ab0193f52de93601c64506edf1804a240612a823e90d811",
+            "made": {
+              "by": "the ane fork's bbdcf60",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-05",
+              "note": "compiled for the X2 Elite's V81, not yet run on one"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "parakeet-tdt-0.6b-v3",
+      "about": "25 European languages",
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v3.pkf",
+            "bytes": 647552644,
+            "sha256": "35a59c9a433d4da2289640db93e73c42478b576e49a293090ef61b4ae595152a",
+            "made": {
+              "by": "pktito-tools convert, as pktito 22fa0b1 writes it"
+            }
+          }
+        },
+        {
+          "id": "coreml",
+          "about": "Apple's Neural Engine",
+          "runtime": {
+            "kind": "coreml",
+            "macos": [15, 0],
+            "ios": [18, 0]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v3-slim.pkf",
+            "bytes": 35187972,
+            "sha256": "169ead8b6b98c67676d13c40bd592614f9d1a3b3783da027fe03967cd559b100",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v3-encoder.mlmodelc.aar",
+            "bytes": 545275075,
+            "sha256": "a7eef40e28b009fee25548fe869124d2b9ba7be8c00c2dcb1b2e8e8973524571",
+            "made": {
+              "by": "tools/ane/encoder.py, then aa archive",
+              "with": "coremltools 9.0, Xcode 27.2",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8650",
+          "about": "the Snapdragon 8 Gen 3 (Galaxy S24)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "57,75,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v3-slim.pkf",
+            "bytes": 35187972,
+            "sha256": "169ead8b6b98c67676d13c40bd592614f9d1a3b3783da027fe03967cd559b100",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v3-sm8650.qnn",
+            "bytes": 714506856,
+            "sha256": "84aae2af7273132997bb71af73550f1a9a037de35b3d45d9e95a9390a796324e",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8750",
+          "about": "the Snapdragon 8 Elite (Galaxy S25)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "69,79,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v3-slim.pkf",
+            "bytes": 35187972,
+            "sha256": "169ead8b6b98c67676d13c40bd592614f9d1a3b3783da027fe03967cd559b100",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v3-sm8750.qnn",
+            "bytes": 713568872,
+            "sha256": "d5cf8b7659ea176f66937a94e72c80bb11caac60d18811b0f500b6b1eaa73113",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8850",
+          "about": "the Snapdragon 8 Elite Gen 5 (Galaxy S26)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "87,81,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v3-slim.pkf",
+            "bytes": 35187972,
+            "sha256": "169ead8b6b98c67676d13c40bd592614f9d1a3b3783da027fe03967cd559b100",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v3-sm8850.qnn",
+            "bytes": 714412648,
+            "sha256": "68eb09b667c7f9f6f36bb7eb7812945078150d8ff9984c61ce169d1bdfe99eab",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-04"
+            }
+          }
+        },
+        {
+          "id": "qnn-x1e80100",
+          "about": "the Snapdragon X Elite (X1E80100)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "60,73,8,1,1",
+            "systems": ["android", "windows"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v3-slim.pkf",
+            "bytes": 35187972,
+            "sha256": "169ead8b6b98c67676d13c40bd592614f9d1a3b3783da027fe03967cd559b100",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v3-x1e80100.qnn",
+            "bytes": 714523240,
+            "sha256": "1208ddc1b2c63e68568d692780297d142ad5f57ee3bb05dd86218347edd7809f",
+            "made": {
+              "by": "pktito-qnn-graph 2, the ane fork's 88f5a6d",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-03"
+            }
+          }
+        },
+        {
+          "id": "qnn-sc8480xp",
+          "about": "the Snapdragon X2 Elite",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "88,81,8,1,1",
+            "systems": ["windows"]
+          },
+          "model": {
+            "file": "parakeet-tdt-0.6b-v3-slim.pkf",
+            "bytes": 35187972,
+            "sha256": "169ead8b6b98c67676d13c40bd592614f9d1a3b3783da027fe03967cd559b100",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-tdt-0.6b-v3-sc8480xp.qnn",
+            "bytes": 714445416,
+            "sha256": "237a5a6c51abfcb969310d494f70b2663c568a43174b70b9fd3f6d624c6caa7a",
+            "made": {
+              "by": "the ane fork's bbdcf60",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-05",
+              "note": "compiled for the X2 Elite's V81, not yet run on one"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
