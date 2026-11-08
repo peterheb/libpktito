@@ -1232,7 +1232,10 @@ static int models(const opts *o, const char *argv0) {
     printf("This machine: %s", d->system);
     if (d->os[0])
         printf(" %d.%d", d->os[0], d->os[1]);
-    if (d->qnn[0])
+    unsigned arch;
+    if (d->qnn[0] && sscanf(d->qnn, "%*u,%u", &arch) == 1)
+        printf(", its NPU a Hexagon V%u (QNN's %s)", arch, d->qnn);
+    else if (d->qnn[0])
         printf(", its NPU %s to QNN", d->qnn);
     printf(". This pktito-c runs the CPU's editions%s%s.\n", ane ? " and Apple's Neural Engine's (ANE=1)" : "",
            qnn ? " and Snapdragon NPUs' (QNN=1)" : "");
