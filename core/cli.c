@@ -398,6 +398,11 @@ static const char *slim_encoder(const pk_model *m, char *out, size_t cap) {
     return out;
 }
 
+/* Where the encoder runs, for -v and bench: NULL for the CPU, else the NPU,
+ * and in npu_file the encoder it was given */
+static const char *npu_name;
+static char npu_file[4608];
+
 /* A transcriber for m, its encoder on the NPU where --npu names one, or the
  * model is slim and its edition's sits beside it; the VAD alone (encodes
  * 0) takes none */
@@ -410,10 +415,20 @@ static pk_asr *asr_new(const opts *o, const pk_model *m, int encodes) {
     const char *npu = o->npu;
     if (encodes && !npu && !o->qnn && !pk_model_has_encoder(m))
         npu = slim_encoder(m, here, sizeof here);
-    if (encodes && npu && pk_asr_use_encoder(a, npu, err, sizeof err))
-        die("%s: %s", npu, err);
-    if (encodes && o->qnn && pk_asr_use_qnn(a, 1, utf8_getenv("PKTITO_QNN_CACHE"), err, sizeof err))
-        die("--qnn: %s", err);
+    if (encodes && npu) {
+        if (pk_asr_use_encoder(a, npu, err, sizeof err))
+            die("%s: %s", npu, err);
+        const size_t n = strlen(npu);
+        npu_name = n > 4 && !strcmp(npu + n - 4, ".qnn") ? "the Hexagon NPU" : "Apple's Neural Engine";
+        snprintf(npu_file, sizeof npu_file, "%s", npu);
+    }
+    if (encodes && o->qnn) {
+        const char *cache = utf8_getenv("PKTITO_QNN_CACHE");
+        if (pk_asr_use_qnn(a, 1, cache, err, sizeof err))
+            die("--qnn: %s", err);
+        npu_name = "the Hexagon NPU";
+        snprintf(npu_file, sizeof npu_file, "%s", cache ? cache : "--qnn's graph");
+    }
     return a;
 }
 
@@ -559,6 +574,10 @@ static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top
             printf(", \"compiler\": ");
             json_str(pk_compiler());
             printf(", \"threads\": %d", pk_asr_threads(a));
+            if (npu_name) {
+                printf(", \"npu\": ");
+                json_str(npu_file);
+            }
         }
     }
     printf("}");
@@ -869,10 +888,13 @@ static int transcribe(const opts *o, pk_model *m) {
         json_meta(o, m, a, 1, audio_s, asr_s, !many, lang);
         printf("}\n");
     }
+    char on[sizeof npu_file + 64] = "";
+    if (npu_name)
+        snprintf(on, sizeof on, ", the encoder on %s (%s)", npu_name, npu_file);
     if (o->verbose)
         fprintf(stderr, "pktito-c: %.1f s of audio: transcribed in %.2f s with its VAD (%.1fx "
-                "real time), %s, %d threads%s\n", audio_s, asr_s, asr_s > 0 ? audio_s / asr_s : 0.0,
-                pk_backend(), pk_asr_threads(a), o->fast ? ", fast mode" : "");
+                "real time), %s, %d threads%s%s\n", audio_s, asr_s, asr_s > 0 ? audio_s / asr_s : 0.0,
+                pk_backend(), pk_asr_threads(a), o->fast ? ", fast mode" : "", on);
     pk_asr_free(a);
     return 0;
 }
@@ -1116,6 +1138,8 @@ static int bench(const opts *o, pk_model *m) {
 #endif
     printf("model     %s\n", pk_model_name(m));
     printf("backend   %s, %d threads\n", pk_backend(), pk_asr_threads(a));
+    if (npu_name)
+        printf("encoder   %s: %s\n", npu_name, npu_file);
     if (o->fast)
         printf("mode      fast: the encoder's activations in blocks of 64\n");
     printf("compiler  %s\n", pk_compiler());
