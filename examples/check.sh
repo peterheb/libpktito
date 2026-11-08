@@ -27,6 +27,9 @@ skip() { echo "examples/$1: $2 - skipped"; }
 fail() { echo "examples/$1: FAIL - $2"; status=1; }
 
 if [ -n "$encoder" ]; then
+    # Windows: QNN's files beside pktito-c and libpktito.dll reach the
+    # programs of C, Go and Rust, in folders of their own, on PATH
+    case $(uname -s) in MINGW* | MSYS* | UCRT* | CLANG*) PATH=$PWD:$PATH ;; esac
     check transcribe "the library alone" ./examples/transcribe
 fi
 
@@ -37,6 +40,8 @@ else
 fi
 
 if command -v go >/dev/null; then
+    # go build relinks for Go's own files, not for a new libpktito.a
+    rm -f examples/go/transcribe examples/go/transcribe.exe
     if (cd examples/go && go build); then
         check go cgo examples/go/transcribe
     else

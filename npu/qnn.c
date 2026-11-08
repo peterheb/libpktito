@@ -38,6 +38,7 @@
  */
 #include <assert.h>              /* the HTP headers' static_assert */
 #ifdef _WIN32
+#include <wchar.h>
 #include <windows.h>
 #else
 #include <dlfcn.h>
@@ -955,6 +956,38 @@ static int check_head(const pk_qnn *e, const pk_model *m, const void *head, size
     return 0;
 }
 
+/* For a graph the NPU refused, on Windows: 1, and into what which of this
+ * QNN's skel and .cat isn't beside QnnHtp.dll, where ADSP_LIBRARY_PATH
+ * names no folder for them. Without both the NPU runs its driver's own
+ * older QNN, which says only "Can't read future blob" (snappy, QNN 2.51:
+ * tools/qnn/CLIMB.md, 2026-11-08); named first, ahead of QNN's words,
+ * which an error buffer of 256 may not hold */
+static int no_skel(const pk_qnn *e, const char *path, char *what, size_t n) {
+#ifdef _WIN32
+    unsigned arch;
+    char name[2][32];
+    wchar_t p[MAX_PATH + 32];
+    const DWORD k = GetModuleFileNameW((HMODULE)e->lib, p, MAX_PATH);
+    wchar_t *slash = k && k < MAX_PATH ? wcsrchr(p, L'\\') : NULL;
+    if (!slash || getenv("ADSP_LIBRARY_PATH") || sscanf(e->chip, "%*u,%u", &arch) != 1)
+        return 0;
+    snprintf(name[0], sizeof name[0], "libQnnHtpV%uSkel.so", arch);
+    snprintf(name[1], sizeof name[1], "libqnnhtpv%u.cat", arch);
+    int miss = 0;
+    for (int i = 0; i < 2; i++)
+        if (MultiByteToWideChar(CP_UTF8, 0, name[i], -1, slash + 1, 32) && GetFileAttributesW(p) == INVALID_FILE_ATTRIBUTES)
+            miss |= 1 << i;
+    if (!miss)
+        return 0;
+    snprintf(what, n, "%s: no %s%s%s beside QnnHtp.dll: contextCreateFromBinary", path, miss & 1 ? name[0] : "",
+             miss == 3 ? " or " : "", miss & 2 ? name[1] : "");
+    return 1;
+#else
+    (void)e, (void)path, (void)what, (void)n;
+    return 0;
+#endif
+}
+
 /* 0 if the cache held this graph and the NPU took it; -1, and why in err */
 static int read_cache(pk_qnn *e, const pk_model *m, const char *path, char *err, size_t errlen) {
     last_error[0] = 0;
@@ -980,8 +1013,9 @@ static int read_cache(pk_qnn *e, const pk_model *m, const char *path, char *err,
     if (!(bin = malloc(h.bytes)) || fread(bin, 1, h.bytes, f) != h.bytes)
         snprintf(err, errlen, "%s: its graph could not be read", path);
     else if ((s = e->q.contextCreateFromBinary(e->backend, e->device, NULL, bin, h.bytes, &e->context, NULL))) {
-        snprintf(what, sizeof what, "%s, compiled by QNN %s, in QNN %s: contextCreateFromBinary", path,
-                 h.built, build_id(e));
+        if (!no_skel(e, path, what, sizeof what))
+            snprintf(what, sizeof what, "%s, compiled by QNN %s, in QNN %s: contextCreateFromBinary", path,
+                     h.built, build_id(e));
         fail(err, errlen, what, s);
     } else if ((s = e->q.graphRetrieve(e->context, "encoder", &e->graph)))
         fail(err, errlen, "graphRetrieve", s);
@@ -1266,12 +1300,75 @@ static int own_chip(pk_qnn *e, char *out, size_t n) {
     return rc;
 }
 
+#ifdef _WIN32
+/* why load_htp loaded no QnnHtp.dll, for dl_why */
+static _Thread_local char htp_why[3 * MAX_PATH + 64];
+
+/* QnnHtp.dll from dir, whose first n characters are a folder and its
+ * backslash; one that is there but won't load says why in htp_why */
+static HMODULE htp_in(wchar_t *dir, size_t n) {
+    if (n + sizeof "QnnHtp.dll" > MAX_PATH)
+        return NULL;
+    wcscpy(dir + n, L"QnnHtp.dll");
+    HMODULE h = LoadLibraryExW(dir, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    const DWORD why = GetLastError();
+    char u[3 * MAX_PATH];
+    if (!h && !htp_why[0] && GetFileAttributesW(dir) != INVALID_FILE_ATTRIBUTES &&
+        WideCharToMultiByte(CP_UTF8, 0, dir, -1, u, sizeof u, NULL, NULL))
+        snprintf(htp_why, sizeof htp_why, "%s did not load (error %lu)", u, (unsigned long)why);
+    return h;
+}
+
+/* QnnHtp.dll where Windows finds a program's own DLLs, but not in the
+ * current folder: beside the module this code is in (libpktito.dll, for
+ * Python's ctypes or Node's koffi, or the program that links libpktito.a);
+ * the program's folder, System32 or one the program added; PATH's folders
+ * named in full, as for a program go run or cargo run builds elsewhere
+ * (examples/README.md). Its stub, skel and .cat go beside it */
+static HMODULE load_htp(void) {
+    static const char here = 0;
+    HMODULE self = NULL, h = NULL;
+    wchar_t dir[MAX_PATH + 1], *slash;
+    char u[3 * MAX_PATH] = "this program";
+    htp_why[0] = 0;
+    DWORD n = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                 (LPCWSTR)&here, &self)
+                  ? GetModuleFileNameW(self, dir, MAX_PATH)
+                  : 0;
+    if (n && n < MAX_PATH && (slash = wcsrchr(dir, L'\\'))) {
+        WideCharToMultiByte(CP_UTF8, 0, dir, -1, u, sizeof u, NULL, NULL);
+        h = htp_in(dir, (size_t)(slash + 1 - dir));
+    }
+    if (!h && !(h = LoadLibraryExW(L"QnnHtp.dll", NULL, LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)) &&
+        GetLastError() != ERROR_MOD_NOT_FOUND && !htp_why[0])
+        snprintf(htp_why, sizeof htp_why, "QnnHtp.dll did not load (error %lu)", (unsigned long)GetLastError());
+    n = h ? 0 : GetEnvironmentVariableW(L"PATH", NULL, 0);
+    wchar_t *path = n ? malloc(n * sizeof *path) : NULL;
+    if (path && GetEnvironmentVariableW(L"PATH", path, n) < n)
+        for (wchar_t *d = path, *end; !h && *d; d = *end ? end + 1 : end) {
+            end = d + wcscspn(d, L";");
+            size_t k = (size_t)(end - d);
+            /* a relative folder is the current folder's */
+            if (k < 3 || k >= MAX_PATH || !((d[1] == L':' && (d[2] == L'\\' || d[2] == L'/')) || (d[0] == L'\\' && d[1] == L'\\')))
+                continue;
+            for (size_t i = 0; i < k; i++)
+                dir[i] = d[i] == L'/' ? L'\\' : d[i];
+            if (dir[k - 1] != L'\\')
+                dir[k++] = L'\\';
+            h = htp_in(dir, k);
+        }
+    free(path);
+    if (!h && !htp_why[0])
+        snprintf(htp_why, sizeof htp_why, "QnnHtp.dll is not beside %s%s or on PATH", u,
+                 self != GetModuleHandleW(NULL) ? " or the program," : "");
+    return h;
+}
+#endif
+
 /* why the HTP library didn't load */
 static const char *dl_why(void) {
 #ifdef _WIN32
-    static char m[64];
-    snprintf(m, sizeof m, "QnnHtp.dll did not load (error %lu)", (unsigned long)GetLastError());
-    return m;
+    return htp_why;
 #else
     return dlerror();
 #endif
@@ -1282,12 +1379,11 @@ static const char *dl_why(void) {
  * in err */
 static int open_device(pk_qnn *e, target *t, char *err, size_t errlen) {
     last_error[0] = 0;
-    /* Windows on Snapdragon: QnnHtp.dll, from the exe's folder, which also
-     * holds QnnSystem.dll and, for each Hexagon the program serves, its
-     * stub and the DSP's skel and .cat (a v73's QnnHtpV73Stub.dll,
-     * libQnnHtpV73Skel.so and libqnnhtpv73.cat) */
+    /* Windows on Snapdragon: QnnHtp.dll (load_htp) and beside it, for each
+     * Hexagon the program serves, its stub and the DSP's skel and .cat (a
+     * V73's QnnHtpV73Stub.dll, libQnnHtpV73Skel.so and libqnnhtpv73.cat) */
 #ifdef _WIN32
-    e->lib = (void *)LoadLibraryExA("QnnHtp.dll", NULL, LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    e->lib = (void *)load_htp();
     get_providers_fn gp = e->lib ? (get_providers_fn)(void (*)(void))GetProcAddress((HMODULE)e->lib, "QnnInterface_getProviders") : NULL;
 #else
     e->lib = dlopen("libQnnHtp.so", RTLD_NOW | RTLD_LOCAL);
