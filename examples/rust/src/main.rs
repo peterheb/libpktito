@@ -6,12 +6,13 @@
 //!     cd examples/rust && cargo run --release -- ../../models/parakeet-tdt-0.6b-v2.pkf talk.wav
 //!
 //! prints each chunk as "start end text", the times in seconds. A 16 kHz file
-//! only, as there. build.rs links libpktito.a, the archive at the top of the
-//! tree (or the one in PKTITO_LIB_DIR), so the program is one binary that
-//! needs nothing beside it but the model. No crate: the declarations below
-//! are core/pktito.h's and core/wav.h's, written out by hand, and nothing
-//! checks them against the headers - a type written wrong here is undefined
-//! behaviour there. A binding to keep would have bindgen write them.
+//! only, as there; a third argument is an NPU's encoder, as there. build.rs
+//! links libpktito.a, the archive at the top of the tree (or the one in
+//! PKTITO_LIB_DIR), so the program is one binary that needs nothing beside it
+//! but the model. No crate: the declarations below are core/pktito.h's and
+//! core/wav.h's, written out by hand, and nothing checks them against the
+//! headers - a type written wrong here is undefined behaviour there. A
+//! binding to keep would have bindgen write them.
 //!
 //! An example of the wiring, not a crate. `make check-ffi` holds its
 //! transcript to ./pktito-c's.
@@ -105,6 +106,12 @@ extern "C" {
         out: *mut PkSeg,
     ) -> usize;
     fn pk_asr_new(m: *const PkModel, threads: c_int) -> *mut PkAsr;
+    fn pk_asr_use_encoder(
+        a: *mut PkAsr,
+        path: *const c_char,
+        err: *mut c_char,
+        errlen: usize,
+    ) -> c_int;
     fn pk_asr_run(a: *mut PkAsr, x: *const f32, n: usize, toks: *mut *const PkTok) -> c_long;
     fn pk_asr_free(a: *mut PkAsr);
     fn pk_text(m: *const PkModel, t: *const PkTok, n: usize, out: *mut c_char, cap: usize)
@@ -123,8 +130,8 @@ fn c_path(p: &OsStr) -> CString {
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
-    if args.len() != 3 {
-        eprintln!("usage: transcribe MODEL.pkf FILE.wav");
+    if args.len() != 3 && args.len() != 4 {
+        eprintln!("usage: transcribe MODEL.pkf FILE.wav [ENCODER]");
         return ExitCode::from(2);
     }
     // Every call into the library is unsafe to Rust, which cannot see what
@@ -202,12 +209,23 @@ fn main() -> ExitCode {
 
         // each chunk through the transcriber, as NeMo would hear it as a file
         let a = pk_asr_new(m, 0);
+        if let Some(e) = args.get(3) {
+            if pk_asr_use_encoder(a, c_path(e).as_ptr(), err.as_mut_ptr(), err.len()) != 0 {
+                eprintln!(
+                    "{}: {}",
+                    e.to_string_lossy(),
+                    CStr::from_ptr(err.as_ptr()).to_string_lossy()
+                );
+                return ExitCode::from(1);
+            }
+        }
         let mut t: *const PkTok = std::ptr::null();
         let mut text = vec![0 as c_char; 65536];
         for c in &chunk[..nc] {
             let xs = &x[c.start as usize..c.end as usize];
             let nt = pk_asr_run(a, xs.as_ptr(), xs.len(), &mut t);
             if nt < 0 {
+                eprintln!("no transcript: out of memory, or the encoder could not run (a slim model has none of its own)");
                 return ExitCode::from(1);
             }
             pk_text(m, t, nt as usize, text.as_mut_ptr(), text.len());

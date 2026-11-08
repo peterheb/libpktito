@@ -6,9 +6,9 @@ it is long.
     python3 examples/python/transcribe.py models/parakeet-tdt-0.6b-v2.pkf talk.wav
 
 prints each chunk as "start end text", the times in seconds. A 16 kHz file
-only, as there. The library is the one `make shared` leaves at the top of the
-tree, or the file PKTITO_LIB names; Python 3.8 or later, and its standard
-library.
+only, as there; a third argument is an NPU's encoder, as there. The library
+is the one `make shared` leaves at the top of the tree, or the file
+PKTITO_LIB names; Python 3.8 or later, and its standard library.
 
 An example of the wiring, not a package: it gives the functions it calls
 their C types, from core/pktito.h and core/wav.h, and a program of your own
@@ -105,6 +105,7 @@ def load():
         ),
         ("pk_chunks", c_size_t, [floats, segs, c_size_t, c_int64, c_int64, segs]),
         ("pk_asr_new", c_void_p, [c_void_p, c_int]),
+        ("pk_asr_use_encoder", c_int, [c_void_p, c_char_p, c_char_p, c_size_t]),
         ("pk_asr_run", c_long, [c_void_p, floats, c_size_t, POINTER(POINTER(pk_tok))]),
         ("pk_asr_free", None, [c_void_p]),
         (
@@ -125,8 +126,8 @@ def view(a, start=0, end=None):
 
 
 def main(argv):
-    if len(argv) != 3:
-        print("usage: transcribe.py MODEL.pkf FILE.wav", file=sys.stderr)
+    if len(argv) not in (3, 4):
+        print("usage: transcribe.py MODEL.pkf FILE.wav [ENCODER]", file=sys.stderr)
         return 2
     pk = load()
     # The library's paths are UTF-8 on every system, which os.fsencode
@@ -174,6 +175,9 @@ def main(argv):
     # ctypes lets go of the GIL for each call, and the transcriber runs its
     # own threads, so other Python threads go on meanwhile
     a = pk.pk_asr_new(m, 0)
+    if len(argv) == 4 and pk.pk_asr_use_encoder(a, os.fsencode(argv[3]), err, len(err)):
+        print(f"{argv[3]}: {err.value.decode()}", file=sys.stderr)
+        return 1
     t = POINTER(pk_tok)()
     text = ctypes.create_string_buffer(65536)
     sys.stdout.reconfigure(
@@ -182,6 +186,10 @@ def main(argv):
     for c in chunk[:nc]:
         nt = pk.pk_asr_run(a, view(x, c.start, c.end), c.end - c.start, byref(t))
         if nt < 0:
+            print(
+                "no transcript: out of memory, or the encoder could not run (a slim model has none of its own)",
+                file=sys.stderr,
+            )
             return 1
         pk.pk_text(m, t, nt, text, len(text))
         print(f"{c.start / rate:.2f} {c.end / rate:.2f} {text.value.decode()}")

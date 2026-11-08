@@ -7,6 +7,11 @@
  * prints each chunk as "start end text", the times in seconds. A 16 kHz
  * file only: resampling is core/resample.h's, which ./pktito-c uses.
  *
+ * A third argument runs the encoder on an NPU (pk_asr_use_encoder): a Core
+ * ML model on the Neural Engine, or a QNN graph on a Snapdragon, with the
+ * library built for it (ANE=1, QNN=1). A slim model, models.json's file for
+ * an NPU edition, runs only so (examples/README.md, "On an NPU").
+ *
  * The library takes paths in UTF-8 on every system. argv is UTF-8 on
  * Linux and macOS; on Windows it is the ANSI code page's, so a name past
  * it does not arrive here whole. ./pktito-c asks Windows for the command
@@ -21,8 +26,8 @@
 
 int main(int argc, char **argv) {
     char err[256];
-    if (argc != 3) {
-        fprintf(stderr, "usage: transcribe MODEL.pkf FILE.wav\n");
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "usage: transcribe MODEL.pkf FILE.wav [ENCODER]\n");
         return 2;
     }
     pk_model *m = pk_model_load(argv[1], err, sizeof err);
@@ -83,12 +88,18 @@ int main(int argc, char **argv) {
 
     /* each chunk through the transcriber, as NeMo would hear it as a file */
     pk_asr *a = pk_asr_new(m, 0);
+    if (argc == 4 && pk_asr_use_encoder(a, argv[3], err, sizeof err)) {
+        fprintf(stderr, "%s: %s\n", argv[3], err);
+        return 1;
+    }
     char text[65536];
     for (size_t i = 0; i < nc; i++) {
         const pk_tok *t;
         long nt = pk_asr_run(a, x + chunk[i].start, (size_t)(chunk[i].end - chunk[i].start), &t);
-        if (nt < 0)
+        if (nt < 0) {
+            fprintf(stderr, "no transcript: out of memory, or the encoder could not run (a slim model has none of its own)\n");
             return 1;
+        }
         pk_text(m, t, (size_t)nt, text, sizeof text);
         printf("%.2f %.2f %s\n", (double)chunk[i].start / rate, (double)chunk[i].end / rate, text);
     }

@@ -6,10 +6,10 @@
 //     node transcribe.mjs ../../models/parakeet-tdt-0.6b-v2.pkf talk.wav
 //
 // prints each chunk as "start end text", the times in seconds. A 16 kHz file
-// only, as there. Node has no foreign-function interface of its own; koffi
-// is one, and reads C prototypes as written in core/pktito.h and core/wav.h.
-// The library is the one `make shared` leaves at the top of the tree, or the
-// file PKTITO_LIB names.
+// only, as there; a third argument is an NPU's encoder, as there. Node has no
+// foreign-function interface of its own; koffi is one, and reads C prototypes
+// as written in core/pktito.h and core/wav.h. The library is the one
+// `make shared` leaves at the top of the tree, or the file PKTITO_LIB names.
 //
 // An example of the wiring, not a package. `make check-ffi` holds its
 // transcript to ./pktito-c's.
@@ -81,6 +81,9 @@ const pk = {
       "int64_t total, int64_t max_len, int64_t *out)",
   ),
   asr_new: lib.func("pk_asr *pk_asr_new(const pk_model *m, int threads)"),
+  asr_use_encoder: lib.func(
+    "int pk_asr_use_encoder(pk_asr *a, const char *path, char *err, size_t errlen)",
+  ),
   asr_run: lib.func(
     "long pk_asr_run(pk_asr *a, const float *x, size_t n, _Out_ const pk_tok **toks)",
   ),
@@ -95,8 +98,8 @@ const PK_VAD_SAMPLES = 512;
 const cstr = (buf) => buf.toString("utf8", 0, buf.indexOf(0));
 
 function main(argv) {
-  if (argv.length !== 2) {
-    console.error("usage: transcribe.mjs MODEL.pkf FILE.wav");
+  if (argv.length !== 2 && argv.length !== 3) {
+    console.error("usage: transcribe.mjs MODEL.pkf FILE.wav [ENCODER]");
     return 2;
   }
   // The library's paths are UTF-8 on every system, as koffi passes a string.
@@ -152,13 +155,22 @@ function main(argv) {
   // chunk takes; a server would make it with koffi's async form instead,
   // pk.asr_run.async(...), which runs it on a worker thread.
   const a = pk.asr_new(m, 0);
+  if (argv.length === 3 && pk.asr_use_encoder(a, argv[2], err, err.length)) {
+    console.error(`${argv[2]}: ${cstr(err)}`);
+    return 1;
+  }
   const t = [null];
   const text = Buffer.alloc(65536);
   for (let i = 0; i < nc; i++) {
     const start = Number(chunk[2 * i]),
       end = Number(chunk[2 * i + 1]);
     const nt = pk.asr_run(a, x.subarray(start, end), end - start, t);
-    if (nt < 0) return 1;
+    if (nt < 0) {
+      console.error(
+        "no transcript: out of memory, or the encoder could not run (a slim model has none of its own)",
+      );
+      return 1;
+    }
     pk.text(m, t[0], nt, text, text.length);
     process.stdout.write(
       `${(start / rate).toFixed(2)} ${(end / rate).toFixed(2)} ${cstr(text)}\n`,

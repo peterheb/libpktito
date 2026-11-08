@@ -4,11 +4,12 @@
 //	make libpktito.a
 //	cd examples/go && go build && ./transcribe ../../models/parakeet-tdt-0.6b-v2.pkf talk.wav
 //
-// prints each chunk as "start end text", the times in seconds. A 16 kHz
-// file only, as there. It links libpktito.a, the archive at the top of the
-// tree, so the program is one binary that needs nothing beside it but the
-// model: cgo reads core/pktito.h and core/wav.h for the types, and Go's
-// compiler checks each call against them.
+// prints each chunk as "start end text", the times in seconds. A 16 kHz file
+// only, as there; a third argument is an NPU's encoder, as there. It links
+// libpktito.a, the archive at the top of the tree, so the program is one
+// binary that needs nothing beside it but the model: cgo reads core/pktito.h
+// and core/wav.h for the types, and Go's compiler checks each call against
+// them.
 //
 // An example of the wiring, not a package. `make check-ffi` holds its
 // transcript to ./pktito-c's.
@@ -17,6 +18,10 @@ package main
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../core
 #cgo LDFLAGS: ${SRCDIR}/../../libpktito.a -lm -lpthread
+// what the archive calls when make ANE=1 built it; every macOS Go runs on
+// has both, and a binary of an archive without the Neural Engine loads them
+// unused
+#cgo darwin LDFLAGS: -framework CoreML -framework Foundation
 #include <stdlib.h>
 #include "pktito.h"
 #include "wav.h"
@@ -40,14 +45,18 @@ func floats(s []float32) *C.float {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: transcribe MODEL.pkf FILE.wav")
+	if len(os.Args) != 3 && len(os.Args) != 4 {
+		fmt.Fprintln(os.Stderr, "usage: transcribe MODEL.pkf FILE.wav [ENCODER]")
 		os.Exit(2)
 	}
-	os.Exit(run(os.Args[1], os.Args[2]))
+	encoder := ""
+	if len(os.Args) == 4 {
+		encoder = os.Args[3]
+	}
+	os.Exit(run(os.Args[1], os.Args[2], encoder))
 }
 
-func run(modelPath, wavPath string) int {
+func run(modelPath, wavPath, encoder string) int {
 	// The library's paths are UTF-8 on every system, and a Go string is
 	// one: os.Args has Windows' UTF-16 command line as UTF-8, whole.
 	var err [256]C.char
@@ -108,12 +117,21 @@ func run(modelPath, wavPath string) int {
 	// the transcriber runs its own threads, and a cgo call holds only the
 	// goroutine that makes it
 	a := C.pk_asr_new(m, 0)
+	if encoder != "" {
+		cenc := C.CString(encoder)
+		defer C.free(unsafe.Pointer(cenc))
+		if C.pk_asr_use_encoder(a, cenc, &err[0], C.size_t(len(err))) != 0 {
+			fmt.Fprintf(os.Stderr, "%s: %s\n", encoder, C.GoString(&err[0]))
+			return 1
+		}
+	}
 	var t *C.pk_tok
 	text := make([]C.char, 65536)
 	for _, c := range chunk[:nc] {
 		xs := x[c.start:c.end]
 		nt := C.pk_asr_run(a, floats(xs), C.size_t(len(xs)), &t)
 		if nt < 0 {
+			fmt.Fprintln(os.Stderr, "no transcript: out of memory, or the encoder could not run (a slim model has none of its own)")
 			return 1
 		}
 		C.pk_text(m, t, C.size_t(nt), &text[0], C.size_t(len(text)))

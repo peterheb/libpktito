@@ -23,7 +23,8 @@
 #   make check-c                  what needs only a compiler and a model: runs on any board
 #   make check-sanitize           the two file parsers under ASan and UBSan
 #   make check-math               every float through exp, sigmoid, tanh and log
-#   make check-ffi                the examples in other languages, where they are installed
+#   make check-ffi                the examples in other languages, where they are installed;
+#                                 ENCODER=<an NPU's>, on it
 #   make fuzz                     coverage-guided harnesses (Clang libFuzzer)
 #   make fuzz-smoke               a short sanitizer-backed run of every harness
 #   make remote HOST=pi           rsync, make, check-c and bench over ssh
@@ -148,6 +149,8 @@ ifeq ($(ANE),1)
 endif
 npu/ane.o: npu/ane.m npu/ane.h
 	$(CC) $(CFLAGS) -fobjc-arc $(PLATFLAGS) $(INC) -c $< -o $@
+npu/ane.pic.o: npu/ane.m npu/ane.h
+	$(CC) $(CFLAGS) -fobjc-arc $(PIC) $(PLATFLAGS) $(INC) -c $< -o $@
 
 # make QNN=1 QNN_SDK=<Qualcomm's AI Runtime SDK> (Android or Windows on a
 # Snapdragon): the encoder on the Hexagon NPU through QNN, for a
@@ -406,11 +409,12 @@ check-math: tests/mathcheck
 # library or the archive: each whose language is here must print test.wav's
 # transcript as ./pktito-c --no-context --no-retry does, as check-c holds
 # examples/transcribe to it, and one whose language is not is skipped with a
-# line (examples/check.sh).
+# line (examples/check.sh). With ENCODER, an NPU's (--npu), the CLI and
+# every example run on it, examples/transcribe too.
 # Apart from check, since they are examples of the wiring, not the library:
 # a language missing or changed on a board is no reason to hold up a commit.
-check-ffi: pktito-c libpktito.a $(SHLIB)
-	@sh examples/check.sh $(MODEL) "$(PYTHON)"
+check-ffi: pktito-c libpktito.a $(SHLIB) $(if $(ENCODER),examples/transcribe)
+	@sh examples/check.sh $(MODEL) "$(PYTHON)" "$(ENCODER)"
 
 # --------------------------------------------------------------- fuzzing ----
 

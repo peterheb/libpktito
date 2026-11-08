@@ -59,3 +59,50 @@ for word (the examples write a chunk a line, the CLI a sentence), as `make
 check-c` holds transcribe.c to it; one whose language is not is skipped
 with a line. It is not part of
 `make check`.
+
+## On an NPU
+
+Each example takes a third argument, an NPU's encoder, and hands it to
+`pk_asr_use_encoder`: a compiled Core ML model (a `.mlmodelc` folder) for
+Apple's Neural Engine, or a QNN graph (`.qnn`) for a Snapdragon's Hexagon
+NPU (README, "The Neural Engine and NPUs"). The library is built for it,
+`make ANE=1` or `make QNN=1`, and the model is the slim file, which leaves
+its encoder to the NPU; `./pktito-c models` names both for this machine
+and prints the commands that fetch them. On a Mac, with Apple's Command
+Line Tools and nothing else:
+
+```sh
+make ANE=1 pktito-c libpktito.a shared examples/transcribe
+./pktito-c models          # then the lines it prints, in models/
+./examples/transcribe models/parakeet-tdt-0.6b-v2-slim.pkf talk.wav models/parakeet-tdt-0.6b-v2-encoder.mlmodelc
+python3 examples/python/transcribe.py models/parakeet-tdt-0.6b-v2-slim.pkf talk.wav models/parakeet-tdt-0.6b-v2-encoder.mlmodelc
+```
+
+and the same three arguments for the others. What differs from the CPU's:
+
+- **Linking.** An archive built with ANE=1 calls Core ML and Foundation.
+  go/main.go names both on macOS, which always has them, and a binary of
+  an archive built without loads them unused (cgo refuses the
+  `-Wl,-dead_strip_dylibs` that would leave them out). rust/build.rs
+  names them when build.opts, which make writes beside the archive, says
+  ANE=1. The shared library links them itself, so Python and Node need
+  nothing more.
+- **The first run.** The first time a program runs the encoder, Core ML
+  compiles it for the Mac's Neural Engine, 9 s on an M4 mini, and keeps
+  the result, about 0.6 GB of disk for v2's, in
+  /Library/Caches/com.apple.aned, which only the system clears. pktito-c,
+  python3 and node are each a program to it, and so is each example's
+  binary; one rebuilt in place keeps its copy. From then on test.wav's
+  minute takes 0.3 s.
+- **A slim model without its encoder** runs nothing: `pk_asr_run`
+  returns -1, and each example says so.
+- **A build without ANE=1** refuses the encoder ("this pktito was built
+  without ANE=1") and the slim file ("a slim model file, whose encoder is
+  an NPU's").
+
+`make check-ffi ANE=1 MODEL=models/parakeet-tdt-0.6b-v2-slim.pkf
+ENCODER=models/parakeet-tdt-0.6b-v2-encoder.mlmodelc` holds every example,
+examples/transcribe with them, to `./pktito-c --npu`'s transcript. Each
+gave it on an M4 Mac mini (macOS 26.4, the Command Line Tools' clang 21)
+on 2026-11-08: Apple's python3 3.9.6, Go 1.27.3, Rust 1.99.1, and Node
+26.13.0 with koffi 3.3.4.
