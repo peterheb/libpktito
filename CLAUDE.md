@@ -21,7 +21,11 @@ allows.
    `pk_asr_transcribe`, adds processing on top - its retry of speech the
    model dropped - that leaves NeMo's transcript on purpose, measured and
    documented (README, "Transcribing a recording"), and off with
-   `--no-retry`; it never changes what the low level computes.
+   `--no-retry`; it never changes what the low level computes. The NPUs'
+   encoders (npu/, in a build with ANE=1 or QNN=1 and never in a default
+   one) are fp16 and outside `ref`'s bits, held to float32 and to the CPU
+   by measurement instead (tools/ane/CLIMB.md, tools/qnn/CLIMB.md); they
+   never change what the CPU's path computes.
 2. **Can a learner follow it?** The tree reads top down: core/encoder.c and
    core/decoder.c are the model, core/mel.c the features, backend/ref the
    arithmetic. Code outside the tuned backends is written for a reader first,
@@ -37,7 +41,9 @@ allows.
    language's model.
 5. **Does it need anything?** The C library, libm and pthreads. No network,
    no allocation the caller cannot bound. Conversion is offline Python whose
-   only dependency is numpy.
+   only dependency is numpy. An NPU's runtime (Core ML with ANE=1, QNN,
+   loaded at run time, with QNN=1) is opt-in twice over: a build asks for
+   it, and a run is given an encoder.
 
 ## Code
 
@@ -55,6 +61,12 @@ allows.
   among them). Inside a family a variant replaces a kernel only where it
   measures faster: the int8 product in each, and in the AVX-512 builds the
   float kernels in zmm - each to ref's bits, like every kernel.
+- npu/ is the encoder on an NPU, not a backend: Core ML's (ane.m) and
+  QNN's (qnn.c), compiled only with ANE=1 or QNN=1, and reached from core/
+  only under `#ifdef PK_ANE` and `PK_QNN`. models.json is the catalog of
+  model files and the hardware each edition runs on, pktito-app's as well
+  as pktito-c's: tools/catalog.py writes core/catalog.c from it, and
+  tests/editions.tsv holds core/editions.c's choice to the app's.
 - Comments explain _why_ and carry the number that justified it, and say
   where the number came from (a CLIMB.md row, a check), because a bare
   figure goes stale when the code under it changes.
@@ -89,6 +101,8 @@ allows.
 - `make check-c` before every commit, on every backend touched, on its board.
 - `make check` where Python and NeMo's checkpoints are, before every merge.
 - `make check-sanitize` for any change to core/model.c or core/wav.c.
+- A change to npu/ runs check-c with ANE=1 or QNN=1, and
+  `make check-ffi ENCODER=`, on a machine with that NPU.
 - `scripts/fmt.sh --check` before every commit: prettier, ruff, cargo fmt
   and gofmt at their defaults, as in the app and the server.
 
