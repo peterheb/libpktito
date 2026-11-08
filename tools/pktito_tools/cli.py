@@ -52,7 +52,7 @@ def main(argv=None):
     r.add_argument("wav", nargs="+")
     d = sub.add_parser("diar", help="who speaks when in a 16 kHz WAV, as RTTM, with the float64 "
                                     "Streaming Sortformer reference (docs/DIARIZATION.md)")
-    d.add_argument("model", help="diar_streaming_sortformer_4spk-v2.nemo")
+    d.add_argument("model", help="Nemotron-3-Diarization.nemo or diar_streaming_sortformer_4spk-v2.nemo")
     d.add_argument("wav", nargs="+")
     a = ap.parse_args(argv)
 
@@ -100,13 +100,16 @@ def main(argv=None):
             print(text)
     elif a.cmd == "diar":
         import os
-        from . import nemo, sortformer
+        from . import nemo, nemotron3, sortformer
         nm = nemo.Nemo(a.model)
-        arch = sortformer.arch(nm.config, sortformer.OFFLINE)
-        w = sortformer.tensors(nm.state, arch)
+        # Nemotron 3's encoder is NeMo's TransformerEncoder, v2's a ConformerEncoder
+        rotary = nm.config["encoder"].get("_target_", "").endswith("modules.TransformerEncoder")
+        net = nemotron3 if rotary else sortformer
+        arch = net.arch(nm.config, net.OFFLINE)
+        w = net.tensors(nm.state, arch)
         for path in a.wav:
-            p, _ = sortformer.diarize(read_wav(path), w, arch)
+            p, _ = net.diarize(read_wav(path), w, arch)
             name = os.path.splitext(os.path.basename(path))[0]
-            for start, end, s in sortformer.segments(p, 0.08):
+            for start, end, s in sortformer.segments(p, arch["frame"]):
                 print("SPEAKER %s 1 %.2f %.2f <NA> <NA> speaker_%d <NA> <NA>" % (name, start, end - start, s))
     return 0
