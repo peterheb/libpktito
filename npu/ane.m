@@ -81,7 +81,7 @@ static void say(char *err, size_t len, NSString *what, NSError *e) {
         snprintf(err, len, "%s", s.UTF8String);
 }
 
-static MLMultiArray *array16(NSArray<NSNumber *> *shape, NSError **e) {
+API_AVAILABLE(macos(15.0), ios(18.0)) static MLMultiArray *array16(NSArray<NSNumber *> *shape, NSError **e) {
     return [[MLMultiArray alloc] initWithShape:shape dataType:MLMultiArrayDataTypeFloat16 error:e];
 }
 
@@ -90,7 +90,7 @@ static MLMultiArray *array16(NSArray<NSNumber *> *shape, NSError **e) {
  * encoding, a pair of rows, pe(j) (sin j w, then cos j w) less its mean
  * over j, and the turn's (-cos i w, cos i w) and (sin i w, sin i w). In
  * double, rounded once. */
-static int len_tables(pk_ane *a, ane_len *l, NSError **e) {
+API_AVAILABLE(macos(15.0), ios(18.0)) static int len_tables(pk_ane *a, ane_len *l, NSError **e) {
     const uint32_t D = a->d;
     uint32_t T3 = l->frames;
     for (int i = 0; i < 3; i++)
@@ -123,7 +123,7 @@ static int len_tables(pk_ane *a, ane_len *l, NSError **e) {
 
 /* l's parts loaded for the Neural Engine, those not loaded yet for another
  * length, and its inputs allocated; why not in err, if given */
-static int len_load(pk_ane *a, ane_len *l, char *err, size_t errlen) {
+API_AVAILABLE(macos(15.0), ios(18.0)) static int len_load(pk_ane *a, ane_len *l, char *err, size_t errlen) {
     @autoreleasepool {
         NSError *e = nil;
         int tables = 0;
@@ -172,7 +172,12 @@ static void name_part(NSString *name, uint32_t *part) {
     *part = sscanf(name.UTF8String, "f%up%u", &T, &k) == 2 ? k : 0;
 }
 
-pk_ane *pk_ane_open(const char *path, const pk_model *m, char *err, size_t errlen) {
+/* pk_ane_open's work, on a system with the calls it makes: MLModelAsset's
+ * functionNamesWithCompletionHandler: and MLModelConfiguration's
+ * functionName are macOS 15's and iOS 18's, and the functions above and
+ * len_run below are open_model's or come after it */
+API_AVAILABLE(macos(15.0), ios(18.0)) static pk_ane *open_model(const char *path, const pk_model *m, char *err,
+                                                                size_t errlen) {
     const uint32_t n_mels = m->n_mels, d_model = m->d_model;
     const char *source = pk_model_meta(m, "source_sha256");
     @autoreleasepool {
@@ -308,12 +313,23 @@ pk_ane *pk_ane_open(const char *path, const pk_model *m, char *err, size_t errle
     }
 }
 
+pk_ane *pk_ane_open(const char *path, const pk_model *m, char *err, size_t errlen) {
+    /* macOS 13 and 14 have the classes and not those calls: the first one
+     * would raise an unrecognized selector's NSInvalidArgumentException,
+     * which nothing catches. macOS 12 has no MLModelAsset at all. */
+    if (@available(macOS 15.0, iOS 18.0, *))
+        return open_model(path, m, err, errlen);
+    if (err && errlen)
+        snprintf(err, errlen, "the Neural Engine's encoder needs macOS 15 or iOS 18, or later");
+    return NULL;
+}
+
 /* feat [T0][n_mels] through length l, padded to it, in slot k's inputs:
  * x [Te][d], Te encoder frames, which it returns; 0 if Core ML failed, and
  * why in err if given. Calls in different slots run at once: Core ML's
  * predictions on one MLModel may, each with inputs and outputs of its own. */
-static uint32_t len_run(pk_ane *a, ane_len *l, int k_slot, const float *feat, uint32_t T0, float *x,
-                        char *err, size_t errlen) {
+API_AVAILABLE(macos(15.0), ios(18.0)) static uint32_t len_run(pk_ane *a, ane_len *l, int k_slot, const float *feat,
+                                                               uint32_t T0, float *x, char *err, size_t errlen) {
     pthread_mutex_lock(&a->load);
     const int bad = !l->loaded && len_load(a, l, err, errlen);
     pthread_mutex_unlock(&a->load);
@@ -404,9 +420,10 @@ int pk_ane_warm(pk_ane *a, char *err, size_t errlen) {
     int rc = feat && x ? 0 : -1;
     if (rc)
         say(err, errlen, @"out of memory", nil);
-    for (uint32_t i = 0; i < a->n && rc == 0; i++)
-        if (!len_run(a, &a->len[i], PK_ANE_SLOTS - 1, feat, a->len[i].frames, x, err, errlen))
-            rc = -1;
+    if (@available(macOS 15.0, iOS 18.0, *))    /* always: a pk_ane is open_model's */
+        for (uint32_t i = 0; i < a->n && rc == 0; i++)
+            if (!len_run(a, &a->len[i], PK_ANE_SLOTS - 1, feat, a->len[i].frames, x, err, errlen))
+                rc = -1;
     free(feat);
     free(x);
     return rc;
@@ -465,5 +482,7 @@ uint32_t pk_ane_encode_in(pk_ane *a, int slot, const float *feat, uint32_t T0, f
     }
     if (!l || !T0)
         return 0;
-    return len_run(a, l, slot, feat, T0, x, NULL, 0);
+    if (@available(macOS 15.0, iOS 18.0, *))    /* always: a pk_ane is open_model's */
+        return len_run(a, l, slot, feat, T0, x, NULL, 0);
+    return 0;
 }
