@@ -9,7 +9,6 @@ canonical tensors of canon.py, at batch size one and the input's own
 length: NeMo's masks, at batch size one, make each of its frames exactly
 what this computes (core/encoder.c says why).
 """
-
 import math
 
 import numpy as np
@@ -20,6 +19,16 @@ def mm(x, w, name):
     matrix goes through here, so that tools/quantcheck.py can put a
     quantized one in its place."""
     return x @ w[name].T
+
+
+def lin(x, w, name):
+    """mm and the matrix's bias, "<name>.b", where the model has one.
+    Parakeet's encoder matrices have none; the FastConformer inside
+    NVIDIA's Sortformer diarizer (sortformer.py) has one on every matrix
+    but the position projection."""
+    y = mm(x, w, name)
+    b = w.get(name + ".b")
+    return y if b is None else y + b
 
 
 def _silu(x):
@@ -38,12 +47,14 @@ def _ln(x, w, b, eps):
 
 # ------------------------------------------------------------- features ---
 
-
 def features(audio, w, a):
     """Log-mel features, [T][n_mels], T = len(audio) // hop: preemphasis, a
     centred STFT with zero padding, the power spectrum through the mel
     filterbank, log(x + guard), and each mel band normalized over the
-    recording (mean, and the n - 1 standard deviation plus norm_eps)."""
+    recording (mean, and the n - 1 standard deviation plus norm_eps).
+    A model whose preprocessor normalizes nothing (a["normalize"] False:
+    the streaming diarizer, whose features cannot wait for the recording's
+    end) gets the log-mel as it is."""
     n_fft, win, hop = a["n_fft"], a["win_length"], a["hop_length"]
     x = np.asarray(audio, np.float64)
     T = len(x) // hop
@@ -52,11 +63,13 @@ def features(audio, w, a):
     y = np.concatenate([np.zeros(n_fft // 2), y, np.zeros(n_fft // 2)])
     window = np.zeros(n_fft)
     left = (n_fft - win) // 2
-    window[left : left + win] = w["mel.window"]
+    window[left:left + win] = w["mel.window"]
     idx = np.arange(T)[:, None] * hop + np.arange(n_fft)[None, :]
     spec = np.fft.rfft(y[idx] * window, axis=1)
-    power = spec.real**2 + spec.imag**2
-    mel = np.log(power @ w["mel.fb"].T + a["log_guard"])  # [T][n_mels]
+    power = spec.real ** 2 + spec.imag ** 2
+    mel = np.log(power @ w["mel.fb"].T + a["log_guard"])          # [T][n_mels]
+    if not a.get("normalize", True):
+        return mel
     mean = mel.mean(0)
     if T > 1:
         std = np.sqrt(((mel - mean) ** 2).sum(0) / (T - 1))
@@ -66,7 +79,6 @@ def features(audio, w, a):
 
 
 # -------------------------------------------------------------- encoder ---
-
 
 def _conv3x3_s2(x, w, b, depthwise):
     """3x3 convolution, stride 2, padding 1, over x [C][T][F]; w [O][9] is
@@ -79,7 +91,7 @@ def _conv3x3_s2(x, w, b, depthwise):
     out = np.zeros((w.shape[0], To, Fo))
     for di in range(3):
         for dj in range(3):
-            tap = xp[:, di : di + 2 * To : 2, dj : dj + 2 * Fo : 2]
+            tap = xp[:, di:di + 2 * To:2, dj:dj + 2 * Fo:2]
             out += w[:, 3 * di + dj, None, None] * tap
     return out + b[:, None, None]
 
@@ -90,7 +102,7 @@ def subsample(feat, w, a):
     followed by a pointwise one), ReLU after each stage, then channels and
     frequencies flattened channel-major and projected."""
     C = a["sub_channels"]
-    x = feat[None]  # [1][T][F]
+    x = feat[None]                                                # [1][T][F]
     x = np.maximum(_conv3x3_s2(x, w["sub.conv0.w"], w["sub.conv0.b"], False), 0)
     for s in ("1", "2"):
         x = _conv3x3_s2(x, w["sub.dw%s.w" % s], w["sub.dw%s.b" % s], True)
@@ -119,14 +131,14 @@ def attention(x, pe, w, q, a):
     T, D = x.shape
     H = a["n_heads"]
     dk = D // H
-    Q = mm(x, w, q + "att.q").reshape(T, H, dk)
-    K = mm(x, w, q + "att.k").reshape(T, H, dk)
-    V = mm(x, w, q + "att.v").reshape(T, H, dk)
-    P = mm(pe, w, q + "att.pos").reshape(2 * T - 1, H, dk)
+    Q = lin(x, w, q + "att.q").reshape(T, H, dk)
+    K = lin(x, w, q + "att.k").reshape(T, H, dk)
+    V = lin(x, w, q + "att.v").reshape(T, H, dk)
+    P = mm(pe, w, q + "att.pos").reshape(2 * T - 1, H, dk)       # never a bias (NeMo's linear_pos)
     qu = (Q + w[q + "att.bias_u"].reshape(H, dk)).transpose(1, 0, 2)
     qv = (Q + w[q + "att.bias_v"].reshape(H, dk)).transpose(1, 0, 2)
-    ac = qu @ K.transpose(1, 2, 0)  # [H][T][T]
-    bd = qv @ P.transpose(1, 2, 0)  # [H][T][2T-1]
+    ac = qu @ K.transpose(1, 2, 0)                                # [H][T][T]
+    bd = qv @ P.transpose(1, 2, 0)                                # [H][T][2T-1]
     # rel_shift: score (i, j) takes the position embedding of i - j, which
     # is row T-1-i+j of pe
     i, j = np.arange(T)[:, None], np.arange(T)[None, :]
@@ -135,50 +147,53 @@ def attention(x, pe, w, q, a):
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
     o = (s @ V.transpose(1, 0, 2)).transpose(1, 0, 2).reshape(T, D)
-    return mm(o, w, q + "att.o")
+    return lin(o, w, q + "att.o")
 
 
 def conv_module(x, w, q, a):
     T, D = x.shape
-    h = mm(x, w, q + "conv.pw1")  # [T][2D]
-    h = h[:, :D] * _sigmoid(h[:, D:])  # GLU
+    h = lin(x, w, q + "conv.pw1")                                 # [T][2D]
+    h = h[:, :D] * _sigmoid(h[:, D:])                             # GLU
     K = a["conv_kernel"]
     hp = np.zeros((T + K - 1, D))
-    hp[K // 2 : K // 2 + T] = h
+    hp[K // 2:K // 2 + T] = h
     g = np.zeros((T, D))
     for k in range(K):
-        g += w[q + "conv.dw"][:, k] * hp[k : k + T]
-    g = _silu(g + w[q + "conv.dw_b"])  # BatchNorm folded in
-    return mm(g, w, q + "conv.pw2")
+        g += w[q + "conv.dw"][:, k] * hp[k:k + T]
+    g = _silu(g + w[q + "conv.dw_b"])                             # BatchNorm folded in
+    return lin(g, w, q + "conv.pw2")
 
 
 def ff(x, w, q):
-    return mm(_silu(mm(x, w, q + "up")), w, q + "down")  # 0.5 folded into down
+    return lin(_silu(lin(x, w, q + "up")), w, q + "down")       # 0.5 folded into down
 
 
 def layer(x, pe, w, i, a):
     q, eps = "l%d." % i, a["ln_eps"]
     x = x + ff(_ln(x, w[q + "ff1.norm.w"], w[q + "ff1.norm.b"], eps), w, q + "ff1.")
-    x = x + attention(
-        _ln(x, w[q + "att.norm.w"], w[q + "att.norm.b"], eps), pe, w, q, a
-    )
-    x = x + conv_module(
-        _ln(x, w[q + "conv.norm.w"], w[q + "conv.norm.b"], eps), w, q, a
-    )
+    x = x + attention(_ln(x, w[q + "att.norm.w"], w[q + "att.norm.b"], eps), pe, w, q, a)
+    x = x + conv_module(_ln(x, w[q + "conv.norm.w"], w[q + "conv.norm.b"], eps), w, q, a)
     x = x + ff(_ln(x, w[q + "ff2.norm.w"], w[q + "ff2.norm.b"], eps), w, q + "ff2.")
     return _ln(x, w[q + "out.norm.w"], w[q + "out.norm.b"], eps)
 
 
-def encode(feat, w, a, layers=None):
-    x = subsample(feat, w, a)
+def conformer(x, w, a, layers=None):
+    """The layers over subsampled frames [T][d_model]. A model with
+    xscaling (a["xscale"], sqrt(d_model): the diarizer's, not Parakeet's)
+    scales its input first, as NeMo's RelPositionalEncoding does."""
+    if a.get("xscale"):
+        x = x * a["xscale"]
     pe = pos_emb(x.shape[0], w, a)
     for i in range(a["n_layers"] if layers is None else layers):
         x = layer(x, pe, w, i, a)
     return x
 
 
-# -------------------------------------------------------------- decoder ---
+def encode(feat, w, a, layers=None):
+    return conformer(subsample(feat, w, a), w, a, layers)
 
+
+# -------------------------------------------------------------- decoder ---
 
 class Decoder:
     """The prediction network (an embedding and a stack of LSTMs, torch's
@@ -189,9 +204,7 @@ class Decoder:
         self.L, self.Hd = a["pred_layers"], a["pred_hidden"]
 
     def start(self):
-        return [np.zeros(self.Hd) for _ in range(self.L)], [
-            np.zeros(self.Hd) for _ in range(self.L)
-        ]
+        return [np.zeros(self.Hd) for _ in range(self.L)], [np.zeros(self.Hd) for _ in range(self.L)]
 
     def step(self, label, state):
         h, c = state
@@ -201,12 +214,7 @@ class Decoder:
             p = "dec.l%d." % i
             g = mm(x, self.w, p + "wx") + mm(h[i], self.w, p + "wh") + self.w[p + "b"]
             n = self.Hd
-            ig, fg, gg, og = (
-                _sigmoid(g[:n]),
-                _sigmoid(g[n : 2 * n]),
-                np.tanh(g[2 * n : 3 * n]),
-                _sigmoid(g[3 * n :]),
-            )
+            ig, fg, gg, og = _sigmoid(g[:n]), _sigmoid(g[n:2 * n]), np.tanh(g[2 * n:3 * n]), _sigmoid(g[3 * n:])
             cc = fg * c[i] + ig * gg
             hh = og * np.tanh(cc)
             h2.append(hh)
@@ -216,9 +224,7 @@ class Decoder:
 
     def joint(self, fproj, g):
         gp = mm(g, self.w, "joint.pred.w") + self.w["joint.pred.b"]
-        return (
-            mm(np.maximum(fproj + gp, 0), self.w, "joint.out.w") + self.w["joint.out.b"]
-        )
+        return mm(np.maximum(fproj + gp, 0), self.w, "joint.out.w") + self.w["joint.out.b"]
 
 
 def greedy(enc, w, a, trace=None):
@@ -241,8 +247,8 @@ def greedy(enc, w, a, trace=None):
         while True:
             t_label = t
             z = dec.joint(fproj[t], g)
-            k = int(np.argmax(z[: V + 1]))
-            di = int(np.argmax(z[V + 1 :]))
+            k = int(np.argmax(z[:V + 1]))
+            di = int(np.argmax(z[V + 1:]))
             d = durs[di]
             if trace is not None:
                 trace.append((t, k, di))
