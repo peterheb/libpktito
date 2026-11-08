@@ -18,6 +18,11 @@ Core 3 304, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut
 at its pauses as `./pktito-c` cuts it by default. Every backend computes the
 same bits on every machine.
 
+That is the default build, and what pktito is for: Parakeet exact, with
+nothing to install. Apple's Neural Engine and a Snapdragon's Hexagon NPU
+can run its encoder too, in a build that asks for them (below, "The
+Neural Engine and NPUs").
+
 ## What this is
 
 |              |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -27,6 +32,7 @@ same bits on every machine.
 | numerics     | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8")                                                                                                                                                                                                                                                                                                                                                                                |
 | what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles                                                                                                                                                                                                                                                                                                                                             |
 | audio        | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; AIFF and AIFF-C: PCM 8 to 32 bits either byte order, float 32/64, A-law, mu-law; any channel count; any rate, brought to 16 kHz                                                                                                                                                                                                                                                                             |
+| NPUs         | opt-in, in a build that asks for one: the encoder on Apple's Neural Engine (`make ANE=1`) or a Snapdragon's Hexagon NPU (`make QNN=1`), in fp16, from model files made for it ("The Neural Engine and NPUs")                                                                                                                                                                                                                                                                                         |
 | dependencies | the C library, libm and pthreads                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | systems      | Linux, macOS, and Windows 10 and later (built with MSYS2's MinGW-w64 gcc)                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
@@ -59,7 +65,16 @@ code page before it writes the file, so to keep a transcript's accents
 there, first `[Console]::OutputEncoding = [Text.Encoding]::UTF8` (cmd's
 `>` writes pktito-c's UTF-8 as it is).
 
-Then a model, converted once from NVIDIA's checkpoint and Silero's VAD. The
+Then a model. `./pktito-c models` prints the commands that fetch this
+machine's from models.pktito.net, where each `.pkf` is the file
+`make models` writes, byte for byte (`./pktito-c models --all` has every
+file and its SHA-256):
+
+```sh
+./pktito-c models             # v2 (English, 624 MB) and v3 (25 languages, 648 MB): the lines that fetch them
+```
+
+Or make one, converted once from NVIDIA's checkpoint and Silero's VAD. The
 converter is Python with numpy and nothing else: it reads the `.nemo`
 archive, the PyTorch checkpoint inside it and the SentencePiece model
 itself.
@@ -305,6 +320,61 @@ The integer sums are what make every backend agree: a block's 32 products
 add up to the same int32 in any order, so SDOT, SMULL, VPMADDUBSW and
 VPDPBUSD each take them their own way, and only the one fused multiply-add a
 block that scales the sum is fixed (backend/kernels.h).
+
+## The Neural Engine and NPUs
+
+A default build runs on the CPU alone, and every backend computes `ref`'s
+bits: the transcripts above. Apple's Neural Engine and a Snapdragon's
+Hexagon NPU can run the encoder instead, most of a run's work, and leave
+the CPU nearly idle: on a Snapdragon X Elite a run took a twentieth of
+the CPU's time (tools/qnn/CLIMB.md, 2026-11-05). pktito-app does where a
+device has one. That takes a build that asks for it and model files made
+for it:
+
+|               | build                                     | runs on                                                                                                                                                  | its encoder                                |
+| ------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Neural Engine | `make ANE=1`: Core ML and Foundation      | Apple silicon, macOS 15 or iOS 18 and later                                                                                                              | a compiled Core ML model (`.mlmodelc`)     |
+| Hexagon NPU   | `make QNN=1 QNN_SDK=...`: QNN at run time | Windows on a Snapdragon X Elite, and the X2 Elite (compiled for, not yet run on one); Android on a Snapdragon 8 Gen 3, 8 Elite, 8 Elite Gen 5 or X Elite | a QNN graph compiled for the chip (`.qnn`) |
+
+Their arithmetic is fp16, not the int8 every backend computes the same
+bits of, so a transcript can differ from pktito's own, and from one chip's
+to another's. Over LibriSpeech's 200 the Neural Engine's v2 has float32's
+WER, 1.51%, with 2 transcripts not float32's where pktito's int8 has 7, and
+its v3 over FLEURS 4.47% for float32's 4.43% (tools/ane/CLIMB.md,
+2026-11-02); the Hexagon's AliceBench is 17 words of 27,114 from the CPU's
+(tools/qnn/CLIMB.md). The features, the VAD and the decoder stay on the
+CPU, and a build with either computes what a default one does, bit for
+bit (check-c), unless a run is given an encoder, or a slim model, which
+has none of its own.
+
+The files are on models.pktito.net beside the CPU's: an NPU's edition of a
+model is its slim file, which leaves the encoder out (12 MB for v2, 35 MB
+for v3), and the encoder made for that hardware. `./pktito-c models` says
+which edition this machine and this build run, and prints the commands
+that fetch it; `--all` lists every edition and what each runs on, from
+models.json, the catalog pktito-app builds from too. With a slim model in
+models/ and its encoder beside it, `./pktito-c talk.wav` needs nothing
+more; `--npu FILE` names an encoder, and `-v` says where it ran. A QNN
+graph runs on its own chip and on another of the same Hexagon with at
+least its VTCM: a Snapdragon X1E-78-100 runs the X1E80100's. In the library,
+`pk_asr_use_encoder(a, path, err, errlen)` (core/pktito.h); examples/README.md
+has it from Python, Go, Rust and Node.
+
+On a Mac, the Command Line Tools are enough (`xcode-select --install`):
+Core ML and Apple Archive's `aa` come with macOS.
+
+```sh
+make ANE=1
+./pktito-c models             # the Neural Engine's editions: in models/, the lines it prints
+./pktito-c -v talk.wav        # "... the encoder on Apple's Neural Engine (models/...mlmodelc)"
+```
+
+The first time a program runs the encoder, Core ML compiles it for the
+Mac's Neural Engine, 9 s on an M4 mini, and keeps that in
+/Library/Caches/com.apple.aned, about 0.6 GB a program, which only the
+system clears. From then on test.wav's minute takes 0.3 s there, and on
+an M5 Ultra AliceBench's three hours take 12.2 s, 879 times real time
+(tools/ane/CLIMB.md).
 
 ## Transcribing a recording
 
@@ -919,7 +989,7 @@ of the checkpoint, its licence and the attribution CC-BY-4.0 asks for, the
 VAD's source and licence, the converter's version and the recipe. `pktito
 info` prints it. The loader holds every extent, shape, type and value of the
 file to what the architecture and docs/MEMORY_SAFETY.md say before it forms
-a pointer, and tests/pkfcheck's 29,186 cases run malformed files at it.
+a pointer, and tests/pkfcheck's 29,199 cases run malformed files at it.
 
 `tools/pktito-tools convert` writes one; `info` lists one; `ref` runs the
 float64 reference on a WAV from either a `.nemo` or a `.pkf`; `tiny` writes
@@ -935,6 +1005,7 @@ make check-sanitize          # the model file and WAV/AIFF parsers under ASan an
 make check-tsan              # the pool under ThreadSanitizer
 make check-math              # every float through exp, sigmoid, tanh and log
 make check-ffi               # the examples in other languages, where they are installed
+make check-ffi ANE=1 MODEL=... ENCODER=...   # and on an NPU, against ./pktito-c --npu
 make remote HOST=user@board  # rsync, build, check-c and bench there
 scripts/fmt.sh --check       # every language but C in its formatter's form, before each commit
 ```
@@ -965,9 +1036,15 @@ backend/     the seam (kernels.h, and kernels.c, which picks the backend that
              runs) and ref/, neon/ (and neon-dp/, neon-sve/), avx2/ (and
              avx2-vnni/, avx512-vnni/, amx-int8/); a CLIMB.md beside each
              tuned backend
+npu/         the encoder on an NPU, in a build that asks for one: Core ML's
+             (ane.m, make ANE=1) and QNN's (qnn.c, make QNN=1)
 tools/       the converter, the float64 reference, the corpora, the
-             quantization experiment
+             quantization experiment; ane/, the Core ML encoder's maker and
+             checks; ane/ and qnn/, the NPUs' CLIMB.md records; catalog.py,
+             models.json as core/catalog.c
 tests/       the C checks, the Python ones, and test.wav with its golden files
+models.json  the model files models.pktito.net serves, and the hardware each
+             edition runs on (`./pktito-c models`)
 examples/    the library from the outside: from C, Python, Go, Rust and Node
 docs/        MEMORY_SAFETY.md: the rules the two parsers keep; caption-spec.md:
              the method core/captions.c follows
