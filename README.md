@@ -53,9 +53,9 @@ a Pi 3.
 
 On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
 `pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`, and on Windows on Arm
-in its CLANGARM64 shell with `pacman -S make diffutils
-mingw-w64-clang-aarch64-clang`; pktito-c.exe is linked statically and runs
-from cmd or PowerShell as well. It reads its
+in its CLANGARM64 shell with
+`pacman -S make diffutils mingw-w64-clang-aarch64-clang`; pktito-c.exe is
+linked statically and runs from cmd or PowerShell as well. It reads its
 arguments from Windows in UTF-16 and opens files by those names, so a
 model or recording named past the code page (`C:\Users\José\ñ.wav`)
 opens, and a transcript's accents and Cyrillic reach the console as
@@ -328,10 +328,11 @@ block that scales the sum is fixed (backend/kernels.h).
 A default build runs on the CPU alone, and every backend computes `ref`'s
 bits: the transcripts above. Apple's Neural Engine and a Snapdragon's
 Hexagon NPU can run the encoder instead, most of a run's work, and leave
-the CPU nearly idle: on a Snapdragon X Elite a run took a twentieth of
-the CPU's time (tools/qnn/CLIMB.md, 2026-11-05). pktito-app does where a
-device has one. That takes a build that asks for it and model files made
-for it:
+the CPU nearly idle: on a Snapdragon X Elite ten minutes of speech took
+4.2 s with the encoder on the NPU and 2.3 s of CPU time, and 4.7 s on the
+twelve cores and 51 s of theirs (tools/qnn/CLIMB.md, 2026-11-08).
+pktito-app does where a device has one. That takes a build that asks for
+it and model files made for it:
 
 |               | build                                     | runs on                                                                                                                                                  | its encoder                                |
 | ------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
@@ -377,6 +378,38 @@ Mac's Neural Engine, 9 s on an M4 mini, and keeps that in
 system clears. From then on test.wav's minute takes 0.3 s there, and on
 an M5 Ultra AliceBench's three hours take 12.2 s, 879 times real time
 (tools/ane/CLIMB.md).
+
+On Windows on a Snapdragon, MSYS2's CLANGARM64 shell (above, "Try it")
+builds against Qualcomm's AI Runtime SDK, QAIRT. Its license lets an
+application carry QNN's runtime but not a source tree, so pktito ships
+none of it. QAIRT 2.51 is one public zip of 2.97 GB, with no login; a
+build takes its headers, and a run four of its files:
+
+```sh
+pacman -S --needed libarchive    # bsdtar, which takes from a zip what it is asked for
+curl -fLO https://softwarecenter.qualcomm.com/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.51.0.260929/v2.51.0.260929.zip
+q=qairt/2.51.0.260929
+bsdtar -xf v2.51.0.260929.zip -C ~ $q/include/QNN $q/lib/aarch64-windows-msvc/{QnnHtp,QnnHtpV73Stub}.dll $q/lib/hexagon-v73/unsigned/{libQnnHtpV73Skel.so,libqnnhtpv73.cat}
+make QNN=1 QNN_SDK=~/$q
+cp ~/$q/lib/aarch64-windows-msvc/{QnnHtp,QnnHtpV73Stub}.dll ~/$q/lib/hexagon-v73/unsigned/{libQnnHtpV73Skel.so,libqnnhtpv73.cat} .
+./pktito-c models             # the X Elite's edition: in models/, the lines it prints
+./pktito-c -v talk.wav        # "... the encoder on the Hexagon NPU (models/...x1e80100.qnn)"
+```
+
+V73's are the X Elite's; the X2 Elite takes V81's (`QnnHtpV81Stub.dll`,
+hexagon-v81's skel and .cat). The four go together: beside pktito-c.exe,
+beside a program of yours that links libpktito.a, or beside libpktito.dll
+where Python or Node loads it; or in a folder on PATH, as the examples'
+own programs find them (examples/README.md), but never in the current
+folder. Without the skel and its .cat beside QnnHtp.dll the NPU runs its
+driver's own older QNN, which refuses the graph ("Can't read future
+blob"), and the error says which is missing. Each run writes
+`DSP_INFO UNSUPPORTED_KEY: 49`, 50 and 51 to stderr, twice: the Snapdragon
+driver's QnnSystemInfo.dll, which QnnHtp.dll asks for the chip, doesn't
+know three of the keys QAIRT 2.51 asks it for. They are harmless, and
+stdout is the transcript alone. A run first loads the graph onto the
+NPU, 1.2 s; then test.wav's minute takes 0.52 s (tools/qnn/CLIMB.md,
+2026-11-08).
 
 ## Transcribing a recording
 

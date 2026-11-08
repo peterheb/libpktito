@@ -1427,3 +1427,54 @@ first, in 68.83 s: QNN's binary in it (the file less its 616-byte header)
 is the catalog's (dab2d4d69028caba...) byte for byte. In the PC's x86
 emulation the X2's v2 graph gives test.wav the X1E80100's graph's
 transcript.
+
+## Windows on Snapdragon: where QNN's files go, and the CPU's i8mm
+
+2026-11-08, snappy (Snapdragon X Elite X1E-78-100, Hexagon V73, Windows
+11 build 26300.9818, on mains power). The npu branch's pktito-c and
+examples, built in MSYS2's CLANGARM64 shell (clang 23.1.5) with QNN=1
+against QAIRT 2.51.0.260929; the catalog's X1E80100 v2 graph
+(dab2d4d69028caba...) and the v2 slim file, over SSH. examples/transcribe
+(static) ran from a folder of its own, the current folder another, with
+ADSP_LIBRARY_PATH unset but where a row sets it; QAIRT's files from
+lib/aarch64-windows-msvc and lib/hexagon-v73/unsigned:
+
+| beside the program                           | elsewhere                                      | test.wav                                                               |
+| -------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------- |
+| QnnHtp.dll, QnnSystem.dll, QnnHtpV73Stub.dll |                                                | refused: "Can't read future blob. Newest blob version supported: 3.3." |
+| those, libQnnHtpV73Skel.so, libqnnhtpv73.cat |                                                | the CLI's transcript                                                   |
+| QnnHtp.dll, QnnSystem.dll, QnnHtpV73Stub.dll | the skel and .cat in the current folder        | the CLI's transcript                                                   |
+| QnnHtp.dll, QnnSystem.dll, QnnHtpV73Stub.dll | ADSP_LIBRARY_PATH QAIRT's hexagon-v73/unsigned | the CLI's transcript                                                   |
+| all five but the .cat                        |                                                | refused, as without the skel                                           |
+| all five but QnnSystem.dll                   |                                                | the CLI's transcript                                                   |
+
+So pktito needs four of the five, and without 2.51's skel and its .cat
+where the DSP's loader looks, the DSP runs its driver's own older QNN,
+which can't read 2.51's graph. Python 3.15.2 and Node 26.13.0, loading
+libpktito.dll with QNN's four beside it, the current folder another and
+nothing on PATH, gave the transcript too: the skel is found beside
+QnnHtp.dll and its stub, wherever the program is.
+
+The `DSP_INFO UNSUPPORTED_KEY: 49` (50, 51) lines on stderr, three a call
+and two calls a run, are the driver's: the string is in its HTP folder's
+QnnSystemInfo.dll, which QnnHtp.dll loads to learn the chip
+("SoCServiceUtils/QnnSystemInfo not loaded" is its message without it),
+and in none of QAIRT's files. The chip it learns names no SoC,
+2147483647,73,8,1,1, as on 11-05.
+
+With the CPU's backend neon-i8mm now, where 11-05's was neon-dp, chapter 1
+(640.5 s), runs taken in turn, the times pktito-c -v gives, and the
+process's CPU time as PowerShell's TotalProcessorTime gives it:
+
+|     | run 1           | run 2           | CPU time of the whole process        |
+| --- | --------------- | --------------- | ------------------------------------ |
+| NPU | 4.16 s (154.1x) | 4.21 s (152.3x) | 2.22 s in 5.33 s; 2.44 s in 5.54 s   |
+| CPU | 4.66 s (137.4x) | 4.74 s (135.0x) | 50.14 s in 4.81 s; 51.14 s in 4.90 s |
+
+The transcripts are 11-05's: each the same as its kind's other run, and of
+their 2,194 words one differs, "Why" on the NPU for the CPU's "Why,". The
+NPU is now 1.1 times the CPU's speed, from 1.2 to 1.4, and takes a
+twenty-first to a twenty-third of its CPU time. An NPU run spends 1.2 to
+1.3 s before the VAD starts, most of it the graph's load, a CPU run 0.15 s.
+test.wav's minute: 0.52 s on the NPU and 0.55 s on the CPU by pktito-c -v,
+and by bench's best of 5, 0.507 s and 0.361 s.

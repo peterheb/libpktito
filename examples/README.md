@@ -13,7 +13,10 @@ are the same program in another language, and print what it prints:
 | Node   | node/transcribe.mjs  | koffi 3      | libpktito.so | Node, and `npm install` there    |
 
 Go and Rust link the archive, `make libpktito.a`, into one binary that needs
-nothing beside it but the model, as ./pktito-c does. Python and Node can
+nothing beside it but the model, as ./pktito-c does. cargo relinks for a
+new archive (rust/build.rs says it's an input); `go build` relinks for
+Go's own files alone, so after a new libpktito.a its binary is deleted
+first (go/transcribe, transcribe.exe on Windows), as check.sh does. Python and Node can
 only load a shared library: `make shared` builds it,
 libpktito.so, libpktito.dylib on macOS, libpktito.dll on Windows (MSYS2, as
 for the CLI, with winpthreads in it, so it needs nothing beside it), and an
@@ -106,3 +109,47 @@ examples/transcribe with them, to `./pktito-c --npu`'s transcript. Each
 gave it on an M4 Mac mini (macOS 26.4, the Command Line Tools' clang 21)
 on 2026-11-08: Apple's python3 3.9.6, Go 1.27.3, Rust 1.99.1, and Node
 26.13.0 with koffi 3.3.4.
+
+On Windows on a Snapdragon, in MSYS2's CLANGARM64 shell, with QAIRT's
+headers in ~/qairt and QNN's four files at the top of the tree, as the
+README's lines put them ("The Neural Engine and NPUs"):
+
+```sh
+make QNN=1 QNN_SDK=~/qairt/2.51.0.260929 pktito-c libpktito.a shared examples/transcribe
+./pktito-c models          # then the lines it prints, in models/
+python examples/python/transcribe.py models/parakeet-tdt-0.6b-v2-slim.pkf talk.wav models/parakeet-tdt-0.6b-v2-x1e80100.qnn
+PATH=$PWD:$PATH ./examples/transcribe models/parakeet-tdt-0.6b-v2-slim.pkf talk.wav models/parakeet-tdt-0.6b-v2-x1e80100.qnn
+```
+
+What differs from the Mac's:
+
+- **QNN's files.** The library loads QnnHtp.dll from beside the file its
+  code is in, and QnnHtp.dll the stub, skel and .cat from beside itself.
+  For Python and Node that file is libpktito.dll, at the top of the tree
+  with QNN's four. C, Go and Rust link libpktito.a into a program of
+  their own, in examples/, examples/go and examples/rust/target/release,
+  which finds them on PATH: the top of the tree on it, as above, or a
+  folder that holds the four. So does what `go run` and `cargo run` build
+  elsewhere. The current folder is never looked in. Where QnnHtp.dll
+  isn't found the error names the program it looked beside
+  ("QnnHtp.dll is not beside ...\examples\go\transcribe.exe or on PATH").
+- **Static binaries.** MSYS2's toolchains link their own DLLs
+  (winpthreads, libunwind) by default, which only its shell finds:
+  go/main.go links with `-static` on Windows, and
+  rust/.cargo/config.toml asks for `crt-static`, so each binary runs from
+  cmd or PowerShell, as pktito-c.exe does.
+- **No first run.** Nothing is compiled or kept between runs: each loads
+  the graph onto the NPU, 1.2 s for v2's 0.7 GB, and test.wav's minute
+  then takes 0.52 s.
+- **stderr** carries the driver's `DSP_INFO UNSUPPORTED_KEY` lines
+  (README); stdout, the transcript, doesn't.
+
+`make check-ffi QNN=1 QNN_SDK=~/qairt/2.51.0.260929
+MODEL=models/parakeet-tdt-0.6b-v2-slim.pkf
+ENCODER=models/parakeet-tdt-0.6b-v2-x1e80100.qnn` holds them the same way,
+with the top of the tree on PATH for C, Go and Rust. Each gave
+`./pktito-c --npu`'s transcript on a Snapdragon X Elite X1E-78-100
+(Windows 11 build 26300, MSYS2's CLANGARM64 clang 23.1.5, QAIRT
+2.51.0.260929) on 2026-11-08: python.org's embeddable Python 3.15.2, Go
+1.27.3, Rust 1.99.1 (aarch64-pc-windows-gnullvm), and Node 26.13.0 with
+koffi 3.3.4.
