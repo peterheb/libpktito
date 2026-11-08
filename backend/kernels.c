@@ -25,8 +25,8 @@ const pk_kernels *const pk_kernels_built[] = {
     &pk_kernels_neon_sve,
 #endif
 /* neon-i8mm after it, the same loop for the cores with I8MM and no SVE,
- * where its probe finds SMMLA as fast as SDOT (backend/neon-dp/CLIMB.md,
- * 2026-11-06) */
+ * where its probe finds its tile the faster (backend/neon-dp/CLIMB.md,
+ * 2026-11-07) */
 #ifdef PK_HAVE_neon_i8mm
     &pk_kernels_neon_i8mm,
 #endif
@@ -56,16 +56,43 @@ const pk_kernels *const pk_kernels_built[] = {
     NULL
 };
 
+/* The choice, made once and kept: by the first pk_model_load, on its
+ * thread, before a transcriber's threads run a kernel (core/model.c), or by
+ * the first kernel called in a program that loads no model. A probe then
+ * runs once a process, where a pktito-c run on the M4 mini had run
+ * neon-i8mm's eleven times, ten at once on its first job's threads
+ * (backend/neon-dp/CLIMB.md, 2026-11-07). Two threads that make it at once
+ * keep the first made. A PKTITO_KERNELS that cannot be had is reported by
+ * pk_model_load; a kernel called without a model loaded first takes the
+ * CPU's choice instead. */
+static _Atomic(const pk_kernels *) g_in_use;
+
+static const pk_kernels *keep(const pk_kernels *t) {
+    const pk_kernels *kept = NULL;
+    if (atomic_compare_exchange_strong_explicit(&g_in_use, &kept, t, memory_order_acq_rel,
+                                                memory_order_acquire))
+        return t;
+    return kept;
+}
+
 const pk_kernels *pk_kernels_pick(char *why, size_t whylen) {
     const char *want = getenv("PKTITO_KERNELS");
+    const pk_kernels *kept = atomic_load_explicit(&g_in_use, memory_order_acquire);
+    if (kept && !(want && *want))
+        return kept;
     for (const pk_kernels *const *k = pk_kernels_built; *k; k++) {
         if (want && *want && strcmp(want, (*k)->id))
             continue;
         const char *lack = pk_os_cpu_lacks((*k)->needs);
         /* a probe passes a backend by where it would be slower than the
-         * next, unless PKTITO_KERNELS asks for it */
-        if (!lack && ((want && *want) || !(*k)->usable || (*k)->usable()))
-            return *k;
+         * next, unless PKTITO_KERNELS asks for it. It is asked on the
+         * fastest kind of core the process may use, which does most of a
+         * run's work: neon-i8mm's tile reads 1.16 of SDOT's time on the
+         * S24's A520s and 0.80 to 0.84 on its A720s and X4, and its 8
+         * threads run 12.5% faster on neon-i8mm (backend/neon-dp/CLIMB.md,
+         * 2026-11-07). */
+        if (!lack && ((want && *want) || !(*k)->usable || pk_os_on_fast_cores((*k)->usable)))
+            return keep(*k);
         if (!lack)
             continue;
         if (want && *want) {
@@ -83,24 +110,17 @@ const pk_kernels *pk_kernels_pick(char *why, size_t whylen) {
     return NULL;
 }
 
-/* The choice, made on the first call and kept; two threads that make it at
- * once make the same one. A PKTITO_KERNELS that cannot be had is reported by
- * pk_model_load (core/model.c); a kernel called without a model loaded
- * first takes the CPU's choice instead. */
-static _Atomic(const pk_kernels *) g_in_use;
-
 static const pk_kernels *k(void) {
     const pk_kernels *t = atomic_load_explicit(&g_in_use, memory_order_acquire);
-    if (!t) {
-        t = pk_kernels_pick(NULL, 0);
-        /* a PKTITO_KERNELS that cannot be had: the CPU's choice; ref, last,
-         * needs nothing, so the loop ends */
-        for (const pk_kernels *const *b = pk_kernels_built; !t; b++)
-            if (!pk_os_cpu_lacks((*b)->needs))
-                t = *b;
-        atomic_store_explicit(&g_in_use, t, memory_order_release);
-    }
-    return t;
+    if (t)
+        return t;
+    t = pk_kernels_pick(NULL, 0);
+    /* a PKTITO_KERNELS that cannot be had: the CPU's choice; ref, last,
+     * needs nothing, so the loop ends */
+    for (const pk_kernels *const *b = pk_kernels_built; !t; b++)
+        if (!pk_os_cpu_lacks((*b)->needs))
+            t = *b;
+    return keep(t);
 }
 
 const char *pk_k_name(void) { return k()->name; }

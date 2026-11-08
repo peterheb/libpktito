@@ -39,6 +39,13 @@ int pk_os_cores(void);
  * them where the cores are of one kind or the OS does not say. */
 int pk_os_fast_cores(void);
 
+/* fn's answer, asked on those fastest cores where the process may use cores
+ * of two kinds: on Linux, from a thread of its own held to them, the
+ * caller's thread left as it was. Elsewhere, and where a thread cannot be
+ * had, asked on the calling thread. For a probe of the core it runs on,
+ * whose answer is the process's (backend/kernels.c). */
+int pk_os_on_fast_cores(int (*fn)(void));
+
 /* The calling thread out of what the operating system would hold the
  * library's work back with. On Windows that is the EcoQoS its heuristics
  * give the threads of a process without a window, which it confines to the

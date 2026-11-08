@@ -40,6 +40,9 @@
 #endif
 #ifdef __linux__
 #include <sched.h>
+#ifndef PK_NO_THREADS
+#include <pthread.h>
+#endif
 #endif
 #if defined(__linux__) && defined(__aarch64__)
 #include <sys/prctl.h>
@@ -187,6 +190,32 @@ static int allowed_cores(long *cpu, int max) {
     }
     return n;
 }
+
+/* Of allowed_cores's, the fastest kind's (pk_os_fast_cores says which):
+ * their CPUs into fast, and how many, of the *cores in all. 0 where a core
+ * does not say its speed. */
+static int fast_cpus(cpu_set_t *fast, int *cores) {
+    long cpu[1024], speed[1024], top = 0;
+    int n = *cores = allowed_cores(cpu, 1024);
+    for (int i = 0; i < n; i++) {
+        long s = sysfs_long(cpu[i], "cpu_capacity");
+        if (s < 0)
+            s = sysfs_long(cpu[i], "cpufreq/cpuinfo_max_freq");
+        if (s < 0)
+            return 0;
+        speed[i] = s;
+        top = s > top ? s : top;
+    }
+    int k = 0;
+    CPU_ZERO(fast);
+    for (int i = 0; i < n; i++)
+        if (speed[i] * 10 >= top * 9) {
+            k++;
+            if (cpu[i] < CPU_SETSIZE)
+                CPU_SET(cpu[i], fast);
+        }
+    return k;
+}
 #endif
 
 /* One thread a physical core, of every kind. On a chip with two kinds of
@@ -235,30 +264,56 @@ int pk_os_fast_cores(void) {
         return perf;
 #endif
 #ifdef __linux__
-    /* the cores pk_os_cores counts, each with its speed */
-    long cpu[1024], speed[1024], top = 0;
-    int n = allowed_cores(cpu, 1024);
-    for (int i = 0; i < n; i++) {
-        long s = sysfs_long(cpu[i], "cpu_capacity");
-        if (s < 0)
-            s = sysfs_long(cpu[i], "cpufreq/cpuinfo_max_freq");
-        if (s < 0)
-            return pk_os_cores();               /* a core whose speed it does not say */
-        speed[i] = s;
-        top = s > top ? s : top;
-    }
-    int fast = 0;
-    for (int i = 0; i < n; i++)
-        fast += speed[i] * 10 >= top * 9;
-    if (fast > 0)
-        return fast;
+    cpu_set_t fast;
+    int cores, n = fast_cpus(&fast, &cores);
+    if (n > 0)
+        return n;
 #endif
     return pk_os_cores();
 }
 
+#if defined(__linux__) && !defined(PK_NO_THREADS)
+typedef struct {
+    int (*fn)(void);
+    cpu_set_t fast;
+    int answer;
+} on_fast;
+
+static void *on_fast_main(void *arg) {
+    on_fast *o = arg;
+    sched_setaffinity(0, sizeof o->fast, &o->fast);
+    o->answer = o->fn();
+    return NULL;
+}
+#endif
+
+/* A thread of its own: the caller's, held to the fast cores and let go,
+ * would keep a mask of its own, the cores it had at that moment, which
+ * Linux 6.2 and later keep through the process's later cpusets, as Android
+ * moves an app between them. */
+int pk_os_on_fast_cores(int (*fn)(void)) {
+#if defined(__linux__) && !defined(PK_NO_THREADS)
+    on_fast o = { .fn = fn };
+    int cores, n = fast_cpus(&o.fast, &cores);
+    pthread_t t;
+    if (n > 0 && n < cores && pthread_create(&t, NULL, on_fast_main, &o) == 0) {
+        pthread_join(t, NULL);
+        return o.answer;
+    }
+#endif
+    return fn();
+}
+
 double pk_os_now(void) {
     struct timespec ts;
+#ifdef __APPLE__
+    /* macOS's CLOCK_MONOTONIC steps by a microsecond, and neon-i8mm's
+     * probe times 4 on an M4 (backend/neon-dp/CLIMB.md, 2026-11-07); this
+     * steps by 41.7 ns, and like Linux's CLOCK_MONOTONIC stops in sleep */
+    clock_gettime(CLOCK_UPTIME_RAW, &ts);
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
@@ -370,6 +425,7 @@ static int cores(int fastest) {
 
 int pk_os_cores(void) { return cores(0); }
 int pk_os_fast_cores(void) { return cores(1); }
+int pk_os_on_fast_cores(int (*fn)(void)) { return fn(); }
 
 /* Windows gives EcoQoS, by its own heuristics, to a process with no
  * window - one run over ssh, a service - and on battery to one whose
@@ -478,6 +534,7 @@ void pk_unmap(const unsigned char *p, size_t size) {
 
 int pk_os_cores(void) { return 1; }
 int pk_os_fast_cores(void) { return 1; }
+int pk_os_on_fast_cores(int (*fn)(void)) { return fn(); }
 
 double pk_os_now(void) {
     struct timespec ts;
@@ -629,14 +686,15 @@ static int cpu_has(const char *f) {
  * Apple's clang defines __ARM_FEATURE_DOTPROD for -mcpu=apple-a13 and not
  * for apple-a12, and iPadOS 26 still runs on A12 iPads. The system names
  * each feature it has in hw.optional.arm (1 on the M4 Pro); one that does
- * not name it gets neon. */
+ * not name it gets neon. I8MM (1 on the M4) puts neon-i8mm to its probe,
+ * which keeps the M4 on neon-dp (backend/neon-dp/CLIMB.md, 2026-11-07). */
 static int cpu_has(const char *f) {
-    if (!strcmp(f, "asimddp")) {
-        int has = 0;
-        size_t len = sizeof has;
-        return sysctlbyname("hw.optional.arm.FEAT_DotProd", &has, &len, NULL, 0) == 0 && has;
-    }
-    return 0;
+    const char *name = !strcmp(f, "asimddp") ? "hw.optional.arm.FEAT_DotProd"
+                       : !strcmp(f, "i8mm")  ? "hw.optional.arm.FEAT_I8MM"
+                                             : NULL;
+    int has = 0;
+    size_t len = sizeof has;
+    return name && sysctlbyname(name, &has, &len, NULL, 0) == 0 && has;
 }
 
 #else /* elsewhere no feature can be asked for, and ref and neon need none */

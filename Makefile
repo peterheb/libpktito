@@ -8,7 +8,7 @@
 #                                 neon     ARMv8.0 NEON: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
 #                                 neon-dp  ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
 #                                 neon-sve     and SVE + I8MM's SMMLA: the GB10 (X925, A725)
-#                                 neon-i8mm    and I8MM's SMMLA, no SVE: Snapdragon 8 phones
+#                                 neon-i8mm    and I8MM's SMMLA, no SVE: Snapdragon 8, X
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
 #                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
