@@ -52,8 +52,10 @@ a Pi 3.
 `PKTITO_KERNELS=neon ./pktito-c ...` runs a given one of them, to compare.
 
 On Windows the same, in an [MSYS2](https://www.msys2.org) UCRT64 shell with
-`pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`; pktito-c.exe is linked
-statically and runs from cmd or PowerShell as well. It reads its
+`pacman -S make diffutils mingw-w64-ucrt-x86_64-gcc`, and on Windows on Arm
+in its CLANGARM64 shell with `pacman -S make diffutils
+mingw-w64-clang-aarch64-clang`; pktito-c.exe is linked statically and runs
+from cmd or PowerShell as well. It reads its
 arguments from Windows in UTF-16 and opens files by those names, so a
 model or recording named past the code page (`C:\Users\José\ñ.wav`)
 opens, and a transcript's accents and Cyrillic reach the console as

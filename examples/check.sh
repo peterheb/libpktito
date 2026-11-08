@@ -37,7 +37,7 @@ else
 fi
 
 if command -v go >/dev/null; then
-    if (cd examples/go && go build -o transcribe .); then
+    if (cd examples/go && go build); then
         check go cgo examples/go/transcribe
     else
         fail go "go build"
@@ -47,7 +47,8 @@ else
 fi
 
 if command -v cargo >/dev/null; then
-    if cargo build --quiet --release --manifest-path examples/rust/Cargo.toml; then
+    # from its folder, where cargo finds its .cargo/config.toml
+    if (cd examples/rust && cargo build --quiet --release); then
         check rust "extern \"C\"" examples/rust/target/release/transcribe
     else
         fail rust "cargo build"

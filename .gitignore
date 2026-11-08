@@ -49,3 +49,8 @@ CLAUDE.local.md
 /examples/go/transcribe.exe
 /examples/rust/target/
 /examples/node/node_modules/
+*.exe
+# QNN's runtime, staged beside pktito-c.exe: Qualcomm's to distribute, not this tree's
+/Qnn*.dll
+/libQnn*.so
+/libqnn*.cat

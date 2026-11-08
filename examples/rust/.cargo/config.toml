@@ -1,0 +1,8 @@
+# Windows with MSYS2's clang: the C runtime's parts, the unwinder among
+# them, linked into the binary (build.rs links winpthreads so), as ./pktito-c
+# is, so that it runs outside MSYS2's shell
+[target.aarch64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]

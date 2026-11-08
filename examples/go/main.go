@@ -22,6 +22,9 @@ package main
 // has both, and a binary of an archive without the Neural Engine loads them
 // unused
 #cgo darwin LDFLAGS: -framework CoreML -framework Foundation
+// static, as the Makefile links ./pktito-c on Windows: winpthreads in the
+// binary rather than MSYS2's DLL, so it runs outside MSYS2's shell
+#cgo windows LDFLAGS: -static
 #include <stdlib.h>
 #include "pktito.h"
 #include "wav.h"

@@ -14,8 +14,16 @@ fn main() {
     });
     println!("cargo:rustc-link-search=native={out}");
     println!("cargo:rustc-link-lib=static=pktito");
+    // Windows with MSYS2's toolchain links winpthreads into the binary, as
+    // the Makefile does ./pktito-c, so it runs outside MSYS2's shell; the
+    // unwinder too, by .cargo/config.toml's crt-static
+    let windows_gnu = std::env::var("CARGO_CFG_WINDOWS").is_ok()
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu");
     println!("cargo:rustc-link-lib=m");
-    println!("cargo:rustc-link-lib=pthread");
+    println!(
+        "cargo:rustc-link-lib={}pthread",
+        if windows_gnu { "static=" } else { "" }
+    );
     let opts = std::fs::read_to_string(format!("{dir}/build.opts")).unwrap_or_default();
     let with = |o| opts.split_whitespace().any(|x| x == o);
     if with("ANE=1") {

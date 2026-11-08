@@ -42,7 +42,10 @@ CC ?= cc
 # (backend/kernels.c), so one binary serves its family: built on an Alder
 # Lake it runs on a Zen 4, built on a Pi 5 on a Pi 3.
 # BACKEND=<name> builds that one alone, with ref.
-UNAME_M := $(shell uname -m)
+# The machine is the compiler's target where it names one: on Windows on
+# Arm, MSYS2's shell runs as x86_64 under emulation, and its CLANGARM64
+# clang makes aarch64.
+UNAME_M := $(or $(firstword $(subst -, ,$(shell $(CC) -dumpmachine 2>/dev/null))),$(shell uname -m))
 UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
   FAMILY := neon-sve neon-i8mm neon-dp neon
