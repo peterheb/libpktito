@@ -56,11 +56,11 @@ if ($r) { 'pktito-c: FAIL on the tiny model'; exit 1 }
 'pktito-c: the tiny model through the CLI, chunked, four ways'
 $r = 0
 foreach ($a in "-m $tiny -m $tinydiar --json tests\pkfcheck.wav", "-m $tiny -m $tinydiar tests\pkfcheck.wav tests\pkfcheck.wav",
-               "-m $tinydiar speakers --json tests\pkfcheck.wav") {
+               "-m $tinydiar speakers --json tests\pkfcheck.wav", "-m $tinydiar probs tests\pkfcheck.wav") {
     if (-not $r) { cmd /c "pktito-c.exe $a > NUL"; $r = $LASTEXITCODE }
 }
 if ($r) { 'pktito-c: FAIL on the tiny models with --speakers'; exit 1 }
-'pktito-c --speakers: the tiny models through the CLI, three ways'
+'pktito-c --speakers: the tiny models through the CLI, four ways'
 
 # check-c.sh's names past ASCII, made from their code points so that this
 # file means the same in every code page: Windows PowerShell 5.1 reads a

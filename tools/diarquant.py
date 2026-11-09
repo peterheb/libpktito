@@ -66,7 +66,9 @@ earlier one for the classes it names. This model's classes:
 "f32@CLASSES" leaves those classes unrounded, and the rule "f32cuts" makes
 every cache cut keep the frames float32's kept, so that what is left is the
 network's own rounding. "f64" alone is the float64 reference: what rounding
-differently does with no int8 at all.
+differently does with no int8 at all. "rows:DIR" is not computed: it is the
+probabilities in DIR/NAME.txt as `pktito-c probs` prints them for a
+diarizer's model, the C engine's, scored as the rest are.
 """
 
 import argparse
@@ -442,7 +444,7 @@ def main():
     args = ap.parse_args()
     configs = [c for c in args.configs.split(",") if c and c != "f32"]
     for c in configs:
-        if c != "f64":
+        if c != "f64" and not c.startswith("rows:"):
             parse(c)
     names = [os.path.splitext(os.path.basename(p))[0] for p in args.wav]
     if len(set(names)) != len(names):
@@ -454,9 +456,15 @@ def main():
     def cuts(name):
         return os.path.join(args.cache, "f32", name + ".cuts.npz")
 
+    def load(cfg, name):
+        if cfg.startswith("rows:"):  # a row's start, then each speaker's
+            path = os.path.join(cfg[5:], name + ".txt")
+            return np.loadtxt(path, ndmin=2)[:, 1:].astype(np.float32)
+        return np.load(out(cfg, name))
+
     for cfgs, f64 in (
         (["f32"], False),
-        ([c for c in configs if c != "f64"], False),
+        ([c for c in configs if c != "f64" and not c.startswith("rows:")], False),
         (["f64"] if "f64" in configs else [], True),
     ):
         for c in cfgs:
@@ -490,9 +498,7 @@ def main():
     }
     results = {}
     for cfg in ["f32"] + configs:
-        rows = {
-            n: compare(base[n], np.load(out(cfg, n)), rttm[n], words[n]) for n in names
-        }
+        rows = {n: compare(base[n], load(cfg, n), rttm[n], words[n]) for n in names}
         results[cfg] = rows
         v = list(rows.values())
         lab, of = sum(r["labels"] for r in v), sum(r["of"] for r in v)

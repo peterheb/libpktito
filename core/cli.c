@@ -124,7 +124,8 @@ static const char *usage =
     "usage: pktito-c [options] FILE...        transcribe, a sentence a line\n"
     "       pktito-c bench [options] FILE     time a transcription\n"
     "       pktito-c segments [options] FILE  speech start and end times (s)\n"
-    "       pktito-c probs [options] FILE     speech probability of each 32 ms frame\n"
+    "       pktito-c probs [options] FILE     speech probability of each 32 ms frame; with a\n"
+    "                                         diarizer's -m, each speaker's each 10 ms\n"
     "       pktito-c speakers [options] FILE  who speaks when: start, end (s), speaker\n"
     "       pktito-c info [options]           describe the model\n"
     "       pktito-c models [--all]           the model files for this machine, and\n"
@@ -1420,6 +1421,39 @@ static int bench_diar(const opts *o, const pk_model *dm) {
     return 0;
 }
 
+/* pktito-c probs on a diarizer's model: a line a row, its start in seconds
+ * and each speaker's probability, as the VAD's are printed (vad, below) */
+typedef struct {
+    size_t S;
+    int64_t row;                     /* samples a row */
+    int rate;
+} row_printer;
+
+static int print_rows(void *arg, int64_t row, size_t n, const float *p) {
+    const row_printer *rp = arg;
+    for (size_t i = 0; i < n; i++) {
+        printf("%.3f", (double)((row + (int64_t)i) * rp->row) / rp->rate);
+        for (size_t s = 0; s < rp->S; s++)
+            printf(" %.9g", p[i * rp->S + s]);
+        putchar('\n');
+    }
+    return 0;
+}
+
+static int diar_probs(const opts *o, const pk_model *dm) {
+    size_t n;
+    const int rate = pk_model_rate(dm);
+    float *x = read_audio(o->in, rate, &n, o);
+    pk_diar *dz = pk_diar_new(dm, o->threads);
+    if (!dz)
+        die("out of memory");
+    row_printer rp = { (size_t)pk_model_speakers(dm), llround(pk_model_frame_seconds(dm) * rate), rate };
+    pk_diar_run(dz, x, n, print_rows, &rp);
+    free(x);
+    pk_diar_free(dz);
+    return 0;
+}
+
 /* pktito-c speakers: who speaks when, from the diarizer alone. Each
  * speaker's stretches of speech (pk_speaker_segments), a line each, start
  * and end in seconds and the speaker, numbered from 1 in the order they
@@ -1708,6 +1742,8 @@ int main(int argc, char **argv) {
                 putchar('\n');
             rc |= info(dm);
         }
+    } else if (!strcmp(o.cmd, "probs") && dm && !m) {
+        rc = diar_probs(&o, dm);
     } else if (!strcmp(o.cmd, "bench") && dm && !m) {
         rc = bench_diar(&o, dm);
     } else {
@@ -1715,7 +1751,8 @@ int main(int argc, char **argv) {
         if (dm && (o.subs || o.stream))
             die("a diarizer's model with %s: not yet", o.subs ? "subtitles" : "--stream");
         if (dm && strcmp(o.cmd, "text"))
-            die("a diarizer's model is for a transcript with --speakers, or pktito-c speakers; not %s", o.cmd);
+            die("a diarizer's model is for a transcript with --speakers, pktito-c speakers or probs; not %s",
+                o.cmd);
         if (!m)
             m = load_model(NULL, argv[0]);
         if (o.speakers && !dm)

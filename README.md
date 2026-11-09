@@ -945,7 +945,8 @@ and as `word` and `words` the index of its first word in the file and how
 many); and `meta` gains the `diarizer` and how many `speakers` said a word.
 `pktito-c speakers FILE` prints the diarizer's answer alone, with no
 transcript: each speaker's stretches of speech, a line each, the start and
-end in seconds and the speaker.
+end in seconds and the speaker. `pktito-c probs` with the diarizer's `-m`
+prints the probabilities themselves, a line each 10 ms.
 
 The diarizer is NVIDIA's Nemotron 3 Diarization (99.2M parameters, up to
 eight speakers, OpenMDW-1.1), a Streaming Sortformer: 31 Transformer layers
@@ -972,14 +973,14 @@ looks for it in `models/` beside the recognizer's, or takes it as a second
 
 Its numerics are Parakeet's: every matrix int8 with a scale a row, the
 activations entering them in blocks of 32, the rest float. On AMI's 16
-evaluation meetings that changes 0.085% of float32's labels, a speaker's
-speech or silence each 10 ms, and gives a DER of 9.21% against float32's
-9.19% (docs/DIARIZATION.md, "Why int8"). On two of that study's synthetic
-conversations, C's labels differ from those of tools/diarquant.py's numpy
-model of the same rounding in 6 of 240,240 (5 minutes, two speakers; 12
-from float32's) and 70 of 484,144 (10 minutes, four; 82). Every backend
-writes ref's bits: avx2, avx2-vnni and avx512-vnni on a 9950X, neon, neon-dp
-and neon-dp-a76 on a Pi 5.
+evaluation meetings, 9 hours, the C changes 0.086% of float32's labels (a
+speaker's speech or silence each 10 ms) and makes a DER of 9.23% against
+NTT's forced alignment, where float32 makes 9.19% and the model card gives
+9.25%. It gives 0.35% of the words another speaker than float32 does, and
+837 of the 74,737 to a speaker who did not say them, where float32 gives
+855 (docs/DIARIZATION.md, "Why int8"). Every backend writes ref's bits:
+avx2, avx2-vnni and avx512-vnni on a 9950X, neon, neon-dp and neon-dp-a76
+on a Pi 5.
 
 The 5-minute conversation took 10.1 s on a Pi 5's four cores (30x real
 time; neon-dp-a76, gcc 14.2) and 0.81 s on a 9950X's eight (371x; WSL2, gcc

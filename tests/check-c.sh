@@ -37,7 +37,8 @@ run ./tests/sentcheck "$MODEL" tests/data/test.wav
 ./pktito-c -m $TINY -m $TINY_DIAR --json tests/pkfcheck.wav > /dev/null \
   && ./pktito-c -m $TINY -m $TINY_DIAR tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
   && ./pktito-c -m $TINY_DIAR speakers --json tests/pkfcheck.wav > /dev/null \
-  && echo "pktito-c --speakers: the tiny models through the CLI, three ways" \
+  && ./pktito-c -m $TINY_DIAR probs tests/pkfcheck.wav > /dev/null \
+  && echo "pktito-c --speakers: the tiny models through the CLI, four ways" \
   || { echo "pktito-c: FAIL on the tiny models with --speakers"; exit 1; }
 d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/ñ.wav" \
   && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json \

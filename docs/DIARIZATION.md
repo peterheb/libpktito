@@ -704,6 +704,42 @@ recordings, took 1 h 40 min in five processes of three threads, under a
 stacking matrix float, 28 min (peak 7.1 GB); the stacking matrix's two
 recordings with float32's cuts, 2 min in two processes (2.8 GB).
 
+### The C, measured the same way (2026-11-09)
+
+The engine's C (core/diar.c and the kernels as 897d54c left them; its rows
+as `pktito-c probs` prints them for a diarizer's model, avx512-vnni on the
+9950X, which are ref's bits), scored by diarquant.py
+(`--configs rows:DIR`) against the same float32 runs, beside the rule's
+rows from the tables above:
+
+| AMI                | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
+| ------------------ | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ---------------------------------- |
+| the rule, in numpy | 0.085%         | +0.00050 (4.9) | 0.89%                 | 9.21% (+0.010, t 0.4)                  | 221                      | 836                                         | +140, -181                     | 0, 0, 1                            |
+| the rule, in the C | 0.086%         | +0.00052 (3.3) | 0.91%                 | 9.23% (+0.064, t 1.6)                  | 264                      | 837                                         | +173, -191                     | 0, 0, 1                            |
+
+| synthetic          | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
+| ------------------ | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ------------------------------------------- |
+| the rule, in numpy | 0.023%         | +0.00007 (1.7) | 0.21%                 | 5.83% (-0.020, t -1.0)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, in the C | 0.040%         | +0.00054 (1.3) | 0.35%                 | 5.80% (-0.091, t -1.4)                 | 17                       | 112                                         | +0, -0                         | 42, 0, 0                                    |
+
+The C does not compute numpy's bits: its products are int32 sums in its
+own order, and its exponentials, GELU's erf, the rotation's sines and
+cosines, the softmax and the norms are its own (core/vmath.h, core/diar.c).
+Its labels differ from the numpy rule's in 13,629 of AMI's 26.1 million
+(0.052%), in every meeting (236 to 1,874 each), and in 2,215 of the
+synthetic set's 9.4 million, 1,583 of them conv5's. Against float32 it is
+as far as the rule in numpy is: DER within the meetings' spread (+0.064
+on AMI, t 1.6), and as many words not the true speaker's (837 to 836).
+All 17 of the synthetic set's moved words are conv5's, the conversation
+in which the model hears its host as three voices (section 8): there the
+C hears six speakers for float32's seven, and gives 93 words to a wrong
+speaker for float32's 110. The other eight conversations move none.
+
+So the C meets section 9's bar for stage 2: every backend writes ref's
+bits, and its DER is float32's within int8's measured cost, the spread
+of the configurations above (9.21% to 9.28% on AMI). It took 80 s for
+AMI's 9.06 hours on the 9950X (16 threads), about 400 times real time.
+
 ## 7. What it costs
 
 ### Time
