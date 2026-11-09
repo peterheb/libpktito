@@ -3021,3 +3021,36 @@ differs. Any scalar pk_fmaf left in the x86 backends under clang pays
 it too, in the vector kernels' tails, which are short.
 
 Kept: every criterion holds, under both compilers, on both boards.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (hypothesis)
+
+backend/neon/CLIMB.md's entry of the same day has the change and the
+reason: two passes between the attention's products take as long at
+four threads as at one on a Pi 5. A scratch copy of c1162b8 timed both
+on the 9950X (avx512-vnni, tests/data/conv2.wav, best of 5) in a window
+pinfer gave. K's repacking is its own stage there, so its time is the
+stage's less the cache's 0.9 to 1.1 ms:
+
+| pass                      | gcc 15.2, 1 thread | 16      | clang 21.1, 1 | 16      |
+| ------------------------- | ------------------ | ------- | ------------- | ------- |
+| the rotation (rope_item)  | 4.9 ms             | 2.2     | 3.6           | 2.3     |
+| K's repacking (kpan_item) | 5.1                | 4.9     | 5.0           | 4.7     |
+| the run                   | 0.616 s            | 0.095 s | 0.599 s       | 0.092 s |
+| the two passes' share     | 1.6%               | 7.5%    | 1.4%          | 7.6%    |
+
+K's repacking takes as long at 16 threads as at one. The recognizer's
+repacking was slower at 16 threads than at 8 (8.8 ms against 3.9) until
+its 2026-10-28 entry above moved it into the K product's items, where
+the products took on 39 to 55% of its time at 16 threads.
+
+Predicted, the same share here. The passes are core code, so with
+avx2-vnni they cost the same 7 ms, out of a run of 0.129 s:
+
+| board | kernels     | threads | gcc 15.2     | clang 21.1   |
+| ----- | ----------- | ------- | ------------ | ------------ |
+| 9950X | avx512-vnni | 1       | level to -1% | level to -1% |
+| 9950X | avx512-vnni | 16      | -3 to -5%    | -3 to -5%    |
+| 9950X | avx2-vnni   | 16      | -2 to -3.5%  | -2 to -3.5%  |
+
+Kept on the criteria in the NEON entry, and if the 9950X at 16 threads
+is faster than its base by more than the spread under both compilers.

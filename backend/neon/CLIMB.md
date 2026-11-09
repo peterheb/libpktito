@@ -1464,3 +1464,58 @@ clang's own vectorization of ref's loop was 6.004-6.014 s; the kernel
 takes 5.811-5.824 s.
 
 Kept: every criterion holds, under both compilers, on both cores.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (hypothesis)
+
+`make PROFILE=1` now covers the diarizer (c1162b8). On pi5a (gcc 14.2,
+neon-dp-a76, tests/data/conv2.wav, best of 5) two passes between the
+attention's products take the same time at four threads as at one. A
+scratch copy of c1162b8 timed K's repacking (kpan_item) as its own
+stage:
+
+| pass                      | 1 thread | 4 threads |
+| ------------------------- | -------- | --------- |
+| the rotation (rope_item)  | 45.7 ms  | 44.9 ms   |
+| K's repacking (kpan_item) | 28.6     | 29.5      |
+| the run                   | 5.739 s  | 1.573 s   |
+| the two passes' share     | 1.3%     | 4.7%      |
+
+At 684 frames, q and k are 1.4 MB each. Together they are more than the
+Pi 5's 2 MB L3, so a pass of its own over them goes to memory, and more
+threads don't make that faster. The A53 (Orange Pi, gcc 15.2) spent
+346 ms of 59.5 s on the rotation at one thread and 140 ms of 15.25 s at
+four. The 9950X (avx512-vnni) is in backend/avx2/CLIMB.md's entry of the
+same day.
+
+The change: each item of the q and k products turns its own tile by
+the rotary angles while the tile is in its core's cache. For k, the item
+then copies its tile into pk_k_gemm_f32's panels (pk_panels_tile), as
+the recognizer's K product already does (core/passes.c). rope_item,
+kpan_item and their two pool jobs a layer go. A tile must hold whole
+heads, since the rotation pairs dimensions i and i + dk/2.
+pk_gemm_on's rows come in slices of 64 or 256, so the validator gains a
+shape check: a head must divide 64. Nemotron 3's heads are 64 wide.
+pkfcheck gains a corrupt case for it.
+
+No bits change. The rotation is the same operations on each value, and
+the panels are a copy.
+
+Predicted: the passes' work is done from L2 instead of from memory, and
+at four threads it is split four ways.
+
+| board           | threads | gcc 14.2 / 15.2 (A53) | clang 21.1     |
+| --------------- | ------- | --------------------- | -------------- |
+| pi5a (A76)      | 1       | -0.3 to -1.0%         | -0.3 to -1.0%  |
+| pi5a (A76)      | 4       | -3 to -4.5%           | -3 to -4.5%    |
+| Orange Pi (A53) | 4       | level to -1.5%        | level to -1.5% |
+
+Kept if all of these hold:
+
+- check-c passes on the 9950X and pi5a, with conv2's rows and speakers
+  the same bytes.
+- pkfcheck passes with the new case, and check-sanitize passes, since
+  core/model.c changes.
+- pi5a at four threads is faster than its base by more than the spread,
+  under both compilers.
+- No board and thread count is slower than its base by more than the
+  spread.
