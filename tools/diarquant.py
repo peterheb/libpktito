@@ -19,7 +19,8 @@ float32 run it reports, over all the WAVs:
   t        dBCE's paired t over the WAVs
   DER/f32  the DER of its labels against float32's
   DER      against the true speakers, where NAME.rttm is beside NAME.wav:
-           no collar, overlapped speech scored (float32's own on its line)
+           no collar, overlapped speech scored (float32's own on its line),
+           and the mean of each WAV's difference from float32's, with its t
   words    where NAME.json beside the WAV holds pktito-c --json's words:
            words whose speaker (NeMo's rule on 80 ms means, speakers.py) is
            not float32's, and words not the true speaker's (float32's on
@@ -34,6 +35,13 @@ float32 run it reports, over all the WAVs:
 The probabilities of every run are kept in --cache (DIR/CONFIG/NAME.npy),
 and a run found there is not computed again: --jobs N runs the work in N
 processes, and a later call that adds configurations computes only theirs.
+
+Each process holds the model, one recording's samples and one chunk's
+work: at most 1.95 GB for an int8 configuration and 2.61 GB for f64 over
+an hour-long recording (measured, /usr/bin/time -v, OPENBLAS_NUM_THREADS=2).
+Size --jobs from those and run it under a memory cap, such as
+systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0, so that a
+mistake ends the run and not the machine.
 
 A configuration is quantcheck.py's rules separated by ";", each a weight
 rounding, optionally "+" an activation rounding, optionally "@" the classes
@@ -173,6 +181,7 @@ def _job(job):
     else:
         if _W["cfg"] != cfg:
             rules, _ = parse(cfg)
+            _W.pop("wd", None)                  # never two rounded copies at once
             _W["wd"], _W["mm"], _W["cfg"] = setup(_W["w"], rules) + (cfg,)
         wd, mm = _W["wd"], _W["mm"]
         fixed = parse(cfg)[1]
@@ -188,9 +197,9 @@ def _job(job):
     p, st = nemotron3.diarize(audio, wd, _W["a"])
     _save(out, np.save, p.astype(np.float32))
     if _CUTS["record"] is not None:
-        rec = _CUTS["record"]
-        _save(cuts, np.savez, idx=np.array([i for i, _ in rec], np.int64).reshape(len(rec), -1),
-              off=np.array([o for _, o in rec], bool).reshape(len(rec), -1))
+        rec, L = _CUTS["record"], _W["a"]["spkcache_len"]
+        _save(cuts, np.savez, idx=np.array([i for i, _ in rec], np.int64).reshape(len(rec), L),
+              off=np.array([o for _, o in rec], bool).reshape(len(rec), L))
     return cfg, os.path.basename(wav), st.steps, time.time() - t0
 
 
@@ -413,9 +422,12 @@ def main():
         t = db.mean() / (db.std(ddof=1) / math.sqrt(len(db))) if len(db) > 1 and db.std() > 0 else 0.0
         line = "%-24s labels %7d of %9d (%.4f%%)  dBCE %+.6f  t %6.1f  DER/f32 %.3f%%" % (
             cfg, lab, of, 100.0 * lab / of, db.mean(), t, pct(v, "f32"))
-        scored = [r for r, n in zip(v, names) if rttm[n]]
+        scored = [n for n in names if rttm[n]]
         if scored:
-            line += "  DER %.2f%% (collar %.2f%%)" % (pct(scored, "true"), pct(scored, "collar"))
+            dd = np.array([pct([rows[n]], "true") - pct([results["f32"][n]], "true") for n in scored])
+            tt = dd.mean() / (dd.std(ddof=1) / math.sqrt(len(dd))) if len(dd) > 1 and dd.std() > 0 else 0.0
+            line += "  DER %.2f%% (collar %.2f%%), against float32's %+.3f (t %.1f)" % (
+                pct([rows[n] for n in scored], "true"), pct([rows[n] for n in scored], "collar"), dd.mean(), tt)
         heard = [r for r, n in zip(v, names) if words[n]]
         if heard:
             line += "  words %d of %d moved, wrong %d  turns +%d -%d" % (
