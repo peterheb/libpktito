@@ -784,12 +784,18 @@ Inferred, from sizes:
   board: peak memory and major faults over an hour.
 
 One finding beside the point but in a podcast's way: core/cli.c's
-`read_audio` holds the whole recording as floats, at least 230 MB an hour,
-and `chunks_of` copies it again, padded, for the VAD: at least 460 MB at the
-peak. With the 624 MB model, an hour-long file needs more than a Pi 3B+'s
-905 MB already, diarizer or not, and the model's pages would be read from
-the card again and again (inferred from the code; not run on the board).
-Samples kept as 16-bit, or the VAD run as the file is read, would fix it.
+`read_audio` holds the whole recording as floats, at least 230 MB an hour.
+At this branch's base, 3720a1b, `chunks_of` also copied it, padded, for the
+VAD; on main that copy is gone (libpktito, 2026-11-09: `chunks_of` keeps
+segment indices and the VAD reads `read_audio`'s buffer), and the peak
+above 230 MB is realloc's doubling, about 384 MB while the buffer grows from
+128 to 256 MB. With the 624 MB model, an hour-long file still needs more
+than a Pi 3B+'s 905 MB, diarizer or not, and the model's pages would be read
+from the card again and again (inferred from the code; not run on the
+board). `pk_asr_transcribe` itself takes the recording as one float array,
+so the fix is an API decision - a 16-bit input, or the VAD run as the file
+is read - and libpktito has put it to Peter as its own card, outside this
+plan's stages.
 
 ## 8. From frames to words
 
