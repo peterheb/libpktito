@@ -983,10 +983,12 @@ NTT's forced alignment, where float32 makes 9.19% and the model card gives
 avx2, avx2-vnni and avx512-vnni on a 9950X, neon, neon-dp and neon-dp-a76
 on a Pi 5.
 
-The 5-minute conversation took 10.1 s on a Pi 5's four cores (30x real
-time; neon-dp-a76, gcc 14.2) and 0.81 s on a 9950X's eight (371x; WSL2, gcc
-15.2), on 2026-11-09. On the 9950X's 16 threads, `--speakers` on its first
-minute added 0.15 s to the transcription's 0.33 s, and 149 MB to the peak
+`pktito-c bench` with the diarizer's `-m` times it alone. On
+tests/data/conv2.wav, a minute of two speakers, it took 1.57 s on a Pi 5's
+four cores (38x real time; neon-dp-a76, gcc 14.2). On a 9950X's 16
+threads it took 0.093 to 0.099 s (about 620x; avx512-vnni, WSL2, gcc
+15.2). Both were measured on 2026-11-09. On the 9950X, `--speakers` added
+0.12 s to that minute's 0.33 s transcription, and 149 MB to the peak
 memory, the file's 100 MB included.
 
 `--srt`, `--vtt` and `--stream` don't take `--speakers` yet, and `pktito-c

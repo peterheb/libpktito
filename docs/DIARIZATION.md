@@ -1000,7 +1000,10 @@ check-python` and skipped where they are not installed; nemotron3.py's
    libpktito version that adds GELU and the rotation; its file is
    independent of the transcribers', one diarizer for both.
 3. **The tuned backends.** `pk_k_gelu` in each, held to ref by kcheck, its
-   hypothesis and measurement in the backend's CLIMB.md; then `make
+   hypothesis and measurement in the backend's CLIMB.md (done 2026-11-09:
+   ymm and zmm, and NEON four vectors a step, both kept; under gcc the
+   diarizer's time fell 25 to 38% on the 9950X, avx512-vnni, and 13 to 14%
+   on a Pi 5, neon-dp-a76); then `make
 PROFILE=1` on each board, the attention over a 684-frame step the likely
    next candidate; then a Pi 5 and a Pi 3B+ over an hour-long recording:
    time, peak memory, major faults.
