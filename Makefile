@@ -136,7 +136,7 @@ ifeq ($(PROFILE),1)
 endif
 
 INC := -Icore -Ibackend -Inpu
-LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/decoder.c \
+LIB_SRC := core/model.c core/os.c core/pool.c core/passes.c core/mel.c core/encoder.c core/decoder.c \
            core/tokens.c core/asr.c core/transcribe.c core/vad.c core/segment.c core/wav.c core/resample.c core/captions.c core/sentences.c \
            core/language.c
 BACK_OBJ := $(foreach b,$(BACKENDS) ref,backend/$(b)/kernels.o) backend/kernels.o
