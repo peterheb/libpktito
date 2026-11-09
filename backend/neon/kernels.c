@@ -84,6 +84,44 @@ static inline float32x4_t v_tanh(float32x4_t x) {
 /* x * sigmoid(x), as ref's pk_k_silu */
 static inline float32x4_t v_silu(float32x4_t x) { return vmulq_f32(x, v_sigmoid(x)); }
 
+/* pk_erff's three outcomes in every lane, and each lane takes the one the
+ * scalar's branches would: below 1, from 1 to 4, and beyond, where a NaN
+ * goes too (FCMGT is false for it). VBSL on the sign bit is copysignf. */
+static inline float32x4_t v_erf(float32x4_t x) {
+    const float32x4_t one = vdupq_n_f32(1.0f);
+    const uint32x4_t sign = vdupq_n_u32(0x80000000u);
+    float32x4_t a = vabsq_f32(x);
+    float32x4_t s = vmulq_f32(x, x);
+    float32x4_t q = vdupq_n_f32(PK_ERF_Q6);
+    q = vfmaq_f32(vdupq_n_f32(PK_ERF_Q5), q, s);
+    q = vfmaq_f32(vdupq_n_f32(PK_ERF_Q4), q, s);
+    q = vfmaq_f32(vdupq_n_f32(PK_ERF_Q3), q, s);
+    q = vfmaq_f32(vdupq_n_f32(PK_ERF_Q2), q, s);
+    q = vfmaq_f32(vdupq_n_f32(PK_ERF_Q1), q, s);
+    q = vfmaq_f32(vdupq_n_f32(PK_ERF_Q0), q, s);
+    float32x4_t below = vfmaq_f32(x, x, q);
+    float32x4_t t = vsubq_f32(a, one);
+    float32x4_t g = vdupq_n_f32(PK_ERF_G9);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G8), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G7), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G6), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G5), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G4), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G3), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G2), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G1), g, t);
+    g = vfmaq_f32(vdupq_n_f32(PK_ERF_G0), g, t);
+    float32x4_t mid = vbslq_f32(sign, x, vsubq_f32(one, v_exp(vnegq_f32(g))));
+    float32x4_t r = vbslq_f32(vcltq_f32(a, vdupq_n_f32(4.0f)), mid, vbslq_f32(sign, x, one));
+    return vbslq_f32(vcltq_f32(a, one), below, r);
+}
+
+/* x * 0.5 * (1 + erf(x * sqrt(1/2))), ref's k_gelu in its order */
+static inline float32x4_t v_gelu(float32x4_t x) {
+    float32x4_t e = v_erf(vmulq_f32(x, vdupq_n_f32(PK_SQRT1_2F)));
+    return vmulq_f32(vmulq_f32(x, vdupq_n_f32(0.5f)), vaddq_f32(vdupq_n_f32(1.0f), e));
+}
+
 /* PK_LANES' reduction: sixteen lanes in four vectors, combined as ref's
  * acc[i] += acc[i + h] for h = 8, 4, 2, 1 */
 static inline float lanes_sum(float32x4_t a0, float32x4_t a1, float32x4_t a2, float32x4_t a3) {
@@ -1495,10 +1533,21 @@ static void k_silu(float *x, size_t n) {
     for (; i < n; i++) x[i] = x[i] * pk_sigmoidf(x[i]);
 }
 
-/* x * 0.5 * (1 + pk_erff(x * sqrt(1/2))): GELU, ref's loop as it stands
- * (backend/ref/kernels.c), kept scalar until a vector one measures faster */
+/* Four vectors a step. One vector's chain, the polynomial in t and then
+ * exp's, is about 100 cycles of dependent instructions, which the A76's
+ * window cannot overlap with the next step's; four chains interleave.
+ * 4.00 and 4.45 ns a value on the A76 under gcc and clang against one
+ * vector's 6.54 and 6.37, and 25.5 and 19.8 on the A53 against 40.0 and
+ * 37.1 (CLIMB.md, 2026-11-09). */
 static void k_gelu(float *x, size_t n) {
-    for (size_t i = 0; i < n; i++) x[i] = x[i] * 0.5f * (1.0f + pk_erff(x[i] * PK_SQRT1_2F));
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        float32x4_t a = v_gelu(vld1q_f32(x + i)), b = v_gelu(vld1q_f32(x + i + 4));
+        float32x4_t c = v_gelu(vld1q_f32(x + i + 8)), d = v_gelu(vld1q_f32(x + i + 12));
+        vst1q_f32(x + i, a), vst1q_f32(x + i + 4, b), vst1q_f32(x + i + 8, c), vst1q_f32(x + i + 12, d);
+    }
+    for (; i + 4 <= n; i += 4) vst1q_f32(x + i, v_gelu(vld1q_f32(x + i)));
+    for (; i < n; i++) x[i] = x[i] * 0.5f * (1.0f + pk_erff(x[i] * PK_SQRT1_2F));
 }
 
 static void k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {

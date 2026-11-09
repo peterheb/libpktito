@@ -1429,3 +1429,38 @@ Kept if all of these hold:
 - check-c passes on pi5a, its conv2 rows and speakers the same bytes.
 - The bench is faster than its base by more than the spread under both
   compilers: on pi5a at 1 and 4 threads, and on the A53 at 4.
+
+## 2026-11-09 - the diarizer's GELU four vectors a step (result: kept)
+
+The hypothesis above, as written.
+
+**Bits.** kcheck and every float through the kernel (gelusweep), tails
+included, give ref's bits on each of these:
+
+- pi5a: neon-dp-a76, neon-dp and neon, under gcc 14.2 and clang 21.1;
+- the A53: neon, under gcc 15.2 and clang 21.1;
+- a GB10 (spark-9eba): all five NEON builds, under gcc 15.2 and clang
+  21.1, cross-built static, 1,726 cases each with no model given.
+
+check-c passes on pi5a (gcc 14.2), with conv2's rows and speakers the
+same bytes.
+
+**Time.** Measured as in the entry above: base 4891170 against the
+kernel, the same builds of the base. pi5a ran six rounds (65.3 °C at
+the end, never throttled); the A53 ran four at 4 threads (50 °C to
+73.4 °C).
+
+| board           | threads | gcc                     | clang                |
+| --------------- | ------- | ----------------------- | -------------------- |
+| pi5a (A76)      | 1       | -14.0% (-14.5 to -13.7) | -3.3% (-3.3 to -3.1) |
+| pi5a (A76)      | 4       | -12.7% (-13.0 to -12.5) | -2.6% (-2.9 to -2.2) |
+| Orange Pi (A53) | 4       | -9.2% (-9.3 to -9.1)    | -2.5% (-2.6 to -2.3) |
+
+Each is in its predicted range, or past it for gcc at four threads on
+pi5a (-12.7% against -10 to -12%). gcc on pi5a went from 6.669 s to
+5.73 s at one thread, against 5.31-5.34 s with no GELU at all. So the
+kernel's 0.4 s is 4.5 ns a value, where gcc's scalar loop was 14.6.
+clang's own vectorization of ref's loop was 6.004-6.014 s; the kernel
+takes 5.811-5.824 s.
+
+Kept: every criterion holds, under both compilers, on both cores.
