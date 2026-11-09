@@ -1042,9 +1042,9 @@ static double diarize(pk_diar *dz, const pk_model *dm, const float *x, size_t n,
 
 /* One file through the transcriber: its chunks, printed as -o asks, by
  * default a sentence a line. With several files a line each, the file's
- * name, a tab and its chunks' text. With --speakers (dz), the diarizer
+ * name, a tab and its chunks' text. With --speakers (dm), the diarizer
  * hears the file first, and each word goes to a speaker. */
-static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, pk_diar *dz,
+static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a,
                             const pk_model *dm, int many, double *audio_s, double *asr_total,
                             double *diar_total, const char **lang, int *heard) {
     size_t n;
@@ -1057,8 +1057,12 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         die("out of memory");
     rows_buf rb = { 0 };
     double diar_s = 0;
-    if (dz) {
+    if (dm) {    /* freed before the recognizer runs: 34 MB at -t 4 (x86-64) */
+        pk_diar *dz = pk_diar_new(dm, o->threads);
+        if (!dz)
+            die("out of memory");
         diar_s = diarize(dz, dm, x, n, &rb);
+        pk_diar_free(dz);
         *diar_total += diar_s;
         out.dm = dm;
         out.dp = rb.p;
@@ -1085,7 +1089,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     *heard = out.heard;
     if (o->json)
         *lang = file_language(m, &out.words);
-    if (o->json && dz) {             /* the turns, then the chunks' and their closing ] */
+    if (o->json && dm) {             /* the turns, then the chunks' and their closing ] */
         printf("\n],\n \"turns\": [");
         for (size_t k = 0; k < out.nturns; k++) {
             const turn *tn = &out.turns[k];
@@ -1120,9 +1124,6 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
 /* dm, a diarizer's model, for --speakers, or NULL */
 static int transcribe(const opts *o, pk_model *m, const pk_model *dm) {
     pk_asr *a = asr_new(o, m, 1);
-    pk_diar *dz = dm ? pk_diar_new(dm, o->threads) : NULL;
-    if (dm && !dz)
-        die("out of memory");
     double audio_s = 0, asr_s = 0, diar_s = 0;
     int many = o->nin > 1, heard = 0;
     if (o->json)
@@ -1131,7 +1132,7 @@ static int transcribe(const opts *o, pk_model *m, const pk_model *dm) {
     for (int i = 0; i < o->nin; i++) {
         if (o->json && many)
             printf(i ? ",\n" : "\n");
-        transcribe_file(o, o->ins[i], m, a, dz, dm, many, &audio_s, &asr_s, &diar_s, &lang, &heard);
+        transcribe_file(o, o->ins[i], m, a, dm, many, &audio_s, &asr_s, &diar_s, &lang, &heard);
     }
     if (o->json) {
         const spk_meta sm = { dm, many ? -1 : heard, diar_s };
@@ -1142,13 +1143,12 @@ static int transcribe(const opts *o, pk_model *m, const pk_model *dm) {
     char on[sizeof npu_file + 64] = "", who[96] = "";
     if (npu_name)
         snprintf(on, sizeof on, ", the encoder on %s (%s)", npu_name, npu_file);
-    if (dz)
+    if (dm)
         snprintf(who, sizeof who, "; who spoke, %.2f s more (%.1fx)", diar_s, diar_s > 0 ? audio_s / diar_s : 0.0);
     if (o->verbose)
         fprintf(stderr, "pktito-c: %.1f s of audio: transcribed in %.2f s with its VAD (%.1fx "
                 "real time)%s, %s, %d threads%s%s\n", audio_s, asr_s, asr_s > 0 ? audio_s / asr_s : 0.0, who,
                 pk_backend(), pk_asr_threads(a), o->fast ? ", fast mode" : "", on);
-    pk_diar_free(dz);
     pk_asr_free(a);
     return 0;
 }
