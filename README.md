@@ -991,6 +991,15 @@ threads it took 0.093 to 0.099 s (about 620x; avx512-vnni, WSL2, gcc
 0.12 s to that minute's 0.33 s transcription, and 149 MB to the peak
 memory, the file's 100 MB included.
 
+Over an hour of two speakers (LibriSpeech readers, as in conv2.wav), a Pi
+5 took 6.4 minutes to transcribe the hour with v2 and label it: 387 s,
+9.3x real time, of which the diarizer was 109 s. It peaked at 1,005 MB,
+142 MB more than v2 alone. Four episodes of a podcast, 9 to 40 minutes
+each, ran at 10.3 to 10.4x, and their transcripts with speakers were the
+9950X's bytes. The diarizer's own memory does not grow with the
+recording, but `pktito-c` reads the whole file first and holds it as
+floats: 230 MB an hour.
+
 `--srt`, `--vtt` and `--stream` don't take `--speakers` yet, and `pktito-c
 models` doesn't list the diarizer's file: it is made as above.
 

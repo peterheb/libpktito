@@ -740,6 +740,13 @@ bits, and its DER is float32's within int8's measured cost, the spread
 of the configurations above (9.21% to 9.28% on AMI). It took 80 s for
 AMI's 9.06 hours on the 9950X (16 threads), about 400 times real time.
 
+The same comparison on real recordings, 2026-11-09: four episodes of a
+podcast (123 minutes; not in the tree), with 1, 4, 5 and 8 voices
+counting their ads and clips. The C's labels differ from float32's in
+3,133 of 5.9 million (0.053%), DER against float32 0.46%, and one word
+of 21,104 goes to another speaker. Both hear the same 18 voices, none
+split, merged or renumbered. The one-voice episode gets one speaker.
+
 ## 7. What it costs
 
 ### Time
@@ -785,6 +792,15 @@ Parakeet's 507, v2 202, 0.40. For the boards (inferred from here on):
 | Ryzen 9 9950X    | 0.217 s a minute     | 0.10 s (measured) | 0.32 s: about 190x real time              |
 | Raspberry Pi 5   | 3.71 s               | 1.3 to 1.7 s      | 5.0 to 5.4 s: an hour in 5 to 5.5 minutes |
 | Raspberry Pi 3B+ | 44.6 s               | 16 to 21 s        | 61 to 66 s: an hour in 61 to 66 minutes   |
+
+Measured on 2026-11-09, with the GELU kernels: a Pi 5 (four cores,
+neon-dp-a76, gcc 14.2) took 387 s over the hour-long conv2h for both,
+6.4 minutes against the 5 to 5.5 inferred. v2 alone took 279 s, more a
+minute than test.wav's 3.71 s, and the diarizer alone 109 s: 1.82 s a
+minute, with the cache full at every step. Over tests/data/conv2.wav's
+minute the diarizer takes 1.57 s on the Pi 5, 0.093 to 0.099 s on the
+9950X at 16 threads, and 15.25 s on an A53 at four threads (an Orange Pi
+Zero 3, the Pi 3B+'s core).
 
 The boards' ranges run from the multiply-adds' share of Parakeet (0.36) to
 the 9950X's measured share (0.46); v2's were 1.5 to 2.2 s and 18 to 27 s. So
@@ -1010,7 +1026,8 @@ PROFILE=1` on each board, the attention over a 684-frame step the likely
    to 34%, the queries, keys and values 11 to 17%; the rotation and K's
    panels made in the products' tiles, measured and not kept, in
    backend/neon/CLIMB.md); then a Pi 5 and a Pi 3B+ over an hour-long recording:
-   time, peak memory, major faults.
+   time, peak memory, major faults (the Pi 5 measured 2026-11-09, in
+   section 7: 387 s for both, 1,005 MB at peak, no major faults).
 4. **When NeMo releases a version that runs the model**, or moves the
    arithmetic: the reference checked against it, and nemotron3.py's commit
    moved with a measurement, as any change to the arithmetic would be.
