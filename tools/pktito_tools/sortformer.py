@@ -34,6 +34,7 @@ Where NeMo leaves an answer to the implementation, this fixes one: when
 scores tie, the speaker cache keeps the lower index (torch.topk on a CPU
 returns tied values in an order of its own; DIARIZATION.md, "Ties").
 """
+
 import math
 
 import numpy as np
@@ -44,15 +45,28 @@ from .reference import _ln, _sigmoid, lin
 # The model card's configuration for a recording heard after the fact
 # ("very high latency", 30.4 s): chunks of 340 frames with 40 of right
 # context, a FIFO of 40 and a cache update every 300 frames.
-OFFLINE = {"chunk_len": 340, "chunk_right_context": 40, "fifo_len": 40,
-           "spkcache_update_period": 300, "spkcache_len": 188}
+OFFLINE = {
+    "chunk_len": 340,
+    "chunk_right_context": 40,
+    "fifo_len": 40,
+    "spkcache_update_period": 300,
+    "spkcache_len": 188,
+}
 
 # SortformerModules' defaults in NeMo 3.0, which the checkpoint's config
 # does not override
-MODULE_DEFAULTS = {"chunk_left_context": 1, "chunk_right_context": 1, "spkcache_sil_frames_per_spk": 3,
-                   "pred_score_threshold": 0.25, "scores_boost_latest": 0.05, "sil_threshold": 0.2,
-                   "strong_boost_rate": 0.75, "weak_boost_rate": 1.5, "min_pos_scores_rate": 0.5,
-                   "max_index": 99999}
+MODULE_DEFAULTS = {
+    "chunk_left_context": 1,
+    "chunk_right_context": 1,
+    "spkcache_sil_frames_per_spk": 3,
+    "pred_score_threshold": 0.25,
+    "scores_boost_latest": 0.05,
+    "sil_threshold": 0.2,
+    "strong_boost_rate": 0.75,
+    "weak_boost_rate": 1.5,
+    "min_pos_scores_rate": 0.5,
+    "max_index": 99999,
+}
 
 
 def arch(cfg, streaming=None):
@@ -62,46 +76,97 @@ def arch(cfg, streaming=None):
     pre, enc = cfg["preprocessor"], cfg["encoder"]
     tf, sm = cfg["transformer_encoder"], cfg["sortformer_modules"]
     want = [
-        (str(cfg.get("target", "")).endswith("SortformerEncLabelModel"), "a SortformerEncLabelModel"),
+        (
+            str(cfg.get("target", "")).endswith("SortformerEncLabelModel"),
+            "a SortformerEncLabelModel",
+        ),
         (cfg.get("streaming_mode") is True, "a streaming model"),
-        (pre.get("_target_", "").endswith("AudioToMelSpectrogramPreprocessor"), "the preprocessor"),
+        (
+            pre.get("_target_", "").endswith("AudioToMelSpectrogramPreprocessor"),
+            "the preprocessor",
+        ),
         (pre.get("normalize") == "NA", "unnormalized features"),
         (pre.get("window") == "hann", "a Hann window"),
         (pre.get("frame_splicing", 1) == 1, "no frame splicing"),
         (enc.get("_target_", "").endswith("ConformerEncoder"), "a ConformerEncoder"),
-        (enc.get("subsampling") == "dw_striding" and enc.get("subsampling_factor") == 8, "dw_striding by 8"),
+        (
+            enc.get("subsampling") == "dw_striding"
+            and enc.get("subsampling_factor") == 8,
+            "dw_striding by 8",
+        ),
         (enc.get("self_attention_model") == "rel_pos", "rel_pos attention"),
         (list(enc.get("att_context_size", [-1, -1])) == [-1, -1], "full attention"),
         (enc.get("untie_biases") is True, "per-layer position biases"),
         (enc.get("use_bias", True) is True, "biased encoder matrices"),
-        (enc.get("conv_norm_type") == "batch_norm", "batch norm in the convolution module"),
-        (tf.get("_target_", "").endswith("transformer_encoders.TransformerEncoder"),
-         "NeMo's TransformerEncoder"),
-        (tf.get("pre_ln") is False and tf.get("hidden_act") == "relu", "a post-LN ReLU Transformer"),
-        (cfg["model_defaults"]["tf_d_model"] != enc["d_model"], "a projection to the Transformer's width"),
+        (
+            enc.get("conv_norm_type") == "batch_norm",
+            "batch norm in the convolution module",
+        ),
+        (
+            tf.get("_target_", "").endswith("transformer_encoders.TransformerEncoder"),
+            "NeMo's TransformerEncoder",
+        ),
+        (
+            tf.get("pre_ln") is False and tf.get("hidden_act") == "relu",
+            "a post-LN ReLU Transformer",
+        ),
+        (
+            cfg["model_defaults"]["tf_d_model"] != enc["d_model"],
+            "a projection to the Transformer's width",
+        ),
     ]
     for ok, what in want:
         if not ok:
-            raise ValueError("this reference implements Streaming Sortformer with %s; "
-                             "this checkpoint differs" % what)
+            raise ValueError(
+                "this reference implements Streaming Sortformer with %s; "
+                "this checkpoint differs" % what
+            )
     sr = int(pre["sample_rate"])
     win, hop = round(pre["window_size"] * sr), round(pre["window_stride"] * sr)
-    a = {"sample_rate": sr, "n_fft": int(pre["n_fft"]), "win_length": win, "hop_length": hop,
-         "n_mels": int(pre["features"]), "preemph": float(pre.get("preemph", 0.97)),
-         "log_guard": float(pre.get("log_zero_guard_value", 2 ** -24)), "norm_eps": 1e-5, "normalize": False,
-         "n_layers": int(enc["n_layers"]), "d_model": int(enc["d_model"]), "n_heads": int(enc["n_heads"]),
-         "ff_dim": int(enc["d_model"] * enc["ff_expansion_factor"]),
-         "conv_kernel": int(enc["conv_kernel_size"]),
-         "sub_channels": int(enc["subsampling_conv_channels"]), "ln_eps": 1e-5,
-         "xscale": math.sqrt(enc["d_model"]) if enc.get("xscaling", True) else None,
-         "tf_layers": int(tf["num_layers"]), "tf_d_model": int(tf["hidden_size"]),
-         "tf_heads": int(tf["num_attention_heads"]), "tf_inner": int(tf["inner_size"]),
-         "n_spk": int(sm["num_spks"]), "subsampling": 8, "upsample": 1, "frame": 8 * hop / sr,
-         "learned_silence": False}
+    a = {
+        "sample_rate": sr,
+        "n_fft": int(pre["n_fft"]),
+        "win_length": win,
+        "hop_length": hop,
+        "n_mels": int(pre["features"]),
+        "preemph": float(pre.get("preemph", 0.97)),
+        "log_guard": float(pre.get("log_zero_guard_value", 2**-24)),
+        "norm_eps": 1e-5,
+        "normalize": False,
+        "n_layers": int(enc["n_layers"]),
+        "d_model": int(enc["d_model"]),
+        "n_heads": int(enc["n_heads"]),
+        "ff_dim": int(enc["d_model"] * enc["ff_expansion_factor"]),
+        "conv_kernel": int(enc["conv_kernel_size"]),
+        "sub_channels": int(enc["subsampling_conv_channels"]),
+        "ln_eps": 1e-5,
+        "xscale": math.sqrt(enc["d_model"]) if enc.get("xscaling", True) else None,
+        "tf_layers": int(tf["num_layers"]),
+        "tf_d_model": int(tf["hidden_size"]),
+        "tf_heads": int(tf["num_attention_heads"]),
+        "tf_inner": int(tf["inner_size"]),
+        "n_spk": int(sm["num_spks"]),
+        "subsampling": 8,
+        "upsample": 1,
+        "frame": 8 * hop / sr,
+        "learned_silence": False,
+    }
     mod = dict(MODULE_DEFAULTS)
-    mod.update({k: sm[k] for k in ("spkcache_len", "fifo_len", "chunk_len", "spkcache_update_period",
-                                   "chunk_left_context", "chunk_right_context", "spkcache_sil_frames_per_spk")
-                if k in sm})
+    mod.update(
+        {
+            k: sm[k]
+            for k in (
+                "spkcache_len",
+                "fifo_len",
+                "chunk_len",
+                "spkcache_update_period",
+                "chunk_left_context",
+                "chunk_right_context",
+                "spkcache_sil_frames_per_spk",
+            )
+            if k in sm
+        }
+    )
     mod.update({k: sm[k] for k in MODULE_DEFAULTS if k in sm})
     if streaming:
         mod.update(streaming)
@@ -115,7 +180,11 @@ def tensors(state, a):
     bias as "<name>.b", BatchNorm folded into the depthwise convolution
     (with its bias), the feed-forward's 0.5 into its second matrix and
     bias; then the projection, the Transformer ("t<i>.") and the head."""
-    s = {k: np.asarray(v, np.float64) for k, v in state.items() if not k.endswith("num_batches_tracked")}
+    s = {
+        k: np.asarray(v, np.float64)
+        for k, v in state.items()
+        if not k.endswith("num_batches_tracked")
+    }
     used = set()
 
     def g(name):
@@ -123,12 +192,17 @@ def tensors(state, a):
         return s[name]
 
     D, C = a["d_model"], a["sub_channels"]
-    w = {"mel.fb": g("preprocessor.featurizer.fb")[0], "mel.window": g("preprocessor.featurizer.window"),
-         "pos.freq": canon.pos_freq(D).astype(np.float64)}
+    w = {
+        "mel.fb": g("preprocessor.featurizer.fb")[0],
+        "mel.window": g("preprocessor.featurizer.window"),
+        "pos.freq": canon.pos_freq(D).astype(np.float64),
+    }
     p = "encoder.pre_encode."
     for name, k in (("conv0", 0), ("dw1", 2), ("pw1", 3), ("dw2", 5), ("pw2", 6)):
         wt = g(p + "conv.%d.weight" % k)
-        w["sub.%s.w" % name] = wt.reshape(C, C) if name.startswith("pw") else wt.reshape(C, 9)
+        w["sub.%s.w" % name] = (
+            wt.reshape(C, C) if name.startswith("pw") else wt.reshape(C, 9)
+        )
         w["sub.%s.b" % name] = g(p + "conv.%d.bias" % k)
     w["sub.out.w"], w["sub.out.b"] = g(p + "out.weight"), g(p + "out.bias")
     for i in range(a["n_layers"]):
@@ -140,11 +214,23 @@ def tensors(state, a):
             w[q + ours + ".up.b"] = g(p + theirs + ".linear1.bias")
             w[q + ours + ".down"] = 0.5 * g(p + theirs + ".linear2.weight")
             w[q + ours + ".down.b"] = 0.5 * g(p + theirs + ".linear2.bias")
-        for ours, theirs in (("ff1.norm", "norm_feed_forward1"), ("att.norm", "norm_self_att"),
-                             ("conv.norm", "norm_conv"), ("ff2.norm", "norm_feed_forward2"),
-                             ("out.norm", "norm_out")):
-            w[q + ours + ".w"], w[q + ours + ".b"] = g(p + theirs + ".weight"), g(p + theirs + ".bias")
-        for ours, theirs in (("q", "linear_q"), ("k", "linear_k"), ("v", "linear_v"), ("o", "linear_out")):
+        for ours, theirs in (
+            ("ff1.norm", "norm_feed_forward1"),
+            ("att.norm", "norm_self_att"),
+            ("conv.norm", "norm_conv"),
+            ("ff2.norm", "norm_feed_forward2"),
+            ("out.norm", "norm_out"),
+        ):
+            w[q + ours + ".w"], w[q + ours + ".b"] = (
+                g(p + theirs + ".weight"),
+                g(p + theirs + ".bias"),
+            )
+        for ours, theirs in (
+            ("q", "linear_q"),
+            ("k", "linear_k"),
+            ("v", "linear_v"),
+            ("o", "linear_out"),
+        ):
             w[q + "att." + ours] = g(p + "self_attn.%s.weight" % theirs)
             w[q + "att." + ours + ".b"] = g(p + "self_attn.%s.bias" % theirs)
         w[q + "att.pos"] = g(p + "self_attn.linear_pos.weight")
@@ -158,29 +244,40 @@ def tensors(state, a):
         w[q + "conv.pw2"] = g(p + "conv.pointwise_conv2.weight")[:, :, 0]
         w[q + "conv.pw2.b"] = g(p + "conv.pointwise_conv2.bias")
     p = "sortformer_modules."
-    for ours, theirs in (("proj", "encoder_proj"), ("head.hidden", "first_hidden_to_hidden"),
-                         ("head.out", "single_hidden_to_spks")):
+    for ours, theirs in (
+        ("proj", "encoder_proj"),
+        ("head.hidden", "first_hidden_to_hidden"),
+        ("head.out", "single_hidden_to_spks"),
+    ):
         w[ours], w[ours + ".b"] = g(p + theirs + ".weight"), g(p + theirs + ".bias")
-    g(p + "hidden_to_spks.weight"), g(p + "hidden_to_spks.bias")      # training's head only
+    g(p + "hidden_to_spks.weight"), g(p + "hidden_to_spks.bias")  # training's head only
     for i in range(a["tf_layers"]):
         p, q = "transformer_encoder.layers.%d." % i, "t%d." % i
-        for ours, theirs in (("att.q", "first_sub_layer.query_net"),
-                             ("att.k", "first_sub_layer.key_net"),
-                             ("att.v", "first_sub_layer.value_net"),
-                             ("att.o", "first_sub_layer.out_projection"),
-                             ("ff.up", "second_sub_layer.dense_in"),
-                             ("ff.down", "second_sub_layer.dense_out")):
-            w[q + ours], w[q + ours + ".b"] = g(p + theirs + ".weight"), g(p + theirs + ".bias")
+        for ours, theirs in (
+            ("att.q", "first_sub_layer.query_net"),
+            ("att.k", "first_sub_layer.key_net"),
+            ("att.v", "first_sub_layer.value_net"),
+            ("att.o", "first_sub_layer.out_projection"),
+            ("ff.up", "second_sub_layer.dense_in"),
+            ("ff.down", "second_sub_layer.dense_out"),
+        ):
+            w[q + ours], w[q + ours + ".b"] = (
+                g(p + theirs + ".weight"),
+                g(p + theirs + ".bias"),
+            )
         for n in ("1", "2"):
             w[q + "norm%s.w" % n] = g(p + "layer_norm_%s.weight" % n)
             w[q + "norm%s.b" % n] = g(p + "layer_norm_%s.bias" % n)
     left = sorted(set(s) - used)
     if left:
-        raise ValueError("tensors this reference does not know what to do with: %s" % left[:8])
+        raise ValueError(
+            "tensors this reference does not know what to do with: %s" % left[:8]
+        )
     return w
 
 
 # -------------------------------------------------------------- the model ---
+
 
 def tf_layer(x, w, i, a):
     """NeMo's TransformerEncoderBlock, post-LN: x = LN(x + attention(x));
@@ -195,7 +292,7 @@ def tf_layer(x, w, i, a):
     Q = (lin(x, w, q + "att.q") / root4).reshape(T, H, dk).transpose(1, 0, 2)
     K = (lin(x, w, q + "att.k") / root4).reshape(T, H, dk).transpose(1, 0, 2)
     V = lin(x, w, q + "att.v").reshape(T, H, dk).transpose(1, 0, 2)
-    s = Q @ K.transpose(0, 2, 1)                                   # [H][T][T]
+    s = Q @ K.transpose(0, 2, 1)  # [H][T][T]
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
     o = (s @ V).transpose(1, 0, 2).reshape(T, D)
@@ -223,6 +320,7 @@ def forward(embs, w, a):
 
 # --------------------------------------------------------- the speaker cache ---
 
+
 def _top(col, k):
     """The indices of the k largest of col, ties to the lower index."""
     return np.argsort(-col, kind="stable")[:k]
@@ -240,10 +338,15 @@ class Stream:
         self.w, self.a = w, a
         self.pre_encode, self.forward = pre_encode, forward
         D, S = a["d_model"], a["n_spk"]
-        dt = w["mel.fb"].dtype                  # the weights' precision: float64, or float32 (diarquant.py)
+        dt = w[
+            "mel.fb"
+        ].dtype  # the weights' precision: float64, or float32 (diarquant.py)
         self.cache, self.cache_p = np.zeros((0, D), dt), None
         self.fifo = np.zeros((0, D), dt)
-        self.sil, self.n_sil = (w["sil"] if a["learned_silence"] else np.zeros(D, dt)), 0
+        self.sil, self.n_sil = (
+            (w["sil"] if a["learned_silence"] else np.zeros(D, dt)),
+            0,
+        )
         self.ties = 0
         self.steps = 0
         self.S = S
@@ -260,8 +363,11 @@ class Stream:
         # finer probabilities (SortformerModules.downsample_preds)
         p = out if up == 1 else out.reshape(-1, up, self.S).mean(1)
         n = len(emb) - lc - rc
-        chunk, chunk_p = emb[lc:lc + n], p[nc + nf + lc:nc + nf + lc + n]
-        fifo, fifo_p = np.concatenate([self.fifo, chunk]), np.concatenate([p[nc:nc + nf], chunk_p])
+        chunk, chunk_p = emb[lc : lc + n], p[nc + nf + lc : nc + nf + lc + n]
+        fifo, fifo_p = (
+            np.concatenate([self.fifo, chunk]),
+            np.concatenate([p[nc : nc + nf], chunk_p]),
+        )
         if nf + n > a["fifo_len"]:
             k = min(max(a["spkcache_update_period"], n - a["fifo_len"] + nf), nf + n)
             pop, pop_p = fifo[:k], fifo_p[:k]
@@ -272,12 +378,12 @@ class Stream:
             if self.cache_p is not None:
                 self.cache_p = np.concatenate([self.cache_p, pop_p])
             if len(self.cache) > a["spkcache_len"]:
-                if self.cache_p is None:                    # the first cut: this step's view of the cache
+                if self.cache_p is None:  # the first cut: this step's view of the cache
                     self.cache_p = np.concatenate([p[:nc], pop_p])
                 self.cache, self.cache_p = self._compress(self.cache, self.cache_p)
         self.fifo = fifo
         self.steps += 1
-        return out[(nc + nf + lc) * up:(nc + nf + lc + n) * up]
+        return out[(nc + nf + lc) * up : (nc + nf + lc + n) * up]
 
     def _silence(self, emb, p):
         """SortformerModules._get_silence_profile: the running mean of the
@@ -333,7 +439,7 @@ class Stream:
         n = len(sc)
         if nsil:
             sc = np.concatenate([sc, np.full((nsil, S), np.inf)])
-        flat = sc.T.reshape(-1)                                     # speaker-major
+        flat = sc.T.reshape(-1)  # speaker-major
         pick = _top(flat, L)
         cut = flat[pick[-1]]
         if np.isfinite(cut) and (flat == cut).sum() > (flat[pick] == cut).sum():
@@ -368,20 +474,23 @@ def features(audio, f0, f1, w, a):
     recording's features can be made a chunk at a time. Made at once, an
     hour's take some 5 GB of float64 on the way (four [T][512] arrays)."""
     n_fft, win, hop = a["n_fft"], a["win_length"], a["hop_length"]
-    lo, hi = f0 * hop - n_fft // 2, (f1 - 1) * hop + n_fft // 2       # the samples they see, zeros outside
+    lo, hi = (
+        f0 * hop - n_fft // 2,
+        (f1 - 1) * hop + n_fft // 2,
+    )  # the samples they see, zeros outside
     s0, s1 = max(lo, 0), min(hi, len(audio))
-    x = np.asarray(audio[max(s0 - 1, 0):s1], np.float64)
-    pre = x[1:] - a["preemph"] * x[:-1]                                  # y[n] = x[n] - 0.97 x[n - 1] ...
+    x = np.asarray(audio[max(s0 - 1, 0) : s1], np.float64)
+    pre = x[1:] - a["preemph"] * x[:-1]  # y[n] = x[n] - 0.97 x[n - 1] ...
     if s0 == 0:
-        pre = np.concatenate([x[:1], pre])                               # ... and y[0] = x[0]
+        pre = np.concatenate([x[:1], pre])  # ... and y[0] = x[0]
     y = np.zeros(hi - lo)
-    y[s0 - lo:s1 - lo] = pre
+    y[s0 - lo : s1 - lo] = pre
     window = np.zeros(n_fft)
     left = (n_fft - win) // 2
-    window[left:left + win] = w["mel.window"]
+    window[left : left + win] = w["mel.window"]
     idx = np.arange(f1 - f0)[:, None] * hop + np.arange(n_fft)[None, :]
     spec = np.fft.rfft(y[idx] * window, axis=1)
-    power = spec.real ** 2 + spec.imag ** 2
+    power = spec.real**2 + spec.imag**2
     return np.log(power @ w["mel.fb"].T + a["log_guard"])
 
 
@@ -398,12 +507,16 @@ def run(audio, w, a, pre_encode, forward, log=None):
     f, up = a["subsampling"], a["upsample"]
     out = []
     for i, (stt, end, left, right) in enumerate(chunks(T0, a)):
-        feat = features(audio, stt - left, end + right, w, a).astype(w["mel.fb"].dtype, copy=False)
+        feat = features(audio, stt - left, end + right, w, a).astype(
+            w["mel.fb"].dtype, copy=False
+        )
         p = st.step(feat, round(left / f), math.ceil(right / f))
         out.append(p)
         if log:
-            log("  chunk %d: frames %d to %d, cache %d, fifo %d" % (i, stt // f, stt // f + len(p) // up,
-                                                                   len(st.cache), len(st.fifo)))
+            log(
+                "  chunk %d: frames %d to %d, cache %d, fifo %d"
+                % (i, stt // f, stt // f + len(p) // up, len(st.cache), len(st.fifo))
+            )
     n = -(-T0 * up // f)
     return np.concatenate(out)[:n] if out else np.zeros((0, a["n_spk"])), st
 

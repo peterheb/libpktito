@@ -26,6 +26,7 @@ one:
               each 80 ms frame scored on the mean of its eight 10 ms
               probabilities
 """
+
 import math
 
 import numpy as np
@@ -37,7 +38,12 @@ from .reference import _ln, _sigmoid, lin, mm
 # ("very high latency", 30.4 s): chunks of 340 frames with 40 of right
 # context, a FIFO of 40 and a cache update every 300 frames. The cache keeps
 # the checkpoint's 264 frames, as the card's table does.
-OFFLINE = {"chunk_len": 340, "chunk_right_context": 40, "fifo_len": 40, "spkcache_update_period": 300}
+OFFLINE = {
+    "chunk_len": 340,
+    "chunk_right_context": 40,
+    "fifo_len": 40,
+    "spkcache_update_period": 300,
+}
 
 
 def arch(cfg, streaming=None):
@@ -46,45 +52,99 @@ def arch(cfg, streaming=None):
     module's settings. Anything this does not implement is refused."""
     pre, enc, sm = cfg["preprocessor"], cfg["encoder"], cfg["sortformer_modules"]
     want = [
-        (str(cfg.get("target", "")).endswith("SortformerEncLabelModel"), "a SortformerEncLabelModel"),
+        (
+            str(cfg.get("target", "")).endswith("SortformerEncLabelModel"),
+            "a SortformerEncLabelModel",
+        ),
         (cfg.get("streaming_mode") is True, "a streaming model"),
-        (cfg.get("high_resolution") is True and cfg.get("output_subsampling_factor") == 1, "10 ms output"),
+        (
+            cfg.get("high_resolution") is True
+            and cfg.get("output_subsampling_factor") == 1,
+            "10 ms output",
+        ),
         (not cfg.get("transformer_encoder"), "no second Transformer"),
-        (pre.get("_target_", "").endswith("AudioToMelSpectrogramPreprocessor"), "the preprocessor"),
+        (
+            pre.get("_target_", "").endswith("AudioToMelSpectrogramPreprocessor"),
+            "the preprocessor",
+        ),
         (pre.get("normalize") == "NA", "unnormalized features"),
         (pre.get("window") == "hann", "a Hann window"),
         (pre.get("frame_splicing", 1) == 1, "no frame splicing"),
-        (enc.get("_target_", "").endswith("modules.TransformerEncoder"), "NeMo's TransformerEncoder"),
-        (enc.get("subsampling") == "feature_stacking" and enc.get("subsampling_factor") == 8,
-         "8 feature frames stacked"),
-        (enc.get("self_attention_model") == "rope" and enc.get("rotary_fraction", 1.0) == 1.0,
-         "rotary positions on whole heads"),
+        (
+            enc.get("_target_", "").endswith("modules.TransformerEncoder"),
+            "NeMo's TransformerEncoder",
+        ),
+        (
+            enc.get("subsampling") == "feature_stacking"
+            and enc.get("subsampling_factor") == 8,
+            "8 feature frames stacked",
+        ),
+        (
+            enc.get("self_attention_model") == "rope"
+            and enc.get("rotary_fraction", 1.0) == 1.0,
+            "rotary positions on whole heads",
+        ),
         (enc.get("attn_mode", "full") == "full", "full attention"),
-        (enc.get("pre_block_norm") is True and enc.get("final_norm", True) is True,
-         "a LayerNorm before the first layer and after the last"),
-        (enc.get("qkv_bias") is False and enc.get("qk_norm") is False, "unbiased, unnormalized q, k, v"),
+        (
+            enc.get("pre_block_norm") is True and enc.get("final_norm", True) is True,
+            "a LayerNorm before the first layer and after the last",
+        ),
+        (
+            enc.get("qkv_bias") is False and enc.get("qk_norm") is False,
+            "unbiased, unnormalized q, k, v",
+        ),
         (enc.get("xscaling") is False, "no xscaling"),
         (enc.get("feat_out", -1) == -1, "no output projection in the encoder"),
         (sm.get("use_learnable_sil_emb") is True, "a learned silence frame"),
     ]
     for ok, what in want:
         if not ok:
-            raise ValueError("this reference implements Nemotron 3 Diarization with %s; "
-                             "this checkpoint differs" % what)
+            raise ValueError(
+                "this reference implements Nemotron 3 Diarization with %s; "
+                "this checkpoint differs" % what
+            )
     sr = int(pre["sample_rate"])
     win, hop = round(pre["window_size"] * sr), round(pre["window_stride"] * sr)
     f = int(enc["subsampling_factor"])
-    a = {"sample_rate": sr, "n_fft": int(pre["n_fft"]), "win_length": win, "hop_length": hop,
-         "n_mels": int(pre["features"]), "preemph": float(pre.get("preemph", 0.97)),
-         "log_guard": float(pre.get("log_zero_guard_value", 2 ** -24)), "norm_eps": 1e-5, "normalize": False,
-         "n_layers": int(enc["n_layers"]), "d_model": int(enc["d_model"]), "n_heads": int(enc["n_heads"]),
-         "ff_dim": int(enc["d_model"] * enc["ff_expansion"]), "rope_base": float(enc.get("rope_base", 10000.0)),
-         "ln_eps": 1e-5, "tf_d_model": int(cfg["model_defaults"]["tf_d_model"]), "n_spk": int(sm["num_spks"]),
-         "subsampling": f, "upsample": f, "frame": hop / sr, "learned_silence": True}
+    a = {
+        "sample_rate": sr,
+        "n_fft": int(pre["n_fft"]),
+        "win_length": win,
+        "hop_length": hop,
+        "n_mels": int(pre["features"]),
+        "preemph": float(pre.get("preemph", 0.97)),
+        "log_guard": float(pre.get("log_zero_guard_value", 2**-24)),
+        "norm_eps": 1e-5,
+        "normalize": False,
+        "n_layers": int(enc["n_layers"]),
+        "d_model": int(enc["d_model"]),
+        "n_heads": int(enc["n_heads"]),
+        "ff_dim": int(enc["d_model"] * enc["ff_expansion"]),
+        "rope_base": float(enc.get("rope_base", 10000.0)),
+        "ln_eps": 1e-5,
+        "tf_d_model": int(cfg["model_defaults"]["tf_d_model"]),
+        "n_spk": int(sm["num_spks"]),
+        "subsampling": f,
+        "upsample": f,
+        "frame": hop / sr,
+        "learned_silence": True,
+    }
     mod = dict(sortformer.MODULE_DEFAULTS)
-    mod.update({k: sm[k] for k in ("spkcache_len", "fifo_len", "chunk_len", "spkcache_update_period",
-                                   "chunk_left_context", "chunk_right_context", "spkcache_sil_frames_per_spk")
-                if k in sm})
+    mod.update(
+        {
+            k: sm[k]
+            for k in (
+                "spkcache_len",
+                "fifo_len",
+                "chunk_len",
+                "spkcache_update_period",
+                "chunk_left_context",
+                "chunk_right_context",
+                "spkcache_sil_frames_per_spk",
+            )
+            if k in sm
+        }
+    )
     mod.update({k: sm[k] for k in sortformer.MODULE_DEFAULTS if k in sm})
     if streaming:
         mod.update(streaming)
@@ -106,32 +166,60 @@ def tensors(state, a):
         return s[name]
 
     D, C = a["d_model"], a["tf_d_model"]
-    w = {"mel.fb": g("preprocessor.featurizer.fb")[0], "mel.window": g("preprocessor.featurizer.window"),
-         "stack": g("encoder.pre_encode.proj.weight"), "sil": g("sortformer_modules.learnable_sil_emb")}
+    w = {
+        "mel.fb": g("preprocessor.featurizer.fb")[0],
+        "mel.window": g("preprocessor.featurizer.window"),
+        "stack": g("encoder.pre_encode.proj.weight"),
+        "sil": g("sortformer_modules.learnable_sil_emb"),
+    }
     for ours, theirs in (("embed_norm", "embed_norm"), ("final_norm", "final_norm")):
-        w[ours + ".w"], w[ours + ".b"] = g("encoder.%s.weight" % theirs), g("encoder.%s.bias" % theirs)
+        w[ours + ".w"], w[ours + ".b"] = (
+            g("encoder.%s.weight" % theirs),
+            g("encoder.%s.bias" % theirs),
+        )
     for i in range(a["n_layers"]):
         p, q = "encoder.layers.%d." % i, "l%d." % i
-        qkv = g(p + "attn.w_qkv.weight")                            # rows: q, k, v; in each, head by head
-        w[q + "att.q"], w[q + "att.k"], w[q + "att.v"] = qkv[:D], qkv[D:2 * D], qkv[2 * D:]
-        w[q + "att.o"], w[q + "att.o.b"] = g(p + "attn.out_proj.weight"), g(p + "attn.out_proj.bias")
-        w[q + "ff.up"], w[q + "ff.up.b"] = g(p + "ffn.net.0.weight"), g(p + "ffn.net.0.bias")
-        w[q + "ff.down"], w[q + "ff.down.b"] = g(p + "ffn.net.3.weight"), g(p + "ffn.net.3.bias")
+        qkv = g(p + "attn.w_qkv.weight")  # rows: q, k, v; in each, head by head
+        w[q + "att.q"], w[q + "att.k"], w[q + "att.v"] = (
+            qkv[:D],
+            qkv[D : 2 * D],
+            qkv[2 * D :],
+        )
+        w[q + "att.o"], w[q + "att.o.b"] = (
+            g(p + "attn.out_proj.weight"),
+            g(p + "attn.out_proj.bias"),
+        )
+        w[q + "ff.up"], w[q + "ff.up.b"] = (
+            g(p + "ffn.net.0.weight"),
+            g(p + "ffn.net.0.bias"),
+        )
+        w[q + "ff.down"], w[q + "ff.down.b"] = (
+            g(p + "ffn.net.3.weight"),
+            g(p + "ffn.net.3.bias"),
+        )
         for ours, theirs in (("att.norm", "norm1"), ("ff.norm", "norm2")):
-            w[q + ours + ".w"], w[q + ours + ".b"] = g(p + theirs + ".weight"), g(p + theirs + ".bias")
+            w[q + ours + ".w"], w[q + ours + ".b"] = (
+                g(p + theirs + ".weight"),
+                g(p + theirs + ".bias"),
+            )
     p = "sortformer_modules."
-    for ours, theirs in (("proj", "encoder_proj"), ("head.hidden", "first_hidden_to_hidden"),
-                         ("head.out", "single_hidden_to_spks")):
+    for ours, theirs in (
+        ("proj", "encoder_proj"),
+        ("head.hidden", "first_hidden_to_hidden"),
+        ("head.out", "single_hidden_to_spks"),
+    ):
         w[ours], w[ours + ".b"] = g(p + theirs + ".weight"), g(p + theirs + ".bias")
-    up = g(p + "subpixel_upsample.weight")                          # [8 C][C][3 taps]
-    w["up"] = up.transpose(0, 2, 1).reshape(up.shape[0], 3 * C)     # [8 C][tap, C]
+    up = g(p + "subpixel_upsample.weight")  # [8 C][C][3 taps]
+    w["up"] = up.transpose(0, 2, 1).reshape(up.shape[0], 3 * C)  # [8 C][tap, C]
     w["up.b"] = g(p + "subpixel_upsample.bias")
-    for name in sorted(s):                                          # training's heads only
+    for name in sorted(s):  # training's heads only
         if name.startswith((p + "hidden_to_spks.", p + "activity_head.")):
             g(name)
     left = sorted(set(s) - used)
     if left:
-        raise ValueError("tensors this reference does not know what to do with: %s" % left[:8])
+        raise ValueError(
+            "tensors this reference does not know what to do with: %s" % left[:8]
+        )
     return w
 
 
@@ -210,13 +298,13 @@ def layer(x, cos, sin, w, i, a):
     dk = D // H
 
     def heads(m):
-        return m.reshape(T, H, dk).transpose(1, 0, 2)               # [H][T][dk]
+        return m.reshape(T, H, dk).transpose(1, 0, 2)  # [H][T][dk]
 
     h = _ln(x, w[q + "att.norm.w"], w[q + "att.norm.b"], a["ln_eps"])
     Q = _turn(heads(mm(h, w, q + "att.q")), cos, sin)
     K = _turn(heads(mm(h, w, q + "att.k")), cos, sin)
     V = heads(mm(h, w, q + "att.v"))
-    s = Q @ K.transpose(0, 2, 1) / math.sqrt(dk)                    # [H][T][T]
+    s = Q @ K.transpose(0, 2, 1) / math.sqrt(dk)  # [H][T][T]
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
     o = (s @ V).transpose(1, 0, 2).reshape(T, D)
@@ -232,7 +320,9 @@ def upsample(x, w, a):
     output frame then eight 10 ms frames: [T][192] -> [8 T][192]."""
     T, C = x.shape
     z = np.zeros((1, C), x.dtype)
-    taps = np.concatenate([np.concatenate([z, x[:-1]]), x, np.concatenate([x[1:], z])], axis=1)
+    taps = np.concatenate(
+        [np.concatenate([z, x[:-1]]), x, np.concatenate([x[1:], z])], axis=1
+    )
     return lin(taps, w, "up").reshape(T * a["upsample"], C)
 
 

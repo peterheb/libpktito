@@ -14,11 +14,12 @@ rule "near" is the alternative DIARIZATION.md measures against it: a word
 whose averages are all under one half takes the speaker heard nearest it
 within NEAR seconds, and failing that the previous word's.
 """
+
 import numpy as np
 
-NEAR = 0.5           # seconds either side to look for a speaker for an unheard word ("near")
-LEFT = 1             # frames before a word's first that its average includes (NeMo's left_frame_shift)
-FLOOR = 0.01         # what NeMo raises every average to (its min_sigmoid_val)
+NEAR = 0.5  # seconds either side to look for a speaker for an unheard word ("near")
+LEFT = 1  # frames before a word's first that its average includes (NeMo's left_frame_shift)
+FLOOR = 0.01  # what NeMo raises every average to (its min_sigmoid_val)
 
 
 def word_frames(start, end, frame):
@@ -57,7 +58,7 @@ def assign(words, probs, frame=0.08, rule="nemo"):
         if spk < 0 and out:
             spk = out[-1][0]
         out.append((spk, m))
-    if out and out[0][0] < 0:                    # an unheard start takes the first speaker after it
+    if out and out[0][0] < 0:  # an unheard start takes the first speaker after it
         nxt = next((s for s, _ in out if s >= 0), -1)
         out = [(nxt if s < 0 else s, m) for s, m in out]
     return out

@@ -68,6 +68,7 @@ every cache cut keep the frames float32's kept, so that what is left is the
 network's own rounding. "f64" alone is the float64 reference: what rounding
 differently does with no int8 at all.
 """
+
 import argparse
 import itertools
 import json
@@ -83,12 +84,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import quantcheck  # noqa: E402  (its roundings)
 from pktito_tools import nemo, nemotron3, reference, sortformer, speakers, wavio  # noqa: E402
 
-FINE = {"att.q": "qkv", "att.k": "qkv", "att.v": "qkv", "att.o": "o", "ff.up": "ffup", "ff.down": "ffdown"}
+FINE = {
+    "att.q": "qkv",
+    "att.k": "qkv",
+    "att.v": "qkv",
+    "att.o": "o",
+    "ff.up": "ffup",
+    "ff.down": "ffdown",
+}
 CLASSES = set(FINE.values()) | {"stack", "proj", "up", "head", "enc"}
-GRID = 0.01          # seconds a probability row, and a label, covers
-HEARD = 100          # rows (a second) a speaker needs to count as heard
+GRID = 0.01  # seconds a probability row, and a label, covers
+HEARD = 100  # rows (a second) a speaker needs to count as heard
 SPLIT = (0.05, 200)  # the share of a speaker's frames, and the rows, that make a split
-EPS = 1e-7           # dBCE's probabilities are kept this far from 0 and 1 (float32's sigmoid reaches both)
+EPS = 1e-7  # dBCE's probabilities are kept this far from 0 and 1 (float32's sigmoid reaches both)
 
 
 def classes(name):
@@ -115,7 +123,11 @@ def parse(cfg):
             rule, cl = rule.split("@")
             on = set(cl.split("/"))
         wq, _, aq = rule.partition("+")
-        if not on <= CLASSES or (wq != "f32" and wq not in quantcheck.WQ) or (aq and aq not in quantcheck.AQ):
+        if (
+            not on <= CLASSES
+            or (wq != "f32" and wq not in quantcheck.WQ)
+            or (aq and aq not in quantcheck.AQ)
+        ):
             raise SystemExit("unknown configuration %r" % cfg)
         rules.append((quantcheck.WQ.get(wq), quantcheck.AQ.get(aq), on))
     return rules, fixed
@@ -137,6 +149,7 @@ def setup(w32, rules):
         if act.get(name):
             x = act[name](x).astype(np.float32)
         return x @ w[name].T
+
     return wd, mm
 
 
@@ -144,8 +157,8 @@ def setup(w32, rules):
 
 PLAIN_MM = reference.mm
 CHOOSE = sortformer.Stream._choose
-_W = {}              # a worker's model, and its last configuration's weights
-_CUTS = {}           # the cut choices a run records ("record") or takes ("impose")
+_W = {}  # a worker's model, and its last configuration's weights
+_CUTS = {}  # the cut choices a run records ("record") or takes ("impose")
 
 
 def _choose(self, p):
@@ -162,7 +175,9 @@ def _load(path, f64):
     a = nemotron3.arch(nm.config, nemotron3.OFFLINE)
     w = nemotron3.tensors(nm.state, a)
     del nm
-    _W.update(a=a, w=w if f64 else {k: w.pop(k).astype(np.float32) for k in list(w)}, cfg=None)
+    _W.update(
+        a=a, w=w if f64 else {k: w.pop(k).astype(np.float32) for k in list(w)}, cfg=None
+    )
     sortformer.Stream._choose = _choose
 
 
@@ -184,7 +199,7 @@ def _job(job):
     else:
         if _W["cfg"] != cfg:
             rules, _ = parse(cfg)
-            _W.pop("wd", None)                  # never two rounded copies at once
+            _W.pop("wd", None)  # never two rounded copies at once
             _W["wd"], _W["mm"], _W["cfg"] = setup(_W["w"], rules) + (cfg,)
         wd, mm = _W["wd"], _W["mm"]
         fixed = parse(cfg)[1]
@@ -201,8 +216,12 @@ def _job(job):
     _save(out, np.save, p.astype(np.float32))
     if _CUTS["record"] is not None:
         rec, L = _CUTS["record"], _W["a"]["spkcache_len"]
-        _save(cuts, np.savez, idx=np.array([i for i, _ in rec], np.int64).reshape(len(rec), L),
-              off=np.array([o for _, o in rec], bool).reshape(len(rec), L))
+        _save(
+            cuts,
+            np.savez,
+            idx=np.array([i for i, _ in rec], np.int64).reshape(len(rec), L),
+            off=np.array([o for _, o in rec], bool).reshape(len(rec), L),
+        )
     return cfg, os.path.basename(wav), st.steps, time.time() - t0
 
 
@@ -214,7 +233,9 @@ def compute(todo, model, f64, jobs):
         _load(model, f64)
         done = map(_job, todo)
     else:
-        pool = multiprocessing.get_context("spawn").Pool(jobs, initializer=_load, initargs=(model, f64))
+        pool = multiprocessing.get_context("spawn").Pool(
+            jobs, initializer=_load, initargs=(model, f64)
+        )
         done = pool.imap_unordered(_job, todo)
     for cfg, name, steps, dt in done:
         print("  %-24s %-12s %4d steps %6.0f s" % (cfg, name, steps, dt), flush=True)
@@ -278,9 +299,11 @@ def read_rttm(path):
 def truth(segs, n):
     """The true speakers as labels [n][speakers] on the grid, and their names."""
     names = sorted({s for _, _, s in segs})
-    R = np.zeros((max(n, int(round(max(b for _, b, _ in segs) / GRID)) + 1), len(names)), bool)
+    R = np.zeros(
+        (max(n, int(round(max(b for _, b, _ in segs) / GRID)) + 1), len(names)), bool
+    )
     for a, b, s in segs:
-        R[int(round(a / GRID)):int(round(b / GRID)), names.index(s)] = True
+        R[int(round(a / GRID)) : int(round(b / GRID)), names.index(s)] = True
     return R, names
 
 
@@ -289,7 +312,7 @@ def collar(segs, n, c=0.25):
     k = int(round(c / GRID))
     for a, b, _ in segs:
         for t in (int(round(a / GRID)), int(round(b / GRID))):
-            keep[max(t - k, 0):t + k] = False
+            keep[max(t - k, 0) : t + k] = False
     return keep
 
 
@@ -298,7 +321,10 @@ def means80(p):
     over its own rows - what NeMo's merge sees."""
     T = len(p)
     starts = np.arange(0, T, 8)
-    return np.add.reduceat(p.astype(np.float64), starts, axis=0) / np.diff(np.append(starts, T))[:, None]
+    return (
+        np.add.reduceat(p.astype(np.float64), starts, axis=0)
+        / np.diff(np.append(starts, T))[:, None]
+    )
 
 
 def true_speakers(segs, a, b):
@@ -324,12 +350,15 @@ def splits(L0, L1):
     part to a second column, and columns given two of float32's speakers."""
     one0, one1 = L0.sum(1) == 1, L1.sum(1) == 1
     both = one0 & one1
-    C = L0[both].T.astype(np.int64) @ L1[both].astype(np.int64)        # [f32 speaker][column]
+    C = L0[both].T.astype(np.int64) @ L1[both].astype(np.int64)  # [f32 speaker][column]
     share, rows = SPLIT
 
     def big(v):
         return (v >= max(rows, share * v.sum())).sum() if v.sum() else 0
-    return sum(big(C[i]) >= 2 for i in range(C.shape[0])), sum(big(C[:, j]) >= 2 for j in range(C.shape[1]))
+
+    return sum(big(C[i]) >= 2 for i in range(C.shape[0])), sum(
+        big(C[:, j]) >= 2 for j in range(C.shape[1])
+    )
 
 
 def bce(p, y):
@@ -348,8 +377,14 @@ def compare(p0, p1, segs, words):
     m = d.pop("map")
     order = [m[s] for s in range(L0.shape[1])]
     p1, L1 = p1[:, order], L1[:, order]
-    r = {"labels": int((L0 != L1).sum()), "of": int(L0.size), "dbce": bce(p1, L0) - bce(p0, L0),
-         "f32": d, "heard": int((L1.sum(0) >= HEARD).sum()), "renumbered": order != sorted(order)}
+    r = {
+        "labels": int((L0 != L1).sum()),
+        "of": int(L0.size),
+        "dbce": bce(p1, L0) - bce(p0, L0),
+        "f32": d,
+        "heard": int((L1.sum(0) >= HEARD).sum()),
+        "renumbered": order != sorted(order),
+    }
     r["split"], r["merged"] = (int(x) for x in splits(L0, L1))
     if segs:
         R, names = truth(segs, T)
@@ -364,12 +399,23 @@ def compare(p0, p1, segs, words):
         mine = s1 = [s for s, _ in speakers.assign(spans, means80(p1), 0.08, "nemo")]
         moved = [i for i in range(len(words)) if s0[i] != s1[i]]
         c0, c1 = changes(s0), changes(s1)
-        r.update(words=len(words), moved=len(moved), spurious=len(c1 - c0), lost=len(c0 - c1),
-                 moved_words=[[i, words[i][0], words[i][1], words[i][2], s0[i], s1[i]] for i in moved])
+        r.update(
+            words=len(words),
+            moved=len(moved),
+            spurious=len(c1 - c0),
+            lost=len(c0 - c1),
+            moved_words=[
+                [i, words[i][0], words[i][1], words[i][2], s0[i], s1[i]] for i in moved
+            ],
+        )
         if segs:
-            inv = {c: k for k, c in r["true"]["map"].items()}         # a column -> its true speaker
+            inv = {
+                c: k for k, c in r["true"]["map"].items()
+            }  # a column -> its true speaker
             tv = [true_speakers(segs, a, b) for a, b in spans]
-            r["wrong"] = sum(1 for s, t in zip(mine, tv) if s not in inv or names[inv[s]] not in t)
+            r["wrong"] = sum(
+                1 for s, t in zip(mine, tv) if s not in inv or names[inv[s]] not in t
+            )
     if segs:
         r["true"].pop("map")
     return r
@@ -387,7 +433,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("nemo")
     ap.add_argument("wav", nargs="+")
-    ap.add_argument("--cache", required=True, help="where each run's probabilities are kept")
+    ap.add_argument(
+        "--cache", required=True, help="where each run's probabilities are kept"
+    )
     ap.add_argument("--configs", default="f64,w8row,w8row+a8b32,w8row+a8b32;f32cuts")
     ap.add_argument("--jobs", type=int, default=1, help="processes to run them in")
     ap.add_argument("--json", help="write every WAV's numbers and moved words here")
@@ -406,44 +454,92 @@ def main():
     def cuts(name):
         return os.path.join(args.cache, "f32", name + ".cuts.npz")
 
-    for cfgs, f64 in ((["f32"], False), ([c for c in configs if c != "f64"], False),
-                      (["f64"] if "f64" in configs else [], True)):
+    for cfgs, f64 in (
+        (["f32"], False),
+        ([c for c in configs if c != "f64"], False),
+        (["f64"] if "f64" in configs else [], True),
+    ):
         for c in cfgs:
             os.makedirs(os.path.dirname(out(c, "x")), exist_ok=True)
-        compute([(c, p, out(c, n), cuts(n)) for c in cfgs for p, n in zip(args.wav, names)
-                 if not os.path.exists(out(c, n))], args.nemo, f64, args.jobs)
+        compute(
+            [
+                (c, p, out(c, n), cuts(n))
+                for c in cfgs
+                for p, n in zip(args.wav, names)
+                if not os.path.exists(out(c, n))
+            ],
+            args.nemo,
+            f64,
+            args.jobs,
+        )
 
     seconds = sum(len(np.load(out("f32", n), mmap_mode="r")) for n in names) * GRID
-    print("%s: %d recordings, %.1f minutes" % (os.path.basename(args.nemo), len(names), seconds / 60))
+    print(
+        "%s: %d recordings, %.1f minutes"
+        % (os.path.basename(args.nemo), len(names), seconds / 60)
+    )
     base = {n: np.load(out("f32", n)) for n in names}
-    rttm = {n: read_rttm(os.path.splitext(p)[0] + ".rttm") if os.path.exists(os.path.splitext(p)[0] + ".rttm")
-            else None for p, n in zip(args.wav, names)}
-    words = {n: load_words(os.path.splitext(p)[0] + ".json") for p, n in zip(args.wav, names)}
+    rttm = {
+        n: read_rttm(os.path.splitext(p)[0] + ".rttm")
+        if os.path.exists(os.path.splitext(p)[0] + ".rttm")
+        else None
+        for p, n in zip(args.wav, names)
+    }
+    words = {
+        n: load_words(os.path.splitext(p)[0] + ".json") for p, n in zip(args.wav, names)
+    }
     results = {}
     for cfg in ["f32"] + configs:
-        rows = {n: compare(base[n], np.load(out(cfg, n)), rttm[n], words[n]) for n in names}
+        rows = {
+            n: compare(base[n], np.load(out(cfg, n)), rttm[n], words[n]) for n in names
+        }
         results[cfg] = rows
         v = list(rows.values())
         lab, of = sum(r["labels"] for r in v), sum(r["of"] for r in v)
         db = np.array([r["dbce"] for r in v])
-        t = db.mean() / (db.std(ddof=1) / math.sqrt(len(db))) if len(db) > 1 and db.std() > 0 else 0.0
-        line = "%-24s labels %7d of %9d (%.4f%%)  dBCE %+.6f  t %6.1f  DER/f32 %.3f%%" % (
-            cfg, lab, of, 100.0 * lab / of, db.mean(), t, pct(v, "f32"))
+        t = (
+            db.mean() / (db.std(ddof=1) / math.sqrt(len(db)))
+            if len(db) > 1 and db.std() > 0
+            else 0.0
+        )
+        line = (
+            "%-24s labels %7d of %9d (%.4f%%)  dBCE %+.6f  t %6.1f  DER/f32 %.3f%%"
+            % (cfg, lab, of, 100.0 * lab / of, db.mean(), t, pct(v, "f32"))
+        )
         scored = [n for n in names if rttm[n]]
         if scored:
-            dd = np.array([pct([rows[n]], "true") - pct([results["f32"][n]], "true") for n in scored])
-            tt = dd.mean() / (dd.std(ddof=1) / math.sqrt(len(dd))) if len(dd) > 1 and dd.std() > 0 else 0.0
+            dd = np.array(
+                [
+                    pct([rows[n]], "true") - pct([results["f32"][n]], "true")
+                    for n in scored
+                ]
+            )
+            tt = (
+                dd.mean() / (dd.std(ddof=1) / math.sqrt(len(dd)))
+                if len(dd) > 1 and dd.std() > 0
+                else 0.0
+            )
             line += "  DER %.2f%% (collar %.2f%%), against float32's %+.3f (t %.1f)" % (
-                pct([rows[n] for n in scored], "true"), pct([rows[n] for n in scored], "collar"), dd.mean(), tt)
+                pct([rows[n] for n in scored], "true"),
+                pct([rows[n] for n in scored], "collar"),
+                dd.mean(),
+                tt,
+            )
         heard = [r for r, n in zip(v, names) if words[n]]
         if heard:
             line += "  words %d of %d moved, wrong %d  turns +%d -%d" % (
-                sum(r["moved"] for r in heard), sum(r["words"] for r in heard),
-                sum(r.get("wrong", 0) for r in heard), sum(r["spurious"] for r in heard),
-                sum(r["lost"] for r in heard))
+                sum(r["moved"] for r in heard),
+                sum(r["words"] for r in heard),
+                sum(r.get("wrong", 0) for r in heard),
+                sum(r["spurious"] for r in heard),
+                sum(r["lost"] for r in heard),
+            )
         line += "  heard %d  split %d merged %d  renumbered %d" % (
-            sum(r["heard"] for r in v), sum(r["split"] for r in v), sum(r["merged"] for r in v),
-            sum(r["renumbered"] for r in v))
+            sum(r["heard"] for r in v),
+            sum(r["split"] for r in v),
+            sum(r["merged"] for r in v),
+            sum(r["renumbered"] for r in v),
+        )
         print(line, flush=True)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:

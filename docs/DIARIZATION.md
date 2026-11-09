@@ -11,7 +11,7 @@ boards. Nothing in it is in the engine yet; the prototype is Python:
 - `tools/pktito_tools/nemotron3.py`: NVIDIA's Nemotron 3 Diarization in
   float64 numpy, NeMo's arithmetic at a pinned commit, what reference.py is
   to Parakeet. `tools/pktito-tools diar Nemotron-3-Diarization.nemo
-  talk.wav` prints its RTTM.
+talk.wav` prints its RTTM.
 - `tools/pktito_tools/sortformer.py`: the speaker cache that both of
   NVIDIA's streaming diarizers keep, and the network of Streaming Sortformer
   v2, the alternative measured here; `pktito-tools diar` runs it when given
@@ -86,13 +86,13 @@ relies on it.
 NVIDIA's diarizers for NeMo on Hugging Face (its API searched for them,
 2026-11-08), each from its card, configuration and file listing:
 
-| | released | licence | parameters | speakers | network | a long recording |
-|---|---|---|---|---|---|---|
-| diar_sortformer_4spk-v1 | 2024-12-09 | CC-BY-NC-4.0 | 123M | 4 | 18 FastConformer layers, 18 Transformer layers | whole, at once: "around 12 minutes" on a 48 GB GPU |
-| diar_streaming_sortformer_4spk-v2 | 2025-06-04 | CC-BY-4.0 | 117.7M | 4 | 17 FastConformer layers of 512, 18 Transformer layers of 192 | streamed, a speaker cache: "several hours" |
-| diar_streaming_sortformer_4spk-v2.1 | 2025-10-22 | NVIDIA Open Model License | 117M | 4 | v2's (inferred: its .nemo is v2's size to the byte, 471,367,680) | as v2 |
-| Nemotron-3-Diarization | 2026-09-01 | OpenMDW-1.1 | 99.2M | 8 | 31 Transformer layers of 512 with rotary positions, 8 feature frames stacked into one, an upsampler to 10 ms | streamed, a speaker cache |
-| TitaNet-large and clustering | 2022-07-15 | CC-BY-4.0 | 23M | any | speaker embeddings over VAD segments, spectral clustering | yes |
+|                                     | released   | licence                   | parameters | speakers | network                                                                                                      | a long recording                                   |
+| ----------------------------------- | ---------- | ------------------------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| diar_sortformer_4spk-v1             | 2024-12-09 | CC-BY-NC-4.0              | 123M       | 4        | 18 FastConformer layers, 18 Transformer layers                                                               | whole, at once: "around 12 minutes" on a 48 GB GPU |
+| diar_streaming_sortformer_4spk-v2   | 2025-06-04 | CC-BY-4.0                 | 117.7M     | 4        | 17 FastConformer layers of 512, 18 Transformer layers of 192                                                 | streamed, a speaker cache: "several hours"         |
+| diar_streaming_sortformer_4spk-v2.1 | 2025-10-22 | NVIDIA Open Model License | 117M       | 4        | v2's (inferred: its .nemo is v2's size to the byte, 471,367,680)                                             | as v2                                              |
+| Nemotron-3-Diarization              | 2026-09-01 | OpenMDW-1.1               | 99.2M      | 8        | 31 Transformer layers of 512 with rotary positions, 8 feature frames stacked into one, an upsampler to 10 ms | streamed, a speaker cache                          |
+| TitaNet-large and clustering        | 2022-07-15 | CC-BY-4.0                 | 23M        | any      | speaker embeddings over VAD segments, spectral clustering                                                    | yes                                                |
 
 And one that is not a diarizer: multitalker-parakeet-streaming-0.6b-v1
 (2025-10-15, NVIDIA Open Model License) is a recognizer that writes each
@@ -107,18 +107,18 @@ across:
 v2.1's card, the 30.4 s configuration, no post-processing (v1's from its own
 card, likewise):
 
-| | DIHARD III, 1-4 speakers | DIHARD III, all | CALLHOME, 2 | CALLHOME, 4 | CALLHOME, all | AMI, far microphone | NOTSOFAR1, far, all |
-|---|---|---|---|---|---|---|---|
-| v1 | 16.28 | | 6.49 | 14.14 | | | |
-| v2 | 14.63 | 19.68 | 6.27 | 12.30 | 10.50 | 28.56 | 33.43 |
-| v2.1 | 14.84 | 19.49 | 5.65 | 12.33 | 10.10 | 17.80 | 27.07 |
+|      | DIHARD III, 1-4 speakers | DIHARD III, all | CALLHOME, 2 | CALLHOME, 4 | CALLHOME, all | AMI, far microphone | NOTSOFAR1, far, all |
+| ---- | ------------------------ | --------------- | ----------- | ----------- | ------------- | ------------------- | ------------------- |
+| v1   | 16.28                    |                 | 6.49        | 14.14       |               |                     |                     |
+| v2   | 14.63                    | 19.68           | 6.27        | 12.30       | 10.50         | 28.56               | 33.43               |
+| v2.1 | 14.84                    | 19.49           | 5.65        | 12.33       | 10.10         | 17.80               | 27.07               |
 
 Nemotron 3's card, the 30.4 s configuration, v2.1 measured again beside it:
 
-| | DIHARD III, 1-4 speakers | DIHARD III, all | CALLHOME, 2 | CALLHOME, 4 | CALLHOME, all | AMI, far microphone | NOTSOFAR1, far, all |
-|---|---|---|---|---|---|---|---|
-| v2.1 | 13.98 | 19.09 | 5.68 | 12.36 | 10.32 | 21.42 | 30.49 |
-| Nemotron 3 | 9.13 | 12.73 | 5.98 | 11.03 | 9.10 | 11.14 | 11.00 |
+|            | DIHARD III, 1-4 speakers | DIHARD III, all | CALLHOME, 2 | CALLHOME, 4 | CALLHOME, all | AMI, far microphone | NOTSOFAR1, far, all |
+| ---------- | ------------------------ | --------------- | ----------- | ----------- | ------------- | ------------------- | ------------------- |
+| v2.1       | 13.98                    | 19.09           | 5.68        | 12.36       | 10.32         | 21.42               | 30.49               |
+| Nemotron 3 | 9.13                     | 12.73           | 5.98        | 11.03       | 9.10          | 11.14               | 11.00               |
 
 TitaNet's card publishes DER only with the true speech segments given (an
 "oracle VAD", 1.2 to 6.7%), which no recording comes with, so it is not in
@@ -154,8 +154,7 @@ would want to ship"), and which answers CLAUDE.md's questions in order:
    Transformer - LayerNorm, attention, LayerNorm, feed-forward - with rotary
    positions: less to read than v2's FastConformer with a second Transformer
    after it. The cache is the same page of C.
-3. **It gets more from the same silicon.** It costs what v2 costs (section
-   7) and buys eight speakers and, on NVIDIA's benchmarks, much less error
+3. **It gets more from the same silicon.** It costs what v2 costs (section 7) and buys eight speakers and, on NVIDIA's benchmarks, much less error
    where recordings are hard: DIHARD III 12.73 against v2.1's 19.09,
    far-field meetings (NOTSOFAR1) 11.00 against 30.49 (published). On this
    study's synthetic conversations, up to eight speakers, it took one
@@ -208,7 +207,7 @@ commercial-safe for our users" (section 12).
 
 Nemotron 3 Diarization as NeMo runs it at cd61689
 (SortformerEncLabelModel's forward_streaming with its TransformerEncoder,
-SortformerModules' streaming_update and _compress_spkcache), at batch size
+SortformerModules' streaming_update and \_compress_spkcache), at batch size
 one; the configuration and the tensors read from the checkpoint:
 
 - **features**: Parakeet's log-mel computation (128 mels; a 512-point FFT of
@@ -240,8 +239,7 @@ The speakers come out in the order they first spoke, column 0 whoever spoke
 first, and the cache is what keeps that order over an hour: each step
 attends to frames of every speaker heard so far. The card's lower latencies
 (1.04, 0.64 and 0.32 s) are the same computation with chunks of 9, 6 and 3
-frames, right contexts of 4, 2 and 1, a FIFO of 264 and an update period of
-222.
+frames, right contexts of 4, 2 and 1, a FIFO of 264 and an update period of 222.
 
 ### Its features: Parakeet's computation, not Parakeet's numbers
 
@@ -294,15 +292,15 @@ which is also the checkpoint's own and what Transformers' offline mode
 uses; the seven recordings of v2's table below. A label is whether one
 speaker's probability is over one half in one 10 ms frame: eight a frame.
 
-| | speakers | length | steps | as shipped: most apart, first chunk | anywhere | labels not NeMo's | with the checkpoint's tables: first chunk | anywhere | labels not NeMo's |
-|---|---|---|---|---|---|---|---|---|---|
-| test.wav | 1 | 60 s | 3 | 0.0043 | 0.015 | 1 of 48,000 | 6.4e-7 | 0.015 (6.4e-7 but the last 80 ms) | 0 |
-| conv2 | 2 | 5.0 min | 12 | 0.0052 | 0.024 | 1 of 240,240 | 1.2e-6 | 1.4e-6 | 0 |
-| conv3 | 3 | 10.2 min | 23 | 0.0025 | 0.023 | 19 of 489,680 | 8.3e-7 | 2.9e-6 | 0 |
-| conv4 | 4 | 10.1 min | 23 | 0.0033 | 0.076 | 17 of 484,144 | 1.5e-6 | 2.1e-6 | 0 |
-| conv5 | 5 | 10.2 min | 23 | 0.0021 | 0.79 | 2,096 of 488,960 | 7.7e-7 | 0.0049 (1.8e-6 but the last 80 ms) | 0 |
-| conv2h | 2 | 60.1 min | 133 | 0.0060 | 0.018 | 18 of 2,884,808 | 6.0e-7 | 2.1e-6 | 0 |
-| conv3h | 3 | 60.0 min | 133 | 0.0043 | 0.052 | 37 of 2,881,688 | 1.2e-6 | 4.2e-6 | 0 |
+|          | speakers | length   | steps | as shipped: most apart, first chunk | anywhere | labels not NeMo's | with the checkpoint's tables: first chunk | anywhere                           | labels not NeMo's |
+| -------- | -------- | -------- | ----- | ----------------------------------- | -------- | ----------------- | ----------------------------------------- | ---------------------------------- | ----------------- |
+| test.wav | 1        | 60 s     | 3     | 0.0043                              | 0.015    | 1 of 48,000       | 6.4e-7                                    | 0.015 (6.4e-7 but the last 80 ms)  | 0                 |
+| conv2    | 2        | 5.0 min  | 12    | 0.0052                              | 0.024    | 1 of 240,240      | 1.2e-6                                    | 1.4e-6                             | 0                 |
+| conv3    | 3        | 10.2 min | 23    | 0.0025                              | 0.023    | 19 of 489,680     | 8.3e-7                                    | 2.9e-6                             | 0                 |
+| conv4    | 4        | 10.1 min | 23    | 0.0033                              | 0.076    | 17 of 484,144     | 1.5e-6                                    | 2.1e-6                             | 0                 |
+| conv5    | 5        | 10.2 min | 23    | 0.0021                              | 0.79     | 2,096 of 488,960  | 7.7e-7                                    | 0.0049 (1.8e-6 but the last 80 ms) | 0                 |
+| conv2h   | 2        | 60.1 min | 133   | 0.0060                              | 0.018    | 18 of 2,884,808   | 6.0e-7                                    | 2.1e-6                             | 0                 |
+| conv3h   | 3        | 60.0 min | 133   | 0.0043                              | 0.052    | 37 of 2,881,688   | 1.2e-6                                    | 4.2e-6                             | 0                 |
 
 Two things part them, and past float32's rounding nothing else:
 
@@ -334,15 +332,15 @@ Measured: nemotron3.py against NeMo at cd61689, as above. Against
 Transformers with the checkpoint's tables, the same labels differ, frame
 for frame.
 
-| | speakers | length | steps | most apart, first chunk | anywhere | labels not NeMo's | DER against NeMo's labels |
-|---|---|---|---|---|---|---|---|
-| test.wav | 1 | 60 s | 3 | 9.7e-7 | 4.0e-6 | 0 of 48,000 | 0 |
-| conv2 | 2 | 5.0 min | 12 | 4.1e-6 | 0.015 | 0 of 240,240 | 0 |
-| conv3 | 3 | 10.2 min | 23 | 3.0e-6 | 0.0044 | 0 of 489,680 | 0 |
-| conv4 | 4 | 10.1 min | 23 | 2.3e-6 | 1.2e-5 | 0 of 484,144 | 0 |
-| conv5 | 5 | 10.2 min | 23 | 1.8e-6 | 0.27 | 874 of 488,960 | 1.66% |
-| conv2h | 2 | 60.1 min | 133 | 2.1e-6 | 0.021 | 4 of 2,884,808 | 0.001% |
-| conv3h | 3 | 60.0 min | 133 | 4.8e-6 | 0.048 | 10 of 2,881,688 | 0.003% |
+|          | speakers | length   | steps | most apart, first chunk | anywhere | labels not NeMo's | DER against NeMo's labels |
+| -------- | -------- | -------- | ----- | ----------------------- | -------- | ----------------- | ------------------------- |
+| test.wav | 1        | 60 s     | 3     | 9.7e-7                  | 4.0e-6   | 0 of 48,000       | 0                         |
+| conv2    | 2        | 5.0 min  | 12    | 4.1e-6                  | 0.015    | 0 of 240,240      | 0                         |
+| conv3    | 3        | 10.2 min | 23    | 3.0e-6                  | 0.0044   | 0 of 489,680      | 0                         |
+| conv4    | 4        | 10.1 min | 23    | 2.3e-6                  | 1.2e-5   | 0 of 484,144      | 0                         |
+| conv5    | 5        | 10.2 min | 23    | 1.8e-6                  | 0.27     | 874 of 488,960    | 1.66%                     |
+| conv2h   | 2        | 60.1 min | 133   | 2.1e-6                  | 0.021    | 4 of 2,884,808    | 0.001%                    |
+| conv3h   | 3        | 60.0 min | 133   | 4.8e-6                  | 0.048    | 10 of 2,881,688   | 0.003%                    |
 
 And on section 8's larger conversations: conv6 (6 speakers) 1.2e-5 and no
 label, conv8 (8) 9.1e-6 and none, conv8b (8, 20 minutes) 0.016 and 4.
@@ -377,15 +375,15 @@ Measured: sortformer.py against NeMo 3.0.0's own forward() (torch 2.14.1,
 CPU, float32), the 30.4 s configuration. A label here is one of four
 speakers in one 80 ms frame.
 
-| | speakers | length | steps | most apart, first chunk | anywhere | labels not NeMo's | DER against NeMo's labels |
-|---|---|---|---|---|---|---|---|
-| test.wav | 1 | 60 s | 3 | 1.5e-6 | 1.6e-6 | 0 of 3,000 | 0 |
-| conv2 | 2 | 5.0 min | 12 | 8.5e-7 | 1.9e-6 | 0 of 15,016 | 0 |
-| conv3 | 3 | 10.2 min | 23 | 4.8e-7 | 6.3e-3 | 0 of 30,608 | 0 |
-| conv4 | 4 | 10.1 min | 23 | 9.4e-7 | 2.7e-6 | 0 of 30,260 | 0 |
-| conv5 | 5 | 10.2 min | 23 | 3.8e-7 | 0.094 | 3 of 30,560 | 0.05% |
-| conv2h | 2 | 60.1 min | 133 | 6.4e-7 | 0.016 | 1 of 180,304 | 0.003% |
-| conv3h | 3 | 60.0 min | 133 | 5.9e-7 | 0.038 | 5 of 180,108 | 0.01% |
+|          | speakers | length   | steps | most apart, first chunk | anywhere | labels not NeMo's | DER against NeMo's labels |
+| -------- | -------- | -------- | ----- | ----------------------- | -------- | ----------------- | ------------------------- |
+| test.wav | 1        | 60 s     | 3     | 1.5e-6                  | 1.6e-6   | 0 of 3,000        | 0                         |
+| conv2    | 2        | 5.0 min  | 12    | 8.5e-7                  | 1.9e-6   | 0 of 15,016       | 0                         |
+| conv3    | 3        | 10.2 min | 23    | 4.8e-7                  | 6.3e-3   | 0 of 30,608       | 0                         |
+| conv4    | 4        | 10.1 min | 23    | 9.4e-7                  | 2.7e-6   | 0 of 30,260       | 0                         |
+| conv5    | 5        | 10.2 min | 23    | 3.8e-7                  | 0.094    | 3 of 30,560       | 0.05%                     |
+| conv2h   | 2        | 60.1 min | 133   | 6.4e-7                  | 0.016    | 1 of 180,304      | 0.003%                    |
+| conv3h   | 3        | 60.0 min | 133   | 5.9e-7                  | 0.038    | 5 of 180,108      | 0.01%                     |
 
 ## 5. Ties
 
@@ -586,28 +584,28 @@ Measured, against float32 on the same recordings, AMI's truth NTT's (26.1
 million labels, 74,737 words, 4,926 changes of speaker in float32's
 transcript):
 
-| AMI | labels changed | dBCE (t) | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
-|---|---|---|---|---|---|---|---|---|
-| float64, no int8: a rounding alone | 0.0054% | +0.00001 (0.8) | 0.06% | 9.19% (+0.004, t 1.2) | 30 | 848 | +19, -23 | 0, 0, 0 |
-| int8 weights, a scale a row | 0.089% | +0.00032 (1.9) | 0.91% | 9.25% (+0.067, t 2.5) | 269 | 866 | +158, -172 | 0, 0, 1 |
-| ... and their activations in blocks of 32: the rule | 0.085% | +0.00050 (4.9) | 0.89% | 9.21% (+0.010, t 0.4) | 221 | 836 | +140, -181 | 0, 0, 1 |
-| the rule, the cache cut where float32 cut it | 0.054% | +0.00036 (5.0) | 0.59% | 9.22% (+0.042, t 2.8) | 94 | 849 | +70, -83 | 0, 0, 0 |
-| the rule, activations a row at a time | 0.092% | +0.00050 (3.8) | 0.97% | 9.24% (+0.046, t 1.6) | 245 | 859 | +164, -189 | 0, 0, 1 |
-| the rule, the head's two matrices float | 0.066% | +0.00017 (1.8) | 0.70% | 9.22% (+0.030, t 1.4) | 182 | 856 | +123, -146 | 0, 0, 0 |
-| the rule, the stacking matrix float | 0.084% | +0.00073 (3.4) | 0.87% | 9.28% (+0.090, t 1.6) | 277 | 902 | +166, -171 | 1, 0, 0 |
+| AMI                                                 | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
+| --------------------------------------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ---------------------------------- |
+| float64, no int8: a rounding alone                  | 0.0054%        | +0.00001 (0.8) | 0.06%                 | 9.19% (+0.004, t 1.2)                  | 30                       | 848                                         | +19, -23                       | 0, 0, 0                            |
+| int8 weights, a scale a row                         | 0.089%         | +0.00032 (1.9) | 0.91%                 | 9.25% (+0.067, t 2.5)                  | 269                      | 866                                         | +158, -172                     | 0, 0, 1                            |
+| ... and their activations in blocks of 32: the rule | 0.085%         | +0.00050 (4.9) | 0.89%                 | 9.21% (+0.010, t 0.4)                  | 221                      | 836                                         | +140, -181                     | 0, 0, 1                            |
+| the rule, the cache cut where float32 cut it        | 0.054%         | +0.00036 (5.0) | 0.59%                 | 9.22% (+0.042, t 2.8)                  | 94                       | 849                                         | +70, -83                       | 0, 0, 0                            |
+| the rule, activations a row at a time               | 0.092%         | +0.00050 (3.8) | 0.97%                 | 9.24% (+0.046, t 1.6)                  | 245                      | 859                                         | +164, -189                     | 0, 0, 1                            |
+| the rule, the head's two matrices float             | 0.066%         | +0.00017 (1.8) | 0.70%                 | 9.22% (+0.030, t 1.4)                  | 182                      | 856                                         | +123, -146                     | 0, 0, 0                            |
+| the rule, the stacking matrix float                 | 0.084%         | +0.00073 (3.4) | 0.87%                 | 9.28% (+0.090, t 1.6)                  | 277                      | 902                                         | +166, -171                     | 1, 0, 0                            |
 
 The synthetic set (9.4 million labels, 18,927 words, 816 changes of
 speaker):
 
-| synthetic | labels changed | dBCE (t) | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
-|---|---|---|---|---|---|---|---|---|
-| float64, no int8 | 0.0096% | +0.00003 (1.0) | 0.09% | 5.84% (+0.001, t 1.1) | 0 | 129 | +0, -0 | 43, 0, 0 |
-| int8 weights, a scale a row | 0.037% | +0.00045 (1.3) | 0.35% | 5.82% (-0.032, t -1.3) | 9 | 120 | +5, -0 | 42, 0, 0 |
-| the rule | 0.023% | +0.00007 (1.7) | 0.21% | 5.83% (-0.020, t -1.0) | 0 | 129 | +0, -0 | 43, 0, 0 |
-| the rule, float32's cuts | 0.016% | +0.00013 (3.0) | 0.15% | 5.82% (-0.037, t -1.7) | 0 | 129 | +0, -0 | 43, 0, 0 |
-| the rule, activations a row at a time | 0.025% | +0.00005 (2.0) | 0.24% | 5.84% (-0.001, t -0.0) | 0 | 129 | +0, -0 | 43, 0, 0 |
-| the rule, the head float | 0.023% | +0.00014 (1.8) | 0.21% | 5.85% (+0.003, t 0.2) | 0 | 129 | +0, -0 | 43, 0, 0 |
-| the rule, the stacking matrix float | 0.039% | +0.00073 (1.2) | 0.28% | 5.74% (-0.215, t -1.1) | 62 | 67 | +12, -1 | 42, 0, 1 |
+| synthetic                             | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
+| ------------------------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ------------------------------------------- |
+| float64, no int8                      | 0.0096%        | +0.00003 (1.0) | 0.09%                 | 5.84% (+0.001, t 1.1)                  | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| int8 weights, a scale a row           | 0.037%         | +0.00045 (1.3) | 0.35%                 | 5.82% (-0.032, t -1.3)                 | 9                        | 120                                         | +5, -0                         | 42, 0, 0                                    |
+| the rule                              | 0.023%         | +0.00007 (1.7) | 0.21%                 | 5.83% (-0.020, t -1.0)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, float32's cuts              | 0.016%         | +0.00013 (3.0) | 0.15%                 | 5.82% (-0.037, t -1.7)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, activations a row at a time | 0.025%         | +0.00005 (2.0) | 0.24%                 | 5.84% (-0.001, t -0.0)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, the head float              | 0.023%         | +0.00014 (1.8) | 0.21%                 | 5.85% (+0.003, t 0.2)                  | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, the stacking matrix float   | 0.039%         | +0.00073 (1.2) | 0.28%                 | 5.74% (-0.215, t -1.1)                 | 62                       | 67                                          | +12, -1                        | 42, 0, 1                                    |
 
 What it shows:
 
@@ -721,17 +719,17 @@ stages run at the encoder's own rates: the feed-forward at 3.0 trillion
 multiply-adds a second and the attention at 1.3, where `pktito-c bench`'s
 profile of pktito's encoder at v2's shapes gives 2.6 to 3.2 and 1.2.
 
-| a step (the run of 44.6 ms) | ms | |
-|---|---|---|
-| feed-forward | 14.8 | 33% |
-| attention | 11.6 | 26% |
-| queries, keys, values | 7.3 | 16% |
-| attention out | 2.9 | 6% |
-| GELU (as SiLU) into int8 | 2.7 | 6% |
-| repacking K | 1.7 | 4% |
-| layer norms into int8 | 1.5 | 3% |
-| rotation | 1.4 | 3% |
-| stacking, projection, upsampler, head | 0.7 | 2% |
+| a step (the run of 44.6 ms)           | ms   |     |
+| ------------------------------------- | ---- | --- |
+| feed-forward                          | 14.8 | 33% |
+| attention                             | 11.6 | 26% |
+| queries, keys, values                 | 7.3  | 16% |
+| attention out                         | 2.9  | 6%  |
+| GELU (as SiLU) into int8              | 2.7  | 6%  |
+| repacking K                           | 1.7  | 4%  |
+| layer norms into int8                 | 1.5  | 3%  |
+| rotation                              | 1.4  | 3%  |
+| stacking, projection, upsampler, head | 0.7  | 2%  |
 
 The cache is 264 of the step's 684 frames, so every step pays to attend to
 it again, and the attention's share grows with it. v2, measured the same
@@ -745,11 +743,11 @@ minute for Nemotron 3, 0.46 of Parakeet's; v2's 0.12 s, 0.54. By this
 study's count of multiply-adds, Nemotron 3 is 182 billion a minute, 0.36 of
 Parakeet's 507, v2 202, 0.40. For the boards (inferred from here on):
 
-| | Parakeet v2 (README) | Nemotron 3 | both |
-|---|---|---|---|
-| Ryzen 9 9950X | 0.217 s a minute | 0.10 s (measured) | 0.32 s: about 190x real time |
-| Raspberry Pi 5 | 3.71 s | 1.3 to 1.7 s | 5.0 to 5.4 s: an hour in 5 to 5.5 minutes |
-| Raspberry Pi 3B+ | 44.6 s | 16 to 21 s | 61 to 66 s: an hour in 61 to 66 minutes |
+|                  | Parakeet v2 (README) | Nemotron 3        | both                                      |
+| ---------------- | -------------------- | ----------------- | ----------------------------------------- |
+| Ryzen 9 9950X    | 0.217 s a minute     | 0.10 s (measured) | 0.32 s: about 190x real time              |
+| Raspberry Pi 5   | 3.71 s               | 1.3 to 1.7 s      | 5.0 to 5.4 s: an hour in 5 to 5.5 minutes |
+| Raspberry Pi 3B+ | 44.6 s               | 16 to 21 s        | 61 to 66 s: an hour in 61 to 66 minutes   |
 
 The boards' ranges run from the multiply-adds' share of Parakeet (0.36) to
 the 9950X's measured share (0.46); v2's were 1.5 to 2.2 s and 18 to 27 s. So
@@ -853,31 +851,31 @@ ms grid, pktito-c's transcripts (Parakeet v2):
 
 Nemotron 3:
 
-| | speakers | length | words | DER (miss, false alarm, confusion) | with a 0.25 s collar | words to the wrong speaker: NeMo's rule | the fallback | turns: true, NeMo's rule (changes not there), the fallback (changes not there) |
-|---|---|---|---|---|---|---|---|---|
-| conv2 | 2 | 5.0 min | 407 | 5.28 (3.11, 2.18, 0.00) | 0.11 | 0 | 0 | 23, 23 (0), 23 (0) |
-| conv3 | 3 | 10.2 min | 832 | 4.92 (2.35, 2.56, 0.00) | 0.22 | 1 | 0 | 31, 33 (2), 31 (0) |
-| conv4 | 4 | 10.1 min | 778 | 6.11 (2.13, 3.97, 0.01) | 0.16 | 0 | 0 | 39, 39 (0), 39 (0) |
-| conv2h | 2 | 60.1 min | 6,465 | 4.70 (2.62, 2.08, 0.00) | 0.09 | 3 | 0 | 276, 282 (10), 276 (4) |
-| conv3h | 3 | 60.0 min | 5,535 | 6.37 (1.92, 4.45, 0.00) | 0.41 | 4 | 0 | 221, 227 (7), 221 (0) |
-| conv5 | 5 | 10.2 min | 1,320 | 11.40 (3.58, 2.51, 5.32) | 7.40 | 110 | 109 | 46, 50 (4), 48 (2) |
-| conv6 | 6 | 10.1 min | 1,001 | 6.25 (2.63, 3.62, 0.00) | 0.37 | 0 | 0 | 50, 50 (0), 50 (0) |
-| conv8 | 8 | 10.1 min | 905 | 6.21 (2.22, 3.99, 0.00) | 0.65 | 1 | 0 | 40, 42 (2), 40 (0) |
-| conv8b | 8 | 20.1 min | 1,684 | 4.91 (2.20, 2.71, 0.00) | 0.23 | 10 | 7 | 79, 77 (1), 77 (0) |
+|        | speakers | length   | words | DER (miss, false alarm, confusion) | with a 0.25 s collar | words to the wrong speaker: NeMo's rule | the fallback | turns: true, NeMo's rule (changes not there), the fallback (changes not there) |
+| ------ | -------- | -------- | ----- | ---------------------------------- | -------------------- | --------------------------------------- | ------------ | ------------------------------------------------------------------------------ |
+| conv2  | 2        | 5.0 min  | 407   | 5.28 (3.11, 2.18, 0.00)            | 0.11                 | 0                                       | 0            | 23, 23 (0), 23 (0)                                                             |
+| conv3  | 3        | 10.2 min | 832   | 4.92 (2.35, 2.56, 0.00)            | 0.22                 | 1                                       | 0            | 31, 33 (2), 31 (0)                                                             |
+| conv4  | 4        | 10.1 min | 778   | 6.11 (2.13, 3.97, 0.01)            | 0.16                 | 0                                       | 0            | 39, 39 (0), 39 (0)                                                             |
+| conv2h | 2        | 60.1 min | 6,465 | 4.70 (2.62, 2.08, 0.00)            | 0.09                 | 3                                       | 0            | 276, 282 (10), 276 (4)                                                         |
+| conv3h | 3        | 60.0 min | 5,535 | 6.37 (1.92, 4.45, 0.00)            | 0.41                 | 4                                       | 0            | 221, 227 (7), 221 (0)                                                          |
+| conv5  | 5        | 10.2 min | 1,320 | 11.40 (3.58, 2.51, 5.32)           | 7.40                 | 110                                     | 109          | 46, 50 (4), 48 (2)                                                             |
+| conv6  | 6        | 10.1 min | 1,001 | 6.25 (2.63, 3.62, 0.00)            | 0.37                 | 0                                       | 0            | 50, 50 (0), 50 (0)                                                             |
+| conv8  | 8        | 10.1 min | 905   | 6.21 (2.22, 3.99, 0.00)            | 0.65                 | 1                                       | 0            | 40, 42 (2), 40 (0)                                                             |
+| conv8b | 8        | 20.1 min | 1,684 | 4.91 (2.20, 2.71, 0.00)            | 0.23                 | 10                                      | 7            | 79, 77 (1), 77 (0)                                                             |
 
 v2:
 
-| | speakers | length | words | DER (miss, false alarm, confusion) | with a 0.25 s collar | words to the wrong speaker: NeMo's rule | the fallback | turns: true, NeMo's rule (changes not there), the fallback (changes not there) |
-|---|---|---|---|---|---|---|---|---|
-| conv2 | 2 | 5.0 min | 407 | 3.80 (2.45, 1.35, 0.00) | 0.00 | 1 | 0 | 23, 25 (2), 23 (0) |
-| conv3 | 3 | 10.2 min | 832 | 4.12 (1.02, 3.10, 0.00) | 0.00 | 2 | 0 | 31, 34 (3), 31 (0) |
-| conv4 | 4 | 10.1 min | 778 | 5.21 (1.28, 3.94, 0.00) | 0.18 | 1 | 0 | 39, 39 (1), 39 (0) |
-| conv2h | 2 | 60.1 min | 6,465 | 4.27 (1.48, 2.79, 0.00) | 0.00 | 7 | 3 | 276, 280 (10), 274 (3) |
-| conv3h | 3 | 60.0 min | 5,535 | 4.57 (1.44, 3.13, 0.00) | 0.00 | 4 | 1 | 221, 222 (4), 221 (1) |
-| conv5 | 5 | 10.2 min | 1,320 | 22.45 (4.41, 2.85, 15.18) | 19.19 | 270 | 263 | 46, 48 (2), 46 (5) |
-| conv6 | 6 | 10.1 min | 1,001 | 27.25 (3.97, 1.95, 21.33) | 21.79 | 194 | 194 | 50, 50 (6), 45 (2) |
-| conv8 | 8 | 10.1 min | 905 | 44.15 (17.16, 1.45, 25.53) | 40.09 | 363 | 363 | 40, 54 (19), 35 (5) |
-| conv8b | 8 | 20.1 min | 1,684 | 57.75 (8.39, 1.73, 47.64) | 56.69 | 1,012 | 1,010 | 79, 90 (30), 80 (19) |
+|        | speakers | length   | words | DER (miss, false alarm, confusion) | with a 0.25 s collar | words to the wrong speaker: NeMo's rule | the fallback | turns: true, NeMo's rule (changes not there), the fallback (changes not there) |
+| ------ | -------- | -------- | ----- | ---------------------------------- | -------------------- | --------------------------------------- | ------------ | ------------------------------------------------------------------------------ |
+| conv2  | 2        | 5.0 min  | 407   | 3.80 (2.45, 1.35, 0.00)            | 0.00                 | 1                                       | 0            | 23, 25 (2), 23 (0)                                                             |
+| conv3  | 3        | 10.2 min | 832   | 4.12 (1.02, 3.10, 0.00)            | 0.00                 | 2                                       | 0            | 31, 34 (3), 31 (0)                                                             |
+| conv4  | 4        | 10.1 min | 778   | 5.21 (1.28, 3.94, 0.00)            | 0.18                 | 1                                       | 0            | 39, 39 (1), 39 (0)                                                             |
+| conv2h | 2        | 60.1 min | 6,465 | 4.27 (1.48, 2.79, 0.00)            | 0.00                 | 7                                       | 3            | 276, 280 (10), 274 (3)                                                         |
+| conv3h | 3        | 60.0 min | 5,535 | 4.57 (1.44, 3.13, 0.00)            | 0.00                 | 4                                       | 1            | 221, 222 (4), 221 (1)                                                          |
+| conv5  | 5        | 10.2 min | 1,320 | 22.45 (4.41, 2.85, 15.18)          | 19.19                | 270                                     | 263          | 46, 48 (2), 46 (5)                                                             |
+| conv6  | 6        | 10.1 min | 1,001 | 27.25 (3.97, 1.95, 21.33)          | 21.79                | 194                                     | 194          | 50, 50 (6), 45 (2)                                                             |
+| conv8  | 8        | 10.1 min | 905   | 44.15 (17.16, 1.45, 25.53)         | 40.09                | 363                                     | 363          | 40, 54 (19), 35 (5)                                                            |
+| conv8b | 8        | 20.1 min | 1,684 | 57.75 (8.39, 1.73, 47.64)          | 56.69                | 1,012                                   | 1,010        | 79, 90 (30), 80 (19)                                                           |
 
 What it shows:
 
@@ -943,7 +941,7 @@ holds it there.
 1. **The reference kept, the numerics chosen.** tests/diarcheck.py: the
    reference against NeMo at its commit and against Transformers (with the
    checkpoint's tables) on a handful of recordings, labels and DER, in `make
-   check-python` and skipped where they are not installed; nemotron3.py's
+check-python` and skipped where they are not installed; nemotron3.py's
    `_erfc` against the C library's. The quantcheck of section 6 over a
    corpus of real conversations (done: AMI's evaluation meetings and the
    synthetic set; Parakeet's rule holds), its table in the README beside
@@ -966,7 +964,7 @@ holds it there.
    independent of the transcribers', one diarizer for both.
 3. **The tuned backends.** `pk_k_gelu` in each, held to ref by kcheck, its
    hypothesis and measurement in the backend's CLIMB.md; then `make
-   PROFILE=1` on each board, the attention over a 684-frame step the likely
+PROFILE=1` on each board, the attention over a 684-frame step the likely
    next candidate; then a Pi 5 and a Pi 3B+ over an hour-long recording:
    time, peak memory, major faults.
 4. **When NeMo releases a version that runs the model**, or moves the
@@ -1003,7 +1001,7 @@ full:
   "sortformer" architecture, its params and its tensors: `pk_pkf_validate`,
   the binder's ranges, docs/MEMORY_SAFETY.md, `pktito-tools tiny`'s
   diarizer in pkfcheck's corpus with its flips and truncations, and `make
-  check-sanitize`, together (section 6, "The model file"; stage 1).
+check-sanitize`, together (section 6, "The model file"; stage 1).
 - **A reader can follow it top down**, as core/encoder.c: core/diar.c in
   the network's order - the stacking, the 31 layers on encoder.c's passes,
   the projection, the upsampler, the head, then the cache - to be read
