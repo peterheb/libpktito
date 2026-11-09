@@ -65,7 +65,7 @@ relies on it.
 - **The licence: OpenMDW-1.1**, from its text: any use, change and
   distribution, if a copy of the licence and the model's notices of origin
   go with what is distributed; the rights end for whoever sues claiming the
-  model infringes; nothing on the outputs.
+  model infringes; nothing on the outputs. Peter accepted it on 2026-11-08.
 - **The plan:** the reference kept, held to NeMo at its commit and to
   Transformers, and the numerics measured, as Parakeet's were; C on
   backend/ref with a .pkf of its own; GELU's kernel in the tuned backends;
@@ -191,7 +191,8 @@ file of its own. The agreement:
   their use. The card lists among its training data recordings "Licensed
   under agreement" from a third party.
 
-Whether pktito accepts those terms is Peter's to decide (section 12).
+Peter accepted those terms on 2026-11-08: "sufficiently open and
+commercial-safe for our users" (section 12).
 
 ## 3. What the engine would compute
 
@@ -834,8 +835,10 @@ Each stage ends at a check that holds it there.
 
 ## 12. Questions for Peter
 
-1. **OpenMDW-1.1's terms** (section 2): acceptable, with the licence's text
-   and the model's origin in the .pkf's metadata and on the download page?
+1. **OpenMDW-1.1's terms** (section 2): decided 2026-11-08. Peter accepted
+   them as "sufficiently open and commercial-safe for our users"; the
+   licence's text and the model's origin go in the .pkf's metadata and on
+   the download page, as it requires.
 2. **NeMo's rule, or the fallback for unheard words?** I would keep NeMo's
    rule as the definition and propose the fallback again after measuring it
    on real recordings.
