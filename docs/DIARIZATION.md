@@ -797,7 +797,11 @@ Measured on 2026-11-09, with the GELU kernels: a Pi 5 (four cores,
 neon-dp-a76, gcc 14.2) took 387 s over the hour-long conv2h for both,
 6.4 minutes against the 5 to 5.5 inferred. v2 alone took 279 s, more a
 minute than test.wav's 3.71 s, and the diarizer alone 109 s: 1.82 s a
-minute, with the cache full at every step. Over tests/data/conv2.wav's
+minute, with the cache full at every step. A Pi 3B+ (four cores, neon,
+a static build from gcc 15.2) took 1,100 s for the diarizer alone, 18.3 s a
+minute against the 16 to 21 inferred, and 5,333 s for both, 89 minutes
+against the 61 to 66: v2 there runs short of memory over an hour (below,
+"Memory"). Over tests/data/conv2.wav's
 minute the diarizer takes 1.57 s on the Pi 5, 0.093 to 0.099 s on the
 9950X at 16 threads, and 15.25 s on an A53 at four threads (an Orange Pi
 Zero 3, the Pi 3B+'s core).
@@ -841,12 +845,48 @@ VAD; on main that copy is gone (libpktito, 2026-11-09: `chunks_of` keeps
 segment indices and the VAD reads `read_audio`'s buffer), and the peak
 above 230 MB is realloc's doubling, about 384 MB while the buffer grows from
 128 to 256 MB. With the 624 MB model, an hour-long file still needs more
-than a Pi 3B+'s 905 MB, diarizer or not, and the model's pages would be read
-from the card again and again (inferred from the code; not run on the
-board). `pk_asr_transcribe` itself takes the recording as one float array,
-so the fix is an API decision - a 16-bit input, or the VAD run as the file
-is read - and libpktito has put it to Peter as its own card, outside this
-plan's stages.
+than a Pi 3B+'s 905 MB, diarizer or not, and the model's pages are read
+from the card again and again (measured below). `pk_asr_transcribe` itself
+takes the recording as one float array, so the fix is an API decision - a
+16-bit input, or the samples read from the file as they are needed - and
+libpktito has put it to Peter as its own card, outside this plan's stages.
+
+Measured on 2026-11-09 over the hour-long conv2h at four threads, the 9950X
+from /proc every half second and the boards by getrusage. Both report KiB,
+written here in MB of 2^20 bytes, so v2's 624 MB file is 596 and an hour of
+floats 220:
+
+- v2 alone holds 269 MB of its own beside its 596 MB file, 868 MB at the
+  peak on the 9950X and 864 on a Pi 5: the recording as floats, 220 MB,
+  and the recognizer's work, 49.
+- `--speakers` adds the diarizer's file, 96 MB, and its rows, 11 MB an
+  hour. Its state, 34 MB at four threads, stayed beside the recognizer's
+  through the transcription until pktito-c freed it first: 978 MB at the
+  peak on the 9950X and 971 on a Pi 5, from 1,012 and 1,005, the
+  transcript the same bytes.
+- A Pi 3B+ has 757 MB free, and its swap is zram, memory compressed with
+  zstd. Within two minutes the kernel pushes all 220 MB of the floats
+  there, where they still take about 121 MB (1.8 to 1, on the board and
+  compressed page by page here alike), leaving about 600 MB for v2's 596
+  MB file:
+  - the diarizer alone ran the hour in 1,100 s at 365 MB, 2,655 major
+    faults;
+  - v2 alone read its file from the card again and again, 4,500 major
+    faults a minute; stopped at 16.5 minutes, a quarter of the way and on
+    course for about 64, its 154 lines the 9950X's;
+  - v2 with `--speakers`, the diarizer's state held, was stopped at 100
+    minutes, 85% of the way, after 1.05 million major faults; with it
+    freed, the hour took 5,333 s, 89 minutes, 19 to 20 of them diarizing,
+    after 650,000 major faults, and its transcript was the Pi 5's bytes.
+    Transcribing, it made about 9,500 major faults a minute, twice v2
+    alone's, with 8 MB less available; its clock was at the soft
+    temperature limit's 1.2 GHz half the time, v2 alone's at 1.4
+    throughout.
+
+So the Pi 3B+ is short over an hour with the diarizer or without it, and
+what it is short by is the floats. In zram, 16-bit samples would take 86 MB
+of the 121 (their pages compressed the same way, 1.3 to 1); read from the
+file as they are needed, none.
 
 ## 8. From frames to words
 
@@ -1026,8 +1066,9 @@ PROFILE=1` on each board, the attention over a 684-frame step the likely
    to 34%, the queries, keys and values 11 to 17%; the rotation and K's
    panels made in the products' tiles, measured and not kept, in
    backend/neon/CLIMB.md); then a Pi 5 and a Pi 3B+ over an hour-long recording:
-   time, peak memory, major faults (the Pi 5 measured 2026-11-09, in
-   section 7: 387 s for both, 1,005 MB at peak, no major faults).
+   time, peak memory, major faults (measured 2026-11-09, in section 7: the
+   Pi 5 387 s for both, 971 MB at peak, no major faults; the Pi 3B+
+   5,333 s, short of memory, its model read from the card again and again).
 4. **When NeMo releases a version that runs the model**, or moves the
    arithmetic: the reference checked against it, and nemotron3.py's commit
    moved with a measurement, as any change to the arithmetic would be.
@@ -1115,8 +1156,9 @@ check-sanitize`, together (section 6, "The model file"; stage 1).
 - **The licence's terms**: a copy of OpenMDW-1.1 and the notices of origin
   must go with every distributed .pkf; the rights end on a patent or
   copyright suit over the model.
-- **The Pi 3B+'s memory**: tight with both models, and past its limit for an
-  hour-long file today because of the CLI's buffers.
+- **The Pi 3B+'s memory**: past its limit over an hour-long file, with the
+  diarizer or without it, because the CLI holds the recording as floats
+  (measured, section 7).
 
 ## 11. What would make me recommend against it
 
@@ -1153,7 +1195,8 @@ check-sanitize`, together (section 6, "The model file"; stage 1).
    voice heard as two (section 10).
 6. **Live speaker labels** (--stream): later, or never?
 7. **The CLI's whole-recording buffers**: fix them before stage 3, so that a
-   Pi 3B+ can take an hour?
+   Pi 3B+ can take an hour? Peter, 2026-11-09: a change of its own, apart
+   from this plan.
 8. **Transformers' two differences from NeMo** (section 4, the mel tables
    and the last 80 ms): report them upstream?
 

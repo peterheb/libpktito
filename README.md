@@ -1003,12 +1003,16 @@ memory, the file's 100 MB included.
 
 Over an hour of two speakers (LibriSpeech readers, as in conv2.wav), a Pi
 5 took 6.4 minutes to transcribe the hour with v2 and label it: 387 s,
-9.3x real time, of which the diarizer was 109 s. It peaked at 1,005 MB,
-142 MB more than v2 alone. Four episodes of a podcast, 9 to 40 minutes
-each, ran at 10.3 to 10.4x, and their transcripts with speakers were the
-9950X's bytes. The diarizer's own memory does not grow with the
-recording, but `pktito-c` reads the whole file first and holds it as
-floats: 230 MB an hour.
+9.3x real time, of which the diarizer was 109 s. It peaked at 971 MB,
+107 MB more than v2 alone, most of it the diarizer's file. Four
+episodes of a podcast, 9 to 40 minutes each, ran at 10.3 to 10.4x, and
+their transcripts with speakers were the 9950X's bytes. The diarizer's own
+memory does not grow with the recording, but `pktito-c` reads the whole
+file first and holds it as floats: 230 MB an hour. On a Pi 3B+ that is
+more than fits beside v2's file. It diarizes the hour alone in 18 minutes
+at 365 MB, but transcribing it reads v2's file from the card again and
+again: with `--speakers` the hour took 89 minutes, its transcript the Pi
+5's bytes (docs/DIARIZATION.md, "Memory").
 
 `--stream` doesn't take `--speakers` yet. `pktito-c models --all` lists
 the diarizer's file, a preview, which runs where `-m` names it, and the line
