@@ -18,11 +18,19 @@ typedef struct {
 } ed_part;
 
 enum { ED_CPU, ED_COREML, ED_QNN };
+enum { ED_TRANSCRIBE, ED_DIARIZE };
+/* stable: offered and chosen by default. preview: listed by pktito-c
+ * models --all, and run only when named */
+enum { ED_STABLE, ED_PREVIEW };
 
 typedef struct {
     const char *id;                   /* "cpu", "coreml", "qnn-sm8650" */
     const char *about;                /* the hardware it runs on, in words */
-    int kind;                         /* ED_* */
+    int kind;                         /* ED_CPU, ED_COREML or ED_QNN */
+    int status;                       /* its own: ED_PREVIEW where models.json says so;
+                                         its model's is the model's */
+    const char *needs;                /* the lowest pktito that runs it, its own or its
+                                         model's; NULL: any */
     int macos[2], ios[2];             /* Core ML's: the systems it needs */
     const char *chip;                 /* QNN's name for its chip, as pk_qnn_chip */
     const char *const *systems;       /* QNN's: the systems it runs on, NULL-ended */
@@ -33,6 +41,8 @@ typedef struct {
 
 typedef struct {
     const char *name, *about;
+    int task, status;                 /* ED_TRANSCRIBE or ED_DIARIZE; ED_STABLE or ED_PREVIEW */
+    const char *needs;                /* the lowest pktito that loads its files; NULL: any */
     const ed_edition *editions;
     int n_editions;
 } ed_model;
@@ -55,11 +65,23 @@ typedef struct {
  * more VTCM, on one of e's systems; 1 the CPU's, always; 0 none */
 int ed_fit(const ed_edition *e, const ed_device *d);
 
-/* m's edition for d: the one that fits best, of those can_run takes (NULL
- * for all). Two at the top is the catalog's mistake (tests/editioncheck
- * looks for one), and the first is taken. The CPU's always fits, so there
- * is always one. */
-const ed_edition *ed_choose(const ed_model *m, const ed_device *d, int (*can_run)(const ed_edition *));
+/* a's order against b's, as versions: "0.9.10" is above "0.9.8". <0, 0 or
+ * >0, as strcmp */
+int ed_version_cmp(const char *a, const char *b);
+
+/* Whether e may run: never what needs a newer pktito than this one
+ * (PKTITO_VERSION), nor an edition that is a preview itself; a preview
+ * model's editions only where named, its file given outright (-m). */
+int ed_may(const ed_model *m, const ed_edition *e, int named);
+
+/* m's edition for d: of the editions ed_may lets run and can_run takes
+ * (NULL for all), the one that fits best. Two at the top is the catalog's
+ * mistake (tests/editioncheck looks for one), and the first is taken. NULL
+ * when none may: a preview model not named, or one too new. */
+const ed_edition *ed_choose(const ed_model *m, const ed_device *d, int (*can_run)(const ed_edition *), int named);
+
+/* m's CPU edition: every model has one (tools/catalog.py) */
+const ed_edition *ed_cpu(const ed_model *m);
 
 /* the model of that name, or NULL */
 const ed_model *ed_find(const char *name);

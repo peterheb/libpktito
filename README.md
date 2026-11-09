@@ -72,7 +72,8 @@ there, first `[Console]::OutputEncoding = [Text.Encoding]::UTF8` (cmd's
 Then a model. `./pktito-c models` prints the commands that fetch this
 machine's from models.pktito.net, where each `.pkf` is the file
 `make models` writes, byte for byte (`./pktito-c models --all` has every
-file and its SHA-256):
+file and its SHA-256, and the previews, which run only when `-m` names
+them):
 
 ```sh
 ./pktito-c models             # v2 (English, 624 MB) and v3 (25 languages, 648 MB): the lines that fetch them
@@ -358,7 +359,9 @@ model is its slim file, which leaves the encoder out (12 MB for v2, 35 MB
 for v3), and the encoder made for that hardware. `./pktito-c models` says
 which edition this machine and this build run, and prints the commands
 that fetch it; `--all` lists every edition and what each runs on, from
-models.json, the catalog pktito-app builds from too. With a slim model in
+models.json, the catalog pktito-app builds from too. An edition
+models.json calls a preview is never chosen, and runs where `--npu` names
+its encoder. With a slim model in
 models/ and its encoder beside it, `./pktito-c talk.wav` needs nothing
 more; `--npu FILE` names an encoder, and `-v` says where it ran. A QNN
 graph runs on its own chip and on another of the same Hexagon with at
@@ -1175,8 +1178,9 @@ tools/       the converter, the float64 reference, the corpora, the
              checks; ane/ and qnn/, the NPUs' CLIMB.md records; catalog.py,
              models.json as core/catalog.c
 tests/       the C checks, the Python ones, and test.wav with its golden files
-models.json  the model files models.pktito.net serves, and the hardware each
-             edition runs on (`./pktito-c models`)
+models.json  the model files models.pktito.net serves: each model's task,
+             status, licence and source, and the hardware each edition runs
+             on (`./pktito-c models`)
 examples/    the library from the outside: from C, Python, Go, Rust and Node
 docs/        MEMORY_SAFETY.md: the rules the two parsers keep; caption-spec.md:
              the method core/captions.c follows; DIARIZATION.md: the study the

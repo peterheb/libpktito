@@ -122,9 +122,10 @@ static const char *usage =
     "usage: pktito-c [options] FILE...        transcribe, a sentence a line\n"
     "       pktito-c bench [options] FILE     time a transcription\n"
     "       pktito-c segments [options] FILE  speech start and end times (s)\n"
-    "       pktito-c probs [options] FILE     speech probability of each 32 ms frame; with a\n"
-    "                                         diarizer's -m, each speaker's each 10 ms\n"
-    "       pktito-c speakers [options] FILE  who speaks when: start, end (s), speaker\n"
+    "       pktito-c probs [options] FILE     the speech probability every 32 ms, or\n"
+    "                                         with a diarizer's -m, each speaker's\n"
+    "                                         every 10 ms\n"
+    "       pktito-c speakers [options] FILE  each turn's start, end (s) and speaker\n"
     "       pktito-c info [options]           describe the model\n"
     "       pktito-c models [--all]           the model files for this machine, and\n"
     "                                         where to get them; --all every one\n"
@@ -132,8 +133,9 @@ static const char *usage =
     "\n"
     "  -m, --model FILE    model (default: $PKTITO_MODEL, else the only model in\n"
     "                      ./models or in models/ beside pktito-c, in its edition\n"
-    "                      for this machine where that is all there: pktito-c models);\n"
-    "                      twice, a recognizer's and a diarizer's\n"
+    "                      for this machine where that is all there: pktito-c models;\n"
+    "                      a preview runs only when named); twice, a recognizer's and\n"
+    "                      a diarizer's\n"
     "  -t, --threads N     threads (default: one per core)\n"
     "      --fast          up to 7% faster; transcripts may differ slightly\n"
     "      --npu FILE      the encoder on an NPU: a Core ML model (.mlmodelc) on the\n"
@@ -355,21 +357,43 @@ static int edition_here(const ed_edition *e, const char *dir) {
 
 static const char *model_path;    /* the model file, as loaded */
 
+/* why pktito-c doesn't take the transcriber m unasked, in why: 1, or 0
+ * where it does, m stable and no newer than this pktito-c */
+static int named_only(const ed_model *m, char *why, size_t cap) {
+    const ed_edition *cpu = ed_cpu(m);
+    if (cpu->needs && ed_version_cmp(cpu->needs, PKTITO_VERSION) > 0)
+        snprintf(why, cap, "needs pktito-c %s or later", cpu->needs);
+    else if (!ed_may(m, cpu, 0))
+        snprintf(why, cap, "is a preview, which runs where -m names it");
+    else
+        return 0;
+    return 1;
+}
+
 /* The model where neither -m nor $PKTITO_MODEL names one: in ./models,
- * else models/ beside pktito-c, each of models.json's models in its edition
- * for this machine where that edition is all there (a slim file and its
- * encoder), else its whole .pkf, the CPU's; one model, or -m says which */
+ * else models/ beside pktito-c, each of models.json's transcribers that
+ * pktito-c takes unasked in its edition for this machine where that
+ * edition is all there (a slim file and its encoder), else its whole .pkf,
+ * the CPU's; one model, or -m says which */
 static const char *find_model(const char *argv0, char *found, size_t cap) {
-    char dir[4096], p[4608], slim_alone[4608] = "";
+    char dir[4096], p[4608], slim_alone[4608] = "", skipped[4608 + 64] = "";
     for (int d = 0; d < 2; d++) {
         models_dir(d, argv0, dir, sizeof dir);
         int n = 0;
         for (int i = 0; i < ed_n_models; i++) {
             const ed_model *m = &ed_catalog[i];
-            char pick[4608] = "";
+            char pick[4608] = "", why[64];
+            if (m->task != ED_TRANSCRIBE)
+                continue;
+            if (named_only(m, why, sizeof why)) {
+                snprintf(p, sizeof p, "%s%s.pkf", dir, m->name);
+                if (!skipped[0] && file_size(p) >= 0)
+                    snprintf(skipped, sizeof skipped, "%s %s", p, why);
+                continue;
+            }
             snprintf(p, sizeof p, "%s%s-slim.pkf", dir, m->name);
             if (file_size(p) >= 0) {
-                const ed_edition *e = ed_choose(m, device(), can_run);
+                const ed_edition *e = ed_choose(m, device(), can_run, 0);
                 if (e->kind != ED_CPU && edition_here(e, dir) == 2)
                     snprintf(pick, sizeof pick, "%s", p);
                 else
@@ -389,6 +413,8 @@ static const char *find_model(const char *argv0, char *found, size_t cap) {
     if (slim_alone[0])
         die("%s runs only with its NPU's encoder beside it, in a build with that NPU: pktito-c models says "
             "what runs here, and where to get it", slim_alone);
+    if (skipped[0])
+        die("no model pktito-c takes unasked: %s", skipped);
     die("no model: -m FILE.pkf, or one in models/ (pktito-c models says where to get one; README, \"Try it\", "
         "makes one)");
     return NULL;
@@ -425,10 +451,10 @@ static void no_diarizer(const char *what) {
 }
 
 /* A slim model's encoder, beside it: its edition's for this machine, as
- * pktito-c models names it */
+ * pktito-c models names it, a preview model's too, as it was named */
 static const char *slim_encoder(const pk_model *m, char *out, size_t cap) {
     const ed_model *cm = ed_find(pk_model_name(m));
-    const ed_edition *e = cm ? ed_choose(cm, device(), can_run) : NULL;
+    const ed_edition *e = cm ? ed_choose(cm, device(), can_run, 1) : NULL;
     if (!e || e->kind == ED_CPU)
         die("%s is a slim model file, which runs only on an NPU, and this pktito-c runs none here: the whole "
             "model runs on the CPU (pktito-c models)", model_path);
@@ -1575,10 +1601,19 @@ static void check_size(const char *dir, const ed_part *f) {
                (unsigned long long)f->bytes);
 }
 
-/* pktito-c models: for each model, the edition this machine runs with this
- * build (models.json's fit and choose), the commands that fetch it into
- * models/, and how much of it is there; with --all every edition, what it
- * runs on, and its files' SHA-256s */
+/* what --all says of a preview, or of what needs a newer pktito-c */
+static void caveats(int preview, const char *needs, const char *named) {
+    if (preview)
+        printf("; a preview, which runs only where %s", named);
+    if (needs && ed_version_cmp(needs, PKTITO_VERSION) > 0)
+        printf("; needs pktito-c %s or later", needs);
+}
+
+/* pktito-c models: for each model pktito-c takes unasked, the edition this
+ * machine runs with this build (models.json's fit and choose), the
+ * commands that fetch it into models/, and how much of it is there; with
+ * --all every model and edition, previews too, what each runs on, and its
+ * files' SHA-256s */
 static int models(const opts *o, const char *argv0) {
     const ed_device *d = device();
     int ane = 0, qnn = 0;
@@ -1617,11 +1652,16 @@ static int models(const opts *o, const char *argv0) {
     for (int i = 0; i < ed_n_models; i++) {
         const ed_model *m = &ed_catalog[i];
         if (o->all) {
-            printf("\n%s, %s\n", m->name, m->about);
+            printf("\n%s, %s%s", m->name, m->about, m->task == ED_DIARIZE ? "; a diarizer" : "");
+            caveats(m->status == ED_PREVIEW, m->needs, "-m names it");
+            printf("\n");
             for (int k = 0; k < m->n_editions; k++) {
                 const ed_edition *e = &m->editions[k];
                 printf("  %-13s %s: ", e->id, e->about);
                 runs_on(e);
+                /* the edition's own: its model's are said above */
+                const char *needs = e->needs && (!m->needs || strcmp(e->needs, m->needs)) ? e->needs : NULL;
+                caveats(e->status == ED_PREVIEW, needs, "--npu names its encoder");
                 printf("%s%s\n", e->note ? "; " : "", e->note ? e->note : "");
                 for (int f = 0; f < 1 + !!e->encoder.file; f++) {
                     const ed_part *p = f ? &e->encoder : &e->model;
@@ -1631,7 +1671,9 @@ static int models(const opts *o, const char *argv0) {
             }
             continue;
         }
-        const ed_edition *e = ed_choose(m, d, can_run);
+        const ed_edition *e = ed_choose(m, d, can_run, 0);
+        if (!e)
+            continue;    /* a preview, or newer than this pktito-c: --all lists it */
         const uint64_t bytes = e->model.bytes + (e->encoder.file ? e->encoder.bytes : 0);
         printf("\n%s (%s): the %s edition, for %s, %.0f MB\n", m->name, m->about, e->id, e->about, bytes / 1e6);
         fetch(&e->model);
@@ -1663,7 +1705,8 @@ static int models(const opts *o, const char *argv0) {
     }
     if (!o->all)
         printf("\nRun each model's lines in models/, where you run pktito-c or beside it, and\n"
-               "pktito-c finds it there. Every edition, and each file's SHA-256: pktito-c models --all\n");
+               "pktito-c finds it there. Every model and edition, previews too, and each file's\n"
+               "SHA-256: pktito-c models --all\n");
     return 0;
 }
 

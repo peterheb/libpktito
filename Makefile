@@ -302,8 +302,8 @@ tests/langcheck: tests/langcheck.c core/language.c core/langwords.h core/pktito.
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/langcheck.c $(LDLIBS)
 # editioncheck holds core/editions.c to tests/editions.tsv, which pktito-app's
 # own copy of the rule reads too
-tests/editioncheck: tests/editioncheck.c core/editions.c core/catalog.c core/editions.h
-	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/editioncheck.c core/editions.c core/catalog.c $(LDLIBS)
+tests/editioncheck: tests/editioncheck.c core/editions.c core/catalog.c tests/rules-catalog.c core/editions.h
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/editioncheck.c core/editions.c core/catalog.c tests/rules-catalog.c $(LDLIBS)
 
 # The int8 product alone, for the kernel climbs, and not part of any check:
 # q8bench on one thread (backend/avx2/CLIMB.md's numbers), gemmbench over

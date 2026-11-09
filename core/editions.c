@@ -1,6 +1,7 @@
 /* core/editions.h: which edition of a model a device runs, as pktito-app's
  * editions.rs has it, and this machine as that rule sees it */
 #include "editions.h"
+#include "pktito.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,11 +65,31 @@ int ed_fit(const ed_edition *e, const ed_device *d) {
     return 0;
 }
 
-const ed_edition *ed_choose(const ed_model *m, const ed_device *d, int (*can_run)(const ed_edition *)) {
+int ed_version_cmp(const char *a, const char *b) {
+    while (*a || *b) {
+        char *ea, *eb;
+        const unsigned long x = strtoul(a, &ea, 10), y = strtoul(b, &eb, 10);
+        if (x != y)
+            return x < y ? -1 : 1;
+        a = *ea == '.' ? ea + 1 : ea + strlen(ea);   /* "0.9" is "0.9.0" */
+        b = *eb == '.' ? eb + 1 : eb + strlen(eb);
+    }
+    return 0;
+}
+
+int ed_may(const ed_model *m, const ed_edition *e, int named) {
+    if (e->needs && ed_version_cmp(e->needs, PKTITO_VERSION) > 0)
+        return 0;
+    return e->status == ED_STABLE && (m->status == ED_STABLE || named);
+}
+
+const ed_edition *ed_choose(const ed_model *m, const ed_device *d, int (*can_run)(const ed_edition *), int named) {
     const ed_edition *top = NULL, *cpu = NULL;
     int best = 0;
     for (int i = 0; i < m->n_editions; i++) {
         const ed_edition *e = &m->editions[i];
+        if (!ed_may(m, e, named))
+            continue;
         if (e->kind == ED_CPU)
             cpu = e;
         if (can_run && !can_run(e))
@@ -78,6 +99,13 @@ const ed_edition *ed_choose(const ed_model *m, const ed_device *d, int (*can_run
             best = f, top = e;
     }
     return top ? top : cpu;
+}
+
+const ed_edition *ed_cpu(const ed_model *m) {
+    for (int i = 0; i < m->n_editions; i++)
+        if (m->editions[i].kind == ED_CPU)
+            return &m->editions[i];
+    return NULL;
 }
 
 const ed_model *ed_find(const char *name) {

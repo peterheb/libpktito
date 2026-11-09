@@ -1,0 +1,23 @@
+# tests/editions.tsv's devices against the made-up models of
+# tests/editions-rules.json, whose editions hold choose() to its rules:
+# a preview edition is never chosen (the S24's, of rules-preview-npu), nor
+# one that needs a newer pktito (the S24's, of rules-too-new-npu), nor any
+# edition of a preview model not named (rules-preview-model, "-": none).
+# The columns are editions.tsv's; both test suites read this file too.
+device	system	os	qnn	rules-preview-npu	rules-too-new-npu	rules-preview-model
+an M1-M5 Mac	macos	15.0	-	cpu	cpu	-
+a Mac on macOS 14	macos	14.7	-	cpu	cpu	-
+a Mac on macOS 12	macos	12.0	-	cpu	cpu	-
+an iPhone 16e (A18)	ios	26.7	-	cpu	cpu	-
+an M1 iPad	ios	26.5	-	cpu	cpu	-
+the S24	android	36.0	57,75,8,1,0	cpu	cpu	-
+the S25	android	36.0	69,79,8,1,0	qnn-sm8750	qnn-sm8750	-
+the S26	android	36.0	87,81,8,1,0	cpu	cpu	-
+an SM8845, which takes the S26's graph and never the X2's	android	36.0	97,81,8,1,0	cpu	cpu	-
+the Googlebook (X1E80100)	android	37.0	60,73,8,1,1	cpu	cpu	-
+an Android phone with no NPU	android	34.0	-	cpu	cpu	-
+snappy (X1E, its QNN naming no SoC)	windows	0.0	2147483647,73,8,1,1	cpu	cpu	-
+an X2 Elite	windows	0.0	2147483647,81,8,1,1	cpu	cpu	-
+the 7c (no NPU QNN runs)	windows	0.0	-	cpu	cpu	-
+an x86 PC	windows	0.0	-	cpu	cpu	-
+a Pi	linux	0.0	-	cpu	cpu	-

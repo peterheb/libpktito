@@ -1,0 +1,182 @@
+{
+  "base": "https://example.invalid/",
+  "models": [
+    {
+      "name": "rules-preview-npu",
+      "task": "transcribe",
+      "status": "stable",
+      "about": "a stable model whose S24 edition is preview, not yet run there",
+      "license": "CC-BY-4.0",
+      "source": "https://example.invalid/rules-preview-npu",
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "rules-preview-npu.pkf",
+            "bytes": 1000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8750",
+          "about": "the S25's NPU",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "69,79,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "rules-preview-npu-slim.pkf",
+            "bytes": 2000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          },
+          "encoder": {
+            "file": "rules-preview-npu-sm8750.qnn",
+            "bytes": 3000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8650",
+          "status": "preview",
+          "about": "the S24's NPU, a preview",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "57,75,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "rules-preview-npu-slim.pkf",
+            "bytes": 2000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          },
+          "encoder": {
+            "file": "rules-preview-npu-sm8650.qnn",
+            "bytes": 5000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rules-too-new-npu",
+      "task": "transcribe",
+      "status": "stable",
+      "about": "a stable model whose S24 edition needs a pktito no one has",
+      "license": "CC-BY-4.0",
+      "source": "https://example.invalid/rules-too-new-npu",
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "rules-too-new-npu.pkf",
+            "bytes": 6000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000006",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8750",
+          "about": "the S25's NPU",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "69,79,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "rules-too-new-npu-slim.pkf",
+            "bytes": 7000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000007",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          },
+          "encoder": {
+            "file": "rules-too-new-npu-sm8750.qnn",
+            "bytes": 8000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000008",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8650",
+          "needs": "99.0.0",
+          "about": "the S24's NPU, for a later pktito",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "57,75,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "rules-too-new-npu-slim.pkf",
+            "bytes": 7000,
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000007",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          },
+          "encoder": {
+            "file": "rules-too-new-npu-sm8650.qnn",
+            "bytes": 10000,
+            "sha256": "000000000000000000000000000000000000000000000000000000000000000a",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rules-preview-model",
+      "task": "transcribe",
+      "status": "preview",
+      "about": "a preview model: its CPU edition is never chosen",
+      "license": "CC-BY-4.0",
+      "source": "https://example.invalid/rules-preview-model",
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "rules-preview-model.pkf",
+            "bytes": 11000,
+            "sha256": "000000000000000000000000000000000000000000000000000000000000000b",
+            "made": {
+              "by": "nothing: a test's"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

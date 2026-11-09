@@ -3,7 +3,12 @@
   "models": [
     {
       "name": "parakeet-tdt-0.6b-v2",
+      "task": "transcribe",
+      "status": "stable",
       "about": "English",
+      "languages": ["en"],
+      "license": "CC-BY-4.0",
+      "source": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
       "editions": [
         {
           "id": "cpu",
@@ -187,7 +192,38 @@
     },
     {
       "name": "parakeet-tdt-0.6b-v3",
+      "task": "transcribe",
+      "status": "stable",
       "about": "25 European languages",
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "bg",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "et",
+        "fi",
+        "el",
+        "hu",
+        "it",
+        "lv",
+        "lt",
+        "mt",
+        "pl",
+        "pt",
+        "ro",
+        "sk",
+        "sl",
+        "sv",
+        "ru",
+        "uk"
+      ],
+      "license": "CC-BY-4.0",
+      "source": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
       "editions": [
         {
           "id": "cpu",
@@ -364,6 +400,32 @@
               "with": "QAIRT 2.51.0.260929",
               "on": "2026-11-05",
               "note": "compiled for the X2 Elite's V81; run on an X2E-84-100, 2026-11-09: 216.3x over AliceBench, the CPU's words to 12 of 27,183"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "nemotron-3-diarization",
+      "task": "diarize",
+      "status": "preview",
+      "needs": "0.9.8",
+      "about": "who speaks when, up to 8 speakers",
+      "license": "OpenMDW-1.1",
+      "source": "https://huggingface.co/nvidia/Nemotron-3-Diarization",
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "nemotron-3-diarization.pkf",
+            "bytes": 100498048,
+            "sha256": "95e979be9e0de01c7307ad2ea5f3cc296e86537d4cc935f7c1ab36bddb308715",
+            "made": {
+              "by": "pktito-tools convert, as pktito c0acaf3 writes it"
             }
           }
         }
