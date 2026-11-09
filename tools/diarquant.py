@@ -11,7 +11,10 @@ entering them, rounded one of quantcheck.py's ways. Against the unrounded
 float32 run it reports, over all the WAVs:
 
   labels   speaker labels (a speaker's probability over one half in a
-           10 ms frame) not float32's, of all
+           10 ms frame) not float32's, of all, each of the run's speakers
+           taken as the one of float32's it matches best: speakers are
+           numbered in the order they arrive, and a rounding can renumber
+           them ("renumbered" counts the WAVs where it did)
   dBCE     how much less likely the rounded model finds float32's labels:
            the binary cross-entropy of its probabilities against them, less
            float32's own, per label, in nats. A paired number, like
@@ -339,9 +342,14 @@ def compare(p0, p1, segs, words):
     L0, L1 = p0 > 0.5, p1 > 0.5
     T = len(p0)
     d = der(L0, L1)
-    back = {c: s for s, c in d.pop("map").items()}                  # the run's column -> float32's
+    # Which column a voice gets is arbitrary (the order voices arrive in),
+    # and a rounding can renumber them: the run's columns are compared in
+    # the order of float32's that they match best, as DER's map has them.
+    m = d.pop("map")
+    order = [m[s] for s in range(L0.shape[1])]
+    p1, L1 = p1[:, order], L1[:, order]
     r = {"labels": int((L0 != L1).sum()), "of": int(L0.size), "dbce": bce(p1, L0) - bce(p0, L0),
-         "f32": d, "heard": int((L1.sum(0) >= HEARD).sum())}
+         "f32": d, "heard": int((L1.sum(0) >= HEARD).sum()), "renumbered": order != sorted(order)}
     r["split"], r["merged"] = (int(x) for x in splits(L0, L1))
     if segs:
         R, names = truth(segs, T)
@@ -353,8 +361,7 @@ def compare(p0, p1, segs, words):
     if words:
         spans = [(a, b) for a, b, _ in words]
         s0 = [s for s, _ in speakers.assign(spans, means80(p0), 0.08, "nemo")]
-        mine = [s for s, _ in speakers.assign(spans, means80(p1), 0.08, "nemo")]
-        s1 = [back.get(s, -1) for s in mine]
+        mine = s1 = [s for s, _ in speakers.assign(spans, means80(p1), 0.08, "nemo")]
         moved = [i for i in range(len(words)) if s0[i] != s1[i]]
         c0, c1 = changes(s0), changes(s1)
         r.update(words=len(words), moved=len(moved), spurious=len(c1 - c0), lost=len(c0 - c1),
@@ -434,8 +441,9 @@ def main():
                 sum(r["moved"] for r in heard), sum(r["words"] for r in heard),
                 sum(r.get("wrong", 0) for r in heard), sum(r["spurious"] for r in heard),
                 sum(r["lost"] for r in heard))
-        line += "  heard %d  split %d merged %d" % (sum(r["heard"] for r in v), sum(r["split"] for r in v),
-                                                   sum(r["merged"] for r in v))
+        line += "  heard %d  split %d merged %d  renumbered %d" % (
+            sum(r["heard"] for r in v), sum(r["split"] for r in v), sum(r["merged"] for r in v),
+            sum(r["renumbered"] for r in v))
         print(line, flush=True)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
