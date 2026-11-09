@@ -1336,3 +1336,96 @@ Kept if all of these hold:
 
 neon's ARMv8.0 build, the A53's, keeps the vector kernel only if the
 A53 is not slower.
+
+## 2026-11-09 - the diarizer's GELU four lanes at a time (result: not kept)
+
+The hypothesis above, as written: one vector of four values a step.
+
+**Bits.** kcheck (1,740 cases) and every float through the kernel, tails
+included (gelusweep, a scratch sweep), all gave ref's bits:
+
+- on pi5a, for neon-dp-a76, neon-dp and neon, under gcc 14.2 and
+  clang 21.1;
+- on an Orange Pi Zero 3 (H618, four A53), for neon, under gcc 15.2
+  (cross-built).
+
+**Time.** `pktito-c bench` ran the diarizer's model over
+tests/data/conv2.wav, base 4891170 against the kernel. Rounds turned the
+order each time, best of 5. Each build's change is against its own
+compiler's base a round, median (range).
+
+- pi5a: six rounds. gcc 14.2 was the board's own; clang 21.1 was
+  cross-built static with -mtune=cortex-a76. 67.5 °C at the end, never
+  throttled.
+- The Orange Pi: four rounds at 4 threads only, since one thread there
+  takes 30 s a run. Both builds cross-built static with
+  -mtune=cortex-a53. 50 °C to 73.5 °C.
+
+| board           | threads | gcc                    | clang                |
+| --------------- | ------- | ---------------------- | -------------------- |
+| pi5a (A76)      | 1       | -10.6% (-10.7 to -9.5) | +0.5% (+0.4 to +0.6) |
+| pi5a (A76)      | 4       | -9.8% (-10.0 to -9.7)  | +0.1% (-0.4 to +0.3) |
+| Orange Pi (A53) | 4       | -7.4% (-7.4 to -7.3)   | -0.0% (-0.1 to +0.1) |
+
+Under gcc the kernel is faster but short of the prediction (-14 to -17%
+and -11 to -13% on pi5a). Under clang it is level, and slower at one
+thread on pi5a in every round.
+
+clang's base is not scalar. clang 21 vectorizes ref's loop itself, and
+if-converts pk_erff's branches into selects, which computes the same
+three outcomes in every lane as this kernel. Its base is 6.0 s at one
+thread on pi5a, against gcc's 6.65 s.
+
+Both vector loops are latency's, not throughput's:
+
+- A vector's chain (the polynomial in t, exp's, the selects) is about
+  100 cycles of dependent instructions; FMLA takes 4 cycles on the A76.
+- A step is about 75 instructions under clang. Under gcc it is 101, with
+  each constant rematerialized by ADRP and LDR every step.
+- The A76's 128-entry window holds under two steps.
+
+A scratch harness (gelumb, not in the tree) timed v_gelu on k vectors a
+step, on one core, over a layer-step's 1.4 million values drawn from
+N(0, 1.5^2). Best of 7, each output ref's bits. gcc 15.2 and clang 21.1,
+cross-built, each tuned for its core; ns a value:
+
+| a step     | A76, gcc | A76, clang | A53, gcc | A53, clang |
+| ---------- | -------- | ---------- | -------- | ---------- |
+| ref's loop | 15.09    | 6.66       | 88.65    | 37.58      |
+| 1 vector   | 6.54     | 6.37       | 40.02    | 37.13      |
+| 2          | 5.40     | 5.06       | 25.67    | 21.58      |
+| 3          | 4.63     | 4.32       | 25.31    | 19.74      |
+| 4          | 4.00     | 4.45       | 25.46    | 19.76      |
+| 5          | 3.90     | 4.47       | 27.86    | 19.40      |
+| 6          | 4.44     | 4.45       | 27.24    | 19.64      |
+| 8          | 4.42     | 5.29       | 31.56    | 20.56      |
+
+Not kept: under clang it is no faster anywhere, and slower at one thread
+on pi5a.
+
+## 2026-11-09 - the diarizer's GELU four vectors a step (hypothesis)
+
+The entry above's kernel, with four vectors a step: four independent
+chains for the core to interleave. Then one vector a step, then the
+scalar tail. GELU's rows come in slices of 64 or 256 (core/passes.c), so
+the four-vector loop takes them whole. The operations are the same lane
+for lane, so ref's bits.
+
+Predicted, from the harness above and the shares in the entries above:
+
+| board           | threads | gcc 14.2 / 15.2 (A53) | clang 21.1  |
+| --------------- | ------- | --------------------- | ----------- |
+| pi5a (A76)      | 1       | -13 to -15%           | -2.5 to -4% |
+| pi5a (A76)      | 4       | -10 to -12%           | -1.5 to -3% |
+| Orange Pi (A53) | 4       | -8.5 to -10%          | -2 to -3%   |
+
+Each change is against the scalar base under the same compiler, and
+clang's base is its own vectorization of ref's loop.
+
+Kept if all of these hold:
+
+- kcheck and every float give ref's bits on pi5a under both compilers,
+  and on the A53.
+- check-c passes on pi5a, its conv2 rows and speakers the same bytes.
+- The bench is faster than its base by more than the spread under both
+  compilers: on pi5a at 1 and 4 threads, and on the A53 at 4.
