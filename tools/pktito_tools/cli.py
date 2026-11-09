@@ -51,11 +51,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pktito-tools")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("convert", help="model.nemo silero_vad.onnx -> .pkf")
-    c.add_argument("nemo")
-    c.add_argument("vad")
-    c.add_argument("dst")
+    c = sub.add_parser(
+        "convert",
+        help="model.nemo silero_vad.onnx -> .pkf (a recognizer), or "
+        "Nemotron-3-Diarization.nemo -> .pkf (the diarizer)",
+    )
+    c.add_argument("files", nargs="+", metavar="FILE")
     t = sub.add_parser("tiny", help="a tiny .pkf with random weights, for the C checks")
+    t.add_argument(
+        "--diarizer", action="store_true", help="a diarizer's, not a recognizer's"
+    )
     t.add_argument("dst")
     i = sub.add_parser("info", help="a .pkf's metadata, params and tensors")
     i.add_argument("file")
@@ -77,13 +82,21 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     if a.cmd == "convert":
-        from . import convert
+        from . import convert, diarconvert
 
-        convert.convert(a.nemo, a.vad, a.dst)
+        if len(a.files) == 2:
+            diarconvert.convert_file(a.files[0], a.files[1])
+        elif len(a.files) == 3:
+            convert.convert(*a.files)
+        else:
+            sys.exit(
+                "pktito-tools convert: model.nemo silero_vad.onnx out.pkf, or "
+                "Nemotron-3-Diarization.nemo out.pkf"
+            )
     elif a.cmd == "tiny":
         from . import tiny
 
-        size = tiny.write(a.dst)
+        size = (tiny.write_diarizer if a.diarizer else tiny.write)(a.dst)
         print("%s: %d bytes" % (a.dst, size))
     elif a.cmd == "info":
         from . import pkf

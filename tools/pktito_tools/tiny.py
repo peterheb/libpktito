@@ -2,6 +2,7 @@
 that make it a megabyte, with seeded random weights.
 
     pktito-tools tiny tests/data/tiny.pkf
+    pktito-tools tiny --diarizer tests/data/tiny-diar.pkf
 
 It is not a speech recognizer; it is what the C side's checks run on when
 they want a model whose every byte they can afford to touch. tests/pkfcheck
@@ -9,6 +10,12 @@ builds its malformed corpus from it and runs the whole engine on it under
 the sanitizers, and its odd widths (a head of 16, two layers, a 16-band
 filterbank with an empty band, 32 subsampling channels) reach shapes the
 real models never call the kernels with.
+
+The diarizer's ("sortformer", core/diar.c) is the same idea: Nemotron 3
+Diarization's tensors at a tenth of a megabyte, with a speaker cache small
+enough that a few seconds go through many chunks and cuts, and shapes the
+real model does not have: five speakers, a row every two stacked frames of
+four, a chunk with left context.
 
 The bytes are a function of the seed alone - no date, no git stamp - so
 the committed file is reproducible. Float values sit on a grid of 1/64,
@@ -192,6 +199,121 @@ def tensors(rng):
     # the CLI to cut into chunks
     f32("vad.head.b", np.array([2.0]))
     return out
+
+
+DIAR_ARCH = [
+    ("sample_rate", 16000),
+    ("n_fft", 512),
+    ("win_length", 400),
+    ("hop_length", 160),
+    ("n_mels", 16),
+    ("preemph", 0.97),
+    ("log_guard", 2.0**-24),
+    ("n_layers", 2),
+    ("d_model", 64),
+    ("n_heads", 4),
+    ("ff_dim", 128),
+    ("ln_eps", 1e-5),
+    ("rope_theta", 10000.0),
+    ("stack", 4),
+    ("proj_dim", 32),
+    ("upsample", 2),
+    ("n_spk", 5),
+    ("chunk_len", 6),
+    ("chunk_left", 1),
+    ("chunk_right", 2),
+    ("fifo_len", 3),
+    ("cache_len", 20),
+    ("update_period", 4),
+    ("sil_frames", 1),
+    ("score_threshold", 0.25),
+    ("boost_latest", 0.05),
+    ("strong_boost", 0.75),
+    ("weak_boost", 1.5),
+    ("min_pos_scores", 0.5),
+]
+
+
+def diar_tensors(rng):
+    """The diarizer's [(name, type, dims, array)] in file order
+    (diarconvert.layout's)."""
+    from . import diarconvert
+
+    a = dict(DIAR_ARCH)
+    D, F, M, N = a["d_model"], a["ff_dim"], a["n_mels"], a["n_fft"]
+    P, U, S = a["proj_dim"], a["upsample"], a["n_spk"]
+    out = []
+
+    def f32(name, arr):
+        arr = np.asarray(arr, np.float32)
+        out.append((name, pkf.F32, arr.shape, arr))
+
+    def q8(name, rows, cols, rows_used=None):
+        m = rng.standard_normal((rows, cols)) / np.sqrt(cols)
+        if rows_used is not None:
+            m[rows_used:] = 0
+        q, s = pkf.quantize_q8(m)
+        out.append((name, pkf.Q8, q.shape, q))
+        out.append((name + ".scale", pkf.F32, s.shape, s))
+
+    def norm(name, n=D):
+        f32(name + ".w", _grid(1 + 0.1 * rng.standard_normal(n)))
+        f32(name + ".b", _grid(0.1 * rng.standard_normal(n)))
+
+    bins = N // 2 + 1
+    fb = np.zeros((M, bins))
+    edges = np.linspace(1, bins - 1, M + 2)
+    k = np.arange(bins)
+    for b in range(1, M):
+        lo, mid, hi = edges[b], edges[b + 1], edges[b + 2]
+        fb[b] = np.maximum(0, np.minimum((k - lo) / (mid - lo), (hi - k) / (hi - mid)))
+    f32("mel.fb", _grid(fb))
+    f32("mel.window", np.hanning(a["win_length"]))
+    j = np.arange(N // 2)
+    f32("mel.fft.cos", np.cos(2 * np.pi * j / N))
+    f32("mel.fft.sin", np.sin(2 * np.pi * j / N))
+    f32("rope.freq", diarconvert.rope_freq(dict(a, rope_base=a["rope_theta"])))
+    q8("stack", D, a["stack"] * M)
+    norm("embed_norm")
+    for i in range(a["n_layers"]):
+        p = "l%d." % i
+        norm(p + "att.norm")
+        for m in ("q", "k", "v", "o"):
+            q8(p + "att." + m, D, D)
+        f32(p + "att.o.b", _grid(0.1 * rng.standard_normal(D)))
+        norm(p + "ff.norm")
+        q8(p + "ff.up", F, D)
+        f32(p + "ff.up.b", _grid(0.1 * rng.standard_normal(F)))
+        q8(p + "ff.down", D, F)
+        f32(p + "ff.down.b", _grid(0.1 * rng.standard_normal(D)))
+    norm("final_norm")
+    q8("proj", P, D)
+    f32("proj.b", _grid(0.1 * rng.standard_normal(P)))
+    q8("up", U * P, 3 * P)
+    f32("up.b", _grid(0.1 * rng.standard_normal(U * P)))
+    q8("head.hidden", P, P)
+    f32("head.hidden.b", _grid(0.1 * rng.standard_normal(P)))
+    pad = (-S) % 16
+    q8("head.out", S + pad, P, rows_used=S)
+    f32(
+        "head.out.b",
+        np.concatenate([_grid(0.1 * rng.standard_normal(S)), np.zeros(pad)]),
+    )
+    f32("sil", _grid(rng.standard_normal(D)))
+    return out
+
+
+def write_diarizer(path):
+    rng = np.random.default_rng(SEED)
+    ts = diar_tensors(rng)
+    meta = {
+        "family": "tiny",
+        "params": "%.0fK" % (sum(int(np.prod(d)) for _, _, d, _ in ts) / 1e3),
+        "source": "pktito-tools tiny --diarizer, seed %d" % SEED,
+        "license": "MIT",
+        "notice": "Synthetic weights for pktito's checks: seeded random, not a diarizer.",
+    }
+    return pkf.write(path, "sortformer", "pktito-tiny-diar", DIAR_ARCH, ts, b"", meta)
 
 
 def write(path):

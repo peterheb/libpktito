@@ -8,6 +8,7 @@
 cd "$(dirname "$0")/.." || exit 1
 MODEL=${MODEL:-models/parakeet-tdt-0.6b-v2.pkf}
 TINY=tests/data/tiny.pkf
+TINY_DIAR=tests/data/tiny-diar.pkf
 
 run() {
     echo "$*"
@@ -17,6 +18,7 @@ run ./tests/mathcheck
 run ./tests/kcheck "$MODEL"
 run ./tests/q8check
 run ./tests/pkfcheck $TINY tests/pkfcheck.wav
+run ./tests/pkfcheck $TINY_DIAR
 run ./tests/wavcheck tests/wavcheck.tmp
 run ./tests/pathcheck $TINY
 run ./tests/capcheck

@@ -131,6 +131,8 @@ static pk_asr *transcriber(const pk_model *m, int threads) {
 }
 
 pk_asr *pk_asr_new(const pk_model *m, int threads) {
+    if (!m || m->diar)                     /* a diarizer's model: pk_diar_new's */
+        return NULL;
     pk_asr *a = transcriber(m, threads);
 #ifndef PK_PROFILE                       /* whose stage times are one thread's */
     if (a && a->nth / PK_LANE_THREADS > 1) {

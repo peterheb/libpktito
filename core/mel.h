@@ -18,7 +18,8 @@ size_t pk_mel_thread_scratch(const pk_model *m);
  * n_fft samples from win[t] (the preemphasized signal, centred), through
  * the window, the FFT's power, the filterbank and the log. nt is at most
  * PK_MEL_BLOCK, and scratch pk_mel_thread_scratch(m) floats, 64-byte
- * aligned (the STFT's, backend/kernels.h). */
+ * aligned (the STFT's, backend/kernels.h). The
+ * recognizer's features and the diarizer's (core/diar.c) are both this. */
 void pk_mel_block(const pk_model *m, const float *const *win, size_t nt, float *out, float *scratch);
 
 /* a->feat[T][n_mels] for n samples x, the frames and then the bands split

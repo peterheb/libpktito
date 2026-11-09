@@ -22,6 +22,7 @@ param([string]$V2 = 'models\parakeet-tdt-0.6b-v2.pkf',
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot)
 $tiny = 'tests\data\tiny.pkf'
+$tinydiar = 'tests\data\tiny-diar.pkf'
 
 function run([string]$cmd) {
     $cmd
@@ -34,6 +35,7 @@ run 'tests\mathcheck.exe'
 run "tests\kcheck.exe `"$Model`""
 run 'tests\q8check.exe'
 run "tests\pkfcheck.exe $tiny tests\pkfcheck.wav"
+run "tests\pkfcheck.exe $tinydiar"
 run 'tests\wavcheck.exe tests\wavcheck.tmp'
 run "tests\pathcheck.exe $tiny"
 run 'tests\capcheck.exe'

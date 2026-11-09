@@ -31,6 +31,9 @@
  *   captions     pk_captions      words with times to a subtitle track's cues
  *   language     pk_language      which of the 25 languages words are in
  *   sentences    pk_sentences     tokens to the sentences a transcript reads in
+ *   speakers     pk_diar_run      who speaks when: each speaker's
+ *                                 probability every 10 ms, from a
+ *                                 diarizer's model
  *
  * A model is read-only once loaded and may be shared by any number of
  * transcribers on any number of threads; a transcriber belongs to one
@@ -101,18 +104,24 @@ typedef struct {
 void pk_model_describe(const pk_model *m, pk_model_info *out);
 
 /* Samples a second the model hears (16000), and seconds an encoder frame
- * lasts (0.08: a token's frame times this is when it was heard). */
+ * lasts (0.08: a token's frame times this is when it was heard), or for a
+ * diarizer a row of its probabilities (0.01). */
 int    pk_model_rate(const pk_model *m);
 double pk_model_frame_seconds(const pk_model *m);
+
+/* The speakers a diarizer's model tells apart (8 for Nemotron 3
+ * Diarization), or 0 for a recognizer's. */
+int pk_model_speakers(const pk_model *m);
 
 /* -------------------------------------------------------- transcription --- */
 
 typedef struct pk_asr pk_asr;
 
-/* A transcriber on `threads` threads (0: one a core). NULL if memory or a
- * thread cannot be had. With 0, on a chip whose cores are of two kinds, the
- * second recording of 8 s or more times the encoder on every core and on
- * the fast kind alone, and the transcriber keeps the faster;
+/* A transcriber on `threads` threads (0: one a core). NULL if m is a
+ * diarizer's (pk_model_speakers), or memory or a thread cannot be had.
+ * With 0, on a chip whose cores are of two kinds, the second recording of
+ * 8 s or more times the encoder on every core and on the fast kind alone,
+ * and the transcriber keeps the faster;
  * pk_asr_threads says how many it runs on. On 8 threads or more it may run
  * a recording's chunks several at once (pk_asr_run_chunks), and makes the
  * threads and the memory for that the first time a recording takes them. */
@@ -555,5 +564,41 @@ enum {
  * given back before it returns). */
 long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const char *lang, int done,
                   pk_sentence *out);
+
+/* ------------------------------------------------------------- speakers --- */
+
+/* Who speaks when, from a diarizer's model (NVIDIA's Nemotron 3
+ * Diarization, a Streaming Sortformer; core/diar.c): each speaker's
+ * probability of speaking, a row every pk_model_frame_seconds (10 ms), row
+ * r the 160 samples from r 160. The speakers are numbered in the order
+ * they first speak, 0 first. A recording is heard in the model's chunks
+ * (27.2 s), each with the 3.2 s after it, and a speaker cache carries
+ * what was heard before, so a recording of any length takes the same
+ * memory. */
+typedef struct pk_diar pk_diar;
+
+/* A diarizer on `threads` threads (0: one a core). NULL if m is a
+ * recognizer's, or memory or a thread cannot be had. */
+pk_diar *pk_diar_new(const pk_model *m, int threads);
+void     pk_diar_free(pk_diar *d);
+
+/* Rows [row, row + n) of a recording's probabilities, p[n][S], S =
+ * pk_model_speakers: p[i S + s] is speaker s's in row row + i. The rows
+ * come in order, each once. Nonzero stops the run. */
+typedef int (*pk_diar_fn)(void *arg, int64_t row, size_t n, const float *p);
+
+/* A recording heard in pieces, 16 kHz mono floats: pk_diar_feed takes the
+ * next n samples and hands fn every chunk they complete, pk_diar_finish
+ * says the recording has ended and hands fn the rest, n / 160 rows in all
+ * for a recording of n samples. The pieces' sizes change nothing. A sample
+ * that is not finite is heard as 0. Each returns 0, 1 if fn stopped it;
+ * pk_diar_finish, and pk_diar_reset, ready the diarizer for the next
+ * recording. */
+int  pk_diar_feed(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
+int  pk_diar_finish(pk_diar *d, pk_diar_fn fn, void *arg);
+void pk_diar_reset(pk_diar *d);
+
+/* The same for a whole recording at once. */
+int pk_diar_run(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
 
 #endif /* PKTITO_H */

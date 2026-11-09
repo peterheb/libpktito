@@ -1315,18 +1315,33 @@ static int info(pk_model *m) {
     printf("model     %s, %.1f MB\n", pk_model_name(m), mi.file_bytes / 1e6);
     printf("encoder   %u layers of %u, %u heads, feed-forward %u; %u mel bands at %u Hz\n",
            mi.n_layers, mi.d_model, mi.n_heads, mi.ff_dim, mi.n_mels, mi.sample_rate);
-    printf("decoder   %u-unit LSTM x %u, joint %u; %u tokens and blank; durations",
-           mi.pred_hidden, mi.pred_layers, mi.joint_hidden, mi.vocab);
-    for (uint32_t i = 0; i < mi.n_durations; i++)
-        printf(" %u", mi.durations[i]);
-    printf("\nbackend   %s, %d threads by default\n", pk_backend(), pk_os_cores());
+    if (pk_model_speakers(m)) {
+        printf("speakers  %d, a row of probabilities every %g ms\n", pk_model_speakers(m),
+               pk_model_frame_seconds(m) * 1e3);
+    } else {
+        printf("decoder   %u-unit LSTM x %u, joint %u; %u tokens and blank; durations",
+               mi.pred_hidden, mi.pred_layers, mi.joint_hidden, mi.vocab);
+        for (uint32_t i = 0; i < mi.n_durations; i++)
+            printf(" %u", mi.durations[i]);
+        printf("\n");
+    }
+    printf("backend   %s, %d threads by default\n", pk_backend(), pk_os_cores());
     char picks[256];                        /* what the pick timed, where a backend competed */
     if (pk_k_picks(picks, sizeof picks))
         printf("probe     %s\n", picks);
     printf("compiler  %s\n", pk_compiler());
     const char *k, *v;
-    for (int i = 0; pk_model_meta_at(m, i, &k, &v) == 0; i++)
-        printf("  %-16s %s\n", k, v);
+    for (int i = 0; pk_model_meta_at(m, i, &k, &v) == 0; i++) {
+        /* a value of many lines, a licence's text, by its first */
+        const char *nl = strchr(v, '\n');
+        int lines = 1;
+        for (const char *c = v; (c = strchr(c, '\n')); c++)
+            lines++;
+        if (nl)
+            printf("  %-16s %.*s (and %d lines more)\n", k, (int)(nl - v), v, lines - 1);
+        else
+            printf("  %-16s %s\n", k, v);
+    }
     return 0;
 }
 
@@ -1349,6 +1364,8 @@ int main(int argc, char **argv) {
         return rc;
     }
     pk_model *m = load_model(o.model, argv[0]);
+    if (pk_model_speakers(m) && strcmp(o.cmd, "info"))
+        die("%s is a diarizer's model, which says who speaks when, not what is said", model_path);
     int rc = !strcmp(o.cmd, "bench") ? bench(&o, m) : !strcmp(o.cmd, "info") ? info(m)
            : !strcmp(o.cmd, "segments") || !strcmp(o.cmd, "probs") ? vad(&o, m)
            : o.stream ? stream(&o, m) : transcribe(&o, m);

@@ -43,9 +43,10 @@ pointer into the file. It checks:
 
 - **the header**: at least 256 bytes and at most 16 GB, which bounds every sum
   below well inside 64 bits; the magic and the version; the declared size
-  equal to the real one; the architecture "parakeet-tdt" and the model's name
-  each NUL-terminated within its field and NUL-padded after; the reserved
-  bytes zero; 1 to 256 params and 1 to 4096 tensors.
+  equal to the real one; the architecture, "parakeet-tdt" or "sortformer"
+  (a diarizer's), and the model's name each NUL-terminated within its field
+  and NUL-padded after; the reserved bytes zero; 1 to 256 params and 1 to
+  4096 tensors.
 - **the layout**: the tables sit end to end in one fixed order - the params at
   byte 256, the tensor table after them, the vocabulary, the metadata, then
   zeros to the next 64-byte boundary, where the data starts - so a file has one
@@ -53,7 +54,8 @@ pointer into the file. It checks:
   each size against what is left of the file.
 - **the params**: each key NUL-terminated and padded, no key twice, a kind of
   u32, i32 or f32.
-- **the vocabulary**: a count of 1 to 2^20 pieces; its offset table and type
+- **the vocabulary**: none in a diarizer's file (a size of 0); in a
+  recognizer's, a count of 1 to 2^20 pieces; its offset table and type
   table inside the blob; the offsets starting at 0 and never going backward,
   the last one inside the blob with four bytes left for the punctuation's
   length; each type 1 to 5 (normal, unknown, control, user-defined, unused:
@@ -90,6 +92,18 @@ Byte-valid is not model-valid. The binder then:
   the two FFTs' twiddles to be the cosines and sines they must be, and the
   VAD's window to be Hann;
 - holds the vocabulary's count to the vocab param;
+- for a diarizer, reads its own params with theirs - 1 to 16 speakers, a
+  stacking whose input is whole blocks of 32, an upsampling that divides a
+  row's samples, chunks of 1 to 2048 frames with up to 512 either side, a
+  FIFO and a speaker cache of at most 2048, the cache holding each speaker's
+  silence frames and a frame of its own, the cut's threshold in (0, 1] and
+  its boosts in [0, 100] - which bound everything `pk_diar_new` allocates
+  (counted in 64 bits, so a model too big for a 32-bit system is refused
+  there, not wrapped); checks the rotary frequencies to be in (0, 1], each
+  within 2 ulp of the float rope_theta's power rounds to, which keeps a
+  step's angles (at most its 7168 frames) inside the [-8192, 8192] that
+  `pk_sincosf` is checked exact over; and binds the speakers' head
+  at the speakers rounded up to a panel;
 - in a build with ANE=1 or QNN=1, takes the param
   encoder_coreml, u32 1 and nothing else, as a slim file's (`pktito-tools
 slim`), whose encoder is a Core ML model's or the NPU's compiled graph:
@@ -199,8 +213,8 @@ the fields big-endian:
 
 ## Samples
 
-A sample that is not finite is read as 0, by the features (core/mel.c) and by
-the VAD (core/vad.c). A finite sample of any size is safe too, though it is
+A sample that is not finite is read as 0, by the features (core/mel.c and
+core/diar.c) and by the VAD (core/vad.c). A finite sample of any size is safe too, though it is
 not heard as anything useful. The VAD clamps samples to +-1e6, which keeps its
 STFT finite. In the encoder's features a sample past about 1e17 overflows the
 power spectrum to infinity and its log-mel to NaN, and the subsampling's first
@@ -230,7 +244,12 @@ with its size field as found and patched, the tiny model cut inside each
 tensor and each table, each field of the header, a param, a descriptor, the
 vocabulary and the metadata wrong in each way it can be, the binding failures,
 20,000 random bit flips of everything before the tensor data, and the whole
-engine on the tiny model and on the flipped models that still load.
+engine on the tiny model and on the flipped models that still load. It runs
+the same on tests/data/tiny-diar.pkf, a diarizer's, with that architecture's
+params and tensors in place of a recognizer's: a vocabulary refused, the
+rotary frequencies at 2 ulp kept and at 3 refused, weights whose arithmetic
+overflows run, and the diarizer's engine at every length round a row's and a
+chunk's edges, fed in pieces of every size, the same bits each way.
 tests/wavcheck.c runs every prefix of a valid WAV, each field of fmt wrong,
 the widest legal frame and maximum 32- and 64-bit declared lengths; and for
 AIFF, every supported type read against the WAV of the same samples, every

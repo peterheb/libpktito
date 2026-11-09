@@ -3,7 +3,9 @@
  *
  * Every file here is built in memory by a writer of this test's own,
  * written from core/pkf.h rather than from the converter, out of the tables
- * and tensors of tests/data/tiny.pkf (`pktito-tools tiny` writes it). The
+ * and tensors of tests/data/tiny.pkf (`pktito-tools tiny` writes it), or of
+ * tests/data/tiny-diar.pkf, the diarizer's (`pktito-tools tiny --diarizer`),
+ * whose cases below are its own where a recognizer's would not apply. The
  * first check is that the writer remakes the converter's bytes exactly, so
  * the format is held to its definition from both sides. Then:
  *
@@ -29,7 +31,10 @@
  *              20,000 times over, and the engine run on what still loads
  *   engine     the tiny model through pk_asr_run, pk_text, the VAD and
  *              pk_chunks: every length round a frame's edges, samples that
- *              are not finite, the text cut at every size
+ *              are not finite, the text cut at every size; the diarizer
+ *              through pk_diar_run and pk_diar_feed: every length round a
+ *              row's and a chunk's edges, in pieces of every size and on
+ *              one thread and three, the same bits each way
  *
  * and every file must load or be refused with a message - never crash,
  * never hand back a model that should have been refused. `make
@@ -55,6 +60,7 @@
 #include <string.h>
 
 static int g_bad, g_cases;
+static int g_diar;                /* the tiny model is the diarizer's */
 
 #define FAIL(...) do { if (g_bad++ < 40) { printf("FAIL "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
@@ -259,7 +265,7 @@ static void valid_cases(const char *path) {
     int pairs = 0;
     while (pk_model_meta_at(m, pairs, &k, &v) == 0) pairs++;
     g_cases++;
-    if (strcmp(pk_model_name(m), "pktito-tiny") || !pk_model_meta(m, "family")
+    if (strcmp(pk_model_name(m), g_diar ? "pktito-tiny-diar" : "pktito-tiny") || !pk_model_meta(m, "family")
         || strcmp(pk_model_meta(m, "family"), "tiny") || pk_model_meta(m, "no such key") || pairs < 4)
         FAIL("the tiny model's name or metadata");
     pk_model_free(m);
@@ -393,6 +399,8 @@ static void header_cases(void) {
     CORRUPT("file_bytes one more", hdr(c)->file_bytes++);
     CORRUPT("file_bytes one fewer", hdr(c)->file_bytes--);
     CORRUPT("another architecture", memcpy(hdr(c)->arch, "parakeet-ctc", 13));
+    CORRUPT("the other model's architecture", (memset(hdr(c)->arch, 0, sizeof hdr(c)->arch),
+                                               strcpy(hdr(c)->arch, g_diar ? "parakeet-tdt" : "sortformer")));
     CORRUPT("architecture unterminated", memset(hdr(c)->arch, 'x', sizeof hdr(c)->arch));
     CORRUPT("bytes after the architecture", hdr(c)->arch[31] = 'x');
     CORRUPT("name empty", hdr(c)->name[0] = 0);
@@ -416,7 +424,8 @@ static void header_cases(void) {
     CORRUPT("vocab_size huge", hdr(c)->vocab_size = UINT64_MAX);
     CORRUPT("vocab_size one more", hdr(c)->vocab_size++);
     CORRUPT("vocab_size one fewer", hdr(c)->vocab_size--);
-    CORRUPT("vocab_size 0", hdr(c)->vocab_size = 0);
+    if (!g_diar)
+        CORRUPT("vocab_size 0", hdr(c)->vocab_size = 0);
     CORRUPT("meta_off", hdr(c)->meta_off--);
     CORRUPT("meta_size huge", hdr(c)->meta_size = UINT64_MAX - 7);
     CORRUPT("meta_size into the data", hdr(c)->meta_size += 64);
@@ -439,6 +448,69 @@ static void header_cases(void) {
     }
 }
 
+/* a recognizer's params alone */
+static void tdt_param_cases(void) {
+    CORRUPT("n_mels not a multiple of 8", prm(c, find_param(&g_m, "n_mels"))->v.u = 12);
+    CORRUPT("an even convolution", prm(c, find_param(&g_m, "conv_kernel"))->v.u = 8);
+    CORRUPT("a convolution past 63", prm(c, find_param(&g_m, "conv_kernel"))->v.u = 65);
+    CORRUPT("norm_eps 0", prm(c, find_param(&g_m, "norm_eps"))->v.f = 0.0f);
+    CORRUPT("norm_eps subnormal", prm(c, find_param(&g_m, "norm_eps"))->v.f = 1e-40f);
+    CORRUPT("vocab 0", prm(c, find_param(&g_m, "vocab"))->v.u = 0);
+    CORRUPT("vocab one fewer than the pieces", prm(c, find_param(&g_m, "vocab"))->v.u--);
+    CORRUPT("n_durations 0", prm(c, find_param(&g_m, "n_durations"))->v.u = 0);
+    CORRUPT("n_durations 17", prm(c, find_param(&g_m, "n_durations"))->v.u = 17);
+    CORRUPT("n_durations one fewer", prm(c, find_param(&g_m, "n_durations"))->v.u--);
+    CORRUPT("a duration of 2000", prm(c, find_param(&g_m, "dur0"))->v.u = 2000);
+    CORRUPT("max_symbols 0", prm(c, find_param(&g_m, "max_symbols"))->v.u = 0);
+    CORRUPT("pred_layers one more", prm(c, find_param(&g_m, "pred_layers"))->v.u++);
+    model e = g_m;
+    e.p[e.np] = e.p[find_param(&g_m, "dur4")];
+    strcpy(e.p[e.np].key, "dur5");
+    e.np++;
+    expect_model("a duration past n_durations", &e, 0);
+}
+
+/* a diarizer's params alone: the stacking, the upsampling and the speaker
+ * cache, each out of its range or out of step with the tensors */
+static void diar_param_cases(void) {
+#define DP(what, key, stmt) CORRUPT(what, (void)(prm(c, find_param(&g_m, key))->stmt))
+    DP("stack 0", "stack", v.u = 0);
+    DP("a stack whose input is not whole blocks", "stack", v.u = 3);
+    DP("a stack of 65", "stack", v.u = 65);
+    DP("upsample 0", "upsample", v.u = 0);
+    DP("an upsampling that does not divide a row's samples", "upsample", v.u = 3);
+    DP("an upsampling the tensors do not have", "upsample", v.u = 4);
+    DP("proj_dim not a multiple of 32", "proj_dim", v.u = 48);
+    DP("no speakers", "n_spk", v.u = 0);
+    DP("17 speakers", "n_spk", v.u = 17);
+    DP("chunk_len 0", "chunk_len", v.u = 0);
+    DP("chunk_len 2049", "chunk_len", v.u = 2049);
+    DP("chunk_left 513", "chunk_left", v.u = 513);
+    DP("chunk_right 513", "chunk_right", v.u = 513);
+    DP("fifo_len 2049", "fifo_len", v.u = 2049);
+    DP("cache_len 0", "cache_len", v.u = 0);
+    DP("a cache too small for each speaker's silence frames", "cache_len", v.u = 9);
+    DP("update_period 0", "update_period", v.u = 0);
+    DP("sil_frames 65", "sil_frames", v.u = 65);
+    DP("rope_theta 1", "rope_theta", v.f = 1.0f);
+    DP("rope_theta NaN", "rope_theta", v.f = NAN);
+    DP("a rope_theta the frequencies are not", "rope_theta", v.f = 500.0f);
+    DP("score_threshold 0", "score_threshold", v.f = 0.0f);
+    DP("score_threshold 2", "score_threshold", v.f = 2.0f);
+    DP("boost_latest negative", "boost_latest", v.f = -0.05f);
+    DP("strong_boost infinite", "strong_boost", v.f = INFINITY);
+    DP("weak_boost NaN", "weak_boost", v.f = NAN);
+    DP("min_pos_scores 1.5", "min_pos_scores", v.f = 1.5f);
+    DP("an int where a float is", "score_threshold", kind = PK_PARAM_U32);
+    DP("a float where an int is", "cache_len", kind = PK_PARAM_F32);
+#undef DP
+    model e = g_m;
+    e.p[e.np] = e.p[find_param(&g_m, "n_layers")];
+    strcpy(e.p[e.np].key, "vocab");
+    e.np++;
+    expect_model("a recognizer's param", &e, 0);
+}
+
 static void param_cases(void) {
     int ns = find_param(&g_m, "n_fft");
     CORRUPT("param key unterminated", memset(prm(c, 3)->key, 'x', PK_KEY));
@@ -454,30 +526,17 @@ static void param_cases(void) {
     CORRUPT("n_fft 32", prm(c, ns)->v.u = 32);
     CORRUPT("win_length past n_fft", prm(c, find_param(&g_m, "win_length"))->v.u = 513);
     CORRUPT("hop_length 0", prm(c, find_param(&g_m, "hop_length"))->v.u = 0);
-    CORRUPT("n_mels not a multiple of 8", prm(c, find_param(&g_m, "n_mels"))->v.u = 12);
     CORRUPT("d_model not a multiple of 32", prm(c, find_param(&g_m, "d_model"))->v.u = 48);
     CORRUPT("heads that do not divide d_model", prm(c, find_param(&g_m, "n_heads"))->v.u = 3);
     CORRUPT("heads narrower than a panel", prm(c, find_param(&g_m, "n_heads"))->v.u = 8);
-    CORRUPT("an even convolution", prm(c, find_param(&g_m, "conv_kernel"))->v.u = 8);
-    CORRUPT("a convolution past 63", prm(c, find_param(&g_m, "conv_kernel"))->v.u = 65);
     CORRUPT("preemph NaN", prm(c, find_param(&g_m, "preemph"))->v.f = NAN);
     CORRUPT("preemph 2", prm(c, find_param(&g_m, "preemph"))->v.f = 2.0f);
     CORRUPT("ln_eps negative", prm(c, find_param(&g_m, "ln_eps"))->v.f = -1e-5f);
     CORRUPT("ln_eps 0", prm(c, find_param(&g_m, "ln_eps"))->v.f = 0.0f);
-    CORRUPT("norm_eps 0", prm(c, find_param(&g_m, "norm_eps"))->v.f = 0.0f);
     CORRUPT("log_guard 0", prm(c, find_param(&g_m, "log_guard"))->v.f = 0.0f);
-    CORRUPT("norm_eps subnormal", prm(c, find_param(&g_m, "norm_eps"))->v.f = 1e-40f);
     CORRUPT("ln_eps infinite", prm(c, find_param(&g_m, "ln_eps"))->v.f = INFINITY);
-    CORRUPT("vocab 0", prm(c, find_param(&g_m, "vocab"))->v.u = 0);
-    CORRUPT("vocab one fewer than the pieces", prm(c, find_param(&g_m, "vocab"))->v.u--);
     CORRUPT("n_layers 0", prm(c, find_param(&g_m, "n_layers"))->v.u = 0);
     CORRUPT("n_layers one more than the tensors", prm(c, find_param(&g_m, "n_layers"))->v.u++);
-    CORRUPT("n_durations 0", prm(c, find_param(&g_m, "n_durations"))->v.u = 0);
-    CORRUPT("n_durations 17", prm(c, find_param(&g_m, "n_durations"))->v.u = 17);
-    CORRUPT("n_durations one fewer", prm(c, find_param(&g_m, "n_durations"))->v.u--);
-    CORRUPT("a duration of 2000", prm(c, find_param(&g_m, "dur0"))->v.u = 2000);
-    CORRUPT("max_symbols 0", prm(c, find_param(&g_m, "max_symbols"))->v.u = 0);
-    CORRUPT("pred_layers one more", prm(c, find_param(&g_m, "pred_layers"))->v.u++);
     CORRUPT("a param missing", prm(c, find_param(&g_m, "hop_length"))->key[9] = 'x');
     {
         model e = g_m;
@@ -489,12 +548,11 @@ static void param_cases(void) {
         strcpy(e.p[e.np].key, "flavour");
         e.np++;
         expect_model("a param this build does not know", &e, 0);
-        e = g_m;
-        e.p[e.np] = e.p[find_param(&g_m, "dur4")];
-        strcpy(e.p[e.np].key, "dur5");
-        e.np++;
-        expect_model("a duration past n_durations", &e, 0);
     }
+    if (g_diar)
+        diar_param_cases();
+    else
+        tdt_param_cases();
 }
 
 static void descriptor_cases(void) {
@@ -507,7 +565,7 @@ static void descriptor_cases(void) {
     CORRUPT("type huge", dsc(c, 7)->type = 0xFFFFFFFFu);
     CORRUPT("ndim 0", dsc(c, 7)->ndim = 0);
     CORRUPT("ndim 3", dsc(c, 7)->ndim = 3);
-    CORRUPT("a vector of two dims", dsc(c, find_tensor(&g_m, "pos.freq"))->dims[1] = 2);
+    CORRUPT("a vector of two dims", dsc(c, find_tensor(&g_m, g_diar ? "rope.freq" : "pos.freq"))->dims[1] = 2);
     CORRUPT("dim 0", dsc(c, 7)->dims[0] = 0);
     CORRUPT("second dim 0", dsc(c, find_tensor(&g_m, "mel.fb"))->dims[1] = 0);
     CORRUPT("offset misaligned", dsc(c, 7)->offset += 4);
@@ -640,6 +698,7 @@ static void poke(unsigned char *c, int t, size_t i, float v) {
 }
 
 static void engine_cases(const pk_model *m, int deep);
+static void diar_engine_cases(const pk_model *m, int deep);
 
 static void meaning_cases(void) {
     model e;
@@ -734,6 +793,132 @@ static void meaning_cases(void) {
             FAIL("a finite extreme weight: %s", err);
         } else {
             engine_cases(m, 0);
+            pk_model_free(m);
+        }
+        free(c);
+    }
+}
+
+/* The diarizer's file: a tensor missing, extra, of another shape or type,
+ * a value that is not finite or a table that is not what it says; a
+ * vocabulary, which a diarizer's file has none of; and weights whose
+ * arithmetic overflows, which must still run */
+static void diar_meaning_cases(void) {
+    model e;
+    static const char *drop[] = { "l1.att.k", "l0.ff.up.scale", "mel.window", "rope.freq", "stack",
+                                  "embed_norm.w", "final_norm.b", "up.b", "head.out", "sil" };
+    for (size_t i = 0; i < sizeof drop / sizeof drop[0]; i++) {
+        e = g_m;
+        int k = find_tensor(&e, drop[i]);
+        memmove(&e.t[k], &e.t[k + 1], (size_t)(e.nt - k - 1) * sizeof e.t[0]);
+        e.nt--;
+        char what[96];
+        snprintf(what, sizeof what, "no %s", drop[i]);
+        expect_model(what, &e, 0);
+    }
+    e = g_m;
+    e.t[e.nt] = e.t[find_tensor(&g_m, "sil")];
+    strcpy(e.t[e.nt].name, "extra.w");
+    e.nt++;
+    expect_model("a tensor that is not the model's", &e, 0);
+    e = g_m;
+    e.t[e.nt] = e.t[find_tensor(&g_m, "sil")];
+    e.nt++;
+    expect_invalid("a tensor twice, the copy added", &e);
+    {
+        /* a recognizer's vocabulary, which a diarizer has no use for */
+        static const unsigned char vocab[] = {
+            2, 0, 0, 0,  0, 0, 0, 0,  4, 0, 0, 0,  5, 0, 0, 0,  1, 1,
+            0xE2, 0x96, 0x81, 'a', 'b',  1, 0, 0, 0, '.' };
+        e = g_m;
+        e.vocab = vocab;
+        e.vocab_n = sizeof vocab;
+        expect_model("a diarizer's file with a vocabulary", &e, 0);
+    }
+
+    int up = find_tensor(&g_m, "up");
+    CORRUPT("a shape transposed", (dsc(c, up)->dims[0] = g_m.t[up].d1, dsc(c, up)->dims[1] = g_m.t[up].d0));
+    {
+        int nw = find_tensor(&g_m, "l0.att.norm.w");
+        e = g_m;
+        e.t[nw].type = PK_Q8;
+        e.t[nw].bytes /= 4;
+        expect_model("an int8 vector where a float one is", &e, 0);
+        int qm = find_tensor(&g_m, "l0.att.q");
+        e = g_m;
+        unsigned char *wide = calloc(g_m.t[qm].bytes, 4);
+        e.t[qm].type = PK_F32;
+        e.t[qm].data = wide;
+        e.t[qm].bytes *= 4;
+        expect_model("a float matrix where an int8 one is", &e, 0);
+        free(wide);
+        int sc = find_tensor(&g_m, "l0.att.q.scale");
+        e = g_m;
+        e.t[sc].d0 /= 2;
+        e.t[sc].bytes /= 2;
+        expect_model("a scale for half the rows", &e, 0);
+    }
+    static const struct { const char *name; size_t at; float v; } bad[] = {
+        { "l0.att.norm.w", 3, NAN }, { "l1.ff.norm.b", 63, INFINITY }, { "l0.att.q.scale", 5, NAN },
+        { "mel.fb", 300, -INFINITY }, { "rope.freq", 2, INFINITY }, { "stack.scale", 1, NAN },
+        { "up.b", 9, NAN }, { "head.out.b", 0, NAN }, { "sil", 7, NAN }, { "l1.ff.down.b", 2, -INFINITY },
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        size_t n;
+        unsigned char *c = fresh(&n);
+        poke(c, find_tensor(&g_m, bad[i].name), bad[i].at, bad[i].v);
+        char what[96];
+        snprintf(what, sizeof what, "%g in %s", bad[i].v, bad[i].name);
+        expect(what, c, n, 0);
+        free(c);
+    }
+    static const char *tables[] = { "mel.fft.cos", "mel.fft.sin" };
+    for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
+        size_t n;
+        unsigned char *c = fresh(&n);
+        int t = find_tensor(&g_m, tables[i]);
+        float v;
+        memcpy(&v, c + dsc(c, t)->offset + 12, 4);
+        poke(c, t, 3, v + 1e-3f);
+        char what[96];
+        snprintf(what, sizeof what, "a wrong value in %s", tables[i]);
+        expect(what, c, n, 0);
+        free(c);
+    }
+    {
+        /* the rotary frequencies: each within 2 ulp of the float that
+         * theta^(-i/n) rounds to (core/model.c, check_rope), in (0, 1] */
+        int rf = find_tensor(&g_m, "rope.freq");
+        const float theta = g_m.p[find_param(&g_m, "rope_theta")].v.f;
+        const float want = (float)pow((double)theta, -3.0 / g_m.t[rf].d0);
+        const float up2 = nextafterf(nextafterf(want, 1), 1), up3 = nextafterf(up2, 1);
+        CORRUPT("a rotary frequency 3 ulp off", poke(c, rf, 3, up3));
+        CORRUPT("a rotary frequency above one", poke(c, rf, 0, 1.5f));
+        CORRUPT("a rotary frequency of zero", poke(c, rf, 5, 0.0f));
+        CORRUPT("a negative rotary frequency", poke(c, rf, 1, -want));
+        size_t n;
+        unsigned char *c = fresh(&n);
+        poke(c, rf, 3, up2);
+        expect("a rotary frequency 2 ulp off", c, n, 1);
+        free(c);
+    }
+    /* finite and extreme: the arithmetic overflows to infinity and NaN,
+     * which quantizing makes zeros and the cut's scores take as silence;
+     * the engine must run, the probabilities in [0, 1] or NaN */
+    static const struct { const char *name; size_t at; } extreme[] = {
+        { "stack.scale", 0 }, { "l0.ff.norm.w", 1 }, { "sil", 0 }, { "up.b", 3 }, { "head.out.b", 1 },
+    };
+    for (size_t i = 0; i < sizeof extreme / sizeof extreme[0]; i++) {
+        size_t n;
+        unsigned char *c = fresh(&n);
+        poke(c, find_tensor(&g_m, extreme[i].name), extreme[i].at, 0x1.fffffep+127f);
+        char err[256] = "";
+        pk_model *m = pk_model_from_bytes(c, n, err, sizeof err);
+        g_cases++;
+        if (!m) {
+            FAIL("a finite extreme value in %s: %s", extreme[i].name, err);
+        } else {
+            diar_engine_cases(m, 0);
             pk_model_free(m);
         }
         free(c);
@@ -1238,6 +1423,191 @@ static void engine_cases(const pk_model *m, int deep) {
     free(probs);
 }
 
+/* ------------------------------------------------------ the diarizer --- */
+
+typedef struct {
+    int64_t next;                 /* the row that should come next */
+    size_t S, cap;
+    float *keep;                  /* the rows, [cap][S], or NULL */
+    int strict;                   /* every probability in [0, 1]; else NaN may be too */
+    int bad;                      /* 1 out of order, 2 a probability outside, 4 past cap */
+    int64_t stop;                 /* stop once this many rows have come, or -1 */
+} diar_sink;
+
+static int diar_rows(void *arg, int64_t row, size_t n, const float *p) {
+    diar_sink *k = arg;
+    if (row != k->next || !n)
+        k->bad |= 1;
+    for (size_t i = 0; i < n * k->S; i++)
+        if (!(p[i] >= 0 && p[i] <= 1) && (k->strict || p[i] == p[i]))
+            k->bad |= 2;
+    if (k->keep && row >= 0 && (size_t)row + n <= k->cap)
+        memcpy(k->keep + (size_t)row * k->S, p, n * k->S * sizeof *p);
+    else if (k->keep)
+        k->bad |= 4;
+    k->next = row + (int64_t)n;
+    return k->stop >= 0 && k->next >= k->stop;
+}
+
+/* the rows n samples make: a row every stack / upsample feature frames,
+ * a part of one counting */
+static int64_t diar_nrows(const pk_model *m, size_t n) {
+    const int64_t T0 = (int64_t)(n / m->hop);
+    return (T0 * m->dw.upsample + m->dw.stack - 1) / m->dw.stack;
+}
+
+/* x[0..n) through d, whole (piece 0) or fed in pieces, its rows into keep
+ * (if not NULL): 0, or 1 having said what went wrong */
+static int diar_run(pk_diar *d, const pk_model *m, const float *x, size_t n, size_t piece, int strict,
+                    float *keep, const char *what) {
+    diar_sink k = { 0, (size_t)pk_model_speakers(m), (size_t)diar_nrows(m, n), keep, strict, 0, -1 };
+    int rc = 0;
+    if (!piece)
+        rc = pk_diar_run(d, x, n, diar_rows, &k);
+    else {
+        for (size_t i = 0; i < n && !rc; i += piece)
+            rc = pk_diar_feed(d, x + i, n - i < piece ? n - i : piece, diar_rows, &k);
+        if (!rc)
+            rc = pk_diar_finish(d, diar_rows, &k);
+    }
+    g_cases++;
+    if (rc || k.bad || k.next != diar_nrows(m, n)) {
+        FAIL("%s: returned %d, %lld rows of %lld%s", what, rc, (long long)k.next, (long long)diar_nrows(m, n),
+             k.bad & 1 ? ", out of order" : k.bad & 2 ? ", a probability outside [0, 1]"
+             : k.bad & 4 ? ", past the end" : "");
+        return 1;
+    }
+    return 0;
+}
+
+static void same_rows(const float *a, const float *b, size_t n, const char *what) {
+    g_cases++;
+    if (memcmp(a, b, n * sizeof *a))
+        FAIL("%s: not the same bits", what);
+}
+
+static void diar_engine_cases(const pk_model *m, int deep) {
+    const size_t S = (size_t)pk_model_speakers(m);
+    if (!deep) {
+        /* a model a flip or an extreme value made: it must run */
+        static const size_t lengths[] = { 0, 161, 2 * 16000 };
+        pk_diar *d = pk_diar_new(m, 1);
+        g_cases++;
+        if (!d) {
+            FAIL("pk_diar_new");
+            return;
+        }
+        for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; i++) {
+            float *x = audio(lengths[i]);
+            char what[64];
+            snprintf(what, sizeof what, "%zu samples", lengths[i]);
+            diar_run(d, m, x, lengths[i], 0, 0, NULL, what);
+            free(x);
+        }
+        pk_diar_free(d);
+        return;
+    }
+    g_cases += 4;
+    if (pk_diar_new(NULL, 1) || pk_model_speakers(NULL))
+        FAIL("a diarizer of no model");
+    pk_asr *a = pk_asr_new(m, 1);
+    if (a)
+        FAIL("a transcriber of the diarizer's model");
+    pk_asr_free(a);
+    if (pk_model_speakers(m) != (int)m->dw.n_spk)
+        FAIL("pk_model_speakers: %d", pk_model_speakers(m));
+    if (pk_model_frame_seconds(m) != (double)m->dw.stack * m->hop / ((double)m->dw.upsample * m->sample_rate))
+        FAIL("pk_model_frame_seconds: %g", pk_model_frame_seconds(m));
+
+    pk_diar *d1 = pk_diar_new(m, 1), *d3 = pk_diar_new(m, 3);
+    g_cases++;
+    if (!d1 || !d3) {
+        FAIL("pk_diar_new");
+        pk_diar_free(d1);
+        pk_diar_free(d3);
+        return;
+    }
+    /* every length round a row's, a chunk's and a chunk's context's edges:
+     * the same bits on one thread and three, and fed in pieces of 1, 7,
+     * 1000 and 4096 samples */
+    const size_t chunk = (size_t)m->dw.chunk_len * m->dw.stack * m->hop;
+    const size_t ctx = (size_t)m->dw.chunk_right * m->dw.stack * m->hop;
+    const size_t lengths[] = { 0, 1, 159, 160, 161, 319, 320, 321, 639, 640, 641, chunk - 1, chunk,
+                               chunk + 1, chunk + ctx - 1, chunk + ctx, chunk + ctx + 1, 16000, 2 * 16000,
+                               6 * 16000 + 17 };
+    static const size_t pieces[] = { 1, 7, 1000, 4096 };
+    for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; i++) {
+        const size_t n = lengths[i], rows = (size_t)diar_nrows(m, n) * S;
+        float *x = audio(n), *r1 = malloc((rows ? rows : 1) * sizeof *r1), *r = malloc((rows ? rows : 1) * sizeof *r);
+        char what[96];
+        snprintf(what, sizeof what, "%zu samples", n);
+        if (!diar_run(d1, m, x, n, 0, 1, r1, what)) {
+            snprintf(what, sizeof what, "%zu samples, three threads", n);
+            if (!diar_run(d3, m, x, n, 0, 1, r, what))
+                same_rows(r1, r, rows, what);
+            for (size_t j = 0; j < sizeof pieces / sizeof pieces[0]; j++) {
+                if (pieces[j] == 1 && n > 2 * 16000)
+                    continue;
+                snprintf(what, sizeof what, "%zu samples in pieces of %zu", n, pieces[j]);
+                if (!diar_run(j % 2 ? d3 : d1, m, x, n, pieces[j], 1, r, what))
+                    same_rows(r1, r, rows, what);
+            }
+        }
+        free(x);
+        free(r1);
+        free(r);
+    }
+
+    /* samples that are not finite are heard as 0 */
+    const size_t n = 2 * 16000, rows = (size_t)diar_nrows(m, n) * S;
+    float *x = audio(n), *z = malloc(n * sizeof *z), *r1 = malloc(rows * sizeof *r1), *r = malloc(rows * sizeof *r);
+    memcpy(z, x, n * sizeof *z);
+    for (size_t i = 0; i < n; i += 97) {
+        x[i] = i % 3 == 0 ? NAN : i % 3 == 1 ? INFINITY : -INFINITY;
+        z[i] = 0;
+    }
+    if (!diar_run(d1, m, z, n, 0, 1, r1, "zeros where the next has NaN")
+        && !diar_run(d1, m, x, n, 0, 1, r, "NaN and infinite samples"))
+        same_rows(r1, r, rows, "NaN and infinite samples, against zeros there");
+    /* finite and huge: the power spectrum overflows, and quantizing makes
+     * those blocks zeros */
+    for (size_t i = 0; i < n; i += 7)
+        x[i] = i % 2 ? 1e30f : -3e38f;
+    diar_run(d3, m, x, n, 0, 1, NULL, "samples of 1e30");
+
+    /* a run fn stops: 1, and the next recording as if it had not been */
+    free(x);
+    x = audio(n);
+    diar_run(d1, m, x, n, 0, 1, r1, "a recording");
+    diar_sink k = { 0, S, 0, NULL, 1, 0, 1 };
+    int rc = pk_diar_run(d1, x, n, diar_rows, &k);
+    g_cases++;
+    if (rc != 1 || k.next >= diar_nrows(m, n))
+        FAIL("a run fn stops: returned %d after %lld rows", rc, (long long)k.next);
+    if (!diar_run(d1, m, x, n, 0, 1, r, "the recording after a stopped one"))
+        same_rows(r1, r, rows, "the recording after a stopped one");
+    k = (diar_sink){ 0, S, 0, NULL, 1, 0, 1 };
+    rc = 0;
+    for (size_t i = 0; i < n && !rc; i += 5000)
+        rc = pk_diar_feed(d1, x + i, n - i < 5000 ? n - i : 5000, diar_rows, &k);
+    g_cases++;
+    if (rc != 1)
+        FAIL("a feed fn stops: returned %d", rc);
+    pk_diar_reset(d1);
+    if (!diar_run(d1, m, x, n, 0, 1, r, "the recording after a reset"))
+        same_rows(r1, r, rows, "the recording after a reset");
+    k = (diar_sink){ 0, S, 0, NULL, 1, 0, -1 };
+    g_cases++;
+    if (pk_diar_feed(d1, x, 0, diar_rows, &k) || pk_diar_finish(d1, diar_rows, &k) || k.next)
+        FAIL("an empty recording: %lld rows", (long long)k.next);
+    free(x);
+    free(z);
+    free(r1);
+    free(r);
+    pk_diar_free(d1);
+    pk_diar_free(d3);
+}
+
 /* -------------------------------------------------------------- flipped --- */
 
 static void flip_cases(void) {
@@ -1263,7 +1633,10 @@ static void flip_cases(void) {
             loaded++;
             if (ran < 400 && it % 4 == 0) {
                 ran++;
-                engine_cases(m, 0);
+                if (g_diar)
+                    diar_engine_cases(m, 0);
+                else
+                    engine_cases(m, 0);
             }
         } else if (!e[0]) {
             FAIL("flip %d: refused without a reason", it);
@@ -1286,7 +1659,7 @@ static void write_wav(const char *path) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: pkfcheck tests/data/tiny.pkf [WAV_OUT]\n");
+        fprintf(stderr, "usage: pkfcheck tests/data/tiny.pkf [WAV_OUT], or tests/data/tiny-diar.pkf\n");
         return 2;
     }
     FILE *fp = fopen(argv[1], "rb");
@@ -1309,6 +1682,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     parse(g_file, &g_m);
+    g_diar = !strcmp(g_m.arch, "sortformer");
     if (g_m.nt + 2 > MAXT || g_m.np + 2 > MAXP) {
         printf("pkfcheck: %s is bigger than this test's tables\n", argv[1]);
         return 2;
@@ -1322,19 +1696,28 @@ int main(int argc, char **argv) {
     header_cases();
     param_cases();
     descriptor_cases();
-    vocab_cases();
+    if (!g_diar)
+        vocab_cases();
     meta_cases();
     corrupt = g_cases - at, at = g_cases;
-    meaning_cases();
-    slim_cases();
+    if (g_diar) {
+        diar_meaning_cases();
+    } else {
+        meaning_cases();
+        slim_cases();
+    }
     meaning = g_cases - at, at = g_cases;
 #ifdef PK_QNN
-    graph_cases();
+    if (!g_diar)
+        graph_cases();
 #endif
     graph = g_cases - at, at = g_cases;
     pk_model *m = pk_model_from_bytes(g_file, g_n, err, sizeof err);
     if (m) {
-        engine_cases(m, 1);
+        if (g_diar)
+            diar_engine_cases(m, 1);
+        else
+            engine_cases(m, 1);
         pk_model_free(m);
     }
     engine = g_cases - at, at = g_cases;
