@@ -71,7 +71,7 @@ static const ed_edition model0[] = {
         .systems = on_windows,
         .model = { "parakeet-tdt-0.6b-v2-slim.pkf", 12115524u, "e582eb76db19e9fba4d9e15d45ce041dd9a230bac3c2970643aa6808bf966acb" },
         .encoder = { "parakeet-tdt-0.6b-v2-sc8480xp.qnn", 714445416u, "726db8ecde7934510ab0193f52de93601c64506edf1804a240612a823e90d811" },
-        .note = "compiled for the X2 Elite's V81, not yet run on one",
+        .note = "compiled for the X2 Elite's V81; run on an X2E-84-100, 2026-11-08: 221.3x over AliceBench, the CPU's words to 13 of 27,190",
     },
 };
 
@@ -135,7 +135,7 @@ static const ed_edition model1[] = {
         .systems = on_windows,
         .model = { "parakeet-tdt-0.6b-v3-slim.pkf", 35187972u, "169ead8b6b98c67676d13c40bd592614f9d1a3b3783da027fe03967cd559b100" },
         .encoder = { "parakeet-tdt-0.6b-v3-sc8480xp.qnn", 714445416u, "237a5a6c51abfcb969310d494f70b2663c568a43174b70b9fd3f6d624c6caa7a" },
-        .note = "compiled for the X2 Elite's V81, not yet run on one",
+        .note = "compiled for the X2 Elite's V81; run on an X2E-84-100, 2026-11-09: 216.3x over AliceBench, the CPU's words to 12 of 27,183",
     },
 };
 

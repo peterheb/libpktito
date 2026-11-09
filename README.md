@@ -336,10 +336,10 @@ twelve cores and 51 s of theirs (tools/qnn/CLIMB.md, 2026-11-08).
 pktito-app does where a device has one. That takes a build that asks for
 it and model files made for it:
 
-|               | build                                     | runs on                                                                                                                                                  | its encoder                                |
-| ------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Neural Engine | `make ANE=1`: Core ML and Foundation      | Apple silicon, macOS 15 or iOS 18 and later                                                                                                              | a compiled Core ML model (`.mlmodelc`)     |
-| Hexagon NPU   | `make QNN=1 QNN_SDK=...`: QNN at run time | Windows on a Snapdragon X Elite, and the X2 Elite (compiled for, not yet run on one); Android on a Snapdragon 8 Gen 3, 8 Elite, 8 Elite Gen 5 or X Elite | a QNN graph compiled for the chip (`.qnn`) |
+|               | build                                     | runs on                                                                                                               | its encoder                                |
+| ------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Neural Engine | `make ANE=1`: Core ML and Foundation      | Apple silicon, macOS 15 or iOS 18 and later                                                                           | a compiled Core ML model (`.mlmodelc`)     |
+| Hexagon NPU   | `make QNN=1 QNN_SDK=...`: QNN at run time | Windows on a Snapdragon X Elite, and the X2 Elite; Android on a Snapdragon 8 Gen 3, 8 Elite, 8 Elite Gen 5 or X Elite | a QNN graph compiled for the chip (`.qnn`) |
 
 Their arithmetic is fp16, not the int8 every backend computes the same
 bits of, so a transcript can differ from pktito's own, and from one chip's

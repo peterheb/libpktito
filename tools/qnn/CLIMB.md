@@ -1478,3 +1478,29 @@ twenty-first to a twenty-third of its CPU time. An NPU run spends 1.2 to
 1.3 s before the VAD starts, most of it the graph's load, a CPU run 0.15 s.
 test.wav's minute: 0.52 s on the NPU and 0.55 s on the CPU by pktito-c -v,
 and by bench's best of 5, 0.507 s and 0.361 s.
+
+## Windows on Snapdragon: the X2 Elite's two graphs, run on one
+
+2026-11-08 and 2026-11-09, x2elite (HP OmniBook 5 16, Snapdragon X2 Elite
+X2E-84-100, 6 Prime and 6 Performance cores, 32 GB, Windows 11 Home 26H1,
+on mains power), run by pktito-mac over ssh. The Store's signed pktito
+0.9.6 app (pktito-app.exe `--transcribe --json`, a process a chapter,
+each run once the CPU was quiet) read the slim file and the graph above as
+it downloads them, both the catalog's bytes. QNN gave the chip as
+2147483647,81,8,1,1, naming no SoC, as snappy's does; the catalog's rule
+takes the graph for it by its Hexagon (tests/editions.tsv, "an X2 Elite").
+The CPU's backend was neon-sve.
+
+AliceBench v1, three runs each; every chapter's JSON the same bytes in all
+three. Words against the CPU's transcripts of the same chapters (the
+catalog's whole file, ref's bits, made on an M4 Pro), counted as
+tools/pktito_tools/wer.py normalizes them:
+
+| model | runs                 | speed  | words off the CPU's |
+| ----- | -------------------- | ------ | ------------------- |
+| v2    | 220.3, 221.3, 222.3x | 221.3x | 13 of 27,190        |
+| v3    | 216.2, 216.3, 216.9x | 216.3x | 12 of 27,183        |
+
+v3's graph strays from its CPU as far as v2's does from its own. The run
+files are pktito-mac's (pktito-app ALICEBENCH.md's x2elite rows, 90e9d3c
+for v2).

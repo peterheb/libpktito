@@ -179,7 +179,7 @@
               "by": "the ane fork's bbdcf60",
               "with": "QAIRT 2.51.0.260929",
               "on": "2026-11-05",
-              "note": "compiled for the X2 Elite's V81, not yet run on one"
+              "note": "compiled for the X2 Elite's V81; run on an X2E-84-100, 2026-11-08: 221.3x over AliceBench, the CPU's words to 13 of 27,190"
             }
           }
         }
@@ -363,7 +363,7 @@
               "by": "the ane fork's bbdcf60",
               "with": "QAIRT 2.51.0.260929",
               "on": "2026-11-05",
-              "note": "compiled for the X2 Elite's V81, not yet run on one"
+              "note": "compiled for the X2 Elite's V81; run on an X2E-84-100, 2026-11-09: 216.3x over AliceBench, the CPU's words to 12 of 27,183"
             }
           }
         }
