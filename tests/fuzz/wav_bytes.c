@@ -1,6 +1,8 @@
 /* A WAV opened repeatedly from the same bytes must not depend on how its
  * caller partitions reads.  The interleaved and mono APIs must see the same
- * frames, including NaNs and infinities stored by a float WAV. */
+ * frames, including NaNs and infinities stored by a float WAV, and a read
+ * from a frame (pk_wav_seek) what a front to back read has there. */
+#define _GNU_SOURCE                   /* memfd_create */
 #include "wav.c"                      /* for parse(), reached without a path */
 
 #include "fuzz.h"
@@ -92,6 +94,35 @@ static int frames(const uint8_t *data, size_t size, size_t piece, decoded *d) {
     return 0;
 }
 
+#ifdef __linux__
+#include <sys/mman.h>
+
+/* reads from frames here and there, against a, a front to back read: the
+ * bytes as a regular file, which pk_wav_seekable needs and fmemopen's
+ * stream is not, a memfd, in memory too */
+static void seeks(const uint8_t *data, size_t size, const decoded *a) {
+    const int fd = memfd_create("wav_bytes", 0);
+    FZ_ASSERT(fd >= 0);
+    FILE *f = fdopen(fd, "w+b");
+    FZ_ASSERT(f && fwrite(data, 1, size, f) == size && fseek(f, 0, SEEK_SET) == 0);
+    char err[256];
+    pk_wav *w = open_file(f, 1, "wav_bytes", NULL, err, sizeof err);
+    FZ_ASSERT(w);
+    uint64_t nf = 0;
+    FZ_ASSERT(pk_wav_seekable(w, &nf) == 0 && nf == a->frames);
+    FZ_ASSERT((pk_wav_status(w, err, sizeof err) != 0) == (a->status != 0));
+    float y[64];
+    const uint64_t at[] = { 0, nf / 2, nf ? nf - 1 : 0, nf, (uint64_t)size * 2654435761u % (nf + 1) };
+    for (size_t i = 0; i < sizeof at / sizeof *at; i++) {
+        const size_t n = nf - at[i] < 64 ? (size_t)(nf - at[i]) : 64;
+        FZ_ASSERT(pk_wav_seek(w, at[i]) == 0 && pk_wav_read(w, y, 64) == n);
+        FZ_ASSERT(!memcmp(y, a->x + at[i], n * sizeof *y));
+    }
+    FZ_ASSERT(pk_wav_seek(w, nf + 1) == -1);
+    pk_wav_close(w);
+}
+#endif
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (!size || size > 1024 * 1024)  /* fmemopen may refuse an empty buffer */
         return 0;
@@ -121,6 +152,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         }
         FZ_ASSERT(!memcmp(&v, &a.x[i], sizeof v));
     }
+#ifdef __linux__
+    seeks(data, size, &a);
+#endif
     free(a.x);
     free(b.x);
     free(c.x);

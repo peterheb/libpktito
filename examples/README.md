@@ -47,6 +47,14 @@ way. What every one has to get right:
   recording's VAD, chunks and retries (README, "Transcribing a
   recording"), hand each chunk's to a callback instead, which these
   examples leave out: they show the low-level blocks.
+- **A recording is a `pk_audio`**, its length and a function the library
+  calls to read a stretch of it. `pk_chunks` takes one; these examples make
+  it with `pk_audio_floats` over the samples they hold, read in place, so
+  the samples must outlive it, and Go pins them for as long
+  (`runtime.Pinner`), since the struct keeps their address past the call
+  that made it. A reader of one's own is a callback, as
+  `pk_asr_transcribe`'s are, called from the library's threads but never
+  two at once.
 - **Text is UTF-8**, NUL-terminated, in a buffer the caller sized; so are
   paths, on every system, Windows too.
 - **Threads.** A model may be shared by any number of threads; a

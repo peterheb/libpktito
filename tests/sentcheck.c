@@ -352,7 +352,8 @@ static double hear(pk_asr *a, const char *path, heard *h) {
     pk_transcribe_opts o;
     pk_transcribe_defaults(&o);
     h->n = 0;
-    int ok = n && pk_asr_transcribe(a, x, n, &o, on_chunk, h) == 0 && h->n;
+    const pk_audio X = pk_audio_floats(x, n);
+    int ok = n && pk_asr_transcribe(a, &X, &o, on_chunk, h) == 0 && h->n;
     free(x);
     return ok ? (double)n / pk_model_rate(M) : 0;
 }

@@ -17,6 +17,7 @@
 #define PK_OS_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
 /* A whole file, read-only, or NULL with a reason in why. *size is its
@@ -28,6 +29,14 @@ void pk_unmap(const unsigned char *p, size_t size);
 /* fopen, with path in UTF-8 on every system: NULL with errno set, EILSEQ
  * for a path that is not UTF-8. */
 FILE *pk_os_fopen(const char *path, const char *mode);
+
+/* For a regular file - not a pipe, a terminal, or stdin from either - its
+ * size in bytes, else -1. pk_os_seek goes to an offset from the start and
+ * pk_os_tell says where f stands, past 2 GB on every system: 0 or the
+ * offset, -1 on failure. */
+int64_t pk_os_file_size(FILE *f);
+int     pk_os_seek(FILE *f, int64_t off);
+int64_t pk_os_tell(FILE *f);
 
 /* rename and remove, the same: 0, or -1 with errno set. pk_os_rename
  * replaces a file already at to, which Windows' rename refuses to. */

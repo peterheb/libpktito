@@ -468,16 +468,12 @@ static void run_failed(const pk_model *m) {
     die("out of memory");
 }
 
-/* The whole file as 16 kHz mono float */
-static float *read_audio(const char *path, int rate, size_t *n, const opts *o) {
-    char err[256];
-    pk_wav_info info;
-    pk_wav *w = pk_wav_open(path, &info, err, sizeof err);
-    if (!w)
-        cannot_open(path, err);
+/* The rest of an open file, front to back, as 16 kHz mono float, whole:
+ * stdin's, or a pipe's, which can't be read twice */
+static float *read_all(pk_wav *w, const pk_wav_info *info, const char *path, int rate, size_t *n) {
     pk_resampler *rs = NULL;
-    if (info.rate != (uint32_t)rate && !(rs = pk_resampler_new(info.rate, (uint32_t)rate)))
-        die("%s: cannot resample from %u Hz", path, (unsigned)info.rate);
+    if (info->rate != (uint32_t)rate && !(rs = pk_resampler_new(info->rate, (uint32_t)rate)))
+        die("%s: cannot resample from %u Hz", path, (unsigned)info->rate);
     float *in = malloc(READ_FRAMES * sizeof *in);
     size_t cap = 1 << 20, got = 0;
     float *x = malloc(cap * sizeof *x);
@@ -510,26 +506,113 @@ static float *read_audio(const char *path, int rate, size_t *n, const opts *o) {
         if (!r)
             break;
     }
-    if (pk_wav_status(w, err, sizeof err))
-        fprintf(stderr, "pktito-c: %s: %s\n", path, err);
-    if (o->verbose)
-        fprintf(stderr, "pktito-c: %s: %u Hz, %u channel%s, %.1f s%s\n", path, (unsigned)info.rate,
-                (unsigned)info.channels, info.channels == 1 ? "" : "s", (double)got / rate,
-                rs ? ", resampled to 16 kHz" : "");
-    pk_wav_close(w);
     pk_resampler_free(rs);
     free(in);
     *n = got;
     return x;
 }
 
+/* A recording (pk_audio) from a WAV or AIFF file. A regular file is read a
+ * stretch at a time as the library asks for it: a seek and a read
+ * (pk_wav_seek), and at another rate the window of input that stretch's
+ * outputs need (pk_resampler_seek), so that each stretch has the bits
+ * the whole file resampled gives it. stdin, or a pipe, which can't be
+ * read twice, is read whole first. */
+typedef struct {
+    pk_wav *w;                  /* a regular file's */
+    pk_resampler *rs;           /* at another rate */
+    float *in, *out;            /* a read's input frames, and their outputs */
+    float *all;                 /* stdin's samples, or a pipe's */
+    int failed;                 /* a read failed */
+} file_audio;
+
+static int file_read(void *arg, int64_t at, float *out, size_t count) {
+    file_audio *f = arg;
+    size_t got = 0, skip = 0;
+    const uint64_t from = f->rs ? pk_resampler_seek(f->rs, (uint64_t)at, &skip) : (uint64_t)at;
+    if (!pk_wav_seek(f->w, from)) {
+        if (!f->rs)
+            got = pk_wav_read(f->w, out, count);
+        while (f->rs && got < count) {
+            const size_t r = pk_wav_read(f->w, f->in, READ_FRAMES);
+            const size_t made = r ? pk_resample(f->rs, f->in, r, f->out) : pk_resample_flush(f->rs, f->out);
+            const size_t before = skip < made ? skip : made;
+            const size_t take = made - before < count - got ? made - before : count - got;
+            memcpy(out + got, f->out + before, take * sizeof *out);
+            skip -= before;
+            got += take;
+            if (!r)
+                break;
+        }
+    }
+    if (got == count)
+        return 0;
+    f->failed = 1;
+    return -1;
+}
+
+static pk_audio open_audio(const char *path, int rate, const opts *o, file_audio *f) {
+    char err[256];
+    pk_wav_info info;
+    memset(f, 0, sizeof *f);
+    pk_wav *w = pk_wav_open(path, &info, err, sizeof err);
+    if (!w)
+        cannot_open(path, err);
+    uint64_t frames;
+    pk_audio x;
+    if (pk_wav_seekable(w, &frames)) {
+        size_t n;
+        f->all = read_all(w, &info, path, rate, &n);
+        x = pk_audio_floats(f->all, n);
+        if (pk_wav_status(w, err, sizeof err))
+            fprintf(stderr, "pktito-c: %s: %s\n", path, err);
+        pk_wav_close(w);
+    } else {
+        if (pk_wav_status(w, err, sizeof err))  /* cut short, as a read to its end would find it */
+            fprintf(stderr, "pktito-c: %s: %s\n", path, err);
+        f->w = w;
+        x = (pk_audio){ (int64_t)frames, file_read, f };
+        if (info.rate != (uint32_t)rate) {
+            if (!(f->rs = pk_resampler_new(info.rate, (uint32_t)rate)))
+                die("%s: cannot resample from %u Hz", path, (unsigned)info.rate);
+            const size_t room = pk_resample_room(f->rs, READ_FRAMES), flush = pk_resample_room(f->rs, 0);
+            const size_t most = room > flush ? room : flush;
+            f->in = malloc(READ_FRAMES * sizeof *f->in);
+            f->out = most < SIZE_MAX / sizeof *f->out ? malloc(most * sizeof *f->out) : NULL;
+            if (!f->in || !f->out)
+                die("out of memory");
+            x.n = (int64_t)pk_resample_total(f->rs, frames);
+        }
+    }
+    if (o->verbose)
+        fprintf(stderr, "pktito-c: %s: %u Hz, %u channel%s, %.1f s%s\n", path, (unsigned)info.rate,
+                (unsigned)info.channels, info.channels == 1 ? "" : "s", (double)x.n / rate,
+                info.rate != (uint32_t)rate ? ", resampled to 16 kHz" : "");
+    return x;
+}
+
+static void close_audio(file_audio *f) {
+    pk_wav_close(f->w);
+    pk_resampler_free(f->rs);
+    free(f->in);
+    free(f->out);
+    free(f->all);
+}
+
+/* A recording's -1 where its read failed: the file, not the memory */
+static void read_failed(const file_audio *f, const char *path) {
+    if (f->failed)
+        die("%s: a read error in its samples", path);
+}
+
 /* The recording's chunks (pk_chunks): the whole of it when it fits and has
  * speech, else its speech cut at its silences, and what lies between that
  * is neither silent nor too short to hear. The VAD runs on a's threads, as
  * pk_asr_transcribe's does. */
-static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const float *x, size_t n, double max_chunk,
+static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const pk_audio *x, double max_chunk,
                          size_t *nchunks, double *vad_s) {
     const int rate = pk_model_rate(m);
+    const size_t n = (size_t)x->n;
     const int64_t max_len = (int64_t)(max_chunk * rate);
     *vad_s = 0;
     *nchunks = 0;
@@ -546,11 +629,12 @@ static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const float *x, size_t n,
     sp.max_speech_s = max_chunk - 2 * sp.speech_pad_ms / 1000 - 0.1;
     const size_t cap = 2 * ((n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES) + 1;
     pk_seg *seg = malloc(cap * sizeof *seg);
-    const long ns = seg ? pk_asr_speech(a, x, n, &sp, seg, cap) : -1;
+    const long ns = seg ? pk_asr_speech(a, x, &sp, seg, cap) : -1;
     pk_seg *c = ns < 0 ? NULL : malloc((2 * (size_t)ns + 2 + n / (size_t)max_len) * sizeof *c);
-    if (!c)
+    const long nc = c ? pk_chunks(x, seg, (size_t)ns, max_len, c) : -1;
+    if (nc < 0)
         die("out of memory");
-    *nchunks = pk_chunks(x, seg, (size_t)ns, (int64_t)n, max_len, c);
+    *nchunks = (size_t)nc;
     free(seg);
     *vad_s = pk_os_now() - t0;
     return c;
@@ -850,9 +934,10 @@ static int print_chunk(void *arg, const pk_chunk_out *ch) {
  * name, a tab and its chunks' text. */
 static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a, int many,
                             double *audio_s, double *asr_total, const char **lang) {
-    size_t n;
     const int rate = pk_model_rate(m);
-    float *x = read_audio(path, rate, &n, o);
+    file_audio f;
+    const pk_audio x = open_audio(path, rate, o, &f);
+    const size_t n = (size_t)x.n;
     const char *langs = pk_model_meta(m, "languages");
     chunk_out out = { o, m, many, rate, pk_model_frame_seconds(m), 0, malloc(1 << 16), 1 << 16, { 0 },
                       NULL, 0, 0, langs && !strcmp(langs, "en") ? "en" : NULL };
@@ -871,8 +956,10 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     to.retry = !o->no_retry;
     to.context = !o->no_context;
     const double t0 = pk_os_now();
-    if (pk_asr_transcribe(a, x, n, &to, print_chunk, &out) < 0)
+    if (pk_asr_transcribe(a, &x, &to, print_chunk, &out) < 0) {
+        read_failed(&f, path);
         run_failed(m);
+    }
     const double asr_s = pk_os_now() - t0 - out.printing;
     *asr_total += asr_s;
     if (o->json)
@@ -894,7 +981,7 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     }
     free(out.tail);
     free(out.text);
-    free(x);
+    close_audio(&f);
 }
 
 static int transcribe(const opts *o, pk_model *m) {
@@ -1087,7 +1174,7 @@ static int stream(const opts *o, pk_model *m) {
 
 /* Transcribe the file five times; the best time is what a quiet machine
  * does. */
-/* A recording not at the model's rate, resampled to it as read_audio does,
+/* A recording not at the model's rate, resampled to it as read_all does,
  * READ_FRAMES at a time: the best of five, from its samples in memory. 0 for
  * one at the model's rate. */
 static double bench_resample(const char *path, int rate, uint32_t *from) {
@@ -1133,21 +1220,30 @@ static int count_tokens(void *arg, const pk_chunk_out *c) {
 }
 
 static int bench(const opts *o, pk_model *m) {
-    size_t n;
     const int rate = pk_model_rate(m);
     uint32_t from;
     const double rs_s = bench_resample(o->in, rate, &from);
-    float *x = read_audio(o->in, rate, &n, o);
+    /* the samples in memory, so that the time is the transcription's alone */
+    file_audio f;
+    const pk_audio file = open_audio(o->in, rate, o, &f);
+    const size_t n = (size_t)file.n;
+    float *all = malloc((n ? n : 1) * sizeof *all);
+    if (!all)
+        die("out of memory");
+    if (n && file.read(file.arg, 0, all, n))
+        die("%s: a read error in its samples", o->in);
+    close_audio(&f);
+    const pk_audio x = pk_audio_floats(all, n);
     pk_asr *a = asr_new(o, m, 1);
     size_t nc;
     double vad_s;
-    pk_seg *c = chunks_of(a, m, x, n, o->max_chunk, &nc, &vad_s);
+    pk_seg *c = chunks_of(a, m, &x, o->max_chunk, &nc, &vad_s);
     double best = 1e30;
     long ntok = 0;
     for (int rep = 0; rep < 5; rep++) {
         double t0 = pk_os_now();
         ntok = 0;
-        if (pk_asr_run_chunks(a, x, c, nc, count_tokens, &ntok))
+        if (pk_asr_run_chunks(a, &x, c, nc, count_tokens, &ntok))
             run_failed(m);
         double dt = pk_os_now() - t0;
         best = dt < best ? dt : best;
@@ -1174,7 +1270,7 @@ static int bench(const opts *o, pk_model *m) {
     if (rs_s > 0)
         printf("resample  %u Hz to %d, best of 5 %.1f ms\n", (unsigned)from, rate, rs_s * 1e3);
     free(c);
-    free(x);
+    free(all);
     pk_asr_free(a);
     return 0;
 }
@@ -1184,29 +1280,34 @@ static int bench(const opts *o, pk_model *m) {
  * defaults: the VAD inside the model file, on its own, over -t's threads
  * (pk_asr_vad, pk_asr_speech). */
 static int vad(const opts *o, pk_model *m) {
-    size_t n;
     const int rate = pk_model_rate(m);
-    float *x = read_audio(o->in, rate, &n, o);
+    file_audio f;
+    const pk_audio x = open_audio(o->in, rate, o, &f);
+    const size_t n = (size_t)x.n;
     pk_asr *a = asr_new(o, m, 0);
     const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, cap = 2 * frames + 1;
     if (!strcmp(o->cmd, "probs")) {
         float *probs = malloc((frames + 1) * sizeof *probs);
-        if (!probs || pk_asr_vad(a, x, n, probs) < 0)
+        if (!probs || pk_asr_vad(a, &x, probs) < 0) {
+            read_failed(&f, o->in);
             die("out of memory");
+        }
         for (size_t f = 0; f < frames; f++)
             printf("%.3f %.9g\n", (double)f * PK_VAD_SAMPLES / rate, probs[f]);
         free(probs);
     } else {
         pk_seg *seg = malloc(cap * sizeof *seg);
-        const long ns = seg ? pk_asr_speech(a, x, n, NULL, seg, cap) : -1;
-        if (ns < 0)
+        const long ns = seg ? pk_asr_speech(a, &x, NULL, seg, cap) : -1;
+        if (ns < 0) {
+            read_failed(&f, o->in);
             die("out of memory");
+        }
         for (long i = 0; i < ns; i++)
             printf("%.3f %.3f\n", (double)seg[i].start / rate, (double)seg[i].end / rate);
         free(seg);
     }
     pk_asr_free(a);
-    free(x);
+    close_audio(&f);
     return 0;
 }
 

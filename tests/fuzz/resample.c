@@ -1,6 +1,7 @@
 /* Streaming boundaries are not part of a recording.  The same samples sent
  * whole or in fuzz-selected pieces must produce the same bits and exactly
- * torchaudio's ceil(to * n / from) output count. */
+ * torchaudio's ceil(to * n / from) output count, and so must a run started
+ * at any output (pk_resampler_seek), from there on. */
 #include "resample.h"
 
 #include "fuzz.h"
@@ -73,6 +74,34 @@ static size_t run_pieces(uint32_t from, uint32_t to, const float *x, size_t n,
     return made;
 }
 
+/* the outputs from one picked by `pick` on, by pk_resampler_seek, in
+ * fuzz-selected pieces: whole's from there, to the end */
+static void run_from(uint32_t from, uint32_t to, const float *x, size_t n, const float *whole, size_t total,
+                     uint64_t pick) {
+    pk_resampler *r = pk_resampler_new(from, to);
+    FZ_ASSERT(r && pk_resample_total(r, n) == total);
+    const size_t at = (size_t)(pick % (total + 1));
+    size_t skip;
+    const uint64_t in = pk_resampler_seek(r, at, &skip);
+    FZ_ASSERT(in <= n);
+    size_t cap = pk_resample_room(r, n) + pk_resample_room(r, 0), made = 0;
+    float *y = malloc((cap ? cap : 1) * sizeof *y);
+    FZ_ASSERT(y);
+    for (size_t i = (size_t)in; i < n;) {
+        pick = pick * UINT64_C(6364136223846793005) + UINT64_C(1442695040888963407);
+        size_t k = 1 + (size_t)(pick >> 57);
+        if (k > n - i)
+            k = n - i;
+        made += pk_resample(r, x + i, k, y + made);
+        i += k;
+    }
+    made += pk_resample_flush(r, y + made);
+    FZ_ASSERT(made <= cap && made == skip + (total - at));
+    FZ_ASSERT(!memcmp(y + skip, whole + at, (total - at) * sizeof *y));
+    pk_resampler_free(r);
+    free(y);
+}
+
 int LLVMFuzzerInitialize(int *argc, char ***argv) {
     (void)argc;
     (void)argv;
@@ -102,6 +131,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     size_t want = (size_t)ceil((double)nw * (double)n / orig);
     FZ_ASSERT(na == want && nb == want);
     FZ_ASSERT(!memcmp(a, b, want * sizeof *a));
+    run_from(from, to, x, n, a, want, fz_hash(data, size) ^ UINT64_C(0x9E3779B97F4A7C15));
     free(a);
     free(b);
     return 0;

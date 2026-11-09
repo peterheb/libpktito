@@ -41,4 +41,14 @@ int      pk_pool_active(const pk_pool *p);
 void     pk_pool_aside(pk_pool *p, void (*fn)(void *), void *arg);
 void     pk_pool_join(pk_pool *p);
 
+/* A lock for what several threads take turns at: a recording's reads in a
+ * run of lanes (core/transcribe.c). NULL if memory runs out; with no
+ * threads (PK_NO_THREADS), a lock that does nothing. */
+typedef struct pk_lock pk_lock;
+
+pk_lock *pk_lock_new(void);
+void     pk_lock_take(pk_lock *l);
+void     pk_lock_give(pk_lock *l);
+void     pk_lock_free(pk_lock *l);
+
 #endif /* PK_POOL_H */

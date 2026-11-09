@@ -168,18 +168,19 @@ void pk_transcribe_defaults(pk_transcribe_opts *o) {
     o->context = 1;
 }
 
-/* The energy of x over the speech in [from, to), and how many samples of
- * speech that is. A sample that is not finite is read as 0, as pk_asr_run
- * reads it. */
-static double power(const float *x, const pk_seg *sp, size_t ns, int64_t from, int64_t to,
-                    int64_t *heard) {
+/* The energy over the speech in [from, to) of the samples in buf, which
+ * start at the recording's sample `base` and hold [from, to), and how many
+ * samples of speech that is. A sample that is not finite is read as 0, as
+ * pk_asr_run reads it. */
+static double power(const float *buf, int64_t base, const pk_seg *sp, size_t ns, int64_t from,
+                    int64_t to, int64_t *heard) {
     double e = 0;
     int64_t h = 0;
     for (size_t k = 0; k < ns; k++) {
         const int64_t s0 = sp[k].start > from ? sp[k].start : from;
         const int64_t s1 = sp[k].end < to ? sp[k].end : to;
         for (int64_t j = s0; j < s1; j++) {
-            const double v = isfinite(x[j]) ? x[j] : 0;
+            const double v = isfinite(buf[j - base]) ? buf[j - base] : 0;
             e += v * v;
         }
         h += s1 > s0 ? s1 - s0 : 0;
@@ -213,7 +214,9 @@ static size_t quietest(const float *x, size_t n, int rate) {
 /* One run's state, for each chunk as it comes: pk_steps */
 typedef struct pk_steps {
     const pk_model *m;
-    const float *x;
+    pk_audio x;                 /* the recording, the caller's copied */
+    float *buf;                 /* a chunk's samples, or a stretch's: bufcap of them */
+    size_t bufcap;
     pk_seg *c, *win, *sp;       /* the chunks, what each is heard in, the speech */
     size_t nc, ns;
     int retry;
@@ -289,20 +292,22 @@ static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_
     const int64_t spf = llround(pk_model_frame_seconds(m) * rate);
     const int64_t frames = (ch->end - ch->start + spf - 1) / spf;
     const int64_t inside = (int64_t)(RETRY_SPEECH_S * rate), at_break = (int64_t)(RETRY_BREAK_S * rate);
+    const int64_t len = ch->end - ch->start;
+    if ((size_t)len > r->bufcap || pk_audio_read(&r->x, ch->start, r->buf, (size_t)len))
+        return -1;
     if (nt == 0) {
         int64_t heard;
-        const double e = power(r->x, r->sp, r->ns, ch->start, ch->end, &heard);
-        const int64_t len = ch->end - ch->start;
+        const double e = power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, &heard);
         if (heard < at_break || e < r->floor * (double)heard)
             return 0;
-        const int64_t mid = (int64_t)quietest(r->x + ch->start, (size_t)len, rate) / spf;
+        const int64_t mid = (int64_t)quietest(r->buf, (size_t)len, rate) / spf;
         r->st[0][0] = (int32_t)(head < mid ? head : mid), r->st[0][1] = (int32_t)mid;
         r->st[1][0] = (int32_t)mid, r->st[1][1] = (int32_t)frames;
         return 2;
     }
     size_t nw = pk_words(m, t, (size_t)nt, r->w);
     int64_t near;           /* the chunk's speech, for a passage read softly */
-    const double ce = power(r->x, r->sp, r->ns, ch->start, ch->end, &near);
+    const double ce = power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, &near);
     const double floor = near && ce / (double)near * RETRY_NEAR < r->floor ? ce / (double)near * RETRY_NEAR
                                                                            : r->floor;
     long k = 0;
@@ -315,7 +320,7 @@ static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_
             const int64_t s1 = ch->start + f1 * spf < ch->end ? ch->start + f1 * spf : ch->end;
             const int64_t enough = after_break || f1 == frames ? at_break : inside;
             int64_t heard;
-            const double e = power(r->x, r->sp, r->ns, s0, s1, &heard);
+            const double e = power(r->buf, ch->start, r->sp, r->ns, s0, s1, &heard);
             if (heard >= enough && e >= floor * (double)heard) {
                 r->st[k][0] = (int32_t)f0, r->st[k][1] = (int32_t)f1;
                 k++;
@@ -601,7 +606,14 @@ static int advance(run *r) {
     return 0;
 }
 
-long pk_asr_vad(pk_asr *a, const float *x, size_t n, float *probs) {
+/* The VAD reads x a run of its frames at a time (pk_vad_run_frames), each
+ * run through pk_vad_probs_on as one call over all of x would take it: the
+ * same bits, since its stream keeps the last frame's context between
+ * calls. */
+long pk_asr_vad(pk_asr *a, const pk_audio *x, float *probs) {
+    if (x->n < 0)
+        return -1;
+    const size_t n = (size_t)x->n;
     const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, whole = n / PK_VAD_SAMPLES;
     if (n == 0)
         return 0;
@@ -609,32 +621,47 @@ long pk_asr_vad(pk_asr *a, const float *x, size_t n, float *probs) {
         return -1;
     pk_vad *v = a->vad;
     pk_vad_reset(v);
-    pk_vad_probs_on(v, a->pool, x, whole, probs);
-    if (whole < frames) {
-        float last[PK_VAD_SAMPLES] = { 0 };
-        memcpy(last, x + whole * PK_VAD_SAMPLES, (n - whole * PK_VAD_SAMPLES) * sizeof *x);
-        probs[whole] = pk_vad_prob(v, last);
+    const size_t run = pk_vad_run_frames(a->pool) < whole ? pk_vad_run_frames(a->pool) : whole;
+    float *buf = malloc((run ? run : 1) * PK_VAD_SAMPLES * sizeof *buf);
+    if (!buf)
+        return -1;
+    long rc = (long)frames;
+    for (size_t f = 0; f < whole && rc >= 0; f += run) {
+        const size_t k = whole - f < run ? whole - f : run;
+        if (pk_audio_read(x, (int64_t)(f * PK_VAD_SAMPLES), buf, k * PK_VAD_SAMPLES))
+            rc = -1;
+        else
+            pk_vad_probs_on(v, a->pool, buf, k, probs + f);
     }
-    return (long)frames;
+    if (rc >= 0 && whole < frames) {
+        float last[PK_VAD_SAMPLES] = { 0 };
+        if (pk_audio_read(x, (int64_t)(whole * PK_VAD_SAMPLES), last, n - whole * PK_VAD_SAMPLES))
+            rc = -1;
+        else
+            probs[whole] = pk_vad_prob(v, last);
+    }
+    free(buf);
+    return rc;
 }
 
-long pk_asr_speech(pk_asr *a, const float *x, size_t n, const pk_seg_params *p, pk_seg *out,
-                   size_t cap) {
-    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
+long pk_asr_speech(pk_asr *a, const pk_audio *x, const pk_seg_params *p, pk_seg *out, size_t cap) {
+    if (x->n < 0)
+        return -1;
+    const size_t frames = ((size_t)x->n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
     pk_seg_params def;
     if (!p) {
         pk_seg_defaults(&def);
         p = &def;
     }
     float *probs = malloc((frames + 1) * sizeof *probs);
-    const long rc = probs && pk_asr_vad(a, x, n, probs) >= 0
-                        ? (long)pk_segments(probs, frames, pk_model_rate(a->m), (int64_t)n, p, out, cap)
+    const long rc = probs && pk_asr_vad(a, x, probs) >= 0
+                        ? (long)pk_segments(probs, frames, pk_model_rate(a->m), x->n, p, out, cap)
                         : -1;
     free(probs);
     return rc;
 }
 
-pk_steps *pk_steps_new(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o) {
+pk_steps *pk_steps_new(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o) {
     pk_transcribe_opts def;
     if (!o) {
         pk_transcribe_defaults(&def);
@@ -643,17 +670,20 @@ pk_steps *pk_steps_new(pk_asr *a, const float *x, size_t n, const pk_transcribe_
     const pk_model *m = a->m;
     const int rate = pk_model_rate(m);
     const int64_t max_len = (int64_t)(o->max_chunk_s * rate);
-    if (max_len < rate)
+    if (max_len < rate || x->n < 0)
         return NULL;
+    const size_t n = (size_t)x->n;
     const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
     run *r = calloc(1, sizeof *r);
     float *probs = malloc((frames + 1) * sizeof *probs);
     pk_seg *cut = malloc((2 * frames + 1) * sizeof *cut);
     if (!r || !probs || !cut || !(r->sp = malloc((2 * frames + 1) * sizeof *r->sp))
-        || !(r->text = malloc(r->textcap = 256)) || pk_asr_vad(a, x, n, probs) < 0)
+        || !(r->text = malloc(r->textcap = 256)))
+        goto fail;
+    r->x = *x;
+    if (pk_asr_vad(a, &r->x, probs) < 0)
         goto fail;
     r->m = m;
-    r->x = x;
     r->retry = o->retry;
 
     /* 1. the speech: segments no longer than a chunk less the padding
@@ -672,17 +702,29 @@ pk_steps *pk_steps_new(pk_asr *a, const float *x, size_t n, const pk_transcribe_
     const size_t cap = 2 * nk + 2 + n / (size_t)max_len;
     if (!(r->c = malloc(cap * sizeof *r->c)) || !(r->win = malloc(cap * sizeof *r->win)))
         goto fail;
-    r->nc = pk_chunks_past(x, cut, nk, (int64_t)n, max_len, ctx, (int64_t)(CONTEXT_PAUSE_S * rate),
-                           r->c, r->win);
+    const long nc = pk_chunks_past(&r->x, cut, nk, max_len, ctx, (int64_t)(CONTEXT_PAUSE_S * rate),
+                                   r->c, r->win);
+    if (nc < 0)
+        goto fail;
+    r->nc = (size_t)nc;
     if (!(r->ct = calloc(r->nc + 1, sizeof *r->ct)) || !(r->cn = malloc((r->nc + 1) * sizeof *r->cn)))
+        goto fail;
+    /* room for the longest chunk: a chunk, or a stretch of one, at a time */
+    for (size_t i = 0; i < r->nc; i++)
+        if ((size_t)(r->c[i].end - r->c[i].start) > r->bufcap)
+            r->bufcap = (size_t)(r->c[i].end - r->c[i].start);
+    if (!(r->buf = malloc((r->bufcap ? r->bufcap : 1) * sizeof *r->buf)))
         goto fail;
     double e = 0;
     int64_t heard = 0;
     for (size_t i = 0; i < r->nc; i++) {
         int64_t h;
-        e += power(x, r->sp, r->ns, r->c[i].start, r->c[i].end, &h);
+        const pk_seg *ch = &r->c[i];
+        if (pk_audio_read(&r->x, ch->start, r->buf, (size_t)(ch->end - ch->start)))
+            goto fail;
+        e += power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, &h);
         heard += h;
-        r->total += r->c[i].end - r->c[i].start;
+        r->total += ch->end - ch->start;
         r->cn[i] = -1;
     }
     r->floor = heard ? e / (double)heard * RETRY_LEVEL : 0;
@@ -786,6 +828,7 @@ void pk_steps_free(pk_steps *r) {
     free(r->w);
     free(r->st);
     free(r->text);
+    free(r->buf);
     free(r);
 }
 
@@ -810,7 +853,10 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
     if (pk_steps_put(w->r, &chunk, toks, nt))
         return -1;
     while ((rc = pk_steps_job(w->r, &j)) == 1) {    /* chunk i's retries: every chunk is out */
-        const long more = pk_retry_run(w->a, w->r->x + j.at.start, (size_t)(j.at.end - j.at.start), spare);
+        const size_t len = (size_t)(j.at.end - j.at.start);
+        if (len > w->r->bufcap || pk_audio_read(&w->r->x, j.at.start, w->r->buf, len))
+            return -1;
+        const long more = pk_retry_run(w->a, w->r->buf, len, spare);
         if (more < 0 || pk_steps_put(w->r, &j, w->a->toks, more))
             return -1;
     }
@@ -819,16 +865,24 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
     return w->fn(w->arg, &out) ? 1 : 0;
 }
 
-int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o,
-                      pk_chunk_fn fn, void *arg) {
-    if (n == 0)
+/* x read in turns (pk_audio_turns), since a run of lanes reads its
+ * chunks on their threads while the retry reads here */
+int pk_asr_transcribe(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o, pk_chunk_fn fn,
+                      void *arg) {
+    if (x->n == 0)
         return 0;
-    run *r = pk_steps_new(a, x, n, o);
-    if (!r)
+    pk_turns t;
+    pk_audio y;
+    if (pk_audio_turns(&t, x, &y))
         return -1;
-    hand_out_all(r);
-    own w = { r, a, fn, arg };
-    const int rc = pk_run_chunks_with(a, x, r->win, r->nc, each, &w);
-    pk_steps_free(r);
+    run *r = pk_steps_new(a, &y, o);
+    int rc = -1;
+    if (r) {
+        hand_out_all(r);
+        own w = { r, a, fn, arg };
+        rc = pk_run_chunks_with(a, &y, r->win, r->nc, each, &w);
+        pk_steps_free(r);
+    }
+    pk_audio_turns_free(&t);
     return rc;
 }

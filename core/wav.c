@@ -47,6 +47,9 @@ struct pk_wav {
     int      signed8;                 /* 8-bit PCM signed (AIFF), not offset by 128 (WAV) */
     uint64_t promised;                /* frames the header promised, for pk_wav_status */
     int      cut_short, io_error;
+    int      seekable;                /* pk_wav_seekable's: */
+    int64_t  data_at;                 /* the file offset of the first frame */
+    uint64_t data_bytes;              /* the bytes of whole frames a read gives from there */
     unsigned char *buf;
     size_t   have, pos;               /* bytes in buf, and the next one to decode */
     float    law[256];                /* A-law or mu-law, decoded */
@@ -527,6 +530,33 @@ size_t pk_wav_read(pk_wav *w, float *out, size_t n) {
 
 size_t pk_wav_read_frames(pk_wav *w, float *out, size_t n) {
     return read_frames(w, out, n, 0);
+}
+
+int pk_wav_seekable(pk_wav *w, uint64_t *frames) {
+    const int64_t at = pk_os_tell(w->f), size = pk_os_file_size(w->f);
+    if (at < 0 || size < at || w->have || w->pos)
+        return -1;
+    uint64_t bytes = (uint64_t)(size - at);
+    if (!w->streamed && w->left <= bytes)
+        bytes = w->left;
+    else if (!w->streamed)
+        w->cut_short = 1;
+    w->seekable = 1;
+    w->data_at = at;
+    w->data_bytes = bytes / w->block * w->block;
+    *frames = bytes / w->block;
+    return 0;
+}
+
+int pk_wav_seek(pk_wav *w, uint64_t frame) {
+    if (!w->seekable || frame > w->data_bytes / w->block)
+        return -1;
+    const uint64_t off = frame * w->block;
+    if (pk_os_seek(w->f, w->data_at + (int64_t)off))
+        return -1;
+    w->left = w->data_bytes - off;
+    w->have = w->pos = 0;
+    return 0;
 }
 
 int pk_wav_status(const pk_wav *w, char *err, size_t errlen) {

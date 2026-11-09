@@ -11,12 +11,15 @@
  *
  *   a model      pk_model_load    a .pkf file: the model, its vocabulary and
  *                                 the VAD, with where every number came from
- *   a recording  pk_asr_transcribe  the high-level path: any length in,
- *                                 each chunk's tokens out, VAD, chunking
- *                                 and the retries done; pk_steps_new, the
- *                                 same in steps for a caller who runs the
- *                                 transcribing itself
- *   transcribe   pk_asr_run       the low-level path: 16 kHz samples in,
+ *   a recording  pk_audio         its length, and a function that reads it
+ *                                 a stretch at a time, so that no call holds
+ *                                 it whole; pk_audio_floats, one in memory
+ *   transcribe   pk_asr_transcribe  the high-level path: a recording of any
+ *                                 length in, each chunk's tokens out, VAD,
+ *                                 chunking and the retries done;
+ *                                 pk_steps_new, the same in steps for a
+ *                                 caller who runs the transcribing itself
+ *                pk_asr_run       the low-level path: 16 kHz samples in,
  *                                 tokens with times out, NeMo's to the bit
  *   text         pk_text,         tokens to UTF-8, as NeMo writes them, and
  *                pk_words         to words with times
@@ -44,8 +47,10 @@
  * NULL for the defaults. A time is in its own unit: a token's or a word's
  * in encoder frames (pk_model_frame_seconds), a stretch of audio's in
  * samples, a caption's in milliseconds. A language is a two-letter code, as
- * pk_language names it. core/wav.h reads WAV and AIFF files, and
- * core/resample.h brings another rate to the model's.
+ * pk_language names it. core/wav.h reads WAV and AIFF files, front to back
+ * or, in a file that can seek, from any frame, and core/resample.h brings
+ * another rate to the model's, from any sample on: pktito-c's file_audio
+ * (core/cli.c) puts the two together as a pk_audio.
  */
 #ifndef PKTITO_H
 #define PKTITO_H
@@ -104,6 +109,34 @@ void pk_model_describe(const pk_model *m, pk_model_info *out);
  * lasts (0.08: a token's frame times this is when it was heard). */
 int    pk_model_rate(const pk_model *m);
 double pk_model_frame_seconds(const pk_model *m);
+
+/* ------------------------------------------------------------ recording --- */
+
+/* A recording, read a stretch at a time as a call needs it rather than held
+ * whole, by the caller or by the library: n samples of 16 kHz mono audio,
+ * nominally in [-1, 1] (a sample that is not finite is heard as 0). read
+ * puts samples [at, at + count) into out and returns 0, or nonzero where it
+ * can't, and the call that asked then fails with -1. A call asks only for
+ * samples inside [0, n), and makes one read at a time, but not always on
+ * the thread that called it: a run of several chunks at once
+ * (pk_asr_run_chunks) reads each lane's chunks on the lane's thread. It
+ * reads a stretch more than once - the VAD over the whole recording, then
+ * the chunker's gaps, each chunk, and the stretches the retry hears again -
+ * so read gives the same samples each time. A call copies *x and is done
+ * with it when it returns: x, its arg and what read reads need last only
+ * that long, but for pk_steps, which reads until pk_steps_free. What a
+ * call holds of the recording is a stretch at a time: a chunk for each
+ * lane and one for the retry, 2 MB each at 30.72 s, and while the VAD runs
+ * a run of its frames, 0.5 MB a thread. */
+typedef struct {
+    int64_t n;
+    int   (*read)(void *arg, int64_t at, float *out, size_t count);
+    void   *arg;
+} pk_audio;
+
+/* x[0, n), in memory, as a recording: its read copies from x, which must
+ * last as long as the calls that read it. */
+pk_audio pk_audio_floats(const float *x, size_t n);
 
 /* -------------------------------------------------------- transcription --- */
 
@@ -256,10 +289,10 @@ typedef int (*pk_chunk_fn)(void *arg, const pk_chunk_out *c);
  * chunk's joint half, 1 MB at 30 s, for each lane: about 45 MB a lane at
  * 30.72 s. Returns 0, 1 when fn stopped it, or -1 if memory runs out or the
  * encoder can't run, as pk_asr_run's (fn has then seen the chunks before). */
-int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
+int pk_asr_run_chunks(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, pk_chunk_fn fn,
                       void *arg);
 
-/* A recording of any length, x[0, n), to its transcript, with all the
+/* A recording of any length, x, to its transcript, with all the
  * processing pktito does for one: the high-level path, where pk_asr_run is
  * the low-level one, transcript = f(x), NeMo's to the bit. In order:
  * Silero's VAD, its encoder over the transcriber's threads, and its speech
@@ -282,7 +315,8 @@ int pk_asr_run_chunks(pk_asr *a, const float *x, const pk_seg *c, size_t n, pk_c
  * or max_chunk_s is under a second. Besides the transcriber's working
  * memory, which is the longest chunk's for each chunk run at once, and its
  * VAD's, which it keeps (0.85 MB a thread), the call holds about 2% of the
- * recording's own size. */
+ * recording's size as floats, its VAD's probabilities and speech segments,
+ * and a stretch of the recording at a time (pk_audio). */
 typedef struct {
     double max_chunk_s;         /* 30.72: the most the encoder hears at once (README, "Long recordings") */
     int    retry;               /* 1: speech the model wrote nothing for heard again */
@@ -291,17 +325,18 @@ typedef struct {
 
 void pk_transcribe_defaults(pk_transcribe_opts *o);
 
-int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o,
-                      pk_chunk_fn fn, void *arg);
+int pk_asr_transcribe(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o, pk_chunk_fn fn,
+                      void *arg);
 
 /* pk_asr_transcribe in steps, for a caller who runs the transcribing
  * itself: on threads of its own, over several transcribers, with several
  * recordings' chunks dealt among them, as a server's queue would.
  * pk_steps_new runs the VAD and cuts the chunks, on a's threads, and the
  * rest is jobs, each a stretch of x to hear: a chunk whole, or a stretch
- * of one that the retry hears again. The caller hears a job with
- * pk_asr_run on any transcriber of the same model and mode, on any thread,
- * and hands its tokens back with pk_steps_put, the jobs in any order;
+ * of one that the retry hears again. The caller reads a job's samples from
+ * x and hears them with pk_asr_run, on any transcriber of the same model
+ * and mode, on any thread, and hands its tokens back with pk_steps_put,
+ * the jobs in any order;
  * pk_steps_take has each chunk in order once its job and its retries are
  * in. They are the bits pk_asr_transcribe's fn has: pk_asr_run's are the
  * same on every transcriber, and pk_asr_transcribe is these steps, its
@@ -320,11 +355,16 @@ int pk_asr_transcribe(pk_asr *a, const float *x, size_t n, const pk_transcribe_o
  * with the next chunk in *out, its tokens lasting until the next call on
  * s; 0 while that chunk is not done; -1 if memory runs out. The run is
  * over after pk_steps_chunks(s) of them, or at any call's -1, after which
- * every call on s returns -1 and s is for pk_steps_free alone. x must last
- * as long as s, which belongs to one thread at a time, and holds what a
- * pk_asr_transcribe call holds (above) and the tokens of chunks put and not
- * yet taken. pk_steps_new takes o NULL as pk_asr_transcribe does, and
- * returns NULL if memory runs out or max_chunk_s is under a second. */
+ * every call on s returns -1 and s is for pk_steps_free alone. s belongs to
+ * one thread at a time, and holds what a pk_asr_transcribe call holds
+ * (above) and the tokens of chunks put and not yet taken. It reads x
+ * itself, inside pk_steps_new, pk_steps_put, pk_steps_job and
+ * pk_steps_take, on the thread that calls them. pk_steps_new keeps a copy
+ * of *x, so x itself may go, but its arg and what read reads must last
+ * until pk_steps_free, and a caller that reads jobs' samples on other
+ * threads meanwhile needs a read that allows it. pk_steps_new takes o
+ * NULL as pk_asr_transcribe does, and returns NULL if memory runs out, a
+ * read fails, or max_chunk_s is under a second. */
 typedef struct pk_steps pk_steps;
 
 typedef struct {
@@ -333,7 +373,7 @@ typedef struct {
     pk_seg at;                  /* the samples to hear, x[at.start, at.end) */
 } pk_job;
 
-pk_steps *pk_steps_new(pk_asr *a, const float *x, size_t n, const pk_transcribe_opts *o);
+pk_steps *pk_steps_new(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o);
 size_t    pk_steps_chunks(const pk_steps *s);
 int       pk_steps_job(pk_steps *s, pk_job *j);
 int       pk_steps_put(pk_steps *s, const pk_job *j, const pk_tok *toks, long count);
@@ -416,22 +456,22 @@ void pk_seg_defaults(pk_seg_params *p);
 size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
                    const pk_seg_params *p, pk_seg *out, size_t cap);
 
-/* Silero over a recording of any length, x[0, n), as pk_asr_transcribe
- * runs it: the transcriber's own stream made new, its encoder over the
- * transcriber's threads and its LSTM on the calling thread, and the last
- * frame padded with silence. P(speech) for each 32 ms frame into probs,
- * (n + 511) / 512 of them, the bits pk_vad_probs gives from a new stream,
- * 1.9 times as fast as one thread on a 9950X's 16 and a Pi 5's 4, 2.9 on
- * an M5 Ultra's 36 (backend/avx2/CLIMB.md, 2026-11-02). Returns their
- * count, or -1 if memory runs out. */
-long pk_asr_vad(pk_asr *a, const float *x, size_t n, float *probs);
+/* Silero over a recording of any length, x, as pk_asr_transcribe runs it:
+ * the transcriber's own stream made new, its encoder over the transcriber's
+ * threads and its LSTM on the calling thread, a run of frames read at a
+ * time, and the last frame padded with silence. P(speech) for each 32 ms
+ * frame into probs, (x->n + 511) / 512 of them, the bits pk_vad_probs
+ * gives from a new stream, 1.9 times as fast as one thread on a 9950X's 16
+ * and a Pi 5's 4, 2.9 on an M5 Ultra's 36 (backend/avx2/CLIMB.md,
+ * 2026-11-02). Returns their count, or -1 if memory runs out or a read
+ * fails. */
+long pk_asr_vad(pk_asr *a, const pk_audio *x, float *probs);
 
-/* The speech in x[0, n): pk_asr_vad's probabilities through pk_segments
- * with p, Silero's defaults where p is NULL. Returns how many segments
- * there are, out unfinished if that is more than cap (twice the frames
- * plus one is always enough), or -1 if memory runs out. */
-long pk_asr_speech(pk_asr *a, const float *x, size_t n, const pk_seg_params *p, pk_seg *out,
-                   size_t cap);
+/* The speech in x: pk_asr_vad's probabilities through pk_segments with p,
+ * Silero's defaults where p is NULL. Returns how many segments there are,
+ * out unfinished if that is more than cap (twice the frames plus one is
+ * always enough), or -1 if memory runs out or a read fails. */
+long pk_asr_speech(pk_asr *a, const pk_audio *x, const pk_seg_params *p, pk_seg *out, size_t cap);
 
 /* Silero's VADIterator: speech starts and ends as they happen, from each
  * frame's probability in turn. pk_vad_iter_init starts one with p, or
@@ -453,7 +493,7 @@ int  pk_vad_iter_step(pk_vad_iter *it, float prob, int64_t *at);
 
 /* --------------------------------------------------------------- chunks --- */
 
-/* A recording, x of `total` samples, cut into the chunks to transcribe, of
+/* A recording, x, cut into the chunks to transcribe, of
  * at most max_len samples each, from its speech segments (pk_segments'
  * output, sorted, none longer than max_len: pk_seg_params.max_speech_s sees
  * to that). A cut between two segments falls in the middle of the silence
@@ -467,10 +507,11 @@ int  pk_vad_iter_step(pk_vad_iter *it, float prob, int64_t *at);
  * gap is cut into the fewest pieces of at most max_len, all of a length,
  * and a piece is left out if it is silent (no 32 ms of it within 50 dB of
  * full scale) or shorter than 3 s, where the recognizer makes words of
- * anything. Returns the count; out has room for 2 n_speech + 2 + total /
- * max_len. */
-size_t pk_chunks(const float *x, const pk_seg *speech, size_t n_speech, int64_t total,
-                 int64_t max_len, pk_seg *out);
+ * anything. Returns the count, or -1 if a read fails or memory runs out
+ * (it reads the gaps a stretch at a time); out has room for 2 n_speech + 2
+ * + x->n / max_len. */
+long pk_chunks(const pk_audio *x, const pk_seg *speech, size_t n_speech, int64_t max_len,
+               pk_seg *out);
 
 /* ------------------------------------------------------------- captions --- */
 

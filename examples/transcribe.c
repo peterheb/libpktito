@@ -84,7 +84,12 @@ int main(int argc, char **argv) {
     const int64_t max_len = (int64_t)(30.72 * rate);
     size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
     pk_seg *chunk = malloc((2 * ns + 2 + (size_t)(n / max_len)) * sizeof *chunk);
-    size_t nc = pk_chunks(x, seg, ns, (int64_t)n, max_len, chunk);
+    const pk_audio X = pk_audio_floats(x, n);
+    const long nc = pk_chunks(&X, seg, ns, max_len, chunk);
+    if (nc < 0) {
+        fprintf(stderr, "out of memory\n");
+        return 1;
+    }
 
     /* each chunk through the transcriber, as NeMo would hear it as a file */
     pk_asr *a = pk_asr_new(m, 0);
@@ -93,7 +98,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     char text[65536];
-    for (size_t i = 0; i < nc; i++) {
+    for (long i = 0; i < nc; i++) {
         const pk_tok *t;
         long nt = pk_asr_run(a, x + chunk[i].start, (size_t)(chunk[i].end - chunk[i].start), &t);
         if (nt < 0) {

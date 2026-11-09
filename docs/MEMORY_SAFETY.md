@@ -33,7 +33,9 @@ longest, and refuses bytes that are not UTF-8. The in-memory model loader also c
 slack fits in `size_t` before it allocates and copies.
 Counts derived while resampling a WAV saturate instead of wrapping, and the
 front ends check sample-count additions and byte multiplications before they
-grow a whole-recording buffer.
+grow a whole-recording buffer, which pktito-c keeps only for a pipe: a file
+it reads a stretch at a time, and the library asks a `pk_audio` only for
+stretches inside its length.
 
 ## The model file
 
@@ -150,8 +152,12 @@ binary holds, so it is trusted input, like a model file's weights.
 
 ## The WAV and AIFF files
 
-core/wav.c reads front to back and never seeks, so its input may be a pipe,
-and it never allocates from a size the file states: it keeps one fixed buffer
+core/wav.c reads front to back, so its input may be a pipe, and seeks only
+in a regular file it has measured: `pk_wav_seekable`, asked before the first
+read, takes the bytes from the first frame to the end of the file, or the
+header's size where that is less, and `pk_wav_seek` goes to a whole frame
+inside them or refuses, so a read from the middle is a front to back read's
+from there. It never allocates from a size the file states: it keeps one fixed buffer
 and decodes whole frames out of it. Every chunk's size is checked before it is
 read past (by reading, so that a pipe can be read past, and with its pad byte
 added in 64 bits, so that a size of 2^32 - 1 cannot wrap), the fmt chunk is
@@ -232,8 +238,9 @@ vocabulary and the metadata wrong in each way it can be, the binding failures,
 20,000 random bit flips of everything before the tensor data, and the whole
 engine on the tiny model and on the flipped models that still load.
 tests/wavcheck.c runs every prefix of a valid WAV, each field of fmt wrong,
-the widest legal frame and maximum 32- and 64-bit declared lengths; and for
-AIFF, every supported type read against the WAV of the same samples, every
+the widest legal frame and maximum 32- and 64-bit declared lengths, every
+layout read from frames here and there against a front to back read, a seek
+past the end and a file shorter than its header; and for AIFF, every supported type read against the WAV of the same samples, every
 prefix of an AIFF and an AIFF-C, each 80-bit rate that is not one (each
 refused for its own reason), each field of COMM and SSND wrong, chunk sizes
 past the end of the file up to 2^32 - 1, and every bit of two files' headers

@@ -47,6 +47,14 @@ void pk_pool_join(pk_pool *p) {
         fn(p->arg);
 }
 
+struct pk_lock {
+    int unused;
+};
+pk_lock *pk_lock_new(void) { return calloc(1, sizeof(pk_lock)); }
+void pk_lock_take(pk_lock *l) { (void)l; }
+void pk_lock_give(pk_lock *l) { (void)l; }
+void pk_lock_free(pk_lock *l) { free(l); }
+
 #else
 
 #include "os.h"
@@ -269,6 +277,29 @@ void pk_pool_join(pk_pool *p) {
     }
     while (atomic_load_explicit(&p->aside, memory_order_acquire))
         relax();
+}
+
+struct pk_lock {
+    pthread_mutex_t mu;
+};
+
+pk_lock *pk_lock_new(void) {
+    pk_lock *l = malloc(sizeof *l);
+    if (l && pthread_mutex_init(&l->mu, NULL)) {
+        free(l);
+        return NULL;
+    }
+    return l;
+}
+
+void pk_lock_take(pk_lock *l) { pthread_mutex_lock(&l->mu); }
+void pk_lock_give(pk_lock *l) { pthread_mutex_unlock(&l->mu); }
+
+void pk_lock_free(pk_lock *l) {
+    if (!l)
+        return;
+    pthread_mutex_destroy(&l->mu);
+    free(l);
 }
 
 #endif

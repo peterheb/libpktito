@@ -34,6 +34,7 @@ import "C"
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"unsafe"
 )
 
@@ -114,7 +115,20 @@ func run(modelPath, wavPath, encoder string) int {
 	maxLen := int(30.72 * float64(rate))
 	ns := int(C.pk_segments(floats(probs), C.size_t(frames), C.int(rate), C.int64_t(n), &sp, &seg[0], C.size_t(len(seg))))
 	chunk := make([]C.pk_seg, 2*ns+2+n/maxLen)
-	nc := int(C.pk_chunks(floats(x), &seg[0], C.size_t(ns), C.int64_t(n), C.int64_t(maxLen), &chunk[0]))
+	// the recording as the library reads it, x read in place: a pk_audio
+	// keeps x's address past the call that made it, which cgo allows of
+	// memory pinned for as long
+	var pin runtime.Pinner
+	if n > 0 {
+		pin.Pin(&x[0])
+	}
+	defer pin.Unpin()
+	rec := C.pk_audio_floats(floats(x), C.size_t(n))
+	nc := int(C.pk_chunks(&rec, &seg[0], C.size_t(ns), C.int64_t(maxLen), &chunk[0]))
+	if nc < 0 {
+		fmt.Fprintln(os.Stderr, "out of memory")
+		return 1
+	}
 
 	// each chunk through the transcriber, as NeMo would hear it as a file;
 	// the transcriber runs its own threads, and a cgo call holds only the

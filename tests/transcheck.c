@@ -14,6 +14,7 @@
 #include "../core/transcribe.c"
 #include "wav.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 
 static int fails;
@@ -146,6 +147,38 @@ static void forget(seen *s) {
     s->n = 0;
 }
 
+/* A recording read through checks: every stretch inside [0, n), no two
+ * reads at once (each lingers, so that two unlocked would meet), and with
+ * fail_at, that read and every one after it failing */
+typedef struct {
+    const float *x;
+    int64_t n;
+    _Atomic int busy, bad;
+    _Atomic long reads;
+    long fail_at;
+} probe;
+
+static int probe_read(void *arg, int64_t at, float *out, size_t count) {
+    probe *p = arg;
+    if (atomic_fetch_add(&p->busy, 1))
+        atomic_store(&p->bad, 1);
+    const long k = atomic_fetch_add(&p->reads, 1) + 1;
+    if (at < 0 || count == 0 || at > p->n || (uint64_t)(p->n - at) < count)
+        atomic_store(&p->bad, 1);
+    else
+        memcpy(out, p->x + at, count * sizeof *out);
+    for (volatile int i = 0; i < 2000; i++)
+        ;
+    atomic_fetch_sub(&p->busy, 1);
+    return p->fail_at && k >= p->fail_at ? -1 : 0;
+}
+
+static pk_audio probed(probe *p, const float *x, size_t n, long fail_at) {
+    p->x = x, p->n = (int64_t)n, p->fail_at = fail_at;
+    atomic_init(&p->busy, 0), atomic_init(&p->bad, 0), atomic_init(&p->reads, 0);
+    return (pk_audio){ (int64_t)n, probe_read, p };
+}
+
 int main(int argc, char **argv) {
     /* quietest: in the pause, else in the middle third, else the middle */
     {
@@ -162,16 +195,18 @@ int main(int argc, char **argv) {
     }
     /* power: the speech in a stretch, and how much of it there is */
     {
-        static float x[1000];
+        static float x[1000], y[1000];
         for (int i = 0; i < 1000; i++)
-            x[i] = 1;
+            x[i] = 1, y[i] = (float)(i % 7);
         const pk_seg sp[] = { { 100, 300 }, { 500, 900 } };
-        int64_t h;
-        power(x, sp, 2, 100, 1000, &h);
+        int64_t h, h2;
+        power(x, 0, sp, 2, 100, 1000, &h);
         CHECK(h == 600, "power: all the speech");
-        CHECK(power(x, sp, 2, 250, 600, &h) == 150 && h == 150, "power: part of two segments");
-        power(x, sp, 2, 300, 500, &h);
+        CHECK(power(x, 0, sp, 2, 250, 600, &h) == 150 && h == 150, "power: part of two segments");
+        power(x, 0, sp, 2, 300, 500, &h);
         CHECK(h == 0, "power: between them, none");
+        CHECK(power(y + 250, 250, sp, 2, 250, 600, &h) == power(y, 0, sp, 2, 250, 600, &h2) && h == h2,
+              "power: the stretch read alone, the same");
     }
     /* lower and utf8: the seam's letters, of the alphabets the models write */
     {
@@ -205,6 +240,7 @@ int main(int argc, char **argv) {
     float *x = malloc((size_t)info.frames * sizeof *x);
     size_t n = x ? pk_wav_read(w, x, (size_t)info.frames) : 0;
     pk_wav_close(w);
+    const pk_audio X = pk_audio_floats(x, n), X0 = pk_audio_floats(x, 0);
     pk_asr *a = pk_asr_new(m, 0);
     seen hi = { 0 }, lo = { 0 };
 
@@ -213,7 +249,7 @@ int main(int argc, char **argv) {
     pk_transcribe_defaults(&o);
     o.retry = 0;
     o.context = 0;
-    CHECK(pk_asr_transcribe(a, x, n, &o, on_out, &hi) == 0, "no retry: runs to the end");
+    CHECK(pk_asr_transcribe(a, &X, &o, on_out, &hi) == 0, "no retry: runs to the end");
     {
         /* the chunks by the call's own steps: segments ended at a pause of
          * 64 ms (core/transcribe.c's CUT_SILENCE_MS), chunks of at most
@@ -232,8 +268,9 @@ int main(int argc, char **argv) {
         const int64_t max_len = (int64_t)(o.max_chunk_s * rate);
         size_t ns = pk_segments(probs, frames, rate, (int64_t)n, &sp, seg, 2 * frames + 1);
         pk_seg *c = malloc((2 * ns + 2 + (size_t)((int64_t)n / max_len)) * sizeof *c);
-        size_t nc = pk_chunks(x, seg, ns, (int64_t)n, max_len, c);
-        CHECK(pk_asr_run_chunks(a, x, c, nc, on_out, &lo) == 0, "pk_asr_run_chunks runs");
+        const long lc = pk_chunks(&X, seg, ns, max_len, c);
+        const size_t nc = lc > 0 ? (size_t)lc : 0;
+        CHECK(lc >= 0 && pk_asr_run_chunks(a, &X, c, nc, on_out, &lo) == 0, "pk_asr_run_chunks runs");
         CHECK(nc > 1 && lo.n == nc, "the recording is more than one chunk");
         const int64_t spf = llround(pk_model_frame_seconds(m) * rate);
         int64_t done = 0;
@@ -245,8 +282,13 @@ int main(int argc, char **argv) {
         }
         CHECK(ok && lo.total == done, "pk_asr_run_chunks: each chunk's place, its frame and the progress");
         seen one = { .stop_after = 1 };
-        CHECK(pk_asr_run_chunks(a, x, c, nc, on_out, &one) == 1 && one.n == 1 && one.nt[0] == lo.nt[0],
+        CHECK(pk_asr_run_chunks(a, &X, c, nc, on_out, &one) == 1 && one.n == 1 && one.nt[0] == lo.nt[0],
               "pk_asr_run_chunks: stopped after one chunk");
+        forget(&one);
+        one.stop_after = 0;
+        probe pf;
+        const pk_audio F = probed(&pf, x, n, 2);
+        CHECK(pk_asr_run_chunks(a, &F, c, nc, on_out, &one) == -1, "pk_asr_run_chunks: a read failing, -1");
         forget(&one);
         pk_vad_free(v);
         free(pad), free(probs), free(seg), free(c);
@@ -256,13 +298,13 @@ int main(int argc, char **argv) {
     /* with retry, where the model drops nothing: the same */
     seen r = { 0 };
     o.retry = 1;
-    CHECK(pk_asr_transcribe(a, x, n, &o, on_out, &r) == 0, "retry: runs to the end");
+    CHECK(pk_asr_transcribe(a, &X, &o, on_out, &r) == 0, "retry: runs to the end");
     CHECK(same(&r, &lo), "retry: nothing dropped, nothing changed");
     forget(&r);
 
     /* fn stops it after the first chunk */
     r.stop_after = 1;
-    CHECK(pk_asr_transcribe(a, x, n, &o, on_out, &r) == 1 && r.n == 1, "stopped after one chunk");
+    CHECK(pk_asr_transcribe(a, &X, &o, on_out, &r) == 1 && r.n == 1, "stopped after one chunk");
     CHECK(r.nt[0] == lo.nt[0] && !memcmp(r.t[0], lo.t[0], (size_t)lo.nt[0] * sizeof *lo.t[0]),
           "stopped: its one chunk the same");
     forget(&r);
@@ -272,7 +314,7 @@ int main(int argc, char **argv) {
      * its own chunk, and fn still stops it */
     {
         const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
-        CHECK(pk_asr_transcribe(a, x, n, NULL, on_out, &r) == 0 && r.n > 1, "defaults: runs to the end");
+        CHECK(pk_asr_transcribe(a, &X, NULL, on_out, &r) == 0 && r.n > 1, "defaults: runs to the end");
         int in = 1;
         pk_word *wd = malloc(4096 * sizeof *wd);
         for (size_t i = 0; i < r.n && i < 64; i++) {
@@ -284,7 +326,7 @@ int main(int argc, char **argv) {
         CHECK(in, "context: every word starts in its own chunk");
         forget(&r);
         r.stop_after = 1;
-        CHECK(pk_asr_transcribe(a, x, n, NULL, on_out, &r) == 1 && r.n == 1, "context: stopped after one chunk");
+        CHECK(pk_asr_transcribe(a, &X, NULL, on_out, &r) == 1 && r.n == 1, "context: stopped after one chunk");
         forget(&r);
         r.stop_after = 0;
     }
@@ -296,6 +338,7 @@ int main(int argc, char **argv) {
      * chunk the same tokens, fn's in order, and a stop the same */
     {
         float *x4 = malloc(4 * n * sizeof *x4);
+        const pk_audio X4 = pk_audio_floats(x4, 4 * n);
         pk_asr *one = pk_asr_new(m, 4), *two = pk_asr_new(m, 8);
         seen s1 = { 0 }, s2 = { 0 };
         pk_transcribe_opts o4;
@@ -306,13 +349,13 @@ int main(int argc, char **argv) {
             for (int k = 0; k < 4; k++)
                 memcpy(x4 + (size_t)k * n, x, n * sizeof *x);
             CHECK(one->lanes <= 1 && two->lanes == 2, "lanes: one for each four threads");
-            CHECK(pk_asr_transcribe(one, x4, 4 * n, &o4, on_out, &s1) == 0 && s1.n >= 8,
+            CHECK(pk_asr_transcribe(one, &X4, &o4, on_out, &s1) == 0 && s1.n >= 8,
                   "lanes: one lane runs to the end, in 8 chunks or more");
-            CHECK(pk_asr_transcribe(two, x4, 4 * n, &o4, on_out, &s2) == 0, "lanes: two run to the end");
+            CHECK(pk_asr_transcribe(two, &X4, &o4, on_out, &s2) == 0, "lanes: two run to the end");
             CHECK(same(&s1, &s2), "lanes: every chunk one lane's, token for token, in order");
             forget(&s2);
             s2.stop_after = 3;
-            CHECK(pk_asr_transcribe(two, x4, 4 * n, &o4, on_out, &s2) == 1 && s2.n == 3,
+            CHECK(pk_asr_transcribe(two, &X4, &o4, on_out, &s2) == 1 && s2.n == 3,
                   "lanes: stopped after three chunks");
             int first = s2.n == 3;
             for (size_t i = 0; first && i < 3; i++)
@@ -322,12 +365,57 @@ int main(int argc, char **argv) {
             forget(&s1), forget(&s2);
             s2.stop_after = 0;
             pk_asr_set_fast_mode(one, 1), pk_asr_set_fast_mode(two, 1);
-            CHECK(pk_asr_transcribe(one, x4, 4 * n, &o4, on_out, &s1) == 0
-                      && pk_asr_transcribe(two, x4, 4 * n, &o4, on_out, &s2) == 0 && same(&s1, &s2),
+            CHECK(pk_asr_transcribe(one, &X4, &o4, on_out, &s1) == 0
+                      && pk_asr_transcribe(two, &X4, &o4, on_out, &s2) == 0 && same(&s1, &s2),
                   "lanes: the fast mode in every lane, every chunk one lane's");
         }
         forget(&s1), forget(&s2);
         pk_asr_free(one), pk_asr_free(two);
+        free(x4);
+    }
+
+    /* the recording read a stretch at a time (pk_audio), through a probe:
+     * on two lanes, every stretch inside it and no two reads at once, the
+     * chunks the same as from memory; a read failing, from the first to the
+     * last, failing the run with -1; and the other calls that read, a read
+     * failing */
+    {
+        float *x4 = malloc(4 * n * sizeof *x4);
+        pk_asr *two = pk_asr_new(m, 8);
+        seen s1 = { 0 }, s2 = { 0 };
+        pk_transcribe_opts o4;
+        pk_transcribe_defaults(&o4);
+        o4.max_chunk_s = 10;
+        probe p;
+        CHECK(x4 && two, "reads: made");
+        if (x4 && two) {
+            for (int k = 0; k < 4; k++)
+                memcpy(x4 + (size_t)k * n, x, n * sizeof *x);
+            const pk_audio X4 = pk_audio_floats(x4, 4 * n), P = probed(&p, x4, 4 * n, 0);
+            CHECK(pk_asr_transcribe(two, &X4, &o4, on_out, &s1) == 0 && two->lanes == 2
+                      && pk_asr_transcribe(two, &P, &o4, on_out, &s2) == 0 && same(&s1, &s2)
+                      && !memcmp(s1.retried, s2.retried, sizeof s1.retried),
+                  "reads: two lanes' chunks, through a read, the same as from memory");
+            const long all = atomic_load(&p.reads);
+            CHECK(all > 0 && !atomic_load(&p.bad), "reads: every stretch inside the recording, one at a time");
+            int ok = 1;
+            for (int q = 0; q <= 4; q++) {
+                forget(&s2);
+                const pk_audio F = probed(&p, x4, 4 * n, q ? all * q / 4 : 1);
+                ok &= pk_asr_transcribe(two, &F, &o4, on_out, &s2) == -1 && !atomic_load(&p.bad);
+            }
+            CHECK(ok, "reads: a read failing, the first to the last, fails the run");
+            const size_t cap = 8 * n / PK_VAD_SAMPLES + 3;
+            float *probs = malloc((4 * n / PK_VAD_SAMPLES + 2) * sizeof *probs);
+            pk_seg *g = malloc(cap * sizeof *g);
+            const pk_audio F = probed(&p, x4, 4 * n, 1);
+            CHECK(probs && g && pk_steps_new(two, &F, &o4) == NULL && pk_asr_vad(two, &F, probs) == -1
+                      && pk_asr_speech(two, &F, NULL, g, cap) == -1,
+                  "reads: pk_steps_new, pk_asr_vad and pk_asr_speech, a read failing");
+            free(probs), free(g);
+        }
+        forget(&s1), forget(&s2);
+        pk_asr_free(two);
         free(x4);
     }
 
@@ -342,6 +430,7 @@ int main(int argc, char **argv) {
     {
         const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
         float *x4 = malloc(4 * n * sizeof *x4);
+        const pk_audio X4 = pk_audio_floats(x4, 4 * n);
         pk_asr *one = pk_asr_new(m, 4), *h[2] = { pk_asr_new(m, 3), pk_asr_new(m, 5) };
         pk_tok *want = malloc(4096 * sizeof *want);
         seen s1 = { 0 }, s2 = { 0 }, s3 = { 0 };
@@ -355,8 +444,8 @@ int main(int argc, char **argv) {
         if (x4 && one && h[0] && h[1] && want) {
             for (int k = 0; k < 4; k++)
                 memcpy(x4 + (size_t)k * n, x, n * sizeof *x);
-            pk_steps *st = pk_steps_new(one, x4, 4 * n, &o4);
-            CHECK(pk_asr_transcribe(one, x4, 4 * n, &o4, on_out, &s1) == 0 && s1.n >= 8,
+            pk_steps *st = pk_steps_new(one, &X4, &o4);
+            CHECK(pk_asr_transcribe(one, &X4, &o4, on_out, &s1) == 0 && s1.n >= 8,
                   "steps: pk_asr_transcribe runs to the end, in 8 chunks or more");
             CHECK(st && drive(st, h, x4, spf, &s2, 0, want, &nwant, got, &nst, &ok) == 0 && ok,
                   "steps: every chunk handed out once, in order, and taken in order");
@@ -364,7 +453,7 @@ int main(int argc, char **argv) {
                   "steps: every chunk pk_asr_transcribe's, token for token, as many retried");
             pk_steps_free(st);
 
-            st = pk_steps_new(one, x, n, NULL);
+            st = pk_steps_new(one, &X, NULL);
             CHECK(st && drive(st, h, x, spf, &s3, 1, want, &nwant, got, &nst, &ok) == 0 && ok,
                   "steps, a chunk dropped: the jobs as before, its retries one at a time");
             CHECK(s3.n > 1 && nst == 2 && s3.retried[0] == 2 && got[0].start == s3.at[0].start
@@ -388,14 +477,14 @@ int main(int argc, char **argv) {
         pk_transcribe_opts oh;
         pk_transcribe_defaults(&oh);
         oh.max_chunk_s = 0.5;
-        CHECK(pk_steps_new(a, x, n, &oh) == NULL, "steps: max_chunk_s under a second, none");
-        pk_steps *st = pk_steps_new(a, x, 0, NULL);
+        CHECK(pk_steps_new(a, &X, &oh) == NULL, "steps: max_chunk_s under a second, none");
+        pk_steps *st = pk_steps_new(a, &X0, NULL);
         pk_job j;
         pk_chunk_out c;
         CHECK(st && pk_steps_chunks(st) == 0 && pk_steps_job(st, &j) == 0 && pk_steps_take(st, &c) == 0,
               "steps: no samples, no jobs, no chunks");
         pk_steps_free(st);
-        st = pk_steps_new(a, x, n, NULL);
+        st = pk_steps_new(a, &X, NULL);
         CHECK(st && pk_steps_job(st, &j) == 1 && j.chunk == 0 && !j.retry, "steps: chunk 0 first");
         pk_steps_free(st);
         const pk_tok *heard;
@@ -415,7 +504,7 @@ int main(int argc, char **argv) {
         };
         for (size_t k = 0; k < sizeof refused / sizeof *refused; k++) {
             pk_job h;
-            st = pk_steps_new(a, x, n, NULL);
+            st = pk_steps_new(a, &X, NULL);
             int ok = st && pk_steps_job(st, &h) == 1 && h.chunk == 0;
             if (ok && refused[k].first)
                 ok = pk_steps_put(st, &h, t, nt) == 0;
@@ -434,6 +523,7 @@ int main(int argc, char **argv) {
     {
         const int rate = pk_model_rate(m);
         const size_t nn = (n / PK_VAD_SAMPLES - 1) * PK_VAD_SAMPLES + 300;
+        const pk_audio XN = pk_audio_floats(x, nn);
         const size_t frames = (nn + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, cap = 2 * frames + 1;
         float *pad = calloc(frames * PK_VAD_SAMPLES, sizeof *pad);
         float *p1 = malloc(frames * sizeof *p1), *p2 = malloc(frames * sizeof *p2);
@@ -447,19 +537,19 @@ int main(int argc, char **argv) {
             pk_vad_probs(v, pad, frames, p1);
             int ok = 1;
             for (int k = 0; k < 2; k++)
-                ok &= pk_asr_vad(b, x, nn, p2) == (long)frames && !memcmp(p1, p2, frames * sizeof *p1);
+                ok &= pk_asr_vad(b, &XN, p2) == (long)frames && !memcmp(p1, p2, frames * sizeof *p1);
             CHECK(ok, "pk_asr_vad: every probability pk_vad_probs', twice, the last frame padded with silence");
             pk_seg_params sp;
             pk_seg_defaults(&sp);
             for (int k = 0; k < 2; k++) {
                 const size_t ns = pk_segments(p1, frames, rate, (int64_t)nn, &sp, g1, cap);
-                const long ns2 = pk_asr_speech(b, x, nn, k ? &sp : NULL, g2, cap);
+                const long ns2 = pk_asr_speech(b, &XN, k ? &sp : NULL, g2, cap);
                 CHECK(ns > 1 && ns2 == (long)ns && !memcmp(g1, g2, ns * sizeof *g1),
                       k ? "pk_asr_speech: pk_segments' speech, at 32 ms pauses"
                         : "pk_asr_speech: pk_segments' speech, Silero's defaults");
                 sp.min_silence_ms = 32;
             }
-            CHECK(pk_asr_vad(b, x, 0, p2) == 0 && pk_asr_speech(b, x, 0, NULL, g2, cap) == 0,
+            CHECK(pk_asr_vad(b, &X0, p2) == 0 && pk_asr_speech(b, &X0, NULL, g2, cap) == 0,
                   "pk_asr_vad: no samples, no frames");
         }
         pk_asr_free(b);
@@ -561,15 +651,17 @@ int main(int argc, char **argv) {
              * under the recording's, 0.6 dB under the chunk's and then 4.5 */
             pk_seg speech = { ch.start, ch.start + 250 * spf };
             float *xs = malloc((size_t)ch.end * sizeof *xs);
+            sr.bufcap = (size_t)(ch.end - ch.start);
+            sr.buf = malloc(sr.bufcap * sizeof *sr.buf);
             sr.st = malloc(8 * sizeof *sr.st);
             sr.text = malloc(sr.textcap = 256);
             const float level[2] = { 0.09f, 0.05f };
-            for (int q = 0; q < 2 && xs && sr.st && sr.text; q++) {
+            for (int q = 0; q < 2 && xs && sr.buf && sr.st && sr.text; q++) {
                 for (int64_t j = 0; j < ch.end; j++) {
                     const int64_t f = (j - ch.start) / spf;
                     xs[j] = j < ch.start || f >= 250 ? 0 : f >= 100 && f < 200 ? level[q] : 0.1f;
                 }
-                sr.x = xs, sr.sp = &speech, sr.ns = 1;
+                sr.x = pk_audio_floats(xs, (size_t)ch.end), sr.sp = &speech, sr.ns = 1;
                 sr.floor = 0.04 * RETRY_LEVEL;
                 sr.t[0] = (pk_tok){ the, 0, 100 };
                 sr.t[1] = (pk_tok){ no, 200, 50 };
@@ -581,6 +673,7 @@ int main(int argc, char **argv) {
                     CHECK(ns == 0, "retry: speech under its chunk's too, not");
             }
             free(xs);
+            free(sr.buf);
             free(sr.st);
             free(sr.text);
         }
@@ -589,16 +682,16 @@ int main(int argc, char **argv) {
     }
 
     /* and the transcriber is whole after a stop */
-    CHECK(pk_asr_transcribe(a, x, n, &o, on_out, &r) == 0 && same(&r, &lo), "after a stop: the same");
+    CHECK(pk_asr_transcribe(a, &X, &o, on_out, &r) == 0 && same(&r, &lo), "after a stop: the same");
     forget(&r);
 
     o.max_chunk_s = 0.5;
-    CHECK(pk_asr_transcribe(a, x, n, &o, on_out, &r) == -1 && r.n == 0, "max_chunk_s under a second: -1");
-    CHECK(pk_asr_transcribe(a, x, 0, NULL, on_out, &r) == 0 && r.n == 0, "no samples: no chunks");
+    CHECK(pk_asr_transcribe(a, &X, &o, on_out, &r) == -1 && r.n == 0, "max_chunk_s under a second: -1");
+    CHECK(pk_asr_transcribe(a, &X0, NULL, on_out, &r) == 0 && r.n == 0, "no samples: no chunks");
 
     if (!fails)
-        printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, the steps "
-               "pk_asr_transcribe's, a pool's VAD one thread's, the retry's and the seam's parts: ok\n",
+        printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, reads a stretch at a time "
+               "memory's, the steps pk_asr_transcribe's, a pool's VAD one thread's, the retry's and the seam's parts: ok\n",
                lo.n);
     forget(&hi), forget(&lo);
     pk_asr_free(a);

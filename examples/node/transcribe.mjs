@@ -50,6 +50,9 @@ koffi.struct("pk_seg_params", {
   use_max_poss_sil_at_max_speech: "int",
 });
 koffi.struct("pk_tok", { id: "int32_t", frame: "int32_t", dur: "int32_t" });
+// A recording as the library reads it, a stretch at a time through read;
+// pk_audio_floats makes one over samples in memory, which must outlive it.
+koffi.struct("pk_audio", { n: "int64_t", read: "void *", arg: "void *" });
 
 // A pk_seg is two int64_t, start and end, so an array of them is passed as
 // int64_t * over a BigInt64Array: the same bytes, read in place. Samples and
@@ -76,9 +79,10 @@ const pk = {
     "size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples, " +
       "const pk_seg_params *p, int64_t *out, size_t cap)",
   ),
+  audio_floats: lib.func("pk_audio pk_audio_floats(const float *x, size_t n)"),
   chunks: lib.func(
-    "size_t pk_chunks(const float *x, const int64_t *speech, size_t n_speech, " +
-      "int64_t total, int64_t max_len, int64_t *out)",
+    "long pk_chunks(const pk_audio *x, const int64_t *speech, size_t n_speech, " +
+      "int64_t max_len, int64_t *out)",
   ),
   asr_new: lib.func("pk_asr *pk_asr_new(const pk_model *m, int threads)"),
   asr_use_encoder: lib.func(
@@ -148,7 +152,12 @@ function main(argv) {
   const maxLen = Math.trunc(30.72 * rate);
   const ns = pk.segments(probs, frames, rate, n, sp, seg, seg.length / 2);
   const chunk = new BigInt64Array(2 * (2 * ns + 2 + Math.floor(n / maxLen)));
-  const nc = pk.chunks(x, seg, ns, n, maxLen, chunk);
+  const rec = pk.audio_floats(x, n); // x read in place
+  const nc = pk.chunks(rec, seg, ns, maxLen, chunk);
+  if (nc < 0) {
+    console.error("out of memory");
+    return 1;
+  }
 
   // each chunk through the transcriber, as NeMo would hear it as a file.
   // A call holds Node's thread until it returns, here as long as the

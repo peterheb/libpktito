@@ -58,11 +58,15 @@ is reproduced with `build/fuzz/<target> findings/<id>/input`.
   and 4096 frames must be bit-identical, and interleaved reads of seven frames
   must contain the same frames and average to the mono result. The target
   includes core/wav.c and hands its parser an `fmemopen` stream, so the
-  library keeps one way in and no iteration writes a file.
+  library keeps one way in and no iteration writes a file. On Linux it opens
+  them a fourth time as a memfd, a regular file in memory, which
+  `pk_wav_seekable` takes: its frames and status must be the front to back
+  read's, and a read from each of five frames that read's samples there.
 - `resample` makes bounded rate pairs and arbitrary float bit patterns. The
   output sent in one call and in fuzz-selected pieces must have the same bits,
   the documented room must bound every call, and the final count must be
-  `ceil(to * input / from)`.
+  `ceil(to * input / from)`. A run started at a fuzz-picked output
+  (`pk_resampler_seek`) must give the whole run's bits from there on.
 - `state` selects probabilities and segmentation parameters, a valid sorted
   speech layout and audio, or caption words and timings. It checks capacity
   independence, ordered and bounded output, speech coverage, and caption cue

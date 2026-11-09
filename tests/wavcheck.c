@@ -13,6 +13,9 @@
  *              stops mid-frame, a file that stops before its data does
  *   pieces     any file read a frame at a time, in odd-sized reads and all at
  *              once comes out the same
+ *   seek       any file read from a frame (pk_wav_seekable, pk_wav_seek) comes
+ *              out as a front to back read does there; a seek past the end,
+ *              or one before pk_wav_seekable, refused
  *   writer     16-bit and float, read back
  *   open FILE  pk_wav_open_file on a FILE read part way: pk_wav_open's
  *              samples, and the FILE left open, a refused one too
@@ -230,6 +233,33 @@ static float *read_all(const char *path, size_t piece, size_t *frames, pk_wav_in
     return read_any(path, piece, 0, frames, info, status);
 }
 
+/* the file at g_tmp read from frames here and there, against want[frames],
+ * a front to back read's mono samples */
+static void seek_case(const char *what, uint32_t frames, const float *want) {
+    pk_wav_info info;
+    char err[256];
+    pk_wav *w = pk_wav_open(g_tmp, &info, err, sizeof err);
+    uint64_t nf = 0;
+    float y[64];
+    g_cases++;
+    if (!w || pk_wav_seek(w, 0) == 0 || pk_wav_seekable(w, &nf) || nf != frames) {
+        FAIL("%s: seekable, %llu frames of %u", what, (unsigned long long)nf, frames);
+        pk_wav_close(w);
+        return;
+    }
+    const uint32_t at[] = { frames / 3, 0, frames - 1, frames / 2 + 1, frames, 1 };
+    for (size_t i = 0; i < sizeof at / sizeof *at; i++) {
+        const size_t n = frames - at[i] < 64 ? frames - at[i] : 64;
+        g_cases++;
+        if (pk_wav_seek(w, at[i]) || pk_wav_read(w, y, 64) != n || memcmp(y, want + at[i], n * sizeof *y))
+            FAIL("%s: read from frame %u, not what a front to back read has there", what, at[i]);
+    }
+    g_cases++;
+    if (pk_wav_seek(w, (uint64_t)frames + 1) == 0 || pk_wav_status(w, err, sizeof err))
+        FAIL("%s: a seek past the end taken, or the status not 0", what);
+    pk_wav_close(w);
+}
+
 static void format_case(spec s, uint32_t frames) {
     const uint32_t ch = s.channels, bytes = s.bytes;
     size_t len = (size_t)frames * ch * bytes;
@@ -285,6 +315,7 @@ static void format_case(spec s, uint32_t frames) {
                  (unsigned long long)info.frames);
         free(x);
     }
+    seek_case(what, frames, want);
     /* pk_wav_read_frames: every channel as it is, interleaved, the same
      * samples the mono read averages */
     static const size_t frame_pieces[] = { 0, 7 };
@@ -503,6 +534,7 @@ static void aiff_case(spec s, aspec a, uint32_t frames) {
                      (unsigned long long)ai.frames);
             free(x);
         }
+    seek_case(what, frames, wm);
 done:
     free(wm);
     free(wf);
@@ -922,6 +954,23 @@ int main(int argc, char **argv) {
         g_cases++;
         if (!x || n != 100 || st == 0)
             FAIL("cut short: %zu frames, status %d (want 100 and an error)", n, st);
+        /* read from a frame: what the file holds, and cut short from the start */
+        char err[256];
+        pk_wav *w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        uint64_t nf = 0;
+        float y[8];
+        g_cases++;
+        if (!w || pk_wav_seekable(w, &nf) || nf != 100 || pk_wav_status(w, err, sizeof err) == 0
+            || pk_wav_seek(w, 96) || pk_wav_read(w, y, 8) != 4 || memcmp(y, x + 96, 4 * sizeof *y))
+            FAIL("cut short, read from a frame: %llu frames (want 100, an error, the last four)",
+                 (unsigned long long)nf);
+        pk_wav_close(w);
+        /* and pk_wav_seekable after a read, refused */
+        w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        g_cases++;
+        if (!w || pk_wav_read(w, y, 1) != 1 || pk_wav_seekable(w, &nf) == 0)
+            FAIL("pk_wav_seekable after a read: taken");
+        pk_wav_close(w);
         free(x);
         free(b.p);
     }

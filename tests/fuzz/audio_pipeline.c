@@ -133,7 +133,10 @@ static void check_vad(const float *x, size_t n, int transcribe) {
     size_t chunk_cap = 2 * ns + 2 + n / (size_t)max_len;
     pk_seg *chunk = malloc(chunk_cap * sizeof *chunk);
     FZ_ASSERT(chunk);
-    size_t nc = pk_chunks(x, seg, ns, (int64_t)n, max_len, chunk);
+    const pk_audio X = pk_audio_floats(x, n);
+    const long lc = pk_chunks(&X, seg, ns, max_len, chunk);
+    FZ_ASSERT(lc >= 0);
+    size_t nc = (size_t)lc;
     FZ_ASSERT(nc <= chunk_cap);
     for (size_t i = 0; i < nc; i++) {
         FZ_ASSERT(chunk[i].start >= 0 && chunk[i].end > chunk[i].start && chunk[i].end <= (int64_t)n);

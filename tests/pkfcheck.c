@@ -1223,7 +1223,12 @@ static void engine_cases(const pk_model *m, int deep) {
         pk_seg *seg = malloc(cap * sizeof *seg);
         size_t ns = pk_segments(probs, frames, 16000, (int64_t)(frames * PK_VAD_SAMPLES), &sp, seg, cap);
         pk_seg *ch = malloc((2 * ns + 2 + frames * PK_VAD_SAMPLES / (3 * 16000)) * sizeof *ch);
-        size_t nc = pk_chunks(x, seg, ns, (int64_t)(frames * PK_VAD_SAMPLES), 3 * 16000, ch);
+        const pk_audio X = pk_audio_floats(x, frames * PK_VAD_SAMPLES);
+        const long lc = pk_chunks(&X, seg, ns, 3 * 16000, ch);
+        g_cases++;
+        if (lc < 0)
+            FAIL("pk_chunks: %ld", lc);
+        const size_t nc = lc > 0 ? (size_t)lc : 0;
         for (size_t i = 0; i < nc; i++) {
             g_cases++;
             if (ch[i].start < 0 || ch[i].end > (int64_t)(frames * PK_VAD_SAMPLES) || ch[i].end <= ch[i].start

@@ -98,9 +98,11 @@ some 25 to 90 MB besides at the default chunking, more threads taking more:
 652 MB at its peak on a Pi 3B+ with v2, 651 MB on a Pi 5, 663 MB on a
 12900HK at 14 threads, 711 MB on an M4 Pro at 12, a chunk at a time. A
 recording run several chunks at once (below, "How fast") takes about 45
-MB more for each chunk beyond the first: AliceBench's longest chapter
-peaked at 762 MB a chunk at a time on a 9950X's 16 threads, 896 MB four
-at once. The VAD's encoder keeps 0.85 MB a thread besides, 3.4 MB on a
+MB more for each chunk beyond the first: AliceBench's longest chapter,
+23 minutes, peaked at 693 MB a chunk at a time on a 9950X's 16 threads,
+831 MB four at once, and an hour at the same, since pktito-c reads a file a
+stretch at a time; from a pipe it holds the recording whole, as floats, 64
+kB a second. The VAD's encoder keeps 0.85 MB a thread besides, 3.4 MB on a
 Pi's four (below, "Transcribing a recording"). A 512 MB board (a Pi
 Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 4-bit would cost. Then:
@@ -433,8 +435,11 @@ their own, builds from these; examples/transcribe.c is a page of it.
 
 **The high level** is `pk_asr_transcribe`: a recording of any length in, each
 chunk's tokens out as soon as the chunk is done, with everything pktito
-does for a long recording done for you. `pktito-c` transcribes with it. It
-does, in order:
+does for a long recording done for you. The recording is a `pk_audio`, its
+length and a function that reads a stretch of it: samples in memory
+(`pk_audio_floats`), or a file read as the library asks, so that an hour
+need not be in memory at once. `pktito-c` transcribes with it, and reads a
+file so. It does, in order:
 
 1. **Finds the speech.** Silero's VAD gives a probability of speech every
    32 ms, and `pk_segments` turns them into segments as Silero's
@@ -483,8 +488,8 @@ the caller, for one who runs it on threads of their own: a server dealing
 several recordings' chunks among its workers. `pk_steps_new` finds the
 speech and cuts the chunks (1 to 3), and the rest is jobs, each a stretch
 to hear - a chunk whole, or a stretch the retry hears again - which the
-caller hears with `pk_asr_run` on any transcriber, in any order, and hands
-back with `pk_steps_put`. `pk_steps_take` has the chunks in order (4 to 6),
+caller reads and hears with `pk_asr_run` on any transcriber, in any order,
+and hands back with `pk_steps_put`. `pk_steps_take` has the chunks in order (4 to 6),
 the bits `pk_asr_transcribe` gives, which is the same steps with its own
 hearing of the jobs. The retry's stretches come one at a time, each heard
 only while the recording's budget for them lasts. The VAD on its own is
@@ -726,6 +731,10 @@ measurements in its comments.
   alone on one: the VAD 1.9 to 2.9 times as fast, a recording 2% faster on
   a 9950X and 6% on an M5 Ultra, the same bits ("Transcribing a
   recording").
+- **2026-11-09**: the recording read a stretch at a time (`pk_audio`),
+  not handed over whole as floats: an hour's peak on a 9950X's 16 threads
+  833 MB rather than 1,048, a chunk at a time 692 rather than 914, the same
+  as 23 minutes' and the same bits.
 
 ## Long recordings
 
@@ -962,12 +971,17 @@ pk_model *m = pk_model_load("models/parakeet-tdt-0.6b-v2.pkf", err, sizeof err);
 pk_asr *a = pk_asr_new(m, 0);                     /* 0: a thread a core */
 pk_asr_set_fast_mode(a, 1);                       /* optional: faster, "Why int8" */
 
+/* a recording, which the library reads a stretch at a time */
+pk_audio x = pk_audio_floats(samples, n_samples); /* 16 kHz mono float in memory */
+/* or one's own: { n_samples, read, arg }, read(arg, at, out, count) filling
+   out with samples at..at+count of a file, 0 or -1 */
+
 /* the high level: a recording of any length, VAD, chunks and retries done */
 int show(void *arg, const pk_chunk_out *c) {      /* each chunk as it is done */
     pk_text(m, c->toks, (size_t)c->count, text, sizeof text);
     return stop_wanted;                           /* nonzero stops the run here */
 }
-pk_asr_transcribe(a, samples, n_samples, NULL, show, arg);   /* NULL: the defaults, 30.72 s chunks */
+pk_asr_transcribe(a, &x, NULL, show, arg);       /* NULL: the defaults, 30.72 s chunks */
 /* c->at.start / 16000. + c->toks[i].frame * pk_model_frame_seconds(m): when token i was heard */
 
 /* the low level: NeMo's transcript of exactly these samples */
@@ -977,7 +991,7 @@ pk_text(m, t, (size_t)n, text, sizeof text);      /* NeMo's transcript */
 /* t[i].frame * pk_model_frame_seconds(m) is when token i was heard */
 
 /* the high level in steps, for a caller who hears the chunks itself */
-pk_steps *s = pk_steps_new(a, samples, n_samples, NULL);     /* the VAD and the chunks */
+pk_steps *s = pk_steps_new(a, &x, NULL);         /* the VAD and the chunks */
 pk_job j;
 pk_chunk_out c;
 while (pk_steps_job(s, &j) == 1) {                /* any transcriber, any thread, any order */
@@ -989,12 +1003,13 @@ while (pk_steps_job(s, &j) == 1) {                /* any transcriber, any thread
 }
 pk_steps_free(s);
 
-long nsp = pk_asr_speech(a, samples, n_samples, NULL, seg, cap);  /* the speech; NULL: Silero's defaults */
+long nsp = pk_asr_speech(a, &x, NULL, seg, cap); /* the speech; NULL: Silero's defaults */
 pk_vad *v = pk_vad_new(m);                        /* Silero VAD, as vadito has it */
 pk_vad_probs(v, frames, n_frames, probs);
 size_t ns = pk_segments(probs, n_frames, 16000, n_samples, &sp, seg, cap);
-size_t nc = pk_chunks(samples, seg, ns, n_samples, 30 * 16000, chunk);
-pk_asr_run_chunks(a, samples, chunk, nc, show, arg);
+long nc = pk_chunks(&x, seg, ns, 30 * 16000, chunk);  /* -1: a read failed, or memory ran out */
+if (nc >= 0)
+    pk_asr_run_chunks(a, &x, chunk, (size_t)nc, show, arg);
 /* show has each chunk as above, its decoder run beside the next one's encoder */
 
 pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */

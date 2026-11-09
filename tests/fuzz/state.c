@@ -69,7 +69,10 @@ static void segments_case(fz_input *f) {
     float *audio = calloc(samples ? (size_t)samples : 1, sizeof *audio);
     pk_seg *chunk = malloc((2 * count + 2 + (size_t)(samples / max_len)) * sizeof *chunk);
     FZ_ASSERT(audio && chunk);
-    size_t nc = pk_chunks(audio, all, count, samples, max_len, chunk);
+    const pk_audio A = pk_audio_floats(audio, (size_t)samples);
+    const long lc = pk_chunks(&A, all, count, max_len, chunk);
+    FZ_ASSERT(lc >= 0);
+    size_t nc = (size_t)lc;
     FZ_ASSERT(nc <= 2 * count + 2 + (size_t)(samples / max_len));
     for (size_t i = 0; i < nc; i++) {
         FZ_ASSERT(chunk[i].start >= 0 && chunk[i].end > chunk[i].start && chunk[i].end <= samples);
@@ -137,7 +140,10 @@ static void chunks_case(fz_input *f) {
     size_t cap = 2 * n + 2 + (size_t)(total / max_len);
     pk_seg *out = malloc(cap * sizeof *out);
     FZ_ASSERT(out);
-    size_t nc = pk_chunks(audio, seg, n, total, max_len, out);
+    const pk_audio A = pk_audio_floats(audio, (size_t)total);
+    const long lc = pk_chunks(&A, seg, n, max_len, out);
+    FZ_ASSERT(lc >= 0);
+    size_t nc = (size_t)lc;
     FZ_ASSERT(nc <= cap);
     for (size_t i = 0; i < nc; i++) {
         FZ_ASSERT(out[i].start >= 0 && out[i].end > out[i].start && out[i].end <= total);

@@ -21,6 +21,7 @@ import os
 import sys
 from array import array
 from ctypes import (
+    CFUNCTYPE,
     POINTER,
     Structure,
     byref,
@@ -74,6 +75,16 @@ class pk_tok(Structure):
     _fields_ = [("id", c_int32), ("frame", c_int32), ("dur", c_int32)]
 
 
+# A recording as the library reads it, a stretch at a time through `read`;
+# pk_audio_floats makes one over samples in memory, which must outlive it.
+class pk_audio(Structure):
+    _fields_ = [
+        ("n", c_int64),
+        ("read", CFUNCTYPE(c_int, c_void_p, c_int64, POINTER(c_float), c_size_t)),
+        ("arg", c_void_p),
+    ]
+
+
 def load():
     """The library, each function this program calls given its C types.
     Untold, ctypes takes every result for an int, which keeps 32 bits of a
@@ -103,7 +114,8 @@ def load():
             c_size_t,
             [floats, c_size_t, c_int, c_int64, POINTER(pk_seg_params), segs, c_size_t],
         ),
-        ("pk_chunks", c_size_t, [floats, segs, c_size_t, c_int64, c_int64, segs]),
+        ("pk_audio_floats", pk_audio, [floats, c_size_t]),
+        ("pk_chunks", c_long, [POINTER(pk_audio), segs, c_size_t, c_int64, segs]),
         ("pk_asr_new", c_void_p, [c_void_p, c_int]),
         ("pk_asr_use_encoder", c_int, [c_void_p, c_char_p, c_char_p, c_size_t]),
         ("pk_asr_run", c_long, [c_void_p, floats, c_size_t, POINTER(POINTER(pk_tok))]),
@@ -169,7 +181,11 @@ def main(argv):
     max_len = int(30.72 * rate)
     ns = pk.pk_segments(probs, frames, rate, n, byref(sp), seg, len(seg))
     chunk = (pk_seg * (2 * ns + 2 + n // max_len))()
-    nc = pk.pk_chunks(view(x), seg, ns, n, max_len, chunk)
+    rec = pk.pk_audio_floats(view(x), n)  # x read in place
+    nc = pk.pk_chunks(byref(rec), seg, ns, max_len, chunk)
+    if nc < 0:
+        print("out of memory", file=sys.stderr)
+        return 1
 
     # each chunk through the transcriber, as NeMo would hear it as a file;
     # ctypes lets go of the GIL for each call, and the transcriber runs its

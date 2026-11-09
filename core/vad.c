@@ -297,6 +297,11 @@ static int workers(pk_vad *v, int k) {
     return 1;
 }
 
+size_t pk_vad_run_frames(const pk_pool *pool) {
+    const int k = pool ? pk_pool_active(pool) : 1;
+    return (size_t)PK_VAD_RUN * (size_t)(k > 1 ? k : 1) * PK_VAD_BLOCK;
+}
+
 void pk_vad_probs_on(pk_vad *v, pk_pool *pool, const float *x, size_t n, float *probs) {
     const int k = pool ? pk_pool_active(pool) : 1;
     if (k < 2 || n <= PK_VAD_BLOCK || !workers(v, pk_pool_threads(pool))) {

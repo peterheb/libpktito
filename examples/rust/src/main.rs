@@ -17,7 +17,7 @@
 //! An example of the wiring, not a crate. `make check-ffi` holds its
 //! transcript to ./pktito-c's.
 
-use std::ffi::{c_char, c_int, c_long, CStr, CString, OsStr};
+use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString, OsStr};
 use std::process::ExitCode;
 
 const PK_VAD_SAMPLES: usize = 512;
@@ -72,6 +72,17 @@ struct PkTok {
     dur: i32,
 }
 
+// A recording as the library reads it, a stretch at a time through `read`;
+// pk_audio_floats makes one over samples in memory, which must outlive it.
+// Its fields are C's to fill and read.
+#[repr(C)]
+#[allow(dead_code)]
+struct PkAudio {
+    n: i64,
+    read: Option<unsafe extern "C" fn(*mut c_void, i64, *mut f32, usize) -> c_int>,
+    arg: *mut c_void,
+}
+
 extern "C" {
     fn pk_model_load(path: *const c_char, err: *mut c_char, errlen: usize) -> *mut PkModel;
     fn pk_model_rate(m: *const PkModel) -> c_int;
@@ -97,14 +108,14 @@ extern "C" {
         out: *mut PkSeg,
         cap: usize,
     ) -> usize;
+    fn pk_audio_floats(x: *const f32, n: usize) -> PkAudio;
     fn pk_chunks(
-        x: *const f32,
+        x: *const PkAudio,
         speech: *const PkSeg,
         n_speech: usize,
-        total: i64,
         max_len: i64,
         out: *mut PkSeg,
-    ) -> usize;
+    ) -> c_long;
     fn pk_asr_new(m: *const PkModel, threads: c_int) -> *mut PkAsr;
     fn pk_asr_use_encoder(
         a: *mut PkAsr,
@@ -198,14 +209,13 @@ fn main() -> ExitCode {
             seg.len(),
         );
         let mut chunk = vec![PkSeg::default(); 2 * ns + 2 + n / max_len];
-        let nc = pk_chunks(
-            x.as_ptr(),
-            seg.as_ptr(),
-            ns,
-            n as i64,
-            max_len as i64,
-            chunk.as_mut_ptr(),
-        );
+        let rec = pk_audio_floats(x.as_ptr(), n); // x read in place
+        let nc = pk_chunks(&rec, seg.as_ptr(), ns, max_len as i64, chunk.as_mut_ptr());
+        if nc < 0 {
+            eprintln!("out of memory");
+            return ExitCode::from(1);
+        }
+        let nc = nc as usize;
 
         // each chunk through the transcriber, as NeMo would hear it as a file
         let a = pk_asr_new(m, 0);

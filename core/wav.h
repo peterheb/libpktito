@@ -9,10 +9,12 @@
  * And the Mac's AIFF, which Windows' Media Foundation does not read: PCM at
  * 8 (signed) to 32 bits, big-endian, and AIFF-C's uncompressed types - big-
  * and little-endian (sowt) PCM, float at 32 and 64, A-law and mu-law; a
- * compressed one (ima4, MAC3, MAC6, GSM) is refused. It reads front to back
- * and never seeks, so stdin works as well as a file, and so does a file the
- * caller already has open, and it keeps one block of bytes, so a file of any
- * length reads in the same memory.
+ * compressed one (ima4, MAC3, MAC6, GSM) is refused. It reads front to back,
+ * so stdin works as well as a file, and so does a file the caller already
+ * has open, and it keeps one block of bytes, so a file of any length reads
+ * in the same memory. A regular file can also be read from any frame
+ * (pk_wav_seekable), which is how pktito-c reads a recording a stretch at a
+ * time (pk_audio).
  *
  * Samples come out as float in [-1, 1) by the conventions torchaudio.load
  * and soundfile use (int16 / 32768, uint8 (x - 128) / 128, ...), and with
@@ -66,6 +68,19 @@ size_t pk_wav_read(pk_wav *w, float *out, size_t n);
 /* The same, with each frame's channels as they are, interleaved, into
  * out[n * channels]: for a caller that mixes them itself. */
 size_t pk_wav_read_frames(pk_wav *w, float *out, size_t n);
+
+/* For a regular file, not a pipe or a terminal, asked before the first
+ * read: the frames a front to back read gives (the header's, or what the
+ * file holds where that is less, or a streamed file's, read to its end)
+ * into *frames, and 0; -1 for a file that can't seek, which is read front
+ * to back alone. A file that holds less than its header said is cut short
+ * for pk_wav_status from here on, as a read to its end would find it. */
+int pk_wav_seekable(pk_wav *w, uint64_t *frames);
+
+/* For a file pk_wav_seekable took, frame `frame` next: pk_wav_read goes on
+ * from it, the samples a front to back read gives there. 0, or -1 if frame
+ * is past the end or the seek fails. */
+int pk_wav_seek(pk_wav *w, uint64_t frame);
 
 /* 0 if the data ended where the header said it would (or a streamed file
  * reached its end), else -1 with what happened instead in err: cut short,

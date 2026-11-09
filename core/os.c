@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 
 #ifdef _WIN32
@@ -142,6 +144,39 @@ int pk_os_rename(const char *from, const char *to) { return rename(from, to); }
 int pk_os_remove(const char *path) { return remove(path); }
 
 #endif
+
+int64_t pk_os_file_size(FILE *f) {
+#ifdef _WIN32
+    struct _stat64 st;
+    if (_fstat64(_fileno(f), &st) || (st.st_mode & _S_IFMT) != _S_IFREG)
+        return -1;
+#else
+    struct stat st;
+    if (fstat(fileno(f), &st) || !S_ISREG(st.st_mode))
+        return -1;
+#endif
+    return (int64_t)st.st_size;
+}
+
+int pk_os_seek(FILE *f, int64_t off) {
+    if (off < 0)
+        return -1;
+#ifdef _WIN32
+    return _fseeki64(f, off, SEEK_SET) ? -1 : 0;
+#else
+    if ((int64_t)(off_t)off != off)
+        return -1;
+    return fseeko(f, (off_t)off, SEEK_SET) ? -1 : 0;
+#endif
+}
+
+int64_t pk_os_tell(FILE *f) {
+#ifdef _WIN32
+    return _ftelli64(f);
+#else
+    return (int64_t)ftello(f);
+#endif
+}
 
 /* ------------------------------------------------------ files and cores --- */
 

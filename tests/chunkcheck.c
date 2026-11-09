@@ -22,6 +22,9 @@
  *            second, 2 s more or to the recording's end, in no more than
  *            max_len where the chunk leaves room, and every segment is
  *            still in one chunk
+ *   reads    every stretch the chunking reads is inside the recording, and a
+ *            read failing, wherever it falls among them, fails the chunking:
+ *            -1, never fewer chunks
  *
  * The numbers - 3 s, 1e-5 over 32 ms, a sample that is not finite read as
  * 0 - are the README's ("Long recordings") and pktito.h's.
@@ -80,6 +83,25 @@ static int holds_speech(pk_seg c, const pk_seg *s, size_t n) {
     return 0;
 }
 
+/* x read as a pk_audio, each read checked: inside x and not empty; with
+ * fail_at, that read and every one after it failing */
+typedef struct {
+    const float *x;
+    int64_t n;
+    long reads, bad, fail_at;
+} reader;
+
+static int reader_read(void *arg, int64_t at, float *out, size_t count) {
+    reader *r = arg;
+    r->reads++;
+    if (at < 0 || count == 0 || at > r->n || (uint64_t)(r->n - at) < count) {
+        r->bad++;
+        return -1;
+    }
+    memcpy(out, r->x + at, count * sizeof *out);
+    return r->fail_at && r->reads >= r->fail_at ? -1 : 0;
+}
+
 /* pk_chunks over x; the chunks, their count in *nc, checked for what any
  * answer must be: in order, apart, inside the recording, none empty or
  * longer than max_len, no more than the room pktito.h promises */
@@ -87,8 +109,13 @@ static pk_seg *chunks(const float *x, const pk_seg *s, size_t n, int64_t total, 
                       const char *what) {
     size_t room = 2 * n + 2 + (size_t)(total / max_len);
     pk_seg *c = malloc(room * sizeof *c);
-    *nc = pk_chunks(x, s, n, total, max_len, c);
+    reader r = { x, total, 0, 0, 0 };
+    const pk_audio X = { total, reader_read, &r };
+    const long lc = pk_chunks(&X, s, n, max_len, c);
+    *nc = lc > 0 ? (size_t)lc : 0;
     cases++;
+    if (lc < 0 || r.bad)
+        FAIL("%s: pk_chunks %ld, %ld reads outside the recording", what, lc, r.bad);
     if (*nc > room)
         FAIL("%s: %zu chunks, room for %zu", what, *nc, room);
     for (size_t i = 0; i < *nc && i < room; i++)
@@ -142,12 +169,18 @@ static void past_case(const float *x, const pk_seg *s, size_t n, int64_t total, 
     const int64_t ctx = 2 * RATE, pause = RATE;
     size_t room = 2 * n + 2 + (size_t)(total / max_len);
     pk_seg *c = malloc(room * sizeof *c), *w = malloc(room * sizeof *w);
-    size_t nc = pk_chunks_past(x, s, n, total, max_len, 0, pause, c, w);
+    reader r = { x, total, 0, 0, 0 };
+    const pk_audio X = { total, reader_read, &r };
+    long lc = pk_chunks_past(&X, s, n, max_len, 0, pause, c, w);
+    size_t nc = lc > 0 ? (size_t)lc : 0;
     cases++;
-    if (nc != n0 || memcmp(c, c0, nc * sizeof *c) || memcmp(w, c0, nc * sizeof *w))
+    if (lc < 0 || nc != n0 || memcmp(c, c0, nc * sizeof *c) || memcmp(w, c0, nc * sizeof *w))
         FAIL("%s: with no context, not pk_chunks' chunks", what);
-    nc = pk_chunks_past(x, s, n, total, max_len, ctx, pause, c, w);
+    lc = pk_chunks_past(&X, s, n, max_len, ctx, pause, c, w);
+    nc = lc > 0 ? (size_t)lc : 0;
     cases++;
+    if (lc < 0 || r.bad)
+        FAIL("%s: pk_chunks_past %ld, %ld reads outside the recording", what, lc, r.bad);
     if (nc > room)
         FAIL("%s: %zu chunks past, room for %zu", what, nc, room);
     for (size_t i = 0; i < nc && i < room; i++) {
@@ -319,15 +352,43 @@ static void edge_cases(void) {
      * of it, even silent */
     float *x = calloc(20 * RATE, sizeof *x);
     pk_seg seg = { 5 * RATE, 6 * RATE }, c[4];
-    size_t nc = pk_chunks(x, &seg, 1, 20 * RATE, M, c);
+    const pk_audio X = pk_audio_floats(x, 20 * RATE);
+    long nc = pk_chunks(&X, &seg, 1, M, c);
     cases++;
     if (nc != 1 || c[0].start != 0 || c[0].end != 20 * RATE)
-        FAIL("a silent 20 s with speech: %zu chunks, not the whole of it", nc);
+        FAIL("a silent 20 s with speech: %ld chunks, not the whole of it", nc);
+    free(x);
+}
+
+/* reads: 100 s audible, no speech, four gap pieces to hear; a read failing,
+ * each of the reads in turn, fails pk_chunks and pk_chunks_past */
+static void failing_reads(void) {
+    const int64_t total = 100 * RATE, M = 30 * RATE;
+    float *x = malloc((size_t)total * sizeof *x);
+    pk_seg c[8], w[8];
+    for (int64_t i = 0; i < total; i++)
+        x[i] = 0.1f;
+    reader r = { x, total, 0, 0, 0 };
+    const pk_audio X = { total, reader_read, &r };
+    const long n = pk_chunks(&X, NULL, 0, M, c), all = r.reads;
+    cases++;
+    if (n != 4 || all < 4 || r.bad)
+        FAIL("reads: %ld chunks of 100 s in %ld reads, %ld outside it", n, all, r.bad);
+    for (long k = 1; k <= all; k++) {
+        r = (reader){ x, total, 0, 0, k };
+        const long a = pk_chunks(&X, NULL, 0, M, c);
+        r = (reader){ x, total, 0, 0, k };
+        const long b = pk_chunks_past(&X, NULL, 0, M, 2 * RATE, RATE, c, w);
+        cases++;
+        if (a != -1 || b != -1)
+            FAIL("reads: read %ld of %ld failing, pk_chunks %ld and pk_chunks_past %ld, not -1", k, all, a, b);
+    }
     free(x);
 }
 
 int main(void) {
     edge_cases();
+    failing_reads();
     quiet = calloc(LONGEST, sizeof *quiet);
     loud = malloc(LONGEST * sizeof *loud);
     mixed = malloc(LONGEST * sizeof *mixed);

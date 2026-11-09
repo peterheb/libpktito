@@ -185,11 +185,41 @@ size_t pk_resample(pk_resampler *r, const float *in, size_t n, float *out) {
     return made;
 }
 
+uint64_t pk_resample_total(const pk_resampler *r, uint64_t n) {
+    if (r->orig == r->nw)
+        return n;
+    /* torchaudio: ceil(new_freq * length / orig_freq), in a Python float */
+    return (uint64_t)ceil((double)r->nw * (double)n / r->orig);
+}
+
+/* Output block b's window starts at input b orig - width, the padding's
+ * zeros where that is before the first: hist is made to hold it, as the
+ * blocks before b would have left it. */
+uint64_t pk_resampler_seek(pk_resampler *r, uint64_t at, size_t *skip) {
+    if (r->orig == r->nw) {
+        *skip = 0;
+        r->n_in = r->n_out = at;
+        return at;
+    }
+    const uint64_t b = at / r->nw, first = b * r->orig;
+    *skip = (size_t)(at - b * r->nw);
+    uint64_t from = 0;
+    if (first >= r->width) {
+        from = first - r->width;
+        r->have = 0;
+    } else {
+        r->have = (size_t)(r->width - first);
+        memset(r->hist, 0, r->have * sizeof *r->hist);
+    }
+    r->n_in = from;
+    r->n_out = b * r->nw;
+    return from;
+}
+
 size_t pk_resample_flush(pk_resampler *r, float *out) {
     if (r->orig == r->nw)
         return 0;
-    /* torchaudio: ceil(new_freq * length / orig_freq), in a Python float */
-    uint64_t total = (uint64_t)ceil((double)r->nw * (double)r->n_in / r->orig);
+    uint64_t total = pk_resample_total(r, r->n_in);
     size_t made = 0;
     while (r->n_out < total) {
         size_t z = r->cap - r->have;

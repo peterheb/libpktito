@@ -40,4 +40,16 @@ size_t pk_resample(pk_resampler *r, const float *in, size_t n, float *out);
  * torchaudio's total. out has pk_resample_room(r, 0) floats. */
 size_t pk_resample_flush(pk_resampler *r, float *out);
 
+/* torchaudio's total for n inputs, ceil(n * to / from): the outputs that
+ * pk_resample and pk_resample_flush give from them. */
+uint64_t pk_resample_total(const pk_resampler *r, uint64_t n);
+
+/* For reading from the middle of a recording: r made ready to give its
+ * outputs from output `at` on, as pushing every input from the first would
+ * have, since an output depends only on the window of input under it.
+ * Returns the input to push from; of what comes out, the first *skip lie
+ * before `at`. pk_resample_flush's total then counts the inputs before the
+ * one returned as pushed. */
+uint64_t pk_resampler_seek(pk_resampler *r, uint64_t at, size_t *skip);
+
 #endif /* PK_RESAMPLE_H */

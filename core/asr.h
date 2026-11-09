@@ -84,6 +84,10 @@ struct pk_asr {
     /* pk_asr_transcribe's VAD, made the first time it runs and kept, with
      * a block's activations for each of the pool's threads */
     pk_vad *vad;
+    /* the samples of the chunk being heard, read from the recording
+     * (pk_audio) as it comes: pcm_cap of them */
+    float *pcm;
+    size_t pcm_cap;
 
     size_t cap;                      /* feature frames the buffers below hold */
     void  *mem;
@@ -130,10 +134,27 @@ long pk_decode(pk_asr *a, uint32_t Te, const float *f, int split);
  * nonzero to stop there (which the call returns). spare is a joint buffer
  * of a's free until each returns, the one chunk i used where one chunk
  * runs at a time, while the other holds chunk i + 1's encoder output:
- * pk_retry_run may use it then, and only it (core/transcribe.c). */
+ * pk_retry_run may use it then, and only it (core/transcribe.c). x's reads
+ * may come from several threads at once where the run takes lanes: the
+ * caller gives one whose read takes turns (pk_audio_turns). */
 typedef int (*pk_each_fn)(void *arg, size_t i, const pk_tok *toks, long count, float *spare);
-int pk_run_chunks_with(pk_asr *a, const float *x, const pk_seg *c, size_t n,
+int pk_run_chunks_with(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n,
                        pk_each_fn each, void *arg);
+
+/* samples [at, at + n) of x into out: 0, or -1 where they are not in x or
+ * its read fails */
+int pk_audio_read(const pk_audio *x, int64_t at, float *out, size_t n);
+
+/* x with its reads one at a time, from whichever thread makes them: *t
+ * reads x under lock, which pk_audio_turns makes (0, or -1 if memory runs
+ * out) and pk_audio_turns_free frees. */
+typedef struct {
+    pk_audio x;
+    pk_lock *lock;
+} pk_turns;
+
+int  pk_audio_turns(pk_turns *t, const pk_audio *x, pk_audio *out);
+void pk_audio_turns_free(pk_turns *t);
 
 /* pk_asr_run on n samples no longer than the longest chunk of the run in
  * progress, its joint half in spare: a->toks, the count, or -1. */
@@ -146,16 +167,22 @@ int32_t pk_frame_of(const pk_model *m, int64_t sample);
 /* pk_vad_probs with Silero's encoder over the pool's active threads, a run
  * of blocks at a time, and the LSTM on the calling thread after each run:
  * the same bits, since a block's encoder needs only its own samples and the
- * 64 before them (core/vad.c). pk_vad_probs itself where the pool is one
- * thread, or the threads' memory cannot be had. */
+ * 64 before them (core/vad.c), however the frames are cut into calls.
+ * pk_vad_probs itself where the pool is one thread, or the threads' memory
+ * cannot be had. */
 void pk_vad_probs_on(pk_vad *v, pk_pool *pool, const float *x, size_t n, float *probs);
+
+/* The frames one of pk_vad_probs_on's runs takes on this pool: a call
+ * given a multiple of it runs whole runs, as one call over the recording
+ * would. */
+size_t pk_vad_run_frames(const pk_pool *pool);
 
 /* pk_chunks, with what each chunk is heard in (core/transcribe.c): win[k]
  * is out[k] and, where out[k]'s cut falls in a silence shorter than pause,
  * ctx of the recording past it, room left for that in its max_len. With
  * ctx 0, out is pk_chunks', and win NULL is allowed. */
-size_t pk_chunks_past(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len,
-                      int64_t ctx, int64_t pause, pk_seg *out, pk_seg *win);
+long pk_chunks_past(const pk_audio *x, const pk_seg *s, size_t n, int64_t max_len, int64_t ctx,
+                    int64_t pause, pk_seg *out, pk_seg *win);
 
 /* Encoder frames T0 feature frames make: three halvings, each rounding up. */
 static inline uint32_t pk_enc_frames(uint32_t T0) {
