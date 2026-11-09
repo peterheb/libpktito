@@ -295,7 +295,9 @@ typedef struct {
 
 size_t pk_words(const pk_model *m, const pk_tok *t, size_t n, pk_word *out);
 
-/* The backend this library was built with, e.g. "neon-dp (ARMv8.2: SDOT)". */
+/* The backend the library runs, picked from those it was built with for
+ * this CPU, e.g. "neon-dp (ARMv8.2 NEON: SDOT int8, fp32)": the text before
+ * the first " (" is its id, as PKTITO_KERNELS names it. */
 const char *pk_backend(void);
 
 /* The compiler that built it, e.g. "gcc 15.2.0" or "Apple clang 21.0.0":

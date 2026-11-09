@@ -2725,3 +2725,424 @@ process may use: snappy (8 to 10% at 12 threads, 13% on one), the S24
 is: the M4, the M5, and the S24 held to its A520s (4.9%). The probe runs
 once a process, in under a millisecond, and every backend gives ref's
 bits.
+
+## 2026-11-08 - A76 assembly worktree (hypotheses)
+
+Starting at 5b85618 on branch neon-dp-a76-asm, measured on pi5gui:
+Cortex-A76 r4p1, four cores, 2.4 GHz, SDOT present and no i8mm. The
+existing qb32 inline assembly is the control; qb64 and the float products
+are still intrinsics. Compare native GCC 14.2 with cross-built GCC 15.2
+and Clang 21.1.8, all at -O3 -mtune=cortex-a76 -ffp-contract=off, with
+-march=armv8.2-a+dotprod only in the SDOT backend. The cross builds are
+static. Use a temporary performance governor, restore it after each batch,
+run only one benchmark process at a time, and check throttling.
+
+H1: write qb64's block loop in assembly as qb32's, then overlap weight
+loads and block conversions with independent SDOT work. The eight integer
+and eight float accumulators fit without spilling. Keep each block's
+SCVTF and FMLA in ref's order; no quantization or arithmetic changes.
+
+H2: compare 8x4, 4x8 and 8x6 tiles. More columns amortize weight loads;
+the larger tiles may instead lose to register pressure, activation working
+sets or tails. Measure both cache-resident and encoder-shaped products,
+one and four threads, qb32 and qb64, before full transcription.
+
+H3: write the float 16-row x 4-column tile's ordered FMLA chains in
+assembly based on the fastest compiler output. Explicit streaming of
+weight vectors can avoid compiler spills and fix loop placement. Preserve
+bias addition (including +0 when absent), ReLU and arbitrary n tails.
+
+Keep only changes that pass kcheck and check-c and improve interleaved
+whole-transcription measurements outside their spread under both GCC and
+Clang. Append rejected schedules too. New A76-specific code will be an
+explicit build choice; the portable family backend remains available.
+
+H4: replace SCVTF in the bounded qb32/qb64 integer sums with an exact
+biased-float representation. Arm's Cortex-A76 Software Optimization Guide
+(https://documentation-service.arm.com/static/5ed4bd67ca06a95ce53f917d)
+lists Q-form F32 SCVTF at four cycles latency, one per two cycles on V0;
+SDOT and FMLA can use both vector pipes. Initialize the integer sums to
+0x4b400000 (the bits of 12582912.0f) instead of zero. A sum s over at most
+64 products of int8 weights and [-127,127] activations has |s| <= 1040384,
+well inside 2^22. Across this range float spacing around 12582912 is 1,
+so reinterpret(0x4b400000 + s) - 12582912.0f is exactly (float)s, with
+an exact subtraction. The SDOT adds are still exact int32 additions and
+the ordered FMLAs are unchanged. One constant vector replaces a spare
+weight register in the streaming schedule. Predict: the conversion
+bottleneck becomes a two-pipe FSUB, saving several cycles per block.
+Require bitwise ref checks, including extreme sums and cancellation.
+
+## 2026-11-08 - compiler output and the tile search (results)
+
+pi5gui has 64 KB L1D and 512 KB L2 per A76, and 2 MB shared L3. GCC
+14.2.0-19 is native; GCC 15.2.0 and Clang 21.1.8 are cross compilers
+with static glibc linking. All use -O3, -mtune=cortex-a76,
+-ffp-contract=off and -fno-math-errno; the SDOT objects alone use
+-march=armv8.2-a+dotprod. Neither compiler is allowed to generate i8mm.
+
+The starting code is already stronger than pure intrinsics at qb32.
+Disabling its inline assembly in scratch builds gave v3's minute in
+3.827 s under GCC 15 and 3.943 s under Clang 21, against 3.775 and 3.754
+for the existing backend in the initial runs. GCC's general 8x4 tile
+recomputes group addresses inside a run-time chunk loop, moves an integer
+accumulator at the loop edge and spills scalar state around the loops.
+Clang groups many operations by output, retaining different dependency
+chains. Both have a second loop over chunks for qb64. The existing qb32
+assembly removes that compiler variation, but not its half-panel access
+pattern. A cold native-GCC timing was unusually slow; a later native
+profile took 3.787 s, with the same stage split as GCC 15. That first
+sample is not evidence of a compiler regression.
+
+Standalone assembly probes first reproduced the compiler's integer and
+float chains, checked every tile against a scalar FMA reference, and
+counted user-space CPU cycles with perf_event_open under sudo, pinned to
+CPU 3. Three timings per variant, minimum, 30,000 repetitions at n=1024
+and 20,000 at n=4096. These probes use ordinary SCVTF, before H4:
+
+| tile / weight schedule   | qb32 cycles/block, n=1024 |   qb64 | qb32, n=4096 |   qb64 |
+| ------------------------ | ------------------------: | -----: | -----------: | -----: |
+| 8x4, preload four groups |                     50.51 |  85.32 |        53.49 |  92.52 |
+| 8x4, stream two groups   |                     49.64 |  84.16 |        52.61 |  90.93 |
+| 4x8, stream two groups   |                     51.08 |  84.51 |        64.58 | 114.25 |
+| 8x6, stream one group    |                     75.66 | 128.00 |        77.57 | 133.23 |
+| 16x2, stream two groups  |                     49.26 |  81.57 |        49.93 |  83.60 |
+
+8x6 does 1.5 times the work per block: its cycles cannot be compared
+without that factor. It offered no convincing throughput gain. 4x8 was
+competitive only with small operands. The full 16x2 panel was the best
+at 4096 inputs, and therefore advanced to encoder-shaped measurements.
+An early 16x2 probe had an incomplete weight load and failed its reference
+check; all table entries above are from the corrected, passing probe.
+
+The first standalone 8x4 implementation saved registers once per run of
+columns, included the output finish, and specialized qb64. It improved
+the small qb64 case but did not reliably improve normal transcription.
+Changing post-increment activation loads to offsets did not help. Loading
+all four groups before their dots also lost. Explicit L1 prefetch at
+512, 1024 and 2048 bytes ahead made streaming shapes slower, even when
+the tiny L1 case improved. Moving the aligned block head 32 bytes had no
+useful gain. Interleaving final dots with SCVTF improved this prototype's
+L1 case slightly, but did not rescue it as the final tile.
+
+The full-panel tile and exact biased conversion were complementary.
+`gemmbench 250 1 2400 0 QB`, GCC 15, the four encoder shapes summed,
+and its separately timed L1 case:
+
+| implementation                            | qb32 all shapes, GMAC/s | qb32 L1 | qb64 all shapes | qb64 L1 |
+| ----------------------------------------- | ----------------------: | ------: | --------------: | ------: |
+| existing neon-dp                          |                   46.32 |   45.90 |           50.68 |   52.35 |
+| 16x2 with SCVTF                           |                   48.63 |   48.68 |           57.65 |   58.39 |
+| 16x2 with biased conversion, offset loads |                   51.19 |   51.36 |           59.13 |   60.15 |
+| same, post-increment loads                |                   51.08 |   51.38 |           59.73 |   60.12 |
+| same, explicit prefetch                   |                   48.94 |   51.20 |           56.71 |   59.94 |
+
+Post-increment loads were retained: level at qb32, slightly better for
+qb64. A final local scheduling comparison tried subtracting the bias
+immediately after each last SDOT, then subtracting and FMA immediately.
+Their L1 rates were 51.11/59.65 and 50.64/59.34 GMAC/s (qb32/qb64),
+against 51.36/60.07 for the retained grouped finish. Both were rejected.
+
+The float 16x4 tile was also written as standalone assembly, with ordered
+FMLAs and explicit input tails, bias and ReLU. It passed kcheck and 1,656
+prototype guard cases, including in-place bias. Its attention stage was
+293.2 ms, essentially the existing code's 290-298 ms, with no useful
+whole-run gain. H3 is rejected; float kernels remain the existing C.
+
+Two interleaved rounds of v3's minute, four threads, best of five each,
+confirmed the 16x2 candidate before final integration:
+
+| implementation             | normal, seconds | fast, seconds |
+| -------------------------- | --------------- | ------------- |
+| existing GCC 15 neon-dp    | 3.872, 3.874    | 3.637, 3.631  |
+| 16x2, offset loads         | 3.561, 3.553    | 3.230, 3.231  |
+| 16x2, post-increment loads | 3.557, 3.558    | 3.228, 3.224  |
+
+No throttling was reported. The integrated backend is explicitly named
+neon-dp-a76 rather than replacing other SDOT cores' tile. Its FPCR check
+retains the old tile under non-default rounding: the biased subtraction
+would otherwise produce -0 for a zero integer sum under FE_DOWNWARD.
+The normal path hoists the bias constant outside the column-pair loop,
+removes unused prototype pointers, and has no stack access in the block
+loop. Final same-binary comparisons and complete checks follow below.
+
+## 2026-11-08 - integrated A76 backend, final comparisons and validation
+
+The final comparison builds neon-dp-a76, neon-dp and neon into the same
+binary. `tests/a76bench.sh` alternates the first two, reverses their order
+on every other round, and runs v3 on tests/data/test.wav, four threads,
+default chunking. Each sample is the best of five 60-second transcriptions;
+the table gives the median of those samples and their full range in
+seconds. VAD time is reported separately by the CLI, not included here.
+There are three rounds for GCC 15 and Clang 21, two for native GCC 14.
+The CPU governor was temporarily performance at 2.4 GHz, then restored to
+ondemand. Every observation reported 2,400,000 kHz and throttled=0x0.
+
+| compiler | mode   | existing neon-dp, median (range) | neon-dp-a76, median (range) | time reduction |
+| -------- | ------ | -------------------------------: | --------------------------: | -------------: |
+| gcc15    | normal |             3.8720 (3.870-3.878) |        3.5500 (3.549-3.558) |          8.32% |
+| gcc15    | fast   |             3.6340 (3.627-3.635) |        3.2260 (3.216-3.235) |         11.23% |
+| clang21  | normal |             3.8530 (3.850-3.855) |        3.5290 (3.523-3.532) |          8.41% |
+| clang21  | fast   |             3.6070 (3.598-3.613) |        3.2130 (3.212-3.214) |         10.92% |
+| gcc14    | normal |             3.8845 (3.884-3.885) |        3.5420 (3.540-3.544) |          8.82% |
+| gcc14    | fast   |             3.5870 (3.586-3.588) |        3.2235 (3.221-3.226) |         10.13% |
+
+All six improvements exceed their observed spread. The Clang build is
+slightly fastest in this batch. Cross-compiler absolute times also include
+the different toolchain/runtime builds; the same-binary comparisons are
+what establish the assembly gain. No claim is made about other cores,
+thread counts, recordings or chunk sizes.
+
+Validation on pi5gui, GCC 14.2.0, GCC 15.2.0 and Clang 21.1.8:
+
+- The complete C suite passes with all three backends. kcheck checks
+  1,906 cases per backend, including v3's actual weights, against ref's
+  bits. VAD probabilities and both v2 and v3 transcripts, in normal and
+  fast mode, match every reference token and timestamp.
+- The new a76check passes 379 guarded cases per compiler: extreme sums,
+  cancellation, zero scales, bias and residual combinations, odd columns,
+  unaligned output strides and untouched padding, column-block boundaries,
+  maximum input width, empty batches and all directed rounding modes.
+- Native GCC's shared library passes the same 379 guard cases and kcheck's
+  1,892 model-free cases per backend. The normal suite also exercises the
+  static library through examples/transcribe.
+- GCC 15 and Clang 21 emit byte-identical assembly .text (SHA-256
+  39e1c8d5b5a7374b60d3c341c1e8bf9a85a8624006bf5e762f63f5413e792d66).
+  There are no code relocations or i8mm instructions; q8_32 and q8_64
+  occupy 812 and 1,148 bytes. Both have hidden ELF symbols and unwind CFI.
+- The existing ThreadSanitizer target compiles and links with the new
+  assembly dependency. Its runtime was not run; no thread-pool code
+  changed. Python/NeMo WER validation was not rerun: the kernel definition
+  and every checked result remain bit-identical, and this is not a merge.
+
+The retained changes are the full-panel 16x2 schedule, dedicated qb32 and
+qb64 loops, exact biased conversion, post-increment activation loads and
+one register save per run of column pairs. Other kernels and the ordinary
+family selection retain their existing implementations. This is an
+explicit `BACKEND=neon-dp-a76` experiment, ready for further A76 climbs.
+
+## 2026-11-08 - neon-dp-a76 in every AArch64 build, picked by a probe (hypothesis)
+
+The A76's tile above, on main at 76d4cef, which since 5b85618 has the
+lanes, neon-sve, neon-i8mm and neon-i8mm's probe. Two changes, neither to
+the loop's instructions:
+
+- Inline assembly in backend/neon/kernels.c, as the 4-column tile's loop
+  is, in place of q8.S: the same instructions in the same order and the
+  same vector registers, the general registers the compiler's, and the
+  callee-saved ones saved by q8_cols's prologue once a column block. An
+  ELF .S needed Makefile rules of its own and would need Mach-O's and
+  COFF's symbols and unwind records (Windows's are SEH, not CFI); inline,
+  every AArch64 build has it - Linux, Android, macOS, and Windows under
+  llvm-mingw, where the loop's head goes without its line, as the
+  4-column loop's does.
+- In the family build, between neon-i8mm and neon-dp, behind a probe as
+  neon-i8mm is: the A76's two pairs against the 4-column tile's two half
+  panels, a panel's 16 rows by 4 columns over 32 blocks of 32 inputs (16
+  KB of weights, in L1), each with its finish; SDOT's, the A76's, the
+  A76's, SDOT's a run, the median of 5 runs' ratios, on the fastest cores
+  the process may use. PKTITO_KERNELS=neon-dp names the old tile, to
+  compare.
+
+Predict, test.wav through v3, best of 5, the two backends in one binary by
+turns:
+
+- H1, a Pi 5 (pi5a; its gcc 14.2, and gcc 15.2 and clang 21.1 built here):
+  q8.S's gain, 8 to 9% at 4 threads and 10 to 11% in the fast mode, and
+  the probe picks the A76's tile.
+- H2, Graviton2 (c6g, Neoverse N1: the A76's server sibling, no I8MM, on
+  neon-dp at 18.9x, 2026-11-02): 5 to 11% at 4 threads, the probe picks
+  it.
+- H3, armlet (Snapdragon 7c, Windows: two A76s, six A55s): the probe, on
+  the A76s, picks it. The A55 issues in order and its SDOT rate is not the
+  A76's; whether the tile helps or hurts there is unknown, and a run on
+  all eight cores gains less than a run on the two.
+- H4, the M4 (neon-dp: its probe passes neon-i8mm by): unknown. Its SIMD
+  pipes are four, not the A76's two, so SCVTF may cost it nothing extra;
+  within 3% either way, and the probe goes with whichever is faster.
+- H5, Graviton3, 4 and 5 (Neoverse V1 to V3): neon-sve, before both, stays
+  their pick, so nothing changes; neon-dp-a76 against neon-dp, named, is
+  recorded for what the tile does on wider cores.
+- Every probe's verdict is its machine's end-to-end winner; a machine where
+  it is not is a reason to change the probe.
+- tests/q8check, a76check's cases for every backend of a build, at ref's
+  bits on every board it runs on.
+
+## 2026-11-08 - a backend for each kind of core, picked by its own gemm_q8 (hypothesis)
+
+The surveys of the int8 product alone (tests/q8bench on one core,
+tests/gemmbench over a kind; each backend named, in order and reversed)
+give each kind of core a different best tile:
+
+| core           | neon-i8mm | neon-dp | neon-dp-a76 | best        |
+| -------------- | --------- | ------- | ----------- | ----------- |
+| Pi 5's A76     | -         | 47.5    | 54.4        | neon-dp-a76 |
+| armlet's A76   | -         | 47.6    | 53.4        | neon-dp-a76 |
+| armlet's A55   | -         | 8.80    | 8.99        | level       |
+| the S24's X4   | 157.2     | 126.1   | 114.8       | neon-i8mm   |
+| the S24's A720 | 99.7      | 76.3    | 77.1        | neon-i8mm   |
+| the S24's A520 | 28.4      | 29.4    | 33.3        | neon-dp-a76 |
+
+(GMAC/s on one thread: the mean of q8bench's six encoder rows, its three
+shapes at T 750 in blocks of 32 and of 64, over both orders; the S24's
+from android-9950x, ~/i8mm-phone-logs/s24-coresurvey-02ffafb-r30.txt;
+02ffafb, gcc 15.2, llvm-mingw's clang 23.1.2 and r30's clang 21.0.0).
+A process takes one
+backend, picked on its fastest kind, so the S24's A520s run SMMLA, 17%
+slower there than the A76's tile. And the probes, each a tile timed in L1,
+miss on the in-order cores: the A76's reads 1.142 on armlet's A55s, where
+the backend is 2.6% faster end to end, and keeps neon-dp on the A520.
+
+Every backend computes ref's bits in every kernel, so threads on different
+kinds of core may each run their own and no transcript can change. Three
+changes:
+
+- The kinds. core/os.c groups the cores the process may use: on Linux by
+  each CPU's MIDR (implementer and part; /sys/.../regs/identification),
+  else by cpu_capacity; on Windows by EfficiencyClass. macOS does not say
+  which core a thread is on, so its cores stay one kind. pk_os_kind() is
+  the calling thread's, from sched_getcpu or GetCurrentProcessorNumberEx.
+- The probe. backend/kernels.c times each candidate's own gemm_q8, not a
+  tile, on a slice as core/encoder.c's pk_gemm makes them: 64 rows of
+  1024 inputs at T 64, blocks of 32, on memory it has written (64 KB of
+  weights, past the A55's and A520's L1), by turns against the backend the
+  needs alone would give (A, B, B, A, the median of 5 runs' ratios), on a
+  thread held to each kind. The fastest kind's pick is the process's, as
+  now; another kind takes another backend only where that one is at least
+  3% the faster there. The candidates are the backends with a probe
+  (neon-i8mm, neon-dp-a76), which now say only that they compete.
+- The dispatch. pk_k_gemm_q8 takes the table of the kind its thread is on
+  when called; every other kernel takes the process's. A call is a 64-row
+  slice of a product, milliseconds on an A520, so a lookup a call is
+  nothing; a thread that moves mid-call finishes with the tile it began.
+
+Predict:
+
+- H1, the probe: each kind's pick is its q8bench winner above: neon-dp-a76
+  on the A76s and the A520, neon-i8mm on the X4 and A720, and on armlet's
+  A55s the process's (neon-dp-a76, level). The M4 and M5 keep neon-dp.
+  Under 5 ms a process on the S24 (three kinds), under 2 ms on a Pi 5.
+- H2, the S24 at its 8 threads: its A520s on the A76's tile take 1 to 3%
+  off a v3 run of test.wav; armlet unchanged (both kinds on neon-dp-a76);
+  every board of one kind unchanged.
+- H3, the bits: tests/q8check and kcheck at ref's bits for every backend
+  as before, and a transcript made with a backend drawn at random for
+  every gemm_q8 call ref's, token for token (a new check).
+- H4, the cost: no bench of a board of one kind moves, and the S24's
+  lookups cost under 0.1% of its run.
+
+## 2026-11-08 - the probe on all of a kind's cores at once (hypothesis)
+
+The probe above, built with T 128 (its result entry follows when it is
+measured), times one core of each kind alone, and on two kinds that
+reading and the kind's own end-to-end A/B disagree. The S24's two A520s,
+held to test.wav at two threads (taskset 03, v2, android-9950x): neon-i8mm
+14.95 to 15.08 s, neon-dp-a76 15.29, neon-dp 15.64 to 15.86, where one
+A520 alone reads neon-dp-a76 0.945 to 0.968 of neon-dp's gemm_q8 and
+neon-i8mm 1.120. armlet's A55s run test.wav 2.6% the faster on the A76's
+tile, six at once, where one alone reads it 1.013 to 1.016.
+
+A scratch tool (shapepar.c, kept with the run's logs) times the probe's
+slice on several cores at once, each with its own weights and all of them
+the same activations, every sample begun on all of them together by a
+spin barrier. On armlet at 64 x 1024, T 128, blocks of 32: the six A55s
+read neon-dp-a76 0.977 together against 1.006 for one of them alone in the
+same run, the two A76s 0.975 against 0.925.
+
+The change: pk_os_on_kind(j, fn, arg) runs fn(arg, i, n) on n of kind j's
+cores at once (up to 16), a thread held to each, on Linux and Windows,
+and on the calling thread on macOS, which holds no thread to a core. A
+board of one kind is timed on all its cores too. Each thread has its own
+weights and output; the activations are shared; each sample starts on
+all threads at a barrier, with as many calls on each as thread 0's take.
+Each thread's ratio is the median of 5 runs as before, and the kind's is
+the median of its threads'. The pick and its 3% margin are unchanged.
+
+Predict:
+
+- H1: the S24's A520 pair reads neon-i8mm under neon-dp-a76, as its
+  end-to-end A/B ranks them, and takes neon-i8mm; its X4 (one core) and
+  A720s keep neon-i8mm.
+- H2: armlet's two A76s read neon-dp-a76 about 0.975 and the A55s about
+  0.977, both inside the 3% margin, so armlet takes neon-dp throughout;
+  its 8-thread A/B (neon-dp, neon-dp-a76, the pick) says what the margin
+  costs there. pi5a's four A76s keep neon-dp-a76.
+- H3: the bits as before: kcheck, q8check, and check-c's transcripts with
+  PKTITO_KERNELS=mix.
+- H4: the probe's time a process grows by a thread's start per core (on
+  the order of 50 us each), from 4.2 to 4.8 ms on pi5a.
+
+## 2026-11-08 - a backend for each kind of core (result: rejected), the probe on all of the fastest cores at once (result: kept)
+
+Measured on the per-kind code (a76235e, 691d3dd, 2ae0966 and the
+concurrent probe after them):
+
+- H1 of the probe on all of a kind's cores at once held on the S24: its
+  X4 and A720s took neon-i8mm 5/5 (0.866 to 0.877, 0.832 to 0.834), and
+  its A520 pair read noisily, within 5% either way, the 3% margin keeping
+  kind 0's neon-i8mm in four runs of five. H2 did not: armlet's two A76s
+  read neon-dp-a76 0.910 to 0.914 together, not 0.975, and its A55s 0.971
+  to 0.984, so both kinds took neon-dp-a76, 5/5. pi5a read 0.909 to 0.916
+  on its four cores at once and took neon-dp-a76 15/15 (gcc 14, gcc 15,
+  clang 21), timed in 4.5 to 5.0 ms (H4). H3: kcheck, q8check and the
+  mix transcripts held on pi5a, armlet and the S24.
+- What a backend for each kind bought end to end: nothing measured. The
+  S24 at 8 threads came out in two clusters (1.27 s and 1.50 to 1.67 s)
+  whichever kernel its A520s ran; the A520 pair alone ran neon-i8mm
+  14.936 s against neon-dp-a76's 15.302, 2.4%, and that pair does a
+  small share of an 8-thread run. armlet's 8-thread A/B was too noisy to
+  separate (means neon-dp 6.650 s, neon-dp-a76 6.385, the per-kind pick
+  6.327).
+
+So the per-kind dispatch (pk_os_kind, a lookup every 16th gemm_q8 call,
+the kinds' names, PKTITO_KERNELS=mix) is taken out, and the probe that
+times all of the fastest cores at once is kept: pk_os_on_fast_cores(fn,
+arg), on Linux the cores of pk_os_fast_cores's speed, or every core where
+sysfs gives no speeds; on Windows the highest EfficiencyClass's, a thread
+a physical core. The process runs the fastest cores' pick on every core
+(4e8c1d0).
+
+## 2026-11-08 - neon-dp-a76, one pick on the fastest cores (results)
+
+On 4e8c1d0. check-c passed by the pick and, where it says, with
+PKTITO_KERNELS=neon-dp-a76: x86 (the 9950X, gcc 15); pi5a (gcc 14);
+the M4 mini; armlet (llvm-mingw clang 23.1.2, tests/check-c.ps1); c6g,
+c7g, c8g and c9g, each under gcc 13 and clang 18, both ways; the Galaxy
+S25 (make adb, NDK r30 and r27d, android-9950x). No build warned. check-tsan passed on a c6g (gcc 13, `setarch -R`; on pi5a
+TSan's runtime refuses the kernel's 47-bit address space), where the
+probe's threads run.
+
+The probe's pick, `pktito-c info`:
+
+| machine                    | probe                                                     | pick             |
+| -------------------------- | --------------------------------------------------------- | ---------------- |
+| pi5a (A76)                 | neon-dp-a76 0.910-0.913 on 4 cores                        | neon-dp-a76, 3/3 |
+| c6g (Graviton2, N1)        | neon-dp-a76 0.917-0.919 on 4 cores                        | neon-dp-a76, 5/5 |
+| c7g, c8g, c9g (V1, V2, V3) | none: neon-sve competes with nothing                      | neon-sve, 5/5    |
+| S25 (2 prime cores)        | neon-i8mm 0.722-0.756, neon-dp-a76 0.949-0.956 on 2 cores | neon-i8mm, 5/5   |
+| M4 mini                    | neon-i8mm 1.119, neon-dp-a76 0.976-0.977                  | neon-dp, 3/3     |
+| armlet (7c, 2 A76 + 6 A55) | neon-dp-a76 1.085-1.165 on 2 cores                        | neon-dp, 8/8     |
+
+pktito-c bench, test.wav, the default threads, medians of 5 rounds in
+rotated order (EC2: v3; the boards: v2):
+
+| machine                 | compiler | neon-dp normal / fast | neon-dp-a76 normal / fast | change                   |
+| ----------------------- | -------- | --------------------- | ------------------------- | ------------------------ |
+| pi5a                    | gcc 14   | 3.917                 | 3.567                     | -8.9%                    |
+| c6g                     | gcc 13   | 3.153 / 2.754         | 2.931 / 2.600             | -7.0% / -5.6%            |
+| c6g                     | clang 18 | 3.130 / 2.848         | 2.914 / 2.583             | -6.9% / -9.3%            |
+| c6g, 1 thread, 3 rounds | gcc 13   | 12.476                | 11.562                    | -7.3%                    |
+| c7g                     | gcc 13   | 2.368 / 2.205         | 2.450 / 2.243             | (neon-sve 1.937 / 1.723) |
+| c8g                     | gcc 13   | 1.858 / 1.759         | 1.984 / 1.840             | (neon-sve 1.645 / 1.498) |
+| c9g                     | gcc 13   | 1.265 / 1.207         | 1.357 / 1.261             | (neon-sve 1.075 / 0.979) |
+
+On the V cores the A76's tile is 3.5 to 7.3% the slower, 12.9% on one
+c9g core (5.206 s against 4.620), which is what its probe is for; they
+take neon-sve before it in any case.
+
+armlet: in the morning its two A76s read the tile at 0.910 to 0.914 at
+once; at 21:58 they read 1.085 to 1.165, and test.wav held to them (`start
+/affinity C0`, 2 threads) agreed, neon-dp 7.314 s against neon-dp-a76's
+7.782. At 8 threads, two rounds each, neon-dp 6.558 and 5.404 s,
+neon-dp-a76 4.993 and 5.304: too noisy to rank. The board changed between
+the two readings, and the probe read it each time; where the tile is not
+3% the faster, a process runs neon-dp, as main does.

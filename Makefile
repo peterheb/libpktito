@@ -1,14 +1,15 @@
 # pktito
 #
 #   make                          ./pktito-c for this machine's family, every backend in it:
-#                                 neon-sve, neon-i8mm, neon-dp and neon on AArch64; amx-int8,
-#                                 avx512-vnni, avx2-vnni and avx2 on x86-64; and ref. The CPU
-#                                 picks one when it runs.
+#                                 neon-sve, neon-i8mm, neon-dp-a76, neon-dp and neon on AArch64;
+#                                 amx-int8, avx512-vnni, avx2-vnni and avx2 on x86-64; and ref.
+#                                 The CPU picks one when it runs.
 #   make BACKEND=<name>           that backend alone, with ref:
 #                                 neon     ARMv8.0 NEON: Pi 3 and Zero 2 W (A53), Pi 4 (A72)
 #                                 neon-dp  ARMv8.2 NEON + SDOT: Pi 5 (A76), RK3588, Apple M
 #                                 neon-sve     and SVE + I8MM's SMMLA: the GB10 (X925, A725)
 #                                 neon-i8mm    and I8MM's SMMLA, no SVE: Snapdragon 8, X
+#                                 neon-dp-a76  neon-dp in the A76's tile: Pi 5, Graviton2
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
 #                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
@@ -34,7 +35,7 @@
 CC ?= cc
 
 # The backends. A build holds every one of the machine's family that the
-# compiler can make - neon-sve, neon-i8mm, neon-dp and neon on AArch64; amx-int8,
+# compiler can make - neon-sve, neon-i8mm, neon-dp-a76, neon-dp and neon on AArch64; amx-int8,
 # avx512-vnni, avx2-vnni and avx2 on x86-64 - each compiled with its own
 # instruction set, and ref; the rest of the tree takes the family's
 # baseline. Which runs is the CPU's to say, at run time
@@ -44,7 +45,7 @@ CC ?= cc
 UNAME_M := $(shell uname -m)
 UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
-  FAMILY := neon-sve neon-i8mm neon-dp neon
+  FAMILY := neon-sve neon-i8mm neon-dp-a76 neon-dp neon
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
   FAMILY := amx-int8 avx512-vnni avx2-vnni avx2
 endif
@@ -75,6 +76,8 @@ ISA_neon-sve := $(ISA_neon-dp)
 # neon-i8mm is the same loop without its SVE instruction, for the cores with
 # I8MM and no SVE; the same flags, and its probe NEON's SMMLA.
 ISA_neon-i8mm := $(ISA_neon-dp)
+# neon-dp-a76 is neon-dp with its int8 tile in assembly SDOT alone needs.
+ISA_neon-dp-a76 := $(ISA_neon-dp)
 ISA_avx2 := -mavx2 -mfma
 ISA_avx2-vnni := -mavx2 -mfma -mavxvnni
 ISA_avx512-vnni := -mavx2 -mfma -mavx512f -mavx512vnni -mavx512vl
@@ -204,14 +207,17 @@ models/%.pkf:
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
-TESTS := tests/kcheck tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck tests/chunkcheck \
-         tests/pathcheck tests/transcheck tests/sentcheck tests/streamcheck
+TESTS := tests/kcheck tests/q8check tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck \
+         tests/chunkcheck tests/pathcheck tests/transcheck tests/sentcheck tests/streamcheck
 BENCHES := tests/q8bench tests/gemmbench tests/spinbench
 
 # kcheck holds every backend of the build that this CPU can run to ref, bit
 # for bit, in one binary.
 tests/kcheck: tests/kcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/kcheck.c $(LIB_OBJ) $(LDLIBS)
+# q8check the int8 product of each at its edges, every operand at a guard page
+tests/q8check: tests/q8check.c $(BACK_OBJ) core/os.o
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/q8check.c $(BACK_OBJ) core/os.o $(LDLIBS)
 tests/mathcheck: tests/mathcheck.c core/vmath.h
 	$(CC) $(CFLAGS) $(INC) -o $@ tests/mathcheck.c $(LDLIBS)
 tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)

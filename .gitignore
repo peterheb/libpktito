@@ -5,6 +5,7 @@
 /build/
 /models/
 /tests/kcheck
+/tests/q8check
 /tests/mathcheck
 /tests/pkfcheck
 /tests/pkfcheck-san

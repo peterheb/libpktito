@@ -15,6 +15,7 @@ run() {
 }
 run ./tests/mathcheck
 run ./tests/kcheck "$MODEL"
+run ./tests/q8check
 run ./tests/pkfcheck $TINY tests/pkfcheck.wav
 run ./tests/wavcheck tests/wavcheck.tmp
 run ./tests/pathcheck $TINY

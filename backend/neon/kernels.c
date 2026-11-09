@@ -1,11 +1,14 @@
 /* The NEON backends: AArch64's SIMD, for every ARMv8 core from the A53 up.
  *
- * This file is four backends. Built as backend/neon it asks for ARMv8.0
+ * This file is five backends. Built as backend/neon it asks for ARMv8.0
  * and nothing more, which is what the A53 (Pi 3, Zero 2 W) and the A72 (Pi
  * 4) have; built as backend/neon-dp (that directory's kernels.c includes
  * this one with PK_NEON_DOTPROD) it multiplies int8 with SDOT, ARMv8.2's
  * dot product, which the A76 (Pi 5), the A78, the X cores and Apple's M
- * cores have; built as backend/neon-sve (PK_NEON_SVE as well) its 4-column
+ * cores have; built as backend/neon-dp-a76 (PK_NEON_A76 as well) the same
+ * in a tile of a whole panel by 2 columns, written for the A76, for the
+ * cores where it measures the faster; built as backend/neon-sve
+ * (PK_NEON_SVE as well) its 4-column
  * tiles multiply with I8MM's SMMLA on weights put in SMMLA's order, for the
  * cores with SVE and I8MM (measured on the GB10's X925 and A725; Neoverse
  * V1 to V3 have both as well); and built as backend/neon-i8mm
@@ -651,6 +654,191 @@ void q8_blocks4_qb32(float32x4_t f[4][2], const int8_t *g, const int8_t *const *
 #undef Q8_SDOT8
 #endif
 
+#ifdef PK_NEON_A76
+/* neon-dp-a76's tile: 16 rows by 2 columns, the whole panel, at 32 or 64
+ * inputs a block. On the A76 it is faster than the 4-column tile in two
+ * ways. That tile reads a half panel, 32 of each group's 64 bytes, so a
+ * product too wide for L1 brings each line of its weights in twice; this
+ * one uses the whole line the one time. And its sums become floats without
+ * SCVTF, which the A76 issues on one of its two vector pipes, a Q form
+ * every other cycle (Arm's Cortex-A76 Software Optimization Guide): each
+ * sum starts at the bits of 12582912.0f, 0x4b400000, SDOT adds its
+ * products to it as an integer, and FSUB, on either pipe, takes 12582912
+ * off. A block's sum s is at most 64 products of 128 * 127, |s| <= 1040384
+ * < 2^22, so 12582912 + s lies where floats are 1 apart: the bits are that
+ * float's, and the difference is s exactly, SCVTF's float. The FMLA chain
+ * after it, and the finish, are the C tile's, in its order. q8_cols takes
+ * it rounding to nearest only (round_nearest says why).
+ *
+ * v0-v7 hold two groups of weights (a group is 4 inputs of the 16 rows, 64
+ * bytes), v8 and v9 the columns' 16 inputs, v12 and v13 their blocks'
+ * scales, v15 the constant; v16-v19 and v20-v23 are column 0's and 1's
+ * integer sums (rows 0-3, 4-7, 8-11, 12-15), v24-v27 and v28-v31 their
+ * floats. */
+
+/* weight vectors a-d, a group's rows, against lane L of v8 and of v9 */
+#define A76_SDOT8(a, b, c, d, L)                                           \
+    "sdot v16.4s, v" a ".16b, v8.4b[" L "]\n\t"                           \
+    "sdot v20.4s, v" a ".16b, v9.4b[" L "]\n\t"                           \
+    "sdot v17.4s, v" b ".16b, v8.4b[" L "]\n\t"                           \
+    "sdot v21.4s, v" b ".16b, v9.4b[" L "]\n\t"                           \
+    "sdot v18.4s, v" c ".16b, v8.4b[" L "]\n\t"                           \
+    "sdot v22.4s, v" c ".16b, v9.4b[" L "]\n\t"                           \
+    "sdot v19.4s, v" d ".16b, v8.4b[" L "]\n\t"                           \
+    "sdot v23.4s, v" d ".16b, v9.4b[" L "]\n\t"
+
+/* 16 inputs: both columns' activations, and the four groups at g + o, the
+ * second two loading as the first two multiply */
+#define A76_CHUNK(o)                                                       \
+    "ldr q8, [%[x0]], #16\n\t"                                             \
+    "ldr q9, [%[x1]], #16\n\t"                                             \
+    "ldp q0, q1, [%[g], #(" o ")]\n\t"                                     \
+    "ldp q2, q3, [%[g], #(" o " + 32)]\n\t"                                \
+    "ldp q4, q5, [%[g], #(" o " + 64)]\n\t"                                \
+    "ldp q6, q7, [%[g], #(" o " + 96)]\n\t"                                \
+    A76_SDOT8("0", "1", "2", "3", "0")                                     \
+    "ldp q0, q1, [%[g], #(" o " + 128)]\n\t"                               \
+    "ldp q2, q3, [%[g], #(" o " + 160)]\n\t"                               \
+    A76_SDOT8("4", "5", "6", "7", "1")                                     \
+    "ldp q4, q5, [%[g], #(" o " + 192)]\n\t"                               \
+    "ldp q6, q7, [%[g], #(" o " + 224)]\n\t"                               \
+    A76_SDOT8("0", "1", "2", "3", "2")                                     \
+    A76_SDOT8("4", "5", "6", "7", "3")
+
+/* the loop's head on a 64-byte line, but on Windows (q8_blocks4_qb32's
+ * comment says why) */
+#ifndef _WIN32
+#define A76_ALIGN ".p2align 6\n"
+#else
+#define A76_ALIGN
+#endif
+
+/* the constant, the floats at zero, and each block's sums at the constant */
+#define A76_HEAD                                                           \
+    "movi v15.4s, #0x4b, lsl #24\n\t"                                      \
+    "orr v15.4s, #0x40, lsl #16\n\t"                                       \
+    "movi v24.4s, #0\n\t" "movi v25.4s, #0\n\t" "movi v26.4s, #0\n\t"     \
+    "movi v27.4s, #0\n\t" "movi v28.4s, #0\n\t" "movi v29.4s, #0\n\t"     \
+    "movi v30.4s, #0\n\t" "movi v31.4s, #0\n"                             \
+    A76_ALIGN                                                              \
+    "1:\n\t"                                                               \
+    "mov v16.16b, v15.16b\n\t" "mov v17.16b, v15.16b\n\t"                 \
+    "mov v18.16b, v15.16b\n\t" "mov v19.16b, v15.16b\n\t"                 \
+    "mov v20.16b, v15.16b\n\t" "mov v21.16b, v15.16b\n\t"                 \
+    "mov v22.16b, v15.16b\n\t" "mov v23.16b, v15.16b\n\t"
+
+/* the block's scales, loaded between its first two chunks */
+#define A76_SCALES                                                         \
+    "ldr s12, [%[d0]], #4\n\t"                                             \
+    "ldr s13, [%[d1]], #4\n\t"
+
+/* the block's end: its sums as floats, each into its row's chain by the
+ * column's scale, and the next block's weights `step` bytes on */
+#define A76_BLOCK_END(step)                                                \
+    "fsub v16.4s, v16.4s, v15.4s\n\t" "fsub v17.4s, v17.4s, v15.4s\n\t"   \
+    "fsub v18.4s, v18.4s, v15.4s\n\t" "fsub v19.4s, v19.4s, v15.4s\n\t"   \
+    "fsub v20.4s, v20.4s, v15.4s\n\t" "fsub v21.4s, v21.4s, v15.4s\n\t"   \
+    "fsub v22.4s, v22.4s, v15.4s\n\t" "fsub v23.4s, v23.4s, v15.4s\n\t"   \
+    "fmla v24.4s, v16.4s, v12.s[0]\n\t" "fmla v25.4s, v17.4s, v12.s[0]\n\t" \
+    "fmla v26.4s, v18.4s, v12.s[0]\n\t" "fmla v27.4s, v19.4s, v12.s[0]\n\t" \
+    "fmla v28.4s, v20.4s, v13.s[0]\n\t" "fmla v29.4s, v21.4s, v13.s[0]\n\t" \
+    "fmla v30.4s, v22.4s, v13.s[0]\n\t" "fmla v31.4s, v23.4s, v13.s[0]\n\t" \
+    "add %[g], %[g], #" step "\n\t"                                        \
+    "subs %w[nb], %w[nb], #1\n\t"                                          \
+    "b.ne 1b\n\t"
+
+/* the C tile's finish: times the rows' weight scales, plus the bias if
+ * there is one, added to the outputs if add, and stored */
+#define A76_FINISH                                                         \
+    "ldp q0, q1, [%[ws]]\n\t"                                              \
+    "ldp q2, q3, [%[ws], #32]\n\t"                                         \
+    "fmul v24.4s, v24.4s, v0.4s\n\t" "fmul v25.4s, v25.4s, v1.4s\n\t"     \
+    "fmul v26.4s, v26.4s, v2.4s\n\t" "fmul v27.4s, v27.4s, v3.4s\n\t"     \
+    "fmul v28.4s, v28.4s, v0.4s\n\t" "fmul v29.4s, v29.4s, v1.4s\n\t"     \
+    "fmul v30.4s, v30.4s, v2.4s\n\t" "fmul v31.4s, v31.4s, v3.4s\n\t"     \
+    "cbz %[b], 2f\n\t"                                                     \
+    "ldp q4, q5, [%[b]]\n\t"                                               \
+    "ldp q6, q7, [%[b], #32]\n\t"                                          \
+    "fadd v24.4s, v24.4s, v4.4s\n\t" "fadd v25.4s, v25.4s, v5.4s\n\t"     \
+    "fadd v26.4s, v26.4s, v6.4s\n\t" "fadd v27.4s, v27.4s, v7.4s\n\t"     \
+    "fadd v28.4s, v28.4s, v4.4s\n\t" "fadd v29.4s, v29.4s, v5.4s\n\t"     \
+    "fadd v30.4s, v30.4s, v6.4s\n\t" "fadd v31.4s, v31.4s, v7.4s\n"       \
+    "2:\n\t"                                                               \
+    "cbz %w[add], 3f\n\t"                                                  \
+    "ldp q0, q1, [%[o0]]\n\t"                                              \
+    "ldp q2, q3, [%[o0], #32]\n\t"                                         \
+    "ldp q4, q5, [%[o1]]\n\t"                                              \
+    "ldp q6, q7, [%[o1], #32]\n\t"                                         \
+    "fadd v24.4s, v0.4s, v24.4s\n\t" "fadd v25.4s, v1.4s, v25.4s\n\t"     \
+    "fadd v26.4s, v2.4s, v26.4s\n\t" "fadd v27.4s, v3.4s, v27.4s\n\t"     \
+    "fadd v28.4s, v4.4s, v28.4s\n\t" "fadd v29.4s, v5.4s, v29.4s\n\t"     \
+    "fadd v30.4s, v6.4s, v30.4s\n\t" "fadd v31.4s, v7.4s, v31.4s\n"       \
+    "3:\n\t"                                                               \
+    "stp q24, q25, [%[o0]]\n\t"                                            \
+    "stp q26, q27, [%[o0], #32]\n\t"                                       \
+    "stp q28, q29, [%[o1]]\n\t"                                            \
+    "stp q30, q31, [%[o1], #32]\n\t"
+
+#define A76_OUT [g] "+r"(g), [x0] "+r"(x0), [x1] "+r"(x1), [d0] "+r"(d0), [d1] "+r"(d1), \
+                [nb] "+r"(nb)
+#define A76_IN [ws] "r"(ws), [b] "r"(bias), [add] "r"(add), [o0] "r"(o0), [o1] "r"(o1)
+#define A76_CLOBBER "cc", "memory", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", \
+                    "v12", "v13", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22",      \
+                    "v23", "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31"
+
+/* A pair of columns, activations x0 and x1 with block scales d0 and d1,
+ * over nb (at least 1) blocks of qb from the panel's weights g, finished
+ * into o0 and o1, 16 floats each. Its strings are 5 and 7 KB, past C11's
+ * 4095 characters, as the ARMv8.0 loops' are. */
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Woverlength-strings"
+#endif
+static inline __attribute__((always_inline))
+void q8_a76_pair(float *o0, float *o1, const int8_t *g, const int8_t *x0, const int8_t *x1,
+                 const float *d0, const float *d1, uint32_t nb, uint32_t qb, const float *ws,
+                 const float *bias, int add) {
+    if (qb == 32)
+        __asm__ volatile(A76_HEAD A76_CHUNK("0") A76_SCALES A76_CHUNK("256")
+                         A76_BLOCK_END("512") A76_FINISH
+                         : A76_OUT
+                         : A76_IN
+                         : A76_CLOBBER);
+    else
+        __asm__ volatile(A76_HEAD A76_CHUNK("0") A76_SCALES A76_CHUNK("256") A76_CHUNK("512")
+                         A76_CHUNK("768") A76_BLOCK_END("1024") A76_FINISH
+                         : A76_OUT
+                         : A76_IN
+                         : A76_CLOBBER);
+}
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+#undef A76_OUT
+#undef A76_IN
+#undef A76_CLOBBER
+#undef A76_FINISH
+#undef A76_BLOCK_END
+#undef A76_SCALES
+#undef A76_HEAD
+#undef A76_ALIGN
+#undef A76_CHUNK
+#undef A76_SDOT8
+#endif
+
+#if defined(PK_NEON_A76) || defined(PK_NEON_MM)
+/* The FPCR's rounding mode (bits 23-22) is the default, to nearest: the
+ * A76's tile and the SMMLA tiles make their sums floats with an FSUB,
+ * which gives a zero sum -0 rounding toward -infinity, where ref's
+ * conversion gives +0 (tests/q8check), so another rounding takes the
+ * 4-column SDOT tile */
+static inline int round_nearest(void) {
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    return (fpcr & (3u << 22)) == 0;
+}
+#endif
+
 #ifdef PK_NEON_MM
 /* The 4-column tile's blocks of 32 or 64 inputs on SMMLA, I8MM's product of
  * a 2x8 int8 matrix by another's transpose: 32 multiply-adds an
@@ -1053,17 +1241,34 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
     /* a half panel's copy in SMMLA's order for a block of enough columns,
      * its 4-column tiles on it */
     int8_t *mm = NULL;
-    if (c1 - c0 >= PK_Q8_MM_COLS && (a->qb == 32 || a->qb == 64) && first && last)
+    if (c1 - c0 >= PK_Q8_MM_COLS && (a->qb == 32 || a->qb == 64) && first && last &&
+        round_nearest())
         mm = mm_buf();
+#endif
+#ifdef PK_NEON_A76
+    /* the A76's tile takes the block's pairs of columns, of a whole product
+     * at 32 or 64 inputs a block, rounding to nearest; the odd column is the
+     * 4-column tile's */
+    const uint32_t pairs =
+        first && last && nb && (a->qb == 32 || a->qb == 64) && round_nearest() ? (c1 - c0) / 2 : 0;
 #endif
     for (uint32_t r = 0; r < rows; r += 16) {
         const int8_t *wp = w + (size_t)r * n;
         float *o = out + r;
         const float *b = bias ? bias + r : NULL;
+        uint32_t t0 = c0;
+#ifdef PK_NEON_A76
+        for (uint32_t p = 0; p < pairs; p++, t0 += 2) {
+            const int8_t *x = a->q + (size_t)t0 * n;
+            const float *d = a->d + (size_t)t0 * nb;
+            q8_a76_pair(o + (size_t)t0 * os, o + (size_t)(t0 + 1) * os, wp, x, x + n, d, d + nb,
+                        nb, a->qb, ws + r, b, add);
+        }
+#endif
         for (uint32_t h = 0; h < 4; h += 2) {
             /* this half panel's partial sums: 8 floats a column of the block */
             float *ph = part ? part + ((size_t)(r / 8 + h / 2) * cb) * 8 : NULL;
-            uint32_t t = c0;
+            uint32_t t = t0;
 #define Q8_TILE(NC, MM, MAKE)                                                           \
     q8_tile(o, os, wp, n, h, ws + r, b, a, t, add, b0, b1,                              \
             ph ? ph + (size_t)(t - c0) * 8 : none, first, last, MM, MAKE, NC)
@@ -1622,92 +1827,32 @@ static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uin
         }
 }
 
-#ifdef PK_NEON_I8MM
-/* Whether the SMMLA tile is the faster on the calling thread's core: q8_mm4
- * on a copy and the SDOT loop on the file's order, 16 blocks of 32 inputs
- * of zeros (8, 4 and 2 KB, in L1), 64 calls a time. SMMLA's rate alone does
- * not part the cores: it is half SDOT's on snappy's Oryon and on the M4
- * both, where neon-i8mm is 10 to 13% faster and 8 to 10% slower. An SMMLA
- * leaves Oryon two of its four SIMD pipes for the tile's other
- * instructions, and the M4 none (backend/neon-dp/CLIMB.md, 2026-11-07). */
-enum { PROBE_NB = 16 };
-
-/* the weights in the file's order (g) and in SMMLA's (mm), and 4 columns'
- * activations (x) and scales (d) */
-typedef struct {
-    _Alignas(64) int8_t g[PROBE_NB * 512], mm[PROBE_NB * 256], x[4][PROBE_NB * 32];
-    float d[4][PROBE_NB];
-} probe_data;
-
-static double tile_time(const probe_data *p, int smmla) {
-    const int8_t *x[4] = { p->x[0], p->x[1], p->x[2], p->x[3] };
-    const float *d[4] = { p->d[0], p->d[1], p->d[2], p->d[3] };
-    float32x4_t f[4][2];
-    const double t0 = pk_os_now();
-    if (smmla)
-        for (int i = 0; i < 64; i++)
-            q8_mm4(f, p->mm, NULL, x, d, PROBE_NB, 32);
-    else
-        for (int i = 0; i < 64; i++)
-            q8_blocks4_qb32(f, p->g, x, d, PROBE_NB);
-    return pk_os_now() - t0;
-}
-
-/* The SMMLA tile's time over SDOT's: SDOT, SMMLA, SMMLA, SDOT a run, so
- * that a clock rising or falling through the four slows both alike, and
- * the median of 5 runs, past one that a migration or an interrupt cut
- * into. Timed SDOT then SMMLA, the best of 5 of each, it read 8% low on a
- * cold M5 core whose clock moved: 1.08 for its 1.17
- * (backend/neon-dp/CLIMB.md, 2026-11-07). */
-static double mm_tile_ratio(const probe_data *p) {
-    double r[5];
-    for (int run = 0; run < 5; run++) {
-        const double a = tile_time(p, 0);
-        const double b = tile_time(p, 1);
-        const double c = tile_time(p, 1);
-        const double d = tile_time(p, 0);
-        r[run] = (b + c) / (a + d);
-    }
-    for (int i = 1; i < 5; i++) /* sorted, for the median */
-        for (int j = i; j > 0 && r[j] < r[j - 1]; j--) {
-            const double t = r[j];
-            r[j] = r[j - 1];
-            r[j - 1] = t;
-        }
-    return r[2];
-}
-
-/* The data on the stack, and written. On Linux, static zeros never written
- * are all one page of zeros, and where a core's L1 sets reach past a 4 KB
- * page's bits (the A720's), a line read at two addresses moves between
- * sets. Read so, the S24's A520 put the SMMLA tile at 0.58 to 1.09 of
- * SDOT's, by where a build had put the arrays, and written, at 1.16 in
- * every run (backend/neon-dp/CLIMB.md, 2026-11-07). Production's weights
- * and activations are never that page. */
-static int mm_tile_faster(void) {
-    probe_data p;
-    memset(&p, 0, sizeof p);
-    return mm_tile_ratio(&p) < 1.0;
-}
-#endif
-
 #if defined(PK_NEON_SVE)
 /* SVE for the loop's MOVPRFX. A core with I8MM and no SVE has neon-i8mm's
- * loop, where its probe finds it the faster; SVE is named first, so that
- * such a core is told the SVE it lacks */
+ * loop, where it measures the faster; SVE is named first, so that such a
+ * core is told the SVE it lacks */
 static const char *const needs[] = { "asimddp", "sve", "i8mm", "svei8mm", NULL };
 const pk_kernels pk_kernels_neon_sve = {
     .id = "neon-sve",
     .name = "neon-sve (NEON, SVE and I8MM: SMMLA int8, fp32)",
 #elif defined(PK_NEON_I8MM)
-/* I8MM without SVE, and its tile the faster by its probe: the S24's big
- * cores, the S25's and the first Snapdragon X's, not the M4's or the S24's
- * A520s. A core with SVE takes neon-sve, before it. */
+/* I8MM without SVE, where its product measures the faster on the fastest
+ * cores (backend/kernels.c): the S24's big cores, the S25's and the first
+ * Snapdragon X's, not the M4's or the S24's A520s. A core with SVE takes
+ * neon-sve, before it. */
 static const char *const needs[] = { "asimddp", "i8mm", NULL };
 const pk_kernels pk_kernels_neon_i8mm = {
     .id = "neon-i8mm",
     .name = "neon-i8mm (NEON and I8MM: SMMLA int8, fp32)",
-    .usable = mm_tile_faster,
+    .competes = 1,
+#elif defined(PK_NEON_A76)
+/* SDOT in the A76's tile, where its product measures the faster than
+ * neon-dp's 4-column tile's on the fastest cores (backend/kernels.c) */
+static const char *const needs[] = { "asimddp", NULL };
+const pk_kernels pk_kernels_neon_dp_a76 = {
+    .id = "neon-dp-a76",
+    .name = "neon-dp-a76 (ARMv8.2 NEON: SDOT int8 in the A76's tile, fp32)",
+    .competes = 1,
 #elif defined(PK_NEON_DOTPROD)
 static const char *const needs[] = { "asimddp", NULL };
 const pk_kernels pk_kernels_neon_dp = {

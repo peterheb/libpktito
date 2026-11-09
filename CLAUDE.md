@@ -98,8 +98,8 @@ allows.
 - The boards: an i9-12900HK (AVX2, AVX-VNNI), a Pi 3B+ (Cortex-A53,
   905 MB), a Pi 5 (Cortex-A76, 4 GB; pi5a), a DGX Spark (GB10: ten
   Cortex-X925 and ten Cortex-A725; a vLLM worker lives there too), a
-  Snapdragon 7c laptop (Windows 11 on ARM: two Cortex-A76, six A55; 7.6 GB;
-  armlet), and the M4 Pro here, the one machine that is also in use while
+  Snapdragon 7c mini PC, a 4-inch box on Wi-Fi (Windows 11 on ARM: two
+  Cortex-A76, six A55; 7.6 GB; armlet), and the M4 Pro here, the one machine that is also in use while
   measuring. Their logins and addresses are in CLAUDE.local.md, which is
   not committed. One job at a time on a board when measuring.
 - When a request comes with a reason, weigh the reason. If it points

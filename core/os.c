@@ -274,34 +274,74 @@ int pk_os_fast_cores(void) {
 
 #if defined(__linux__) && !defined(PK_NO_THREADS)
 typedef struct {
-    int (*fn)(void);
-    cpu_set_t fast;
-    int answer;
+    int (*fn)(void *, int, int);
+    void *arg;
+    int cpu[PK_OS_ON_FAST], n, go, answer;
+    pthread_mutex_t m;
+    pthread_cond_t c;
 } on_fast;
 
-static void *on_fast_main(void *arg) {
-    on_fast *o = arg;
-    sched_setaffinity(0, sizeof o->fast, &o->fast);
-    o->answer = o->fn();
+typedef struct {
+    on_fast *o;
+    int i;
+} on_fast_arg;
+
+/* held to its core, then let go with the others once all are made */
+static void *on_fast_main(void *p) {
+    const on_fast_arg *a = p;
+    on_fast *o = a->o;
+    cpu_set_t one;
+    CPU_ZERO(&one);
+    CPU_SET(o->cpu[a->i], &one);
+    sched_setaffinity(0, sizeof one, &one);
+    pthread_mutex_lock(&o->m);
+    while (!o->go)
+        pthread_cond_wait(&o->c, &o->m);
+    pthread_mutex_unlock(&o->m);
+    const int answer = o->fn(o->arg, a->i, o->n);
+    if (a->i == 0)
+        o->answer = answer;
     return NULL;
 }
 #endif
 
-/* A thread of its own: the caller's, held to the fast cores and let go,
+/* Threads of its own: the caller's, held to the fast cores and let go,
  * would keep a mask of its own, the cores it had at that moment, which
  * Linux 6.2 and later keep through the process's later cpusets, as Android
  * moves an app between them. */
-int pk_os_on_fast_cores(int (*fn)(void)) {
+int pk_os_on_fast_cores(int (*fn)(void *, int, int), void *arg) {
 #if defined(__linux__) && !defined(PK_NO_THREADS)
-    on_fast o = { .fn = fn };
-    int cores, n = fast_cpus(&o.fast, &cores);
-    pthread_t t;
-    if (n > 0 && n < cores && pthread_create(&t, NULL, on_fast_main, &o) == 0) {
-        pthread_join(t, NULL);
-        return o.answer;
+    on_fast o = { .fn = fn, .arg = arg, .m = PTHREAD_MUTEX_INITIALIZER,
+                  .c = PTHREAD_COND_INITIALIZER };
+    on_fast_arg a[PK_OS_ON_FAST];
+    pthread_t t[PK_OS_ON_FAST];
+    cpu_set_t fast;
+    long all[PK_OS_ON_FAST];
+    int cores, want = 0, made = 0;
+    if (fast_cpus(&fast, &cores) > 0)
+        for (int c = 0; c < CPU_SETSIZE && want < PK_OS_ON_FAST; c++)
+            if (CPU_ISSET(c, &fast))
+                o.cpu[want++] = c;
+    if (!want)                              /* no speeds in sysfs: every core, one kind */
+        for (int n = allowed_cores(all, PK_OS_ON_FAST); want < n; want++)
+            o.cpu[want] = (int)all[want];
+    for (; made < want; made++) {
+        a[made] = (on_fast_arg){ &o, made };
+        if (pthread_create(&t[made], NULL, on_fast_main, &a[made]))
+            break;
     }
+    pthread_mutex_lock(&o.m);
+    o.n = made, o.go = 1;
+    pthread_cond_broadcast(&o.c);
+    pthread_mutex_unlock(&o.m);
+    for (int i = 0; i < made; i++)
+        pthread_join(t[i], NULL);
+    pthread_cond_destroy(&o.c);
+    pthread_mutex_destroy(&o.m);
+    if (made)
+        return o.answer;
 #endif
-    return fn();
+    return fn(arg, 0, 1);
 }
 
 double pk_os_now(void) {
@@ -397,7 +437,7 @@ void pk_unmap(const unsigned char *p, size_t size) {
  * 64 logical processors. */
 /* the cores the process may run on, every one or only those of the
  * highest EfficiencyClass (0 on a chip of one kind) */
-static int cores(int fastest) {
+static int cores(int fastest, DWORD_PTR *mask, int max) {
     DWORD_PTR pmask = ~(DWORD_PTR)0, smask;
     GetProcessAffinityMask(GetCurrentProcess(), &pmask, &smask);
     DWORD len = 0;
@@ -411,21 +451,75 @@ static int cores(int fastest) {
         for (DWORD at = 0; at < len;) {
             const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *r = (const void *)(buf + at);
             at += r->Size;
-            if (!(r->Processor.GroupMask[0].Mask & (KAFFINITY)pmask))
+            const DWORD_PTR m = (DWORD_PTR)r->Processor.GroupMask[0].Mask & pmask;
+            if (!m || (mask && r->Processor.GroupMask[0].Group != 0))
                 continue;
             if (pass == 0)
                 top = r->Processor.EfficiencyClass > top ? r->Processor.EfficiencyClass : top;
-            else
-                n += !fastest || r->Processor.EfficiencyClass == top;
+            else if (!fastest || r->Processor.EfficiencyClass == top) {
+                if (mask && n < max)
+                    mask[n] = m;
+                n++;
+            }
         }
     }
     free(buf);
     return n > 0 ? n : 1;
 }
 
-int pk_os_cores(void) { return cores(0); }
-int pk_os_fast_cores(void) { return cores(1); }
-int pk_os_on_fast_cores(int (*fn)(void)) { return fn(); }
+int pk_os_cores(void) { return cores(0, NULL, 0); }
+int pk_os_fast_cores(void) { return cores(1, NULL, 0); }
+
+typedef struct {
+    int (*fn)(void *, int, int);
+    void *arg;
+    int n, answer;
+} on_fast;
+
+typedef struct {
+    on_fast *o;
+    int i;
+} on_fast_arg;
+
+/* out of EcoQoS for the probe as the library's other threads are
+ * (pk_os_unthrottle), or its clock is the efficient cores' */
+static DWORD WINAPI on_fast_main(LPVOID p) {
+    const on_fast_arg *a = p;
+    pk_os_throttle was = pk_os_unthrottle();
+    const int answer = a->o->fn(a->o->arg, a->i, a->o->n);
+    if (a->i == 0)
+        a->o->answer = answer;
+    pk_os_rethrottle(was);
+    return 0;
+}
+
+/* a thread on each of the highest EfficiencyClass's cores, made suspended,
+ * so that each runs nothing before its mask is set, and let go once all
+ * are made */
+int pk_os_on_fast_cores(int (*fn)(void *, int, int), void *arg) {
+    on_fast o = { fn, arg, 0, 0 };
+    on_fast_arg a[PK_OS_ON_FAST];
+    HANDLE t[PK_OS_ON_FAST];
+    DWORD_PTR mask[PK_OS_ON_FAST];
+    int want = cores(1, mask, PK_OS_ON_FAST), made = 0;
+    want = want < PK_OS_ON_FAST ? want : PK_OS_ON_FAST;
+    for (; made < want; made++) {
+        a[made] = (on_fast_arg){ &o, made };
+        t[made] = CreateThread(NULL, 0, on_fast_main, &a[made], CREATE_SUSPENDED, NULL);
+        if (!t[made])
+            break;
+        SetThreadAffinityMask(t[made], mask[made]);
+    }
+    if (!made)
+        return fn(arg, 0, 1);
+    o.n = made;
+    for (int i = 0; i < made; i++)
+        ResumeThread(t[i]);
+    WaitForMultipleObjects((DWORD)made, t, TRUE, INFINITE);
+    for (int i = 0; i < made; i++)
+        CloseHandle(t[i]);
+    return o.answer;
+}
 
 /* Windows gives EcoQoS, by its own heuristics, to a process with no
  * window - one run over ssh, a service - and on battery to one whose
@@ -534,7 +628,7 @@ void pk_unmap(const unsigned char *p, size_t size) {
 
 int pk_os_cores(void) { return 1; }
 int pk_os_fast_cores(void) { return 1; }
-int pk_os_on_fast_cores(int (*fn)(void)) { return fn(); }
+int pk_os_on_fast_cores(int (*fn)(void *, int, int), void *arg) { return fn(arg, 0, 1); }
 
 double pk_os_now(void) {
     struct timespec ts;
