@@ -402,8 +402,8 @@ check-sanitize: $(if $(filter 1,$(ANE)),tests/ane-san.o)
 TSAN := -O1 -g -fsanitize=thread -std=c11 -ffp-contract=off $(PLATFLAGS) $(INC)
 check-tsan:
 	$(foreach b,$(BACKENDS) ref,$(CC) $(TSAN) $(ISA_$(b)) -c backend/$(b)/kernels.c -o tests/tsan-$(b).o &&) true
-	$(CC) $(TSAN) $(HAVE) -o tests/pktito-tsan core/cli.c $(LIB_SRC) backend/kernels.c \
-	  $(foreach b,$(BACKENDS) ref,tests/tsan-$(b).o) $(LDLIBS)
+	$(CC) $(TSAN) $(HAVE) -o tests/pktito-tsan core/cli.c core/editions.c core/catalog.c $(LIB_SRC) \
+	  backend/kernels.c $(foreach b,$(BACKENDS) ref,tests/tsan-$(b).o) $(LDLIBS)
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 -m $(MODEL) tests/data/test.wav > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 --stream -m $(MODEL) tests/data/test.wav > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 -m $(MODEL) tests/data/test.wav > /dev/null
