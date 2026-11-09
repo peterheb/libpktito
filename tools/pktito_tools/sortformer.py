@@ -7,7 +7,8 @@ This is NeMo 3.0's arithmetic for diar_streaming_sortformer_4spk-v2
 (SortformerEncLabelModel.forward_streaming, and SortformerModules'
 streaming_update and _compress_spkcache) at batch size one:
 
-  features    Parakeet's log-mel (reference.features), not normalized
+  features    Parakeet's log-mel (reference.features' arithmetic), not
+              normalized, made a chunk at a time (features)
   pre-encode  Parakeet's subsampling (reference.subsample), a chunk at a
               time: 340 frames (27.2 s) and up to 1 frame of left and 40 of
               right context, each chunk's convolutions seeing only it
@@ -360,25 +361,50 @@ def chunks(T0, a):
     return out
 
 
+def features(audio, f0, f1, w, a):
+    """The log-mel features of frames f0 .. f1-1 of a recording, from the
+    samples those frames see: reference.features' arithmetic for each
+    frame, unnormalized as the diarizers' preprocessors are, so that a
+    recording's features can be made a chunk at a time. Made at once, an
+    hour's take some 5 GB of float64 on the way (four [T][512] arrays)."""
+    n_fft, win, hop = a["n_fft"], a["win_length"], a["hop_length"]
+    lo, hi = f0 * hop - n_fft // 2, (f1 - 1) * hop + n_fft // 2       # the samples they see, zeros outside
+    s0, s1 = max(lo, 0), min(hi, len(audio))
+    x = np.asarray(audio[max(s0 - 1, 0):s1], np.float64)
+    pre = x[1:] - a["preemph"] * x[:-1]                                  # y[n] = x[n] - 0.97 x[n - 1] ...
+    if s0 == 0:
+        pre = np.concatenate([x[:1], pre])                               # ... and y[0] = x[0]
+    y = np.zeros(hi - lo)
+    y[s0 - lo:s1 - lo] = pre
+    window = np.zeros(n_fft)
+    left = (n_fft - win) // 2
+    window[left:left + win] = w["mel.window"]
+    idx = np.arange(f1 - f0)[:, None] * hop + np.arange(n_fft)[None, :]
+    spec = np.fft.rfft(y[idx] * window, axis=1)
+    power = spec.real ** 2 + spec.imag ** 2
+    return np.log(power @ w["mel.fb"].T + a["log_guard"])
+
+
 def run(audio, w, a, pre_encode, forward, log=None):
     """A model's speaker probabilities for 16 kHz audio, a row every
-    a["frame"] seconds, and the Stream: the features, then the chunks
-    through the network and the cache. The rows are as many as NeMo
+    a["frame"] seconds, and the Stream: each chunk's features, then the
+    chunk through the network and the cache. The rows are as many as NeMo
     returns: one for every 8 feature frames or part of 8 (v2), one for
     every feature frame (Nemotron 3). The features are computed in float64
     and the rest in the weights' precision, as quantcheck.py runs
     Parakeet."""
-    feat = reference.features(audio, w, a).astype(w["mel.fb"].dtype, copy=False)
+    T0 = len(audio) // a["hop_length"]
     st = Stream(w, a, pre_encode, forward)
     f, up = a["subsampling"], a["upsample"]
     out = []
-    for i, (stt, end, left, right) in enumerate(chunks(len(feat), a)):
-        p = st.step(feat[stt - left:end + right], round(left / f), math.ceil(right / f))
+    for i, (stt, end, left, right) in enumerate(chunks(T0, a)):
+        feat = features(audio, stt - left, end + right, w, a).astype(w["mel.fb"].dtype, copy=False)
+        p = st.step(feat, round(left / f), math.ceil(right / f))
         out.append(p)
         if log:
             log("  chunk %d: frames %d to %d, cache %d, fifo %d" % (i, stt // f, stt // f + len(p) // up,
                                                                    len(st.cache), len(st.fifo)))
-    n = -(-len(feat) * up // f)
+    n = -(-T0 * up // f)
     return np.concatenate(out)[:n] if out else np.zeros((0, a["n_spk"])), st
 
 
