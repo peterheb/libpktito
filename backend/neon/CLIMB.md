@@ -1288,3 +1288,51 @@ and 3.2 to 3.4% faster. The hypothesis asked too for the block of 32's
 loop in the same bytes, and it is the same instructions in other general
 registers: the default's time is level on the A72, and on the A53 its
 product is 0.26% slower under gcc and level under clang.
+
+## 2026-11-09 - the diarizer's GELU four lanes at a time (hypothesis)
+
+backend/avx2/CLIMB.md's entry of the same day has the diarizer's GELU.
+It is torch's exact one, over 91,295,744 values for tests/data/conv2.wav,
+and every backend's pk_k_gelu is ref's scalar loop. Its share on pi5a
+(Cortex-A76, neon-dp-a76, the board's gcc 14.2, eddb23b) was timed the
+same way: `pktito-c bench` with the diarizer's model over conv2.wav,
+against the same build with the call left out. Three rounds, alternated,
+best of 5; 57 °C after, never throttled (0x0):
+
+| threads | with GELU     | without       | GELU's share |
+| ------- | ------------- | ------------- | ------------ |
+| 4       | 1.800-1.802 s | 1.517-1.520 s | 16%          |
+| 1       | 6.644-6.668 s | 5.313-5.340 s | 20%          |
+
+At one thread that is 14.6 ns a value.
+
+The hypothesis: the x86 entry's, in NEON. Each of four lanes computes
+all three of pk_erff's outcomes, and VBSL chooses between them on the
+scalar's compares, which are false for a NaN. Each operation is the
+scalar's: FMLA for pk_fmaf, v_exp for pk_expf, and the sign by VBSL. One
+source serves every NEON build: neon, neon-dp, neon-dp-a76, neon-i8mm
+and neon-sve. So the bits are ref's: kcheck on pi5a and on a GB10 (whose
+cores run all five), and every float through each.
+
+Predicted on pi5a, from about 50 instructions for four values on the
+A76's two vector pipes:
+
+- the kernel at 2.5 to 4 ns a value;
+- the diarizer 14 to 17% faster at one thread and 11 to 13% at four;
+- under gcc 14.2 (the board's) and clang 21.1 (cross-built here,
+  static, tuned for the A76).
+
+On the in-order A53 the scalar computes one outcome a value where the
+lanes compute all three, and its NEON runs a quad instruction in two
+halves. Predicted no slower there, measured on pinfer-pi3 if pinfer
+gives a window.
+
+Kept if all of these hold:
+
+- kcheck and the sweep give ref's bits.
+- check-c's conv2 rows and speakers are the same bytes on pi5a.
+- The diarizer's bench on pi5a is faster by more than its spread at 1
+  and 4 threads under both compilers.
+
+neon's ARMv8.0 build, the A53's, keeps the vector kernel only if the
+A53 is not slower.
