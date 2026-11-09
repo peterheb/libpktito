@@ -1129,16 +1129,18 @@ scripts/fmt.sh --check       # every language but C in its formatter's form, bef
 `check-c` is the math library's bounds, every kernel of every backend the
 CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
 model file's validator on its malformed corpus and the whole engine on the
-tiny models, a recognizer's and a diarizer's, the WAV and AIFF reader on its own, a WAV and a model under a name
-past ASCII (on Windows, the regression test for UTF-8 paths), and
-test.wav through `./pktito-c` and
-through examples/transcribe:
-vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
-the detokenizer against sentencepiece, the state machines against Silero's
-Python, the resampler against torchaudio and the corpora's WER.
-tests/README.md has each check. A build copied to Windows without MSYS2,
-which has no make or sh, runs check-c's commands with `powershell -File
-tests\check-c.ps1`, given `-V2` and `-V3` for models kept outside models\.
+tiny models, a recognizer's and a diarizer's, the WAV and AIFF reader on
+its own, a WAV and a model under a name past ASCII (on Windows, the
+regression test for UTF-8 paths), test.wav through `./pktito-c` and through
+examples/transcribe: vadito's VAD bits, and both models' transcripts byte
+for byte; and conv2.wav, a minute of two speakers, through `--speakers`:
+the diarizer's stretches of speech and v2's words with their speakers, byte
+for byte. `check` adds the detokenizer against sentencepiece, the state
+machines against Silero's Python, the resampler against torchaudio and the
+corpora's WER. tests/README.md has each check. A build copied to Windows
+without MSYS2, which has no make or sh, runs check-c's commands with
+`powershell -File tests\check-c.ps1`, given `-V2`, `-V3` and `-Diar` for
+models kept outside models\.
 
 ## The tree
 

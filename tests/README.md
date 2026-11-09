@@ -43,8 +43,18 @@ output, a 1.2 MB model with random weights and every tensor, param and piece
 type, and tiny-diar.pkf `pktito-tools tiny --diarizer`'s, a diarizer's of
 117 KB.
 
+tests/data/conv2.wav is the first minute of docs/DIARIZATION.md's conv2, a
+conversation made from LibriSpeech's test-clean (Panayotov et al., 2015,
+openslr.org/12, CC BY 4.0): two readers, 1089 (chapter 134686) and 121
+(chapter 121726), their speech cut where Silero's VAD found it and laid
+out in turns with gaps between them, one turn overlapping the last.
+conv2.speakers.txt is `ref`'s `pktito-c speakers` for it, and conv2.v2.json
+its `--speakers --json` transcript with v2.
+
 When a change to arithmetic is meant - a rounding, an order, a kernel's
 definition - test.v2.json and test.v3.json are regenerated from `ref`
 (`PKTITO_KERNELS=ref ./pktito-c --json -m MODEL tests/data/test.wav`, and
 with `--fast` the .fast.json), and the change carries its `wercheck.py`
-numbers against the run before (CLAUDE.md, "Measuring").
+numbers against the run before (CLAUDE.md, "Measuring"). conv2's are
+regenerated the same way (`PKTITO_KERNELS=ref ./pktito-c speakers
+tests/data/conv2.wav`, and `--speakers --json -m V2` for conv2.v2.json).

@@ -34,6 +34,11 @@ run ./tests/sentcheck "$MODEL" tests/data/test.wav
   && ./pktito-c -m $TINY --fast tests/pkfcheck.wav > /dev/null \
   && echo "pktito-c: the tiny model through the CLI, chunked, four ways" \
   || { echo "pktito-c: FAIL on the tiny model"; exit 1; }
+./pktito-c -m $TINY -m $TINY_DIAR --json tests/pkfcheck.wav > /dev/null \
+  && ./pktito-c -m $TINY -m $TINY_DIAR tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
+  && ./pktito-c -m $TINY_DIAR speakers --json tests/pkfcheck.wav > /dev/null \
+  && echo "pktito-c --speakers: the tiny models through the CLI, three ways" \
+  || { echo "pktito-c: FAIL on the tiny models with --speakers"; exit 1; }
 d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/ñ.wav" \
   && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json \
   && PKTITO_MODEL="$d/tiny-é.pkf" ./pktito-c --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
@@ -53,6 +58,22 @@ for v in v2 v3; do f=models/parakeet-tdt-0.6b-$v.pkf
     && echo "test.wav: $v transcript in the fast mode is ref's" \
     || { echo "test.wav: FAIL - $v --fast transcript differs from tests/data/test.$v.fast.json"; exit 1; }
 done
+# a minute of two LibriSpeech readers in conversation: the diarizer's
+# stretches of speech, and v2's words with their speakers
+d=models/nemotron-3-diarization.pkf
+if [ ! -f $d ]; then echo "conv2.wav: no $d - skipped"
+else
+  ./pktito-c speakers -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.speakers.txt \
+    && echo "conv2.wav: the diarizer's stretches of speech are ref's" \
+    || { echo "conv2.wav: FAIL - the diarizer's stretches differ from tests/data/conv2.speakers.txt"; exit 1; }
+  f=models/parakeet-tdt-0.6b-v2.pkf
+  if [ ! -f $f ]; then echo "conv2.wav: no $f - skipped"
+  else
+    ./pktito-c --speakers --json -m $f -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.json \
+      && echo "conv2.wav: v2 transcript's words and speakers are ref's" \
+      || { echo "conv2.wav: FAIL - v2 --speakers transcript differs from tests/data/conv2.v2.json"; exit 1; }
+  fi
+fi
 # --stream resamples as it reads: at 8 kHz (a telephone's) and 48 kHz (most
 # microphones'), the lines of the same samples resampled first
 s=tests/streamcheck
