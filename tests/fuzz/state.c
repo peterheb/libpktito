@@ -175,7 +175,7 @@ static void captions_case(fz_input *f) {
     }
     const int lang = fz_u8(f) % 3;
     int64_t media_end = fz_u8(f) & 1 ? at + fz_u32(f) % 5001 : 0;
-    long nc = pk_captions(words, n, lang == 0 ? NULL : lang == 1 ? "en" : pk_language(words, n),
+    long nc = pk_captions(words, n, NULL, lang == 0 ? NULL : lang == 1 ? "en" : pk_language(words, n),
                           media_end, cues);
     FZ_ASSERT(nc >= 0 && (size_t)nc <= n);
     int32_t next = 0;

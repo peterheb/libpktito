@@ -6,7 +6,7 @@
  *   pktito-c bench talk.wav             how fast this machine transcribes it
  *   pktito-c info                       the model file: where it came from
  *   pktito-c models                     the files for this machine, and where to get them
- *   pktito-c -m DIAR.pkf talk.wav       who said what: a paragraph a speaker's turn
+ *   pktito-c -m DIAR.pkf talk.wav       who said what: each turn's sentences, its speaker named
  *   pktito-c speakers -m DIAR.pkf talk.wav   who speaks when, from the diarizer alone
  *
  * A file is read (mean of the channels; another rate is brought to 16 kHz)
@@ -21,8 +21,9 @@
  * With a diarizer's model named by -m (--speakers says so too) the
  * diarizer (core/diar.c) hears the whole file first, and each word goes to
  * a speaker by NeMo's rule (pk_speakers), the speakers numbered from 1 in
- * the order they first say a word. The diarizer is a preview model, which
- * pktito-c runs only when it is named (models.json's design).
+ * the order they first say a word; a change of speaker ends a sentence and
+ * a subtitle's cue (pk_sentences, pk_captions). The diarizer is a preview
+ * model, which pktito-c runs only when it is named (models.json's design).
  */
 #include "pktito.h"
 #include "asr.h"
@@ -148,7 +149,7 @@ static const char *usage =
     "      --no-retry      don't retranscribe speech that gave no words\n"
     "      --no-context    don't extend a cut made mid-sentence\n"
     "                      (with --no-retry: each chunk exactly as NeMo has it)\n"
-    "      --speakers      who said what, a paragraph a turn, with a diarizer's model\n"
+    "      --speakers      who said what, each turn named, with a diarizer's model\n"
     "                      named by -m (nemotron-3-diarization.pkf), as -m alone asks\n"
     "      --json          chunks with word and token times, and metadata\n"
     "      --srt, --vtt    subtitles\n"
@@ -250,8 +251,8 @@ static void parse(int argc, char **argv, opts *o) {
         die("--stream or %s, not both", subs);
     if (o->all && strcmp(o->cmd, "models"))
         die("--all is for pktito-c models");
-    if (o->speakers && (o->subs || o->stream))
-        die("--speakers with %s: not yet", o->subs ? subs : "--stream");
+    if (o->speakers && o->stream)
+        die("--speakers with --stream: not yet");
     if (o->speakers && strcmp(o->cmd, "text") && strcmp(o->cmd, "speakers"))
         die("--speakers is for a transcript, not %s", o->cmd);
     if (!o->in && strcmp(o->cmd, "info") && strcmp(o->cmd, "models")) {
@@ -677,14 +678,19 @@ static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top
  * English alone. */
 typedef struct {
     pk_capword *w;
+    int32_t *spk;                    /* each word's speaker, with --speakers */
     char *text;                      /* the words' texts, each with its NUL */
     size_t n, cap, len, tcap;
 } capwords;
 
-static void cap_add(capwords *c, const char *word, int64_t start, int64_t end) {
+static void cap_add(capwords *c, const char *word, int64_t start, int64_t end, int32_t speaker) {
     size_t l = strlen(word) + 1;
-    if (c->n == c->cap && !(c->w = realloc(c->w, (c->cap = c->cap ? 2 * c->cap : 1024) * sizeof *c->w)))
-        die("out of memory");
+    if (c->n == c->cap) {
+        c->cap = c->cap ? 2 * c->cap : 1024;
+        if (!(c->w = realloc(c->w, c->cap * sizeof *c->w)) || !(c->spk = realloc(c->spk, c->cap * sizeof *c->spk)))
+            die("out of memory");
+    }
+    c->spk[c->n] = speaker;
     while (c->len + l > c->tcap)
         if (!(c->text = realloc(c->text, c->tcap = c->tcap ? 2 * c->tcap : 16384)))
             die("out of memory");
@@ -720,17 +726,34 @@ static const char *file_language(const pk_model *m, capwords *c) {
         lang = pk_language(c->w, c->n);
     }
     free(c->w);
+    free(c->spk);
     free(c->text);
     *c = (capwords){ 0 };
     return lang;
 }
 
-static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end) {
+/* With speakers, a change of speaker ends a cue, and the first word of
+ * each turn carries "Speaker N: ", so that the line counts the name; in
+ * WebVTT each cue's voice is named as well, <v Speaker N>. */
+static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end, int speakers) {
     cap_texts(c);
+    if (!lang)
+        lang = pk_language(c->w, c->n);   /* the words' own, before any name */
+    char **named = speakers ? calloc(c->n ? c->n : 1, sizeof *named) : NULL;
+    if (speakers && !named)
+        die("out of memory");
+    for (size_t i = 0; speakers && i < c->n; i++)
+        if (!i || c->spk[i] != c->spk[i - 1]) {
+            const size_t l = strlen(c->w[i].text) + 24;
+            if (!(named[i] = malloc(l)))
+                die("out of memory");
+            snprintf(named[i], l, "Speaker %d: %s", (int)c->spk[i], c->w[i].text);
+            c->w[i].text = named[i];
+        }
     pk_cue *cue = malloc((c->n ? c->n : 1) * sizeof *cue);
     if (!cue)
         die("out of memory");
-    long nc = pk_captions(c->w, c->n, lang ? lang : pk_language(c->w, c->n), media_end, cue);
+    long nc = pk_captions(c->w, c->n, speakers ? c->spk : NULL, lang, media_end, cue);
     if (nc < 0)
         die("out of memory");
     if (vtt)
@@ -741,6 +764,8 @@ static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end)
         printf(" --> ");
         sub_time(cue[k].end, vtt ? '.' : ',');
         putchar('\n');
+        if (vtt && speakers)
+            printf("<v Speaker %d>", (int)c->spk[cue[k].first]);
         for (int32_t i = cue[k].first; i < cue[k].first + cue[k].n; i++) {
             if (i > cue[k].first)
                 putchar(i == cue[k].line2 ? '\n' : ' ');
@@ -751,8 +776,12 @@ static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end)
         }
         printf("%s\n\n", cue[k].flags & PK_CUE_PAUSE ? "\xE2\x80\xA6" : "");
     }
+    for (size_t i = 0; speakers && i < c->n; i++)
+        free(named[i]);
+    free(named);
     free(cue);
     free(c->w);
+    free(c->spk);
     free(c->text);
 }
 
@@ -790,10 +819,9 @@ typedef struct {
     size_t nwords;                   /* the file's words so far */
     turn *turns;
     size_t nturns, turncap;
-    pk_tok *para;                    /* the text's turn so far, its tokens */
-    size_t npara, paracap;
-    int32_t cur;                     /* its speaker */
-    int paras;                       /* turns printed */
+    int32_t *tailspk;                /* each tail token's speaker, its word's */
+    int32_t said;                    /* the speaker of the last sentence printed, 0 before the first */
+    int lines;                       /* sentences printed */
 } chunk_out;
 
 /* The language of the words so far (pk_language), their texts where the
@@ -812,16 +840,24 @@ static const char *words_language(const capwords *c) {
 /* A file's sentences, a line each, as its chunks come: the tokens in none
  * yet, then the chunk's, their frames counted from the recording's start
  * as pk_sentences takes them. A sentence that runs on into the next chunk
- * waits for it, and the last chunk ends the last one. */
-static void print_sentences(chunk_out *p, const pk_chunk_out *ch) {
+ * waits for it, and the last chunk ends the last one. With --speakers (spk,
+ * each of the chunk's words' speakers), a change of speaker ends a
+ * sentence too, and each turn starts "Speaker N: " after a blank line; with
+ * several files, the sentences on the file's line. */
+static void print_sentences(chunk_out *p, const pk_chunk_out *ch, const pk_word *wd, size_t nw,
+                            const int32_t *spk) {
     const pk_model *m = p->m;
     const size_t nt = (size_t)ch->count;
     if (p->ntail + nt > p->tailcap) {
         while (p->ntail + nt > p->tailcap)
             p->tailcap = p->tailcap ? 2 * p->tailcap : 1024;
-        if (!(p->tail = realloc(p->tail, p->tailcap * sizeof *p->tail)))
+        if (!(p->tail = realloc(p->tail, p->tailcap * sizeof *p->tail))
+            || (spk && !(p->tailspk = realloc(p->tailspk, p->tailcap * sizeof *p->tailspk))))
             die("out of memory");
     }
+    for (size_t w = 0; spk && w < nw; w++)    /* a word's tokens, its speaker */
+        for (int32_t k = 0; k < wd[w].ntok; k++)
+            p->tailspk[p->ntail + (size_t)wd[w].tok + (size_t)k] = spk[w];
     for (size_t k = 0; k < nt; k++) {
         p->tail[p->ntail] = ch->toks[k];
         p->tail[p->ntail++].frame += ch->at_frame;
@@ -834,7 +870,7 @@ static void print_sentences(chunk_out *p, const pk_chunk_out *ch) {
         for (size_t k = 0; k < nw; k++) {
             char word[1024];
             pk_text(m, ch->toks + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
-            cap_add(&p->words, word, 0, 0);
+            cap_add(&p->words, word, 0, 0, 0);
         }
         free(wd);
         p->lang = words_language(&p->words);
@@ -842,7 +878,7 @@ static void print_sentences(chunk_out *p, const pk_chunk_out *ch) {
     pk_sentence *s = malloc((p->ntail ? p->ntail : 1) * sizeof *s);
     if (!s)
         die("out of memory");
-    long ns = pk_sentences(m, p->tail, p->ntail, p->lang, ch->i + 1 == ch->n, s);
+    long ns = pk_sentences(m, p->tail, p->ntail, spk ? p->tailspk : NULL, p->lang, ch->i + 1 == ch->n, s);
     if (ns < 0)
         die("out of memory");
     for (long k = 0; k < ns; k++) {
@@ -850,12 +886,26 @@ static void print_sentences(chunk_out *p, const pk_chunk_out *ch) {
         while ((len = pk_text(m, p->tail + s[k].first, (size_t)s[k].n, p->text, p->cap)) >= p->cap)
             if (!(p->text = realloc(p->text, p->cap *= 2)))
                 die("out of memory");
-        if (len)
-            puts(p->text);
+        if (!len)
+            continue;
+        if (spk) {
+            const int32_t who = p->tailspk[s[k].first];
+            if (who != p->said)
+                printf("%sSpeaker %d: ", p->lines ? p->many ? " " : "\n" : "", (int)who);
+            else if (p->many)
+                putchar(' ');
+            p->said = who;
+        }
+        fputs(p->text, stdout);
+        if (!p->many)
+            putchar('\n');
+        p->lines++;
     }
     if (ns > 0) {
         const size_t used = (size_t)(s[ns - 1].first + s[ns - 1].n);
         memmove(p->tail, p->tail + used, (p->ntail - used) * sizeof *p->tail);
+        if (spk)
+            memmove(p->tailspk, p->tailspk + used, (p->ntail - used) * sizeof *p->tailspk);
         p->ntail -= used;
     }
     free(s);
@@ -897,42 +947,6 @@ static size_t chunk_words(chunk_out *p, const pk_chunk_out *ch, pk_word *wd, int
     return nw;
 }
 
-/* --speakers' text: a turn's paragraph, "Speaker 1: " and its words; with
- * several files, the turns on the file's line */
-static void flush_turn(chunk_out *p) {
-    size_t len;
-    while ((len = pk_text(p->m, p->para, p->npara, p->text, p->cap)) >= p->cap)
-        if (!(p->text = realloc(p->text, p->cap *= 2)))
-            die("out of memory");
-    if (p->many)
-        printf("%sSpeaker %d: %s", p->paras ? " " : "", (int)p->cur, p->text);
-    else
-        printf("%sSpeaker %d: %s\n", p->paras ? "\n" : "", (int)p->cur, p->text);
-    p->paras++;
-    p->npara = 0;
-}
-
-/* each turn printed once the next speaker's first word, or the file's
- * end, says it is over */
-static void print_turns(chunk_out *p, const pk_chunk_out *ch, const pk_word *wd, size_t nw, const int32_t *spk) {
-    for (size_t k = 0; k < nw; k++) {
-        if (p->npara && spk[k] != p->cur)
-            flush_turn(p);
-        p->cur = spk[k];
-        const size_t nt = (size_t)wd[k].ntok;
-        if (p->npara + nt > p->paracap) {
-            while (p->npara + nt > p->paracap)
-                p->paracap = p->paracap ? 2 * p->paracap : 1024;
-            if (!(p->para = realloc(p->para, p->paracap * sizeof *p->para)))
-                die("out of memory");
-        }
-        memcpy(p->para + p->npara, ch->toks + wd[k].tok, nt * sizeof *p->para);
-        p->npara += nt;
-    }
-    if (ch->i + 1 == ch->n && p->npara)
-        flush_turn(p);
-}
-
 /* One chunk's tokens, printed as -o asks (pk_asr_transcribe's fn) */
 static int print_chunk(void *arg, const pk_chunk_out *ch) {
     chunk_out *p = arg;
@@ -969,7 +983,7 @@ static int print_chunk(void *arg, const pk_chunk_out *ch) {
             pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
             printf("%s{\"word\": ", k ? ", " : "");
             json_str(word);
-            cap_add(&p->words, word, 0, 0);
+            cap_add(&p->words, word, 0, 0, 0);
             printf(", \"start\": %.2f, \"end\": %.2f", start + wd[k].start * fs, start + wd[k].end * fs);
             if (p->dm)
                 printf(", \"speaker\": %d", (int)spk[k]);
@@ -991,14 +1005,15 @@ static int print_chunk(void *arg, const pk_chunk_out *ch) {
         for (size_t k = 0; k < nw; k++) {
             char word[1024];
             pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
-            cap_add(&p->words, word, llround((start + wd[k].start * fs) * 1000), llround((start + wd[k].end * fs) * 1000));
+            cap_add(&p->words, word, llround((start + wd[k].start * fs) * 1000), llround((start + wd[k].end * fs) * 1000),
+                    p->dm ? spk[k] : 0);
         }
     } else if (p->dm) {
-        print_turns(p, ch, wd, nw, spk);
+        print_sentences(p, ch, wd, nw, spk);
     } else if (p->many) {
         printf("%s%s", i && len ? " " : "", p->text);
     } else {
-        print_sentences(p, ch);
+        print_sentences(p, ch, NULL, 0, NULL);
     }
     free(wd);
     free(spk);
@@ -1106,17 +1121,18 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         putchar('\n');
     if (o->subs) {
         /* the English model's are English; the multilingual model's say */
-        cap_print(&out.words, o->subs == SUBS_VTT, out.lang, (int64_t)n * 1000 / rate);
+        cap_print(&out.words, o->subs == SUBS_VTT, out.lang, (int64_t)n * 1000 / rate, dm != NULL);
     }
     *audio_s += (double)n / rate;
     if (!o->json && !o->subs) {     /* the words a sentence's language was read from */
         free(out.words.w);
+        free(out.words.spk);
         free(out.words.text);
     }
     free(out.tail);
     free(out.text);
     free(out.turns);
-    free(out.para);
+    free(out.tailspk);
     free(rb.p);
     free(x);
 }
@@ -1800,8 +1816,8 @@ int main(int argc, char **argv) {
         rc = bench_diar(&o, dm);
     } else {
         /* a diarizer's -m asks for --speakers, as the flag does */
-        if (dm && (o.subs || o.stream))
-            die("a diarizer's model with %s: not yet", o.subs ? "subtitles" : "--stream");
+        if (dm && o.stream)
+            die("a diarizer's model with --stream: not yet");
         if (dm && strcmp(o.cmd, "text"))
             die("a diarizer's model is for a transcript with --speakers, pktito-c speakers or probs; not %s",
                 o.cmd);

@@ -513,14 +513,19 @@ enum {
  * two to a cue, each cue on from its first word until a little after its
  * last, and the words cut into cues where their pauses, punctuation and
  * timing read best - the cheapest of every possible cut by
- * core/captions.c's costs, not the first that fits. lang is the words'
- * language as pk_language names it: "en" adds the English rules (no cue or
- * line ends on "the" or "to"; an abbreviation's period ends no sentence),
- * and another, or NULL, leaves punctuation and pauses. media_end is when
- * the recording ends (ms), or 0 if unknown. out has room for n. Returns the
- * count of cues, or -1 if memory runs out (90 bytes a word, given back
- * before it returns). */
-long pk_captions(const pk_capword *w, size_t n, const char *lang, int64_t media_end, pk_cue *out);
+ * core/captions.c's costs, not the first that fits. speaker, if not NULL,
+ * is each word's (pk_speakers'), and a change of speaker ends a cue
+ * wherever the words' times let one end (they always do for pktito's own
+ * words, which never overlap); a speaker's name, to be counted in the
+ * line, goes in the text of the first word of their turn. lang is the
+ * words' language as pk_language names it: "en" adds the English rules (no
+ * cue or line ends on "the" or "to"; an abbreviation's period ends no
+ * sentence), and another, or NULL, leaves punctuation and pauses.
+ * media_end is when the recording ends (ms), or 0 if unknown. out has room
+ * for n. Returns the count of cues, or -1 if memory runs out (91 bytes a
+ * word, given back before it returns). */
+long pk_captions(const pk_capword *w, size_t n, const int32_t *speaker, const char *lang, int64_t media_end,
+                 pk_cue *out);
 
 /* The language of n words, one of the 25 the multilingual model writes (bg
  * cs da de el en es et fi fr hr hu it lt lv mt nl pl pt ro ru sk sl sv uk),
@@ -548,9 +553,11 @@ enum {
  * and its times say no sentence ended there; and one that runs past 30 s is
  * broken after a comma, semicolon, colon or dash that leaves a first part of
  * 10 to 20 s, else at the longest pause there (core/sentences.c; README,
- * "Sentences", has the measurements). lang is the words' language as
- * pk_language names it, for the rules of one language's ("en", "de"), or
- * NULL.
+ * "Sentences", has the measurements). speaker, if not NULL, is each
+ * token's speaker, a word's its first token's (pk_speakers' for the
+ * word), and a change of speaker ends a sentence too. lang is the words'
+ * language as pk_language names it, for the rules of one language's ("en",
+ * "de"), or NULL.
  *
  * done is 1 when the tokens run to the recording's end, so that the words
  * after the last sentence's end make one too, and 0 when more may come:
@@ -562,8 +569,8 @@ enum {
  * Returns the count; out has room for n. -1 if memory runs out (five times
  * the first power of two past the longest word's text, 320 bytes at least,
  * given back before it returns). */
-long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const char *lang, int done,
-                  pk_sentence *out);
+long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const int32_t *speaker, const char *lang,
+                  int done, pk_sentence *out);
 
 /* ------------------------------------------------------------- speakers --- */
 

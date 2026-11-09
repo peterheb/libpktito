@@ -37,9 +37,10 @@ run ./tests/sentcheck "$MODEL" tests/data/test.wav
   || { echo "pktito-c: FAIL on the tiny model"; exit 1; }
 ./pktito-c -m $TINY -m $TINY_DIAR --json tests/pkfcheck.wav > /dev/null \
   && ./pktito-c -m $TINY -m $TINY_DIAR tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
+  && ./pktito-c -m $TINY -m $TINY_DIAR --srt tests/pkfcheck.wav > /dev/null \
   && ./pktito-c -m $TINY_DIAR speakers --json tests/pkfcheck.wav > /dev/null \
   && ./pktito-c -m $TINY_DIAR probs tests/pkfcheck.wav > /dev/null \
-  && echo "pktito-c --speakers: the tiny models through the CLI, four ways" \
+  && echo "pktito-c --speakers: the tiny models through the CLI, five ways" \
   || { echo "pktito-c: FAIL on the tiny models with --speakers"; exit 1; }
 d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/ñ.wav" \
   && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json \
@@ -74,6 +75,11 @@ else
     ./pktito-c --speakers --json -m $f -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.json \
       && echo "conv2.wav: v2 transcript's words and speakers are ref's" \
       || { echo "conv2.wav: FAIL - v2 --speakers transcript differs from tests/data/conv2.v2.json"; exit 1; }
+    for x in txt srt vtt; do o=; [ $x = txt ] || o=--$x
+      ./pktito-c $o -m $f -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.$x \
+        || { echo "conv2.wav: FAIL - v2 --speakers ${o:-text} differs from tests/data/conv2.v2.$x"; exit 1; }
+    done
+    echo "conv2.wav: v2 --speakers sentences, SRT and WebVTT are ref's"
   fi
 fi
 # --stream resamples as it reads: at 8 kHz (a telephone's) and 48 kHz (most

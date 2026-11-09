@@ -3,7 +3,8 @@
  * the boundary rules, graphemes, the greedy cut it must not make, and the
  * dynamic program against every partition of 3000 random transcripts of up
  * to 10 words, the spec's exhaustive oracle, with the properties every
- * track keeps.
+ * track keeps; half of them with speakers, a change of speaker a cut that
+ * must be made wherever a cue may end.
  *
  *   tests/capcheck     exit 0 if every case holds
  *
@@ -30,14 +31,18 @@ typedef struct {
     graph   g;
     int64_t s[MAXW + 1], e[MAXW + 1], gsum[MAXW + 1], csum[MAXW + 1];
     int32_t b[MAXW + 1];
-    uint8_t safe[MAXW + 1], cut[MAXW + 1];
+    uint8_t safe[MAXW + 1], cut[MAXW + 1], turn[MAXW + 1];
 } tgraph;
 
-static void make(tgraph *t, const pk_capword *w, int n, int english, int64_t media_end) {
+static void make_spk(tgraph *t, const pk_capword *w, const int32_t *spk, int n, int english, int64_t media_end) {
     memset(t, 0, sizeof *t);
     t->g = (graph){ .n = n, .w = w, .s = t->s, .e = t->e, .gsum = t->gsum, .b = t->b, .csum = t->csum,
-                    .safe = t->safe, .cut = t->cut };
+                    .safe = t->safe, .cut = t->cut, .spk = spk, .turn = t->turn };
     prepare(&t->g, english, media_end);
+}
+
+static void make(tgraph *t, const pk_capword *w, int n, int english, int64_t media_end) {
+    make_spk(t, w, NULL, n, english, media_end);
 }
 
 /* the candidate cue words [i, j), as the dynamic program weighs it */
@@ -61,30 +66,30 @@ static void fixtures(void) {
     /* basic phrase: one cue 1000-2000, "Hello world.", 12 characters (the
      * spec writes its words text,start,end) */
     pk_capword basic[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };
-    long n = pk_captions(basic, 2, "en", 4000, c);
+    long n = pk_captions(basic, 2, NULL, "en", 4000, c);
     CHECK(n == 1 && c[0].start == 1000 && c[0].end == 2000 && c[0].chars == 12 && c[0].line2 == 0 && !c[0].flags,
           "basic phrase: %ld cues, %lld-%lld, %d characters", n, (long long)c[0].start, (long long)c[0].end, c[0].chars);
 
     /* a required pause: two cues 1000-2000 and 3000-4000 */
     pk_capword pause[] = { { "Hello.", 1000, 1600 }, { "Again.", 3000, 3600 } };
-    n = pk_captions(pause, 2, "en", 5000, c);
+    n = pk_captions(pause, 2, NULL, "en", 5000, c);
     CHECK(n == 2 && c[0].start == 1000 && c[0].end == 2000 && c[1].start == 3000 && c[1].end == 4000,
           "required pause: %ld cues", n);
 
     /* a short reply on its own: the minimum-duration tail, 800 ms after speech */
     pk_capword yes[] = { { "Yes.", 1000, 1200 } };
-    n = pk_captions(yes, 1, "en", 4000, c);
+    n = pk_captions(yes, 1, NULL, "en", 4000, c);
     CHECK(n == 1 && c[0].start == 1000 && c[0].end == 2000 && !c[0].flags, "short reply: %lld-%lld",
           (long long)c[0].start, (long long)c[0].end);
     /* at the recording's end: 1000-1300, too short, no overrun */
-    n = pk_captions(yes, 1, "en", 1300, c);
+    n = pk_captions(yes, 1, NULL, "en", 1300, c);
     CHECK(n == 1 && c[0].end == 1300 && c[0].flags == PK_CUE_SHORT, "short final reply: %lld, flags %d",
           (long long)c[0].end, c[0].flags);
 
     /* rapid speech: no readable track, every word kept; the three as one cue
      * are 32 characters in 450 ms, 71.1 a second */
     pk_capword rapid[] = { { "abcdefghij", 0, 150 }, { "abcdefghij", 150, 300 }, { "abcdefghij", 300, 450 } };
-    n = pk_captions(rapid, 3, "en", 450, c);
+    n = pk_captions(rapid, 3, NULL, "en", 450, c);
     int kept = 0, slow = 1;
     for (long k = 0; k < n; k++) {
         kept += c[k].n;
@@ -139,7 +144,7 @@ static void fixtures(void) {
     static char w43[44];
     memset(w43, 'a', 43);
     pk_capword longw[] = { { w43, 0, 1000 } };
-    n = pk_captions(longw, 1, "en", 0, c);
+    n = pk_captions(longw, 1, NULL, "en", 0, c);
     CHECK(n == 1 && c[0].n == 1 && c[0].chars == 43 && (c[0].flags & PK_CUE_FORCED), "a 43-grapheme word: forced");
 
     /* 30, 30, 20: 82 in all, yet 30 / 51 and 61 / 20 fit no layout */
@@ -149,7 +154,7 @@ static void fixtures(void) {
     pk_capword lengths[] = { { w30, 0, 1000 }, { w30, 1000, 2000 }, { w20, 2000, 3000 } };
     make(&t, lengths, 3, 0, 0);
     CHECK(!cand(&t, 0, 3).ok, "30, 30, 20: no cue holds all three");
-    n = pk_captions(lengths, 3, NULL, 0, c);
+    n = pk_captions(lengths, 3, NULL, NULL, 0, c);
     CHECK(n >= 2 && c[0].first == 0 && c[n - 1].first + c[n - 1].n == 3 && !(c[0].flags & PK_CUE_FORCED),
           "30, 30, 20: %ld cues", n);
 
@@ -163,9 +168,9 @@ static void fixtures(void) {
         memcpy(acc43 + 3 * k, "e\xCC\x81", 3);
     memcpy(acc42, acc43, 42 * 3);
     pk_capword a42[] = { { acc42, 0, 3000 } }, a43[] = { { acc43, 0, 3000 } };
-    n = pk_captions(a42, 1, NULL, 0, c);
+    n = pk_captions(a42, 1, NULL, NULL, 0, c);
     CHECK(n == 1 && c[0].chars == 42 && !(c[0].flags & PK_CUE_FORCED), "42 accented e's fit a line");
-    n = pk_captions(a43, 1, NULL, 0, c);
+    n = pk_captions(a43, 1, NULL, NULL, 0, c);
     CHECK(n == 1 && c[0].chars == 43 && (c[0].flags & PK_CUE_FORCED), "43 do not");
 
     /* punctuation: an abbreviation, an initial and a decimal end no sentence; a question does */
@@ -223,18 +228,18 @@ static void fixtures(void) {
      * too short to cut at, or at the recording's end */
     pk_capword soi[] = { { "So", 54710, 55030 }, { "I", 55030, 55350 }, { "when", 56550, 56800 }, { "I", 56800, 56900 },
                          { "think.", 56900, 57400 } };
-    n = pk_captions(soi, 5, "en", 60000, c);
+    n = pk_captions(soi, 5, NULL, "en", 60000, c);
     CHECK(n == 2 && c[0].n == 2 && (c[0].flags & PK_CUE_PAUSE) && c[0].chars == 5 && !(c[1].flags & PK_CUE_PAUSE),
           "So I | when I think.: %ld cues, flags %d and %d, %d characters", n, c[0].flags, n > 1 ? c[1].flags : 0, c[0].chars);
     soi[1].text = "I,";
-    n = pk_captions(soi, 5, "en", 60000, c);
+    n = pk_captions(soi, 5, NULL, "en", 60000, c);
     CHECK(n == 2 && !(c[0].flags & PK_CUE_PAUSE), "So I, | when: no ellipsis after a comma");
     soi[1].text = "I";
     soi[2].start = 56300;
-    n = pk_captions(soi, 5, "en", 60000, c);
+    n = pk_captions(soi, 5, NULL, "en", 60000, c);
     CHECK(!(c[0].flags & PK_CUE_PAUSE), "a pause under a second is not cut at: no ellipsis");
     pk_capword tail[] = { { "and", 0, 300 }, { "then", 300, 700 } };
-    n = pk_captions(tail, 2, "en", 5000, c);
+    n = pk_captions(tail, 2, NULL, "en", 5000, c);
     CHECK(n == 1 && !(c[0].flags & PK_CUE_PAUSE), "the recording's end: no ellipsis");
     /* 42 graphemes before the pause fit a line, but not with the ellipsis */
     pk_capword w42p[] = { { w42, 0, 2500 }, { "next.", 4000, 4500 } };
@@ -264,9 +269,9 @@ static void fixtures(void) {
 
     /* unsound times are made sound, not refused: a track still */
     pk_capword bad[] = { { "b", 500, 400 }, { "a", 300, 300 }, { "c", 900, 1200 } };
-    n = pk_captions(bad, 3, "en", 0, c);
+    n = pk_captions(bad, 3, NULL, "en", 0, c);
     CHECK(n >= 1 && c[n - 1].first + c[n - 1].n == 3, "unsound times: %ld cues", n);
-    CHECK(pk_captions(bad, 0, "en", 0, c) == 0, "no words: no cues");
+    CHECK(pk_captions(bad, 0, NULL, "en", 0, c) == 0, "no words: no cues");
 }
 
 /* ------------------------------------------------------------------ 11.3 --- */
@@ -276,7 +281,7 @@ static void greedy(void) {
     for (int k = 0; k < 9; k++)
         w[k] = (pk_capword){ "abcdefgh", 500 * k, 500 * k + 500 };
     pk_cue c[9];
-    long n = pk_captions(w, 9, "en", 4500, c);
+    long n = pk_captions(w, 9, NULL, "en", 4500, c);
     tgraph t;
     make(&t, w, 9, 1, 4500);
     int64_t v = 0, q = 0;
@@ -289,6 +294,44 @@ static void greedy(void) {
      * its earlier first boundary; greedy packing's 8 + 1 flashes a word */
     CHECK(n == 2 && c[0].n == 4 && c[1].n == 5 && v == 0 && q == 211,
           "nine words: %ld cues, %d + %d, V %lld, Q %lld", n, c[0].n, n > 1 ? c[1].n : 0, (long long)v, (long long)q);
+}
+
+/* ---------------------------------------------------------------- speakers --- */
+
+/* whether two tracks are the same cues */
+static int same_cues(const pk_cue *a, long na, const pk_cue *b, long nb) {
+    if (na != nb)
+        return 0;
+    for (long k = 0; k < na; k++)
+        if (a[k].first != b[k].first || a[k].n != b[k].n || a[k].line2 != b[k].line2 || a[k].chars != b[k].chars
+            || a[k].flags != b[k].flags || a[k].start != b[k].start || a[k].end != b[k].end)
+            return 0;
+    return 1;
+}
+
+static void speakers(void) {
+    pk_cue c[MAXW], o[MAXW];
+    /* a change of speaker ends a cue, with no ellipsis of its own */
+    pk_capword hw[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };
+    const int32_t two[] = { 0, 1 }, same[] = { 3, 3 };
+    long n = pk_captions(hw, 2, two, "en", 4000, c);
+    CHECK(n == 2 && c[0].n == 1 && c[1].first == 1 && !(c[0].flags & PK_CUE_PAUSE) && c[0].end <= c[1].start,
+          "a change of speaker: %ld cues, the first of %d words, flags %d", n, n ? c[0].n : 0, n ? c[0].flags : 0);
+    n = pk_captions(hw, 2, same, "en", 4000, c);
+    long no = pk_captions(hw, 2, NULL, "en", 4000, o);
+    CHECK(same_cues(c, n, o, no), "one speaker: not the cues without speakers");
+    /* words said over each other: no cue may end between them, so none does */
+    pk_capword over[] = { { "Hello", 1000, 1500 }, { "world.", 1400, 1800 } };
+    n = pk_captions(over, 2, two, "en", 4000, c);
+    no = pk_captions(over, 2, NULL, "en", 4000, o);
+    CHECK(same_cues(c, n, o, no) && n == 1, "a change of speaker over a word: %ld cues", n);
+    /* a pause of a second or more mid-sentence keeps its ellipsis */
+    pk_capword so[] = { { "So", 1000, 1200 }, { "I", 1300, 1400 }, { "yes.", 2600, 2900 } };
+    const int32_t turn[] = { 0, 0, 1 };
+    n = pk_captions(so, 3, turn, "en", 5000, c);
+    no = pk_captions(so, 3, NULL, "en", 5000, o);
+    CHECK(same_cues(c, n, o, no) && n == 2 && (c[0].flags & PK_CUE_PAUSE),
+          "a change of speaker at a long pause: %ld cues, flags %d", n, n ? c[0].flags : 0);
 }
 
 /* ------------------------------------------------------------- 11.4, 11.5 --- */
@@ -327,7 +370,7 @@ static int oracle(const tgraph *t, int n, path *best) {
                 break;
             }
             for (int k = i + 1; k < j; k++)
-                if (t->cut[k])
+                if (t->cut[k] || t->turn[k])
                     ok = 0;
             if (!ok)
                 break;
@@ -357,10 +400,11 @@ static void random_tracks(void) {
     char text[MAXW][24];
     pk_capword w[MAXW];
     pk_cue c[MAXW];
+    int32_t spk[MAXW], one[MAXW];
     tgraph t;
-    int cases = 0;
+    int cases = 0, with = 0;
     for (int run = 0; run < 3000; run++) {
-        const int n = 1 + (int)rnd(10), english = (int)rnd(2);
+        const int n = 1 + (int)rnd(10), english = (int)rnd(2), speakers = (int)rnd(2);
         int64_t at = rnd(500);
         for (int k = 0; k < n; k++) {
             snprintf(text[k], sizeof text[k], "%s", VOCAB[rnd(sizeof VOCAB / sizeof *VOCAB)]);
@@ -373,17 +417,27 @@ static void random_tracks(void) {
             at = start + len;
         }
         const int64_t media_end = rnd(3) ? 0 : at + rnd(2000);
-        long nc = pk_captions(w, (size_t)n, english ? "en" : NULL, media_end, c);
+        /* speakers in runs of one to four words, three of them */
+        for (int k = 0, s = (int)rnd(3); k < n; k++) {
+            if (k && rnd(3) == 0)
+                s = (s + 1 + (int)rnd(2)) % 3;
+            spk[k] = s;
+            one[k] = 7;
+        }
+        const int32_t *sp = speakers ? spk : NULL;
+        with += speakers;
+        long nc = pk_captions(w, (size_t)n, sp, english ? "en" : NULL, media_end, c);
         if (!english) { /* another language's track is NULL's: punctuation and pauses */
             pk_cue o[MAXW];
-            int same = pk_captions(w, (size_t)n, "de", media_end, o) == nc;
-            for (long k = 0; same && k < nc; k++)
-                same = o[k].first == c[k].first && o[k].n == c[k].n && o[k].line2 == c[k].line2
-                       && o[k].chars == c[k].chars && o[k].flags == c[k].flags && o[k].start == c[k].start
-                       && o[k].end == c[k].end;
-            CHECK(same, "run %d: \"de\"'s track is not NULL's", run);
+            long no = pk_captions(w, (size_t)n, sp, "de", media_end, o);
+            CHECK(same_cues(o, no, c, nc), "run %d: \"de\"'s track is not NULL's", run);
         }
-        make(&t, w, n, english, media_end);
+        if (!speakers) { /* one speaker throughout: the track without speakers */
+            pk_cue o[MAXW];
+            long no = pk_captions(w, (size_t)n, one, english ? "en" : NULL, media_end, o);
+            CHECK(same_cues(o, no, c, nc), "run %d: one speaker's track is not the track without", run);
+        }
+        make_spk(&t, w, sp, n, english, media_end);
         path best = { 0 };
         if (!oracle(&t, n, &best)) {
             CHECK(0, "run %d: the oracle found no path", run);
@@ -412,7 +466,9 @@ static void random_tracks(void) {
             CHECK(k == 0 || c[k - 1].end <= c[k].start, "run %d: cues %ld and %ld overlap", run, k - 1, k);
             const int last = c[k].first + c[k].n;
             for (int x = c[k].first + 1; x < last; x++)
-                CHECK(!t.cut[x], "run %d: cue %ld spans a required cut", run, k);
+                CHECK(!t.cut[x] && !t.turn[x], "run %d: cue %ld spans a required cut", run, k);
+            for (int x = c[k].first + 1; sp && x < last; x++)
+                CHECK(sp[x] == sp[x - 1] || !t.safe[x], "run %d: cue %ld holds two speakers where it could end", run, k);
             if (!(c[k].flags & PK_CUE_FORCED)) {
                 int64_t l1 = c[k].line2 ? width(&t.g, c[k].first, c[k].line2) : width(&t.g, c[k].first, last);
                 int64_t l2 = c[k].line2 ? width(&t.g, c[k].line2, last) : 0;
@@ -423,7 +479,8 @@ static void random_tracks(void) {
         CHECK(next == n, "run %d: %d of %d words in cues", run, next, n);
         cases++;
     }
-    printf("capcheck: %d random transcripts, the program's track the best of every partition\n", cases);
+    printf("capcheck: %d random transcripts, %d with speakers, the program's track the best of every partition\n",
+           cases, with);
 }
 
 /* a long transcript, timed */
@@ -438,7 +495,7 @@ static void long_track(void) {
         at += len + (rnd(8) ? rnd(150) : rnd(1500));
     }
     clock_t t0 = clock();
-    long n = pk_captions(w, N, "en", 0, c);
+    long n = pk_captions(w, N, NULL, "en", 0, c);
     double s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     CHECK(n > 0 && c[n - 1].first + c[n - 1].n == N, "20000 words: %ld cues", n);
     printf("capcheck: 20000 words to %ld cues in %.0f ms\n", n, s * 1000);
@@ -447,6 +504,7 @@ static void long_track(void) {
 int main(void) {
     fixtures();
     greedy();
+    speakers();
     random_tracks();
     long_track();
     if (fails) {

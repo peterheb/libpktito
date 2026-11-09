@@ -57,11 +57,12 @@ if ($r) { 'pktito-c: FAIL on the tiny model'; exit 1 }
 'pktito-c: the tiny model through the CLI, chunked, four ways'
 $r = 0
 foreach ($a in "-m $tiny -m $tinydiar --json tests\pkfcheck.wav", "-m $tiny -m $tinydiar tests\pkfcheck.wav tests\pkfcheck.wav",
-               "-m $tinydiar speakers --json tests\pkfcheck.wav", "-m $tinydiar probs tests\pkfcheck.wav") {
+               "-m $tiny -m $tinydiar --srt tests\pkfcheck.wav", "-m $tinydiar speakers --json tests\pkfcheck.wav",
+               "-m $tinydiar probs tests\pkfcheck.wav") {
     if (-not $r) { cmd /c "pktito-c.exe $a > NUL"; $r = $LASTEXITCODE }
 }
 if ($r) { 'pktito-c: FAIL on the tiny models with --speakers'; exit 1 }
-'pktito-c --speakers: the tiny models through the CLI, four ways'
+'pktito-c --speakers: the tiny models through the CLI, five ways'
 
 # check-c.sh's names past ASCII, made from their code points so that this
 # file means the same in every code page: Windows PowerShell 5.1 reads a
@@ -125,6 +126,15 @@ else {
         }
         "conv2.wav: v2 transcript's words and speakers are ref's"
         Remove-Item tests\t.json
+        foreach ($x in 'txt', 'srt', 'vtt') {
+            $o = if ($x -eq 'txt') { '' } else { "--$x" }
+            cmd /c "pktito-c.exe $o -m `"$V2`" -m `"$Diar`" tests\data\conv2.wav > tests\t.$x"
+            if (-not (same tests\t.$x tests\data\conv2.v2.$x)) {
+                "conv2.wav: FAIL - v2 --speakers $x differs from tests\data\conv2.v2.$x"; exit 1
+            }
+            Remove-Item tests\t.$x
+        }
+        "conv2.wav: v2 --speakers sentences, SRT and WebVTT are ref's"
     }
 }
 

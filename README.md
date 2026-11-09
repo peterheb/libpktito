@@ -932,15 +932,22 @@ words heard so far.
 
 ## Who said what
 
-`--speakers` gives each word to the voice that said it, and writes the
-transcript a paragraph a turn, the speakers numbered from 1 in the order
-they first say a word:
+`--speakers` gives each word to the voice that said it, the speakers
+numbered from 1 in the order they first say a word. A change of speaker
+ends a sentence, and the transcript is a sentence a line, each turn after
+a blank line and named on its first:
 
 ```
 Speaker 1: Good night, husband.
 
-Speaker 2: A heart trouble caused by falling in love with a grass widow. Heaven! A good place to be raised to.
+Speaker 2: A heart trouble caused by falling in love with a grass widow.
+Heaven!
+A good place to be raised to.
 ```
+
+With `--srt` or `--vtt`, a change of speaker ends a cue too, and each
+turn's first cue starts with its name, which counts toward the line's 42
+characters; WebVTT names every cue's voice as well, `<v Speaker 1>`.
 
 With `--json`, each word gains a `speaker`; after the chunks, `turns`
 lists each run of one speaker's words (its `speaker`, `start` and `end`,
@@ -1003,8 +1010,9 @@ each, ran at 10.3 to 10.4x, and their transcripts with speakers were the
 recording, but `pktito-c` reads the whole file first and holds it as
 floats: 230 MB an hour.
 
-`--srt`, `--vtt` and `--stream` don't take `--speakers` yet, and `pktito-c
-models` doesn't list the diarizer's file: it is made as above.
+`--stream` doesn't take `--speakers` yet. `pktito-c models --all` lists
+the diarizer's file, a preview, which runs where `-m` names it, and the line
+that fetches it.
 
 ## How it works
 
@@ -1075,11 +1083,11 @@ pk_asr_run_chunks(a, samples, chunk, nc, show, arg);
 /* show has each chunk as above, its decoder run beside the next one's encoder */
 
 pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */
-long nq = pk_captions(w, 2, "en", 0, cue);        /* "en": English's rules too; 0: the end unknown */
+long nq = pk_captions(w, 2, NULL, "en", 0, cue);   /* NULL: no speakers; "en": English's rules too; 0: the end unknown */
 /* cue[0]: words 0-1, one line, 1000-2000 ms */
 
 /* the chunks' tokens in one array, each frame plus its chunk's at_frame */
-long nsen = pk_sentences(m, toks, ntoks, "en", 1, sen);   /* "en": the language, or NULL; 1: the last */
+long nsen = pk_sentences(m, toks, ntoks, NULL, "en", 1, sen);   /* NULL: no speakers; "en": the language, or NULL; 1: the last */
 /* sen[0]: toks[sen[0].first] up to toks[sen[0].first + sen[0].n] */
 
 /* who speaks when: a diarizer's model, beside the recognizer's */
@@ -1091,6 +1099,7 @@ int keep(void *arg, int64_t row, size_t n, const float *p) {   /* rows [row, row
 }
 pk_diar_run(d, samples, n_samples, keep, arg);    /* or pk_diar_feed piece by piece, then pk_diar_finish */
 pk_speakers(dm, p, rows, 1280, spans, nw, spk);   /* spans: words' samples; 1280, the recognizer's frame */
+/* spk to pk_captions, and a word's to each of its tokens for pk_sentences: a change of speaker ends a cue and a sentence */
 size_t nst = pk_speaker_segments(dm, p, rows, st);   /* each speaker's stretches of speech */
 ```
 

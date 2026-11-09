@@ -6,7 +6,9 @@
  * The checks: its rules on words built from the model's own pieces, and on
  * WAV's transcript that the sentences tile the tokens and are the same
  * whether the tokens come at once or split anywhere, passed as a caller
- * hearing a recording chunk by chunk passes them. The letters' cases and
+ * hearing a recording chunk by chunk passes them; with speakers too, a
+ * sentence ending wherever the speaker changes and one speaker's being the
+ * sentences without speakers. The letters' cases and
  * vowels in each alphabet the models write, and what a word's text ends in,
  * are checked on their own.
  *
@@ -177,16 +179,22 @@ static size_t build(const spec *w, size_t n, pk_tok *t, size_t cap) {
 
 /* The words after which pk_sentences ends a sentence, as a string of word
  * numbers ("2 4"), and the flags of each ("L" for PK_SENTENCE_LONG) */
-static void ends_of(const spec *w, size_t nw, const char *lang, int done, char *out, size_t cap) {
+static void ends_spk(const spec *w, size_t nw, const int32_t *wspk, const char *lang, int done, char *out,
+                     size_t cap) {
     pk_tok t[512];
     pk_sentence s[512];
+    int32_t ts[512];
     size_t n = build(w, nw, t, 512);
     out[0] = 0;
     if (!n) {
         snprintf(out, cap, "no pieces");
         return;
     }
-    long k = pk_sentences(M, t, n, lang, done, s);
+    for (size_t j = 0, word = 0; j < n; j++) {   /* each token its word's speaker */
+        word += j > 0 && starts(M, t[j].id);
+        ts[j] = wspk ? wspk[word] : 0;
+    }
+    long k = pk_sentences(M, t, n, wspk ? ts : NULL, lang, done, s);
     size_t at = 0;
     for (long i = 0; i < k; i++) {
         size_t end = (size_t)(s[i].first + s[i].n), word = 0;
@@ -194,6 +202,10 @@ static void ends_of(const spec *w, size_t nw, const char *lang, int done, char *
             word += j > 0 && starts(M, t[j].id);
         at += (size_t)snprintf(out + at, cap - at, "%s%zu%s", i ? " " : "", word, s[i].flags & PK_SENTENCE_LONG ? "L" : "");
     }
+}
+
+static void ends_of(const spec *w, size_t nw, const char *lang, int done, char *out, size_t cap) {
+    ends_spk(w, nw, NULL, lang, done, out, cap);
 }
 
 static void rules(void) {
@@ -288,15 +300,31 @@ static void rules(void) {
         run[i].start += 7, run[i].said += 7;
     ends_of(run, 40, "en", 1, got, sizeof got);
     CHECK(!strcmp(got, "0L 12L 39"), "past 30 s, the first word's pause the longest: %s", got);
+
+    /* a change of speaker ends a sentence, its punctuation or none */
+    spec turn[] = { { "So", 0, 2, 0 }, { "I", 2, 3, 0 }, { "think", 3, 6, 0 }, { "Yes,", 8, 11, 1 },
+                    { "it", 11, 12, 0 }, { "is.", 12, 15, 4 } };
+    const int32_t turns[] = { 0, 0, 0, 1, 1, 1 }, ones[] = { 5, 5, 5, 5, 5, 5 };
+    ends_spk(turn, 6, turns, "en", 1, got, sizeof got);
+    CHECK(!strcmp(got, "2 5"), "a change of speaker after \"think\": %s", got);
+    ends_spk(turn, 6, ones, "en", 1, got, sizeof got);
+    CHECK(!strcmp(got, "5"), "one speaker: %s", got);
+    spec drs[] = { { "Hi,", 0, 5, 1 }, { "I'm", 6, 9, 0 }, { "Dr.", 9, 12, 1 }, { "Jennifer", 13, 19, 0 },
+                   { "Turner.", 19, 25, 4 } };
+    const int32_t drturn[] = { 0, 0, 0, 1, 1 };
+    ends_spk(drs, 5, drturn, "en", 1, got, sizeof got);
+    CHECK(!strcmp(got, "2 4"), "\"Dr.\", then another speaker: %s", got);
+    ends_spk(drs, 3, drturn, "en", 0, got, sizeof got);
+    CHECK(!strcmp(got, ""), "done 0, the next speaker not yet heard: %s", got);
 }
 
 /* ------------------------------------------------ split anywhere, the same --- */
 
 /* pk_sentences on t[0, n) at once, against the same tokens split at k: the
  * first part's sentences, then the rest from where they end */
-static void streaming(const pk_tok *t, size_t n, const char *lang, const char *what) {
+static void streaming(const pk_tok *t, size_t n, const int32_t *spk, const char *lang, const char *what) {
     pk_sentence *all = malloc(n * sizeof *all), *s = malloc(n * sizeof *s);
-    long na = pk_sentences(M, t, n, lang, 1, all);
+    long na = pk_sentences(M, t, n, spk, lang, 1, all);
     CHECK(na > 0, "%s: no sentences", what);
     size_t at = 0;
     for (long i = 0; i < na; i++) {
@@ -306,11 +334,11 @@ static void streaming(const pk_tok *t, size_t n, const char *lang, const char *w
     CHECK(at == n, "%s: the sentences end at token %zu of %zu", what, at, n);
     int bad = 0;
     for (size_t k = 1; k < n && !bad; k++) {
-        long got = 0, n1 = pk_sentences(M, t, k, lang, 0, s);
+        long got = 0, n1 = pk_sentences(M, t, k, spk, lang, 0, s);
         size_t from = n1 > 0 ? (size_t)(s[n1 - 1].first + s[n1 - 1].n) : 0;
         for (long i = 0; i < n1 && !bad; i++, got++)
             bad = got >= na || memcmp(&s[i], &all[got], sizeof *s);
-        long n2 = pk_sentences(M, t + from, n - from, lang, 1, s);
+        long n2 = pk_sentences(M, t + from, n - from, spk ? spk + from : NULL, lang, 1, s);
         for (long i = 0; i < n2 && !bad; i++, got++) {
             s[i].first += (int32_t)from;
             bad = got >= na || memcmp(&s[i], &all[got], sizeof *s);
@@ -320,6 +348,42 @@ static void streaming(const pk_tok *t, size_t n, const char *lang, const char *w
     }
     free(all);
     free(s);
+}
+
+/* each of t[0, n)'s tokens its word's speaker, the speaker changing every
+ * `every` words */
+static void speakers_every(const pk_tok *t, size_t n, size_t every, int32_t *spk) {
+    for (size_t j = 0, word = 0; j < n; j++) {
+        word += j > 0 && starts(M, t[j].id);
+        spk[j] = (int32_t)(word / every % 2);
+    }
+}
+
+/* With speakers spk: a sentence starts wherever the speaker changes and
+ * holds one speaker; and one speaker throughout gives the sentences
+ * without speakers */
+static void speaker_breaks(const pk_tok *t, size_t n, const int32_t *spk, const char *what) {
+    pk_sentence *s = malloc(n * sizeof *s), *o = malloc(n * sizeof *o);
+    int32_t *one = malloc(n * sizeof *one);
+    unsigned char *starts_at = calloc(n + 1, 1);
+    long k = pk_sentences(M, t, n, spk, "en", 1, s);
+    for (long i = 0; i < k; i++) {
+        starts_at[s[i].first] = 1;
+        for (int32_t j = s[i].first + 1; j < s[i].first + s[i].n; j++)
+            CHECK(spk[j] == spk[s[i].first], "%s: sentence %ld holds two speakers", what, i);
+    }
+    for (size_t j = 1; j < n; j++)
+        CHECK(spk[j] == spk[j - 1] || starts_at[j], "%s: the speaker changes at token %zu, inside a sentence", what, j);
+    for (size_t j = 0; j < n; j++)
+        one[j] = 3;
+    k = pk_sentences(M, t, n, one, "en", 1, s);
+    long ko = pk_sentences(M, t, n, NULL, "en", 1, o);
+    CHECK(k == ko && !memcmp(s, o, (size_t)(k > 0 ? k : 0) * sizeof *s), "%s: one speaker's sentences are not those without",
+          what);
+    free(s);
+    free(o);
+    free(one);
+    free(starts_at);
 }
 
 typedef struct {
@@ -416,7 +480,7 @@ static void eval(pk_model *m, const char *lang, char **wavs, int nwav) {
             if (describe(&s, at, &W[nw]))
                 exit(2);
         plain(&s, W, nw, pf);
-        const long k = pk_sentences(m, h.t, h.n, lang, 1, out);
+        const long k = pk_sentences(m, h.t, h.n, NULL, lang, 1, out);
         if (k < 0)
             exit(2);
         for (long i = 0; i < k; i++)
@@ -497,21 +561,37 @@ int main(int argc, char **argv) {
                          i % 9 == 8 ? 4 : 1 };
     size_t nt = build(run, 60, t, 512);
     CHECK(nt > 0, "no pieces for \"go\"");
-    if (nt)
-        streaming(t, nt, "en", "60 words with commas and periods");
+    int32_t ts[512];
+    if (nt) {
+        streaming(t, nt, NULL, "en", "60 words with commas and periods");
+        speakers_every(t, nt, 7, ts);
+        streaming(t, nt, ts, "en", "60 words with commas and periods, two speakers");
+        speaker_breaks(t, nt, ts, "60 words with commas and periods, two speakers");
+    }
     for (int i = 0; i < 60; i++)
         run[i] = (spec){ i == 59 ? "go." : "go", i * 12 + (i % 7) * 2, i * 12 + (i % 7) * 2 + 9, 4 };
     nt = build(run, 60, t, 512);
-    if (nt)
-        streaming(t, nt, "en", "a sentence of 60 words, broken twice");
+    if (nt) {
+        streaming(t, nt, NULL, "en", "a sentence of 60 words, broken twice");
+        speakers_every(t, nt, 11, ts);
+        streaming(t, nt, ts, "en", "a sentence of 60 words, two speakers");
+        speaker_breaks(t, nt, ts, "a sentence of 60 words, two speakers");
+    }
 
     pk_asr *a = pk_asr_new(m, 0);
     heard h = { 0 };
     CHECK(a && hear(a, argv[2], &h), "%s: no transcript", argv[2]);
     if (h.n) {
-        streaming(h.t, h.n, "en", argv[2]);
+        streaming(h.t, h.n, NULL, "en", argv[2]);
+        int32_t *hs = malloc(h.n * sizeof *hs);
+        char what[600];
+        snprintf(what, sizeof what, "%s, two speakers", argv[2]);
+        speakers_every(h.t, h.n, 5, hs);
+        streaming(h.t, h.n, hs, "en", what);
+        speaker_breaks(h.t, h.n, hs, what);
+        free(hs);
         pk_sentence *s = malloc(h.n * sizeof *s);
-        long k = pk_sentences(m, h.t, h.n, "en", 1, s);
+        long k = pk_sentences(m, h.t, h.n, NULL, "en", 1, s);
         char text[4096];
         for (long i = 0; i < k; i++) {
             pk_text(m, h.t + s[i].first, (size_t)s[i].n, text, sizeof text);

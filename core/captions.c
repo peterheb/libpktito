@@ -261,6 +261,8 @@ typedef struct {
     int32_t *b;            /* a cut at boundary k costs this (the spec's B(k)) */
     int64_t *csum;         /* crossing boundaries [1, k] costs this (cross(k), summed) */
     uint8_t *safe, *cut;   /* boundary k may end a cue; must */
+    const int32_t *spk;    /* each word's speaker, or NULL */
+    uint8_t *turn;         /* boundary k changes speaker where a cue may end: one must */
     int64_t media_end;
 } graph;
 
@@ -374,6 +376,7 @@ static void boundaries(graph *g, int english) {
         g->safe[k] = reach <= g->s[k];
         const int64_t pause = g->safe[k] ? g->s[k] - reach : 0;
         g->cut[k] = g->safe[k] && pause >= PAUSE_CUT;
+        g->turn[k] = g->safe[k] && g->spk && g->spk[k] != g->spk[k - 1];
         const int m = mark(before, english);
         char lex[40];
         int base = m == P_TERM ? 0 : m == P_MAJOR ? 10 : m == P_COMMA ? 20 : 60;
@@ -434,14 +437,15 @@ static int earlier(const int32_t *parent, int32_t p, int32_t q, int32_t *tp, int
     return np < nq;
 }
 
-long pk_captions(const pk_capword *w, size_t count, const char *lang, int64_t media_end, pk_cue *out) {
+long pk_captions(const pk_capword *w, size_t count, const int32_t *speaker, const char *lang, int64_t media_end,
+                 pk_cue *out) {
     if (count == 0)
         return 0;
     if (count > INT32_MAX / 2)
         return -1;
     const int32_t n = (int32_t)count;
     const size_t m = (size_t)n + 1;
-    graph g = { .n = n, .w = w };
+    graph g = { .n = n, .w = w, .spk = speaker };
     int64_t *v = NULL, *q = NULL, *end = NULL;
     int32_t *cues = NULL, *parent = NULL, *line2 = NULL, *chars = NULL, *flags = NULL, *tp = NULL, *tq = NULL;
     g.s = malloc(m * sizeof *g.s);
@@ -451,6 +455,7 @@ long pk_captions(const pk_capword *w, size_t count, const char *lang, int64_t me
     g.csum = malloc(m * sizeof *g.csum);
     g.safe = calloc(m, 1);
     g.cut = calloc(m, 1);
+    g.turn = calloc(m, 1);
     v = malloc(m * sizeof *v);
     q = malloc(m * sizeof *q);
     end = malloc(m * sizeof *end);
@@ -462,8 +467,8 @@ long pk_captions(const pk_capword *w, size_t count, const char *lang, int64_t me
     tp = malloc(m * sizeof *tp);
     tq = malloc(m * sizeof *tq);
     long result = -1;
-    if (!g.s || !g.e || !g.gsum || !g.b || !g.csum || !g.safe || !g.cut || !v || !q || !end || !cues || !parent ||
-        !line2 || !chars || !flags || !tp || !tq)
+    if (!g.s || !g.e || !g.gsum || !g.b || !g.csum || !g.safe || !g.cut || !g.turn || !v || !q || !end || !cues ||
+        !parent || !line2 || !chars || !flags || !tp || !tq)
         goto done;
 
     prepare(&g, lang && !strcmp(lang, "en"), media_end);
@@ -509,8 +514,8 @@ long pk_captions(const pk_capword *w, size_t count, const char *lang, int64_t me
                     }
                 }
             }
-            if (j < n && g.cut[j])
-                break;   /* no cue spans a long pause */
+            if (j < n && (g.cut[j] || g.turn[j]))
+                break;   /* no cue spans a long pause, or a change of speaker */
         }
     }
 
@@ -536,6 +541,7 @@ done:
     free(g.csum);
     free(g.safe);
     free(g.cut);
+    free(g.turn);
     free(v);
     free(q);
     free(end);
