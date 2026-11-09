@@ -274,36 +274,33 @@ static void taps_item(void *arg, int i, int th) {
 
 static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     const uint32_t D = d->D, F = d->F, Tp = up16(T);
-    normq(d, d->x, T, L->att_nw, L->att_nb);
-    pk_gemm_on(d->pool, d->q, D, &L->q, NULL, &d->act, 0, NULL, NULL);
-    pk_gemm_on(d->pool, d->k, D, &L->k, NULL, &d->act, 0, NULL, NULL);
-    pk_gemm_panels_on(d->pool, d->vp, (size_t)T * 16, &L->v, &d->act);
+    PROF(PK_P_QUANT, normq(d, d->x, T, L->att_nw, L->att_nb));
+    PROF(PK_P_QKV, pk_gemm_on(d->pool, d->q, D, &L->q, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_QKV, pk_gemm_on(d->pool, d->k, D, &L->k, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, d->vp, (size_t)T * 16, &L->v, &d->act));
     frames_job fj = { d, T };
-    pk_pool_run(d->pool, rope_item, &fj, (int)((T + 15) / 16));
+    PROF(PK_P_POS, pk_pool_run(d->pool, rope_item, &fj, (int)((T + 15) / 16)));
     kpan_job kj = { { d->kp, d->k, T, Tp, D, d->dk }, D };
-    pk_pool_run(d->pool, kpan_item, &kj, (int)((T + 63) / 64));
+    PROF(PK_P_ATT, pk_pool_run(d->pool, kpan_item, &kj, (int)((T + 63) / 64)));
     att_job aj = { d, T, Tp };
-    pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK)));
-    pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB);
-    pk_gemm_on(d->pool, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL);
+    PROF(PK_P_ATT, pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK))));
+    PROF(PK_P_QUANT, pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB));
+    PROF(PK_P_ATTO, pk_gemm_on(d->pool, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL));
 
-    normq(d, d->x, T, L->ff_nw, L->ff_nb);
+    PROF(PK_P_QUANT, normq(d, d->x, T, L->ff_nw, L->ff_nb));
     d->hid.n = F;
     d->hid.qb = QB;
     d->hid.T = T;
-    pk_gemm_on(d->pool, d->u, F, &L->up, L->up_b, &d->act, 0, geluq_tile, d);
-    pk_gemm_on(d->pool, d->x, D, &L->down, L->down_b, &d->hid, 1, NULL, NULL);
+    PROF(PK_P_FF, pk_gemm_on(d->pool, d->u, F, &L->up, L->up_b, &d->act, 0, geluq_tile, d));
+    PROF(PK_P_FF, pk_gemm_on(d->pool, d->x, D, &L->down, L->down_b, &d->hid, 1, NULL, NULL));
 }
 
-/* The step's T stacked frames in d->in to each 10 ms frame's speaker
- * probabilities, d->prob[U T][S] */
-static void forward(pk_diar *d, uint32_t T) {
+/* The final layer norm's T frames, quantized in d->act, to each 10 ms
+ * frame's speaker probabilities, d->prob[U T][S]: the projection, the
+ * upsampler and the head */
+static void head(pk_diar *d, uint32_t T) {
     const pk_diarw *w = d->w;
     const uint32_t P = d->P, U = d->U;
-    norm(d, d->x, d->in, T, w->embed_nw, w->embed_nb);
-    for (uint32_t i = 0; i < d->m->n_layers; i++)
-        layer(d, &w->layers[i], T);
-    normq(d, d->x, T, w->final_nw, w->final_nb);
     pk_gemm_on(d->pool, d->pj, P, &w->proj, w->proj_b, &d->act, 0, NULL, NULL);
 
     pk_quantize_on(d->pool, &d->a1, d->pj, P, T, P, QB);
@@ -325,6 +322,17 @@ static void forward(pk_diar *d, uint32_t T) {
     for (size_t r = 0; r < (size_t)U * T; r++)
         for (uint32_t s = 0; s < d->S; s++)
             d->prob[r * d->S + s] = pk_sigmoidf(d->logit[r * d->S16 + s]);
+}
+
+/* The step's T stacked frames in d->in to each 10 ms frame's speaker
+ * probabilities, d->prob[U T][S] */
+static void forward(pk_diar *d, uint32_t T) {
+    const pk_diarw *w = d->w;
+    PROF(PK_P_NORM, norm(d, d->x, d->in, T, w->embed_nw, w->embed_nb));
+    for (uint32_t i = 0; i < d->m->n_layers; i++)
+        layer(d, &w->layers[i], T);
+    PROF(PK_P_QUANT, normq(d, d->x, T, w->final_nw, w->final_nb));
+    PROF(PK_P_HEAD, head(d, T));
 }
 
 /* -------------------------------------------------------------- the cut --- */
@@ -547,11 +555,12 @@ static int chunk(pk_diar *d, int64_t stt, int64_t end, int64_t left, int64_t rig
     const uint32_t nfeat = (uint32_t)(left + (end - stt) + right), ne = (nfeat + f - 1) / f;
     const uint32_t lc = (uint32_t)(left / f), rc = (uint32_t)((right + f - 1) / f), n = ne - lc - rc;
     const uint32_t nc = d->nc, nf = d->nf, T = nc + nf + ne;
-    features(d, stt - left, nfeat);
+    PROF(PK_P_MEL, features(d, stt - left, nfeat));
     memcpy(d->in, d->cache, (size_t)nc * D * sizeof *d->in);
     memcpy(d->in + (size_t)nc * D, d->fifo, (size_t)nf * D * sizeof *d->in);
-    pk_quantize_on(d->pool, &d->act, d->feat, (size_t)f * M, ne, f * M, QB);
-    pk_gemm_on(d->pool, d->in + (size_t)(nc + nf) * D, D, &d->w->stack_w, NULL, &d->act, 0, NULL, NULL);
+    float *in = d->in + (size_t)(nc + nf) * D;
+    PROF(PK_P_SUB, pk_quantize_on(d->pool, &d->act, d->feat, (size_t)f * M, ne, f * M, QB));
+    PROF(PK_P_SUB, pk_gemm_on(d->pool, in, D, &d->w->stack_w, NULL, &d->act, 0, NULL, NULL));
     forward(d, T);
     /* each 80 ms frame's probabilities, the mean of its U, which the cache
      * scores (SortformerModules.downsample_preds) */
@@ -566,7 +575,7 @@ static int chunk(pk_diar *d, int64_t stt, int64_t end, int64_t left, int64_t rig
     int64_t rows = (int64_t)n * U;
     if (rows_total >= 0 && rows > rows_total - r0)
         rows = rows_total - r0;
-    update(d, nc, nf, lc, n);
+    PROF(PK_P_CACHE, update(d, nc, nf, lc, n));
     if (rows > 0 && fn(arg, r0, (size_t)rows, d->prob + (size_t)(nc + nf + lc) * U * S))
         return 1;
     return 0;

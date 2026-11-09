@@ -1329,6 +1329,20 @@ static double bench_resample(const char *path, int rate, uint32_t *from) {
     return best;
 }
 
+#ifdef PK_PROFILE
+/* make PROFILE=1: each named stage's mean time over bench's five runs, and
+ * its share of theirs */
+typedef struct { int i; const char *name; } prof_row;
+
+static void print_profile(const prof_row *r, int n) {
+    double total = 0;
+    for (int k = 0; k < n; k++) total += pk_prof[r[k].i];
+    for (int k = 0; k < n; k++)
+        printf("  %-16s %7.1f ms a run  %5.1f%%\n", r[k].name, pk_prof[r[k].i] / 5 * 1e3,
+               100 * pk_prof[r[k].i] / total);
+}
+#endif
+
 static int count_tokens(void *arg, const pk_chunk_out *c) {
     *(long *)arg += c->count;
     return 0;
@@ -1356,13 +1370,12 @@ static int bench(const opts *o, pk_model *m) {
     }
     double audio = (double)n / rate;
 #ifdef PK_PROFILE
-    static const char *stage[PK_NPROF] = { "mel", "subsampling", "positions", "layer norms",
-        "quantize", "feed-forward", "q k v pos", "attention", "attention out",
-        "conv pw1 pw2", "glu + depthwise", "decoder" };
-    double total = 0;
-    for (int i = 0; i < PK_NPROF; i++) total += pk_prof[i];
-    for (int i = 0; i < PK_NPROF; i++)
-        printf("  %-16s %7.1f ms a run  %5.1f%%\n", stage[i], pk_prof[i] / 5 * 1e3, 100 * pk_prof[i] / total);
+    static const prof_row stage[] = { { PK_P_MEL, "mel" }, { PK_P_SUB, "subsampling" },
+        { PK_P_POS, "positions" }, { PK_P_NORM, "layer norms" }, { PK_P_QUANT, "quantize" },
+        { PK_P_FF, "feed-forward" }, { PK_P_QKV, "q k v pos" }, { PK_P_ATT, "attention" },
+        { PK_P_ATTO, "attention out" }, { PK_P_CONV, "conv pw1 pw2" }, { PK_P_DW, "glu + depthwise" },
+        { PK_P_DEC, "decoder" } };
+    print_profile(stage, (int)(sizeof stage / sizeof *stage));
 #endif
     printf("model     %s\n", pk_model_name(m));
     printf("backend   %s, %d threads\n", pk_backend(), pk_asr_threads(a));
@@ -1397,6 +1410,13 @@ static int bench_diar(const opts *o, const pk_model *dm) {
         best = dt < best ? dt : best;
     }
     const double audio = (double)n / rate;
+#ifdef PK_PROFILE
+    static const prof_row stage[] = { { PK_P_MEL, "features" }, { PK_P_SUB, "stacking" },
+        { PK_P_NORM, "layer norm" }, { PK_P_QUANT, "norm + quantize" }, { PK_P_QKV, "q k v" },
+        { PK_P_POS, "rotation" }, { PK_P_ATT, "attention" }, { PK_P_ATTO, "attention out" },
+        { PK_P_FF, "ff + GELU" }, { PK_P_HEAD, "head" }, { PK_P_CACHE, "cache" } };
+    print_profile(stage, (int)(sizeof stage / sizeof *stage));
+#endif
     printf("model     %s\n", pk_model_name(dm));
     printf("backend   %s, %d threads\n", pk_backend(), pk_diar_threads(dz));
     printf("compiler  %s\n", pk_compiler());

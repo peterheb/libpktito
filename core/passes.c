@@ -6,9 +6,15 @@
  */
 #include "passes.h"
 #include "kernels.h"
+#include "os.h"
 
 #include <stdint.h>
 #include <string.h>
+
+#ifdef PK_PROFILE
+double pk_prof[PK_NPROF];
+double pk_prof_now(void) { return pk_os_now(); }
+#endif
 
 static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 

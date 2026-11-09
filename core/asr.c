@@ -760,11 +760,6 @@ const char *pk_compiler(void) {
 #endif
 }
 
-#ifdef PK_PROFILE
-double pk_prof[PK_NPROF];
-double pk_prof_now(void) { return pk_os_now(); }
-#endif
-
 /* ---------------------------------------------------------------- chunks --- */
 
 /* Silence kept on the far side of a speech chunk's first and last segment,
