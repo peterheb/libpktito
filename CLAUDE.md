@@ -23,15 +23,16 @@ allows.
    documented (README, "Transcribing a recording"), and off with
    `--no-retry`; it never changes what the low level computes.
 
-   The CPU path is the definition, and it always exists: a default build
-   computes `ref`'s bits, on every machine. Beside it, paths that give up a
-   little of NeMo's nearness for much faster or lower-power inference are
-   strongly encouraged, asked for and measured: the fast mode (`--fast`, `ref`'s
-   bits at blocks of 64, README, "Why int8"), and the NPUs' encoders
-   (npu/, in a build with ANE=1 or QNN=1 and never in a default one, fp16
-   and outside `ref`'s bits, held to float32 and to the CPU by measurement:
-   tools/ane/CLIMB.md, tools/qnn/CLIMB.md). None of them changes what the
-   CPU path computes.
+   **The CPU path is the reference.** Every default build has a CPU path
+   that gives `ref`'s exact bits on every machine. Because its output is
+   exact, a check can compare bytes, and any change shows up right away.
+   The other paths are measured against it.
+
+   Paths that are faster or use less power but aren't exact are strongly
+   encouraged, like the fast mode (`--fast`) and the NPU encoders (`npu/`,
+   built with `ANE=1` or `QNN=1`). Each one is opt-in, and how far it is
+   from the CPU path is measured and written down (README, "Why int8";
+   tools/ane/CLIMB.md; tools/qnn/CLIMB.md).
 
 2. **Can a learner follow it?** The tree reads top down: core/encoder.c and
    core/decoder.c are the model, core/mel.c the features, backend/ref the
