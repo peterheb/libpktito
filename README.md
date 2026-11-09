@@ -109,6 +109,7 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 ./pktito-c --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
 ./pktito-c --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito-c a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
+./pktito-c --speakers talk.wav             # who said what, a paragraph a turn (below, "Who said what")
 arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a line a pause
 ./pktito-c segments talk.wav               # Silero VAD's speech segments, as vadito prints them
 ./pktito-c bench talk.wav                  # this machine's speed
@@ -926,6 +927,69 @@ words again with the next chunk's tokens, and passes `done` 1 with the last.
 come (core/cli.c), with `lang` NULL for v3 until `pk_language` names the
 words heard so far.
 
+## Who said what
+
+`--speakers` gives each word to the voice that said it, and writes the
+transcript a paragraph a turn, the speakers numbered from 1 in the order
+they first say a word:
+
+```
+Speaker 1: Good night, husband.
+
+Speaker 2: A heart trouble caused by falling in love with a grass widow. Heaven! A good place to be raised to.
+```
+
+With `--json`, each word gains a `speaker`; after the chunks, `turns`
+lists each run of one speaker's words (its `speaker`, `start` and `end`,
+and as `word` and `words` the index of its first word in the file and how
+many); and `meta` gains the `diarizer` and how many `speakers` said a word.
+`pktito-c speakers FILE` prints the diarizer's answer alone, with no
+transcript: each speaker's stretches of speech, a line each, the start and
+end in seconds and the speaker.
+
+The diarizer is NVIDIA's Nemotron 3 Diarization (99.2M parameters, up to
+eight speakers, OpenMDW-1.1), a Streaming Sortformer: 31 Transformer layers
+that hear a recording in chunks of 27.2 s, each with the 3.2 s after it,
+and a cache of what each voice sounded like, carried from one chunk to the
+next, so that a recording of any length takes the same memory. It gives
+each speaker a probability of speaking every 10 ms (core/diar.c). A word
+goes to the speaker most probable over its 80 ms frames and the frame
+before them, NeMo's rule (core/speakers.c; docs/DIARIZATION.md, "From
+frames to words"), so where two people talk at once each word still has
+one speaker. How many speakers there are is not an option: the model finds
+up to eight.
+
+Its file is made from NVIDIA's checkpoint as a recognizer's is. pktito-c
+looks for it in `models/` beside the recognizer's, or takes it as a second
+`-m`:
+
+```sh
+.venv/bin/hf download nvidia/Nemotron-3-Diarization Nemotron-3-Diarization.nemo README.md \
+    --local-dir models/src/Nemotron-3-Diarization
+.venv/bin/python tools/pktito-tools convert \
+    models/src/Nemotron-3-Diarization/Nemotron-3-Diarization.nemo models/nemotron-3-diarization.pkf  # 100 MB
+```
+
+Its numerics are Parakeet's: every matrix int8 with a scale a row, the
+activations entering them in blocks of 32, the rest float. On AMI's 16
+evaluation meetings that changes 0.085% of float32's labels, a speaker's
+speech or silence each 10 ms, and gives a DER of 9.21% against float32's
+9.19% (docs/DIARIZATION.md, "Why int8"). On two of that study's synthetic
+conversations, C's labels differ from those of tools/diarquant.py's numpy
+model of the same rounding in 6 of 240,240 (5 minutes, two speakers; 12
+from float32's) and 70 of 484,144 (10 minutes, four; 82). Every backend
+writes ref's bits: avx2, avx2-vnni and avx512-vnni on a 9950X, neon, neon-dp
+and neon-dp-a76 on a Pi 5.
+
+The 5-minute conversation took 10.1 s on a Pi 5's four cores (30x real
+time; neon-dp-a76, gcc 14.2) and 0.81 s on a 9950X's eight (371x; WSL2, gcc
+15.2), on 2026-11-09. On the 9950X's 16 threads, `--speakers` on its first
+minute added 0.15 s to the transcription's 0.33 s, and 149 MB to the peak
+memory, the file's 100 MB included.
+
+`--srt`, `--vtt` and `--stream` don't take `--speakers` yet, and `pktito-c
+models` doesn't list the diarizer's file: it is made as above.
+
 ## How it works
 
 Parakeet TDT is, for a recording of n samples at 16 kHz:
@@ -1001,11 +1065,22 @@ long nq = pk_captions(w, 2, "en", 0, cue);        /* "en": English's rules too; 
 /* the chunks' tokens in one array, each frame plus its chunk's at_frame */
 long nsen = pk_sentences(m, toks, ntoks, "en", 1, sen);   /* "en": the language, or NULL; 1: the last */
 /* sen[0]: toks[sen[0].first] up to toks[sen[0].first + sen[0].n] */
+
+/* who speaks when: a diarizer's model, beside the recognizer's */
+pk_model *dm = pk_model_load("models/nemotron-3-diarization.pkf", err, sizeof err);
+pk_diar *d = pk_diar_new(dm, 0);
+int keep(void *arg, int64_t row, size_t n, const float *p) {   /* rows [row, row + n), in order */
+    /* p[i * 8 + s]: speaker s's probability in row row + i, a row each 10 ms */
+    return 0;
+}
+pk_diar_run(d, samples, n_samples, keep, arg);    /* or pk_diar_feed piece by piece, then pk_diar_finish */
+pk_speakers(dm, p, rows, 1280, spans, nw, spk);   /* spans: words' samples; 1280, the recognizer's frame */
+size_t nst = pk_speaker_segments(dm, p, rows, st);   /* each speaker's stretches of speech */
 ```
 
 A model is read-only once loaded and may be shared by transcribers on any
-number of threads; a transcriber belongs to one thread at a time and runs
-its own pool. Every path it takes is UTF-8, on Windows too, whatever the
+number of threads; a transcriber, or a diarizer, belongs to one thread at
+a time and runs its own pool. Every path it takes is UTF-8, on Windows too, whatever the
 process's code page. `make libpktito.a` builds the library alone;
 core/pktito.h is all of its interface, core/wav.h and core/resample.h the
 WAV and AIFF library's, and `pk_version()` the version it was built as, for
@@ -1020,18 +1095,22 @@ macOS, .dll on Windows): examples of the wiring, not packages
 ## The model file
 
 A `.pkf` (core/pkf.h) is the recognizer, its vocabulary and Silero VAD in
-one file, mapped read-only and used in place, with a metadata table that
-says what it was made from: the HuggingFace repo, file, commit and sha256
-of the checkpoint, its licence and the attribution CC-BY-4.0 asks for, the
-VAD's source and licence, the converter's version and the recipe. `pktito
-info` prints it. The loader holds every extent, shape, type and value of the
-file to what the architecture and docs/MEMORY_SAFETY.md say before it forms
-a pointer, and tests/pkfcheck's 29,199 cases run malformed files at it.
+one file, or the diarizer alone, mapped read-only and used in place, with a
+metadata table that says what it was made from: the HuggingFace repo, file,
+commit and sha256 of the checkpoint, its licence and what that licence asks
+to travel with the weights (CC-BY-4.0's attribution; OpenMDW-1.1's copy of
+the agreement and the model's notices), the VAD's source and licence, the
+converter's version and the recipe. `pktito info` prints it. The loader
+holds every extent, shape, type and value of the file to what the
+architecture and docs/MEMORY_SAFETY.md say before it forms a pointer, and
+tests/pkfcheck's 29,200 cases run malformed files at it, 22,808 more for
+the diarizer's.
 
 `tools/pktito-tools convert` writes one; `info` lists one; `ref` runs the
-float64 reference on a WAV from either a `.nemo` or a `.pkf`; `tiny` writes
-a 1.2 MB model with random weights that has every tensor, param and piece
-type, for the checks.
+float64 reference on a WAV from either a `.nemo` or a `.pkf`, and `diar`
+the diarizer's on a `.nemo`; `tiny` writes a 1.2 MB model with random
+weights that has every tensor, param and piece type, for the checks, and
+`tiny --diarizer` a diarizer's.
 
 ## Checking
 
@@ -1050,7 +1129,7 @@ scripts/fmt.sh --check       # every language but C in its formatter's form, bef
 `check-c` is the math library's bounds, every kernel of every backend the
 CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
 model file's validator on its malformed corpus and the whole engine on the
-tiny model, the WAV and AIFF reader on its own, a WAV and a model under a name
+tiny models, a recognizer's and a diarizer's, the WAV and AIFF reader on its own, a WAV and a model under a name
 past ASCII (on Windows, the regression test for UTF-8 paths), and
 test.wav through `./pktito-c` and
 through examples/transcribe:
@@ -1066,9 +1145,10 @@ tests\check-c.ps1`, given `-V2` and `-V3` for models kept outside models\.
 ```
 core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              the text (tokens.c), the transcriber (asr.c), the VAD (vad.c,
-             segment.c), the WAV and AIFF library (wav.c, resample.c), the captions
-             and sentences (captions.c, sentences.c), the math (vmath.h), the
-             pool (pool.c), the CLI (cli.c)
+             segment.c), the diarizer (diar.c, speakers.c), the WAV and AIFF
+             library (wav.c, resample.c), the captions and sentences
+             (captions.c, sentences.c), the math (vmath.h), the pool and the
+             passes over it (pool.c, passes.c), the CLI (cli.c)
 backend/     the seam (kernels.h, and kernels.c, which picks the backend that
              runs) and ref/, neon/ (and neon-dp/, neon-dp-a76/, neon-i8mm/,
              neon-sve/), avx2/ (and avx2-vnni/, avx512-vnni/, amx-int8/); a
@@ -1084,13 +1164,16 @@ models.json  the model files models.pktito.net serves, and the hardware each
              edition runs on (`./pktito-c models`)
 examples/    the library from the outside: from C, Python, Go, Rust and Node
 docs/        MEMORY_SAFETY.md: the rules the two parsers keep; caption-spec.md:
-             the method core/captions.c follows
+             the method core/captions.c follows; DIARIZATION.md: the study the
+             diarizer was built from
 ```
 
 ## License
 
-MIT for the code. The weights a `.pkf` holds are NVIDIA's, under CC-BY-4.0;
-whoever shares a `.pkf` owes NVIDIA that licence's attribution, which every
-file carries in its metadata. Silero VAD's weights, and the parts of the code
+MIT for the code. The weights a recognizer's `.pkf` holds are NVIDIA's,
+under CC-BY-4.0; whoever shares one owes NVIDIA that licence's attribution,
+which every such file carries in its metadata. The diarizer's are NVIDIA's,
+under OpenMDW-1.1; whoever shares its file shares a copy of the agreement
+and the model's notices with it, which the file carries too. Silero VAD's weights, and the parts of the code
 that port its model and state machines, are MIT, Copyright (c) 2020-present
-Silero Team. LICENSE has all three.
+Silero Team. LICENSE has all four.

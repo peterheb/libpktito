@@ -699,6 +699,7 @@ static void poke(unsigned char *c, int t, size_t i, float v) {
 
 static void engine_cases(const pk_model *m, int deep);
 static void diar_engine_cases(const pk_model *m, int deep);
+static void speakers_cases(const pk_model *m);
 
 static void meaning_cases(void) {
     model e;
@@ -1606,6 +1607,101 @@ static void diar_engine_cases(const pk_model *m, int deep) {
     free(r);
     pk_diar_free(d1);
     pk_diar_free(d3);
+    speakers_cases(m);
+}
+
+/* pk_speakers and pk_speaker_segments on rows made to give known answers:
+ * NeMo's word rule (the frame before a word's counts, an average under
+ * 0.01 counts as 0.01, the first of equals wins), words past the rows or
+ * of no samples, no rows at all, and the most stretches rows can hold, in
+ * exactly the room pktito.h asks for */
+static void speakers_cases(const pk_model *m) {
+    const size_t S = (size_t)pk_model_speakers(m);
+    const int64_t F = 1280, row = llround(pk_model_frame_seconds(m) * pk_model_rate(m)), rpf = F / row;
+    g_cases++;
+    if (S < 5 || F % row) {
+        FAIL("speakers: %zu speakers, rows of %lld samples", S, (long long)row);
+        return;
+    }
+    /* speaker 3 at 0.9 in frames 0-4, speaker 1 at 0.8 from frame 5 to
+     * half way through frame 12, where the rows end */
+    const size_t R = (size_t)(12 * rpf + rpf / 2), R5 = (size_t)(5 * rpf);
+    float *p = calloc(R * S, sizeof *p);
+    for (size_t r = 0; r < R; r++)
+        p[r * S + (r < R5 ? 3 : 1)] = r < R5 ? 0.9f : 0.8f;
+    /* speakers 2 and 3 at 0.6 in frames 0-3, then speaker 4 at 0.005 */
+    float *q = calloc(R * S, sizeof *q);
+    for (size_t r = 0; r < R; r++)
+        if (r < (size_t)(4 * rpf))
+            q[r * S + 2] = q[r * S + 3] = 0.6f;
+        else
+            q[r * S + 4] = 0.005f;
+    static const struct {
+        int64_t start, end;
+        int which, want;
+        const char *what;
+    } w[] = {
+        { 0, 1280, 0, 3, "the first frame" },
+        { 6 * 1280, 8 * 1280, 0, 1, "frames 6 and 7, and 5 before them" },
+        { 5 * 1280, 6 * 1280, 0, 3, "frame 5, and frame 4 before it: 0.45 against 0.4" },
+        { 2 * 1280 + 5, 2 * 1280 + 5, 0, 3, "no samples, in frame 2" },
+        { 100 * 1280, 101 * 1280, 0, 1, "past the rows: the last frame" },
+        { 13 * 1280 - 1, 13 * 1280, 0, 1, "the last frame's last sample" },
+        { 1280, 2 * 1280, 1, 2, "two speakers equal: the first" },
+        { 8 * 1280, 9 * 1280, 1, 0, "an average of 0.005, raised to 0.01 like the others: speaker 0" },
+    };
+    const size_t n = sizeof w / sizeof w[0];
+    pk_seg *at = malloc(n * sizeof *at);
+    int32_t *out = malloc(n * sizeof *out);
+    for (size_t i = 0; i < n; i++)
+        at[i] = (pk_seg){ w[i].start, w[i].end };
+    for (int which = 0; which < 2; which++) {
+        pk_speakers(m, which ? q : p, R, (uint32_t)F, at, n, out);
+        for (size_t i = 0; i < n; i++)
+            if (w[i].which == which) {
+                g_cases++;
+                if (out[i] != w[i].want)
+                    FAIL("pk_speakers, %s: speaker %d, not %d", w[i].what, (int)out[i], w[i].want);
+            }
+    }
+    pk_speakers(m, p, 0, (uint32_t)F, at, n, out);
+    for (size_t i = 0; i < n; i++) {
+        g_cases++;
+        if (out[i])
+            FAIL("pk_speakers, no rows, %s: speaker %d, not 0", w[i].what, (int)out[i]);
+    }
+
+    pk_spk_seg *sg = malloc((S * (R + 1) / 2) * sizeof *sg);
+    size_t k = pk_speaker_segments(m, p, R, sg);
+    g_cases++;
+    if (k != 2 || sg[0].start || sg[0].end != (int64_t)R5 * row || sg[0].speaker != 3
+        || sg[1].start != (int64_t)R5 * row || sg[1].end != (int64_t)R * row || sg[1].speaker != 1)
+        FAIL("pk_speaker_segments: %zu stretches, not speaker 3's and then 1's", k);
+    free(sg);
+    /* every speaker over one half in every other row of an odd count, and
+     * at exactly one half, which is not over, between */
+    const size_t R2 = 2 * (size_t)rpf + 1;
+    float *e = malloc(R2 * S * sizeof *e);
+    for (size_t r = 0; r < R2; r++)
+        for (size_t c = 0; c < S; c++)
+            e[r * S + c] = r % 2 ? 0.5f : 0.51f;
+    sg = malloc((S * (R2 + 1) / 2) * sizeof *sg);
+    k = pk_speaker_segments(m, e, R2, sg);
+    g_cases++;
+    if (k != S * (R2 + 1) / 2)
+        FAIL("pk_speaker_segments: %zu stretches, not %zu", k, S * (R2 + 1) / 2);
+    for (size_t i = 0; i < k; i++)
+        if (sg[i].start != (int64_t)(i / S) * 2 * row || sg[i].end != sg[i].start + row
+            || sg[i].speaker != (int32_t)(i % S)) {
+            FAIL("pk_speaker_segments: stretch %zu out of order", i);
+            break;
+        }
+    free(sg);
+    free(e);
+    free(at);
+    free(out);
+    free(p);
+    free(q);
 }
 
 /* -------------------------------------------------------------- flipped --- */

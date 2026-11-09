@@ -6,7 +6,8 @@ the study of doing that in pktito - which of NVIDIA's diarizers, how close to
 NeMo it can be held, what it costs on the boards, how its output meets
 Parakeet's words, and in what order to build it. It was written on
 2026-11-08 on a Ryzen 9 9950X under WSL2, which is not one of the lab
-boards. Nothing in it is in the engine yet; the prototype is Python:
+boards. The engine's C came after it (core/diar.c, core/speakers.c;
+README, "Who said what"); the study's prototype is Python:
 
 - `tools/pktito_tools/nemotron3.py`: NVIDIA's Nemotron 3 Diarization in
   float64 numpy, NeMo's arithmetic at a pinned commit, what reference.py is

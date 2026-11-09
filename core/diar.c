@@ -735,6 +735,8 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
     return d;
 }
 
+int pk_diar_threads(const pk_diar *d) { return d->nth; }
+
 void pk_diar_reset(pk_diar *d) {
     d->got = 0;
     d->stt = 0;

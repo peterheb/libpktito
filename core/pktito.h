@@ -569,18 +569,20 @@ long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const char *lang
 
 /* Who speaks when, from a diarizer's model (NVIDIA's Nemotron 3
  * Diarization, a Streaming Sortformer; core/diar.c): each speaker's
- * probability of speaking, a row every pk_model_frame_seconds (10 ms), row
- * r the 160 samples from r 160. The speakers are numbered in the order
- * they first speak, 0 first. A recording is heard in the model's chunks
- * (27.2 s), each with the 3.2 s after it, and a speaker cache carries
- * what was heard before, so a recording of any length takes the same
- * memory. */
+ * probability of speaking, a row every pk_model_frame_seconds, so R =
+ * pk_model_frame_seconds times pk_model_rate samples a row (10 ms and 160
+ * for Nemotron 3 Diarization), row r the R from r R on. The speakers are
+ * numbered in the order they first speak, 0 first. A recording is heard in
+ * the model's chunks (27.2 s), each with the 3.2 s after it, and a speaker
+ * cache carries what was heard before, so a recording of any length takes
+ * the same memory. */
 typedef struct pk_diar pk_diar;
 
-/* A diarizer on `threads` threads (0: one a core). NULL if m is a
- * recognizer's, or memory or a thread cannot be had. */
+/* A diarizer on `threads` threads (0: one a core), which pk_diar_threads
+ * says. NULL if m is a recognizer's, or memory or a thread cannot be had. */
 pk_diar *pk_diar_new(const pk_model *m, int threads);
 void     pk_diar_free(pk_diar *d);
+int      pk_diar_threads(const pk_diar *d);
 
 /* Rows [row, row + n) of a recording's probabilities, p[n][S], S =
  * pk_model_speakers: p[i S + s] is speaker s's in row row + i. The rows
@@ -589,16 +591,42 @@ typedef int (*pk_diar_fn)(void *arg, int64_t row, size_t n, const float *p);
 
 /* A recording heard in pieces, 16 kHz mono floats: pk_diar_feed takes the
  * next n samples and hands fn every chunk they complete, pk_diar_finish
- * says the recording has ended and hands fn the rest, n / 160 rows in all
- * for a recording of n samples. The pieces' sizes change nothing. A sample
- * that is not finite is heard as 0. Each returns 0, 1 if fn stopped it;
- * pk_diar_finish, and pk_diar_reset, ready the diarizer for the next
- * recording. */
+ * says the recording has ended and hands fn the rest: every row that starts
+ * within the recording's whole 10 ms feature frames, n / 160 rows for n
+ * samples when a row is a frame, as in Nemotron 3 Diarization. The pieces'
+ * sizes change nothing. A sample that is not finite is heard as 0. Each
+ * returns 0, 1 if fn stopped it; pk_diar_finish, and pk_diar_reset, ready
+ * the diarizer for the next recording. */
 int  pk_diar_feed(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
 int  pk_diar_finish(pk_diar *d, pk_diar_fn fn, void *arg);
 void pk_diar_reset(pk_diar *d);
 
 /* The same for a whole recording at once. */
 int pk_diar_run(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
+
+/* Which speaker said each of n words: out[i] for the word heard over
+ * samples w[i] of a recording (start 0 or more) whose rows from the
+ * diarizer's model d are p[rows][S], S = pk_model_speakers(d): its column,
+ * 0 the first speaker to speak. frame is the recognizer's encoder frame in
+ * samples (pk_model_frame_seconds times pk_model_rate, 1280 for
+ * Parakeet's). NeMo's rule: the rows averaged over frames of that size,
+ * then each speaker's averaged over the word's frames and the frame before
+ * them; the largest wins, each raised to at least 0.01 first, the first of
+ * equals (core/speakers.c; docs/DIARIZATION.md, "From frames to words"). A
+ * word no one was heard saying goes to speaker 0. */
+void pk_speakers(const pk_model *d, const float *p, size_t rows, uint32_t frame, const pk_seg *w, size_t n,
+                 int32_t *out);
+
+/* A stretch of one speaker's speech, in samples; end is exclusive. */
+typedef struct {
+    int64_t start, end;
+    int32_t speaker;
+} pk_spk_seg;
+
+/* Each speaker's stretches of speech in the rows p[rows][S] of d: runs of
+ * rows where its probability is over one half, NeMo's default (no padding,
+ * no shortest stretch), ordered by start, then speaker. out has room for S
+ * (rows + 1) / 2; returns how many. */
+size_t pk_speaker_segments(const pk_model *d, const float *p, size_t rows, pk_spk_seg *out);
 
 #endif /* PKTITO_H */
