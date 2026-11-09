@@ -13,14 +13,19 @@ exchange, in float64:
 
   exp(r) on [-ln2/2, ln2/2]   c0 + c1 r + ... + c6 r^6
   tanh(x) on [0, X0]          x + x^3 (t0 + t1 x^2 + ... )
+  erf(x) on [0, 1]            x + x (q0 + q1 x^2 + ... + q6 x^12)
+  -log erfc(x) on [1, 4]      g0 + g1 (x - 1) + ... + g9 (x - 1)^9
 
 The first is what exp is after the usual reduction x = n ln2 + r; the
 second covers the small arguments where tanh's exp form, 1 - 2/(e^2x + 1),
-cancels. The fitted error printed here is the polynomial's alone, in exact
+cancels. The last two are erf's two pieces, for the diarizer's GELU: above
+1, erf is 1 - e^-g, so erfc's fall is exp's. The fitted error printed here is the polynomial's alone, in exact
 arithmetic: tests/mathcheck measures what the float32 code actually does.
 
     python3 tools/fit_vmath.py
 """
+
+import math
 
 import numpy as np
 
@@ -86,6 +91,24 @@ def main():
         )
         for j, c in enumerate(t):
             print("  t%d = %a  (%.9e)" % (j, float(np.float32(c)), np.float32(c)))
+
+    erf = np.vectorize(math.erf)
+    q, e = remez(
+        erf, [lambda x, j=j: x * (x * x) ** j for j in range(7)], lambda x: x, 1e-6, 1.0
+    )
+    print("erf on [0, 1]: max rel err %.3g (%.3f ulp)" % (e, e / 2**-24))
+    for j, c in enumerate(q):
+        print("  q%d = %a  (%.9e)" % (j, float(np.float32(c)), np.float32(c)))
+    g, e = remez(
+        lambda x: -np.log(np.vectorize(math.erfc)(x)),
+        [lambda x, j=j: (x - 1) ** j for j in range(10)],
+        lambda x: 0 * x,
+        1.0,
+        4.0,
+    )
+    print("-log erfc on [1, 4]: max rel err %.3g" % e)
+    for j, c in enumerate(g):
+        print("  g%d = %a  (%.9e)" % (j, float(np.float32(c)), np.float32(c)))
 
 
 if __name__ == "__main__":

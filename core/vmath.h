@@ -1,9 +1,10 @@
-/* fma, exp, sigmoid and tanh: the definition every backend computes.
+/* fma, exp, sigmoid, tanh and erf: the definition every backend computes.
  *
- * These are vadito's (core/vmath.h there), and with pk_sincos below they
- * are the whole of pktito's transcendental mathematics: SiLU and GLU's
- * sigmoids, the softmax's exponentials, the LSTM cells' gates, and the
- * positional encoding's sines.
+ * exp, sigmoid and tanh are vadito's (core/vmath.h there), and with pk_erff,
+ * pk_sincos and pk_logf below they are the whole of pktito's transcendental
+ * mathematics: SiLU and GLU's sigmoids, the softmax's exponentials, the
+ * LSTM cells' gates, the diarizer's GELU, and the positional encodings'
+ * sines.
  *
  * They are pktito's own rather than libm's for two reasons. The platform
  * libms disagree in the last bit (glibc's expf, macOS's and MSVC's each round
@@ -20,10 +21,12 @@
  *
  *   pk_expf     at most 1 ulp on [-87, 88]; 0.67% of floats not the rounded value
  *   pk_tanhf    at most 1 ulp everywhere; 0.17% not
+ *   pk_erff     at most 1 ulp everywhere; 0.70% not
  *   pk_sigmoidf at most 2 ulp on [-87, inf); 5.2% not
  *   pk_logf     at most 1 ulp on every positive float; a handful of the 2.1e9 not
  *   pk_sincosf  0 ulp on the 25 million angles the positional encoding takes
- *               at 30 minutes and on a sweep of [-8192, 8192]
+ *               at 30 minutes, the diarizer's 21,888 rotary angles and a
+ *               sweep of [-8192, 8192]
  *
  * The polynomials are minimax fits of relative error, made by
  * tools/fit_vmath.py; it prints these constants.
@@ -160,6 +163,61 @@ static inline float pk_tanhf(float x) {
     }
     float e = pk_expf(2.0f * a);
     return copysignf(1.0f - 2.0f / (e + 1.0f), x);
+}
+
+/* erf, for the diarizer's GELU (torch's exact one, x/2 (1 + erf(x/sqrt 2))),
+ * in two pieces that meet at |x| = 1. Below it erf(x) is x + x q(x^2),
+ * q's constant 2/sqrt(pi) - 1, so that the last step is one rounding of a
+ * small correction to x. From 1 to 4 it is 1 - e^-g, g a polynomial in |x| - 1
+ * fitted to -log erfc(|x|): erfc's own steep fall is then exp's, and
+ * nothing cancels. From 4 on, erf is 1 in float (erfc(4) = 1.5e-8, under
+ * half an ulp below 1). Both fits are minimax in relative error, 1.2e-9
+ * and 1.0e-9, by tools/fit_vmath.py. */
+#define PK_ERF_Q0 0x1.06eba8p-3f
+#define PK_ERF_Q1 -0x1.81273ep-2f
+#define PK_ERF_Q2 0x1.ce2cf8p-4f
+#define PK_ERF_Q3 -0x1.b7f90ep-6f
+#define PK_ERF_Q4 0x1.5405b2p-8f
+#define PK_ERF_Q5 -0x1.a3f700p-11f
+#define PK_ERF_Q6 0x1.496a32p-14f
+#define PK_ERF_G0 0x1.d97fc0p+0f
+#define PK_ERF_G1 0x1.51c9b2p+1f
+#define PK_ERF_G2 0x1.afab60p-1f
+#define PK_ERF_G3 0x1.549a98p-5f
+#define PK_ERF_G4 -0x1.4a5b72p-7f
+#define PK_ERF_G5 0x1.0dcc90p-9f
+#define PK_ERF_G6 -0x1.525438p-12f
+#define PK_ERF_G7 0x1.1b40d4p-15f
+#define PK_ERF_G8 -0x1.dda45cp-20f
+#define PK_ERF_G9 0x1.62f362p-27f
+
+static inline float pk_erff(float x) {
+    float a = fabsf(x);
+    if (a < 1.0f) {
+        float s = x * x;
+        float q = PK_ERF_Q6;
+        q = pk_fmaf(q, s, PK_ERF_Q5);
+        q = pk_fmaf(q, s, PK_ERF_Q4);
+        q = pk_fmaf(q, s, PK_ERF_Q3);
+        q = pk_fmaf(q, s, PK_ERF_Q2);
+        q = pk_fmaf(q, s, PK_ERF_Q1);
+        q = pk_fmaf(q, s, PK_ERF_Q0);
+        return pk_fmaf(x, q, x);
+    }
+    if (!(a < 4.0f))                                 /* and a NaN is 1 */
+        return copysignf(1.0f, x);
+    float t = a - 1.0f;
+    float g = PK_ERF_G9;
+    g = pk_fmaf(g, t, PK_ERF_G8);
+    g = pk_fmaf(g, t, PK_ERF_G7);
+    g = pk_fmaf(g, t, PK_ERF_G6);
+    g = pk_fmaf(g, t, PK_ERF_G5);
+    g = pk_fmaf(g, t, PK_ERF_G4);
+    g = pk_fmaf(g, t, PK_ERF_G3);
+    g = pk_fmaf(g, t, PK_ERF_G2);
+    g = pk_fmaf(g, t, PK_ERF_G1);
+    g = pk_fmaf(g, t, PK_ERF_G0);
+    return copysignf(1.0f - pk_expf(-g), x);
 }
 
 /* sin and cos of a float angle: computed in double and rounded once, so

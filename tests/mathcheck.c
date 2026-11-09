@@ -1,7 +1,7 @@
 /* core/vmath.h against the platform's double-precision functions.
  *
  * Every float x in a function's domain (or one in 61, by default) through
- * pk_expf, pk_sigmoidf and pk_tanhf, each held to the double result rounded
+ * pk_expf, pk_sigmoidf, pk_tanhf and pk_erff, each held to the double result rounded
  * once to float, which differs from the correctly rounded float only where
  * the double lands within an ulp of a float's rounding boundary: never, for
  * any purpose here. The distance is counted in floats, so 1 is the next
@@ -11,8 +11,10 @@
  *                            clamp's own e^-87 or e^88
  *   sigmoid  [-87, inf)      below it 1/(1 + e^88) at most, which is 6e-39
  *   tanh     every float
+ *   erf      every float
  *   log      every positive finite float
- *   sin cos  the positional encoding's angles, and floats in [-8192, 8192]
+ *   sin cos  the positional encoding's angles, the diarizer's rotary
+ *            angles, and floats in [-8192, 8192]
  *
  * and sqrt(x * x) is held to |x| wherever x * x is normal, which the VAD's
  * magnitudes rest on. pk_fmaf_soft is held to the FMA instruction bit for
@@ -71,6 +73,7 @@ static void check(stat *s, float x, float got, double want) {
 int main(int argc, char **argv) {
     const uint32_t step = argc > 1 && !strcmp(argv[1], "--all") ? 1 : 61;
     stat se = { "exp", 0, 0, 0, 0 }, ss = { "sigmoid", 0, 0, 0, 0 }, st = { "tanh", 0, 0, 0, 0 };
+    stat sf = { "erf", 0, 0, 0, 0 };
     stat sl = { "log", 0, 0, 0, 0 }, sn = { "sin", 0, 0, 0, 0 }, sc = { "cos", 0, 0, 0, 0 };
     uint64_t sqrt_bad = 0, sqrt_n = 0;
     for (uint64_t u = 0; u < (1ull << 32); u += step) {
@@ -84,6 +87,7 @@ int main(int argc, char **argv) {
         if (x >= -87.0f)
             check(&ss, x, pk_sigmoidf(x), 1.0 / (1.0 + exp(-(double)x)));
         check(&st, x, pk_tanhf(x), tanh((double)x));
+        check(&sf, x, pk_erff(x), erf((double)x));
         if (x > 0 && isfinite(x))
             check(&sl, x, pk_logf(x), log((double)x));
         /* the VAD takes sqrt of the STFT kernel's power for its magnitude
@@ -101,6 +105,18 @@ int main(int argc, char **argv) {
     for (int k = 0; k < 512; k += step == 1 ? 1 : 7) {
         float fr = (float)exp((double)(k * 2.0f * -(float)(log(10000.0) / 1024)));
         for (int p = -22500; p <= 22500; p += step == 1 ? 1 : 13) {
+            float ang = (float)p * fr, s1, c1;
+            pk_sincosf(ang, &s1, &c1);
+            check(&sn, ang, s1, sin((double)ang));
+            check(&sc, ang, c1, cos((double)ang));
+        }
+    }
+    /* the diarizer's rotary angles (core/diar.c): each position of a step,
+     * 0 to 683, times each of its 32 frequencies 10000^(-i/32), in float as
+     * NeMo forms them; the file's are torch's, which these stand for */
+    for (int i = 0; i < 32; i++) {
+        float fr = (float)pow(10000.0, -i / 32.0);
+        for (int p = 0; p < 684; p++) {
             float ang = (float)p * fr, s1, c1;
             pk_sincosf(ang, &s1, &c1);
             check(&sn, ang, s1, sin((double)ang));
@@ -163,12 +179,12 @@ int main(int argc, char **argv) {
 
     /* the bounds core/vmath.h states: `--all` on an M4 Pro, a 12900HK and a
      * Pi 3B+, which agree to the last digit printed */
-    const double bound[6] = { 1, 1, 2, 1, 1, 1 };
-    stat *all[6] = { &se, &st, &ss, &sl, &sn, &sc };
+    const double bound[7] = { 1, 1, 2, 1, 1, 1, 1 };
+    stat *all[7] = { &se, &st, &ss, &sf, &sl, &sn, &sc };
     int bad = sqrt_bad != 0 || fma_bad;
     printf("mathcheck sqrt     %llu floats: sqrt(x * x) is |x| %s\n", (unsigned long long)sqrt_n,
            sqrt_bad ? "NOT everywhere  FAIL" : "for every one");
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         stat *s = all[i];
         int over = s->max_ulp > bound[i];
         printf("mathcheck %-8s %llu floats: at most %.0f ulp (at %a), %.4f%% not the rounded double%s\n",
