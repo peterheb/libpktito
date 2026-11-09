@@ -18,6 +18,9 @@ boards. Nothing in it is in the engine yet; the prototype is Python:
   v2's checkpoint.
 - `tools/pktito_tools/speakers.py`: words to speakers, NeMo's rule and the
   one alternative measured below.
+- `tools/diarquant.py`: tools/quantcheck.py's experiment for the diarizer,
+  what rounding its matrices to int8 does to its labels and the words'
+  speakers (section 6, "Why int8").
 - `tools/pktito_tools/reference.py`: the three things v2's encoder has and
   Parakeet's lacks - a bias on its matrices, xscaling, features that are not
   normalized - each off for Parakeet, whose features, encoder output and
@@ -62,12 +65,19 @@ relies on it.
   stacking (no copy: eight feature frames are already one row of 1024), the
   upsampler (one matrix over three frames side by side), the learned
   silence frame (a tensor), and the cache.
+- **int8: Parakeet's rule holds** (measured): every matrix int8 with a
+  scale a row, the activations entering them in blocks of 32, the rest
+  float. On AMI's 16 evaluation meetings, 9 hours of real ones, it changes
+  0.085% of float32's labels and DER against the true speakers by 0.01
+  points (9.21% against 9.19%; the card's 9.25%), and gives 221 of 74,737
+  words another speaker, float32's own near ties nearly all; it splits or
+  merges no speaker. No tensor needs float beyond what Parakeet's keep.
 - **The licence: OpenMDW-1.1**, from its text: any use, change and
   distribution, if a copy of the licence and the model's notices of origin
   go with what is distributed; the rights end for whoever sues claiming the
   model infringes; nothing on the outputs. Peter accepted it on 2026-11-08.
 - **The plan:** the reference kept, held to NeMo at its commit and to
-  Transformers, and the numerics measured, as Parakeet's were; C on
+  Transformers, and the numerics measured as Parakeet's were (done); C on
   backend/ref with a .pkf of its own; GELU's kernel in the tuned backends;
   then the boards.
 
@@ -417,10 +427,13 @@ Each operation and what has it (backend/kernels.h), or what is new:
 - **the rotation (new)**: the queries and keys, after their products and
   before K is laid out as panels, each pair (x_i, x_i+32) of a head turned
   to (x_i cos - x_i+32 sin, x_i+32 cos + x_i sin) by the frame's angle: a
-  loop in core/, the same bits on every backend. The angles are the position (0
-  to 683) times 10000^(-i/32), a float32 product as NeMo forms it, and their
-  sines and cosines a table made once with core/vmath.h's `pk_sincosf`,
-  whose sweep in tests/mathcheck would take these 21,888 angles.
+  loop in core/, the same bits on every backend. The angles are the
+  position (0 to 683) times 10000^(-i/32), a float32 product as NeMo forms
+  it, and their sines and cosines a table made once with core/vmath.h's
+  `pk_sincosf`, whose sweep in tests/mathcheck would take these 21,888
+  angles. The 32 frequencies 10000^(-i/32) come in the file, as NeMo's
+  float32 forms them (the converter writes them, diarcheck holds them to
+  torch's), so C takes no power and no libm function.
 - **GELU (new)**: torch's exact one, x times the normal distribution at x,
   so erf: `pk_erff` in core/vmath.h with its sweep in tests/mathcheck, and,
   since it runs over every feed-forward's 2048 x 684 values, a kernel
@@ -469,14 +482,16 @@ fold into their matrices.
 A .pkf of its own, "sortformer" its architecture:
 
 - **params**: the network (Nemotron 3's; v2's if it were ever wanted), the
-  shapes (layers, width, heads, feed-forward, stacking, the projection's
-  and the upsampler's widths, the speakers), the rotary base, and the
-  cache's numbers - chunk, contexts, FIFO, cache, update period, silence
-  frames, thresholds, boosts - for the 30.4 s configuration.
+  shapes (layers, width, heads, feed-forward, stacking, the projection's and
+  the upsampler's widths, the speakers), and the cache's numbers - chunk,
+  contexts, FIFO, cache, update period, silence frames, thresholds, boosts -
+  for the 30.4 s configuration.
 - **tensors**: nemotron3.py's `tensors()` names them: the mel tables, the
   stacking matrix, each layer's under Parakeet's names (`l<i>.att.q`,
   `l<i>.ff.up`, each bias `<name>.b`), the projection, the upsampler as a
-  matrix over three frames side by side, the head, the silence frame.
+  matrix over three frames side by side, the head, the silence frame; and
+  the rotation's 32 frequencies, which the validator holds to positive,
+  finite and falling.
 - **no vocabulary**: the validator requires 1 to 2^20 pieces today; for this
   architecture it would require none.
 - **metadata**: the source, the converter's version, and OpenMDW-1.1's text
@@ -501,38 +516,194 @@ nemotron3.py's `tensors()` is the converter's first half, numpy alone (the
 three, the upsampler's taps laid side by side, the training-only heads left
 out. The second half is canon.py's: int8 panels, a scale a row.
 
-### int8 or float
+### Why int8
 
-Decided as README's "Why int8" decided Parakeet's: tools/quantcheck.py's
-method, on the diarizer. Run the reference in float32 with each matrix, and
-the activations entering it, rounded each way, over real conversations, and
-report against float32:
+Measured as README's "Why int8" measured Parakeet's: tools/diarquant.py is
+tools/quantcheck.py's experiment for the diarizer. It runs nemotron3.py in
+float32, what NeMo computes in, with the matrices and the activations
+entering them rounded one way, and reports against the unrounded float32
+run on the same recordings: the 10 ms labels that change; how much less
+likely the rounded model finds float32's labels (dBCE: the binary
+cross-entropy of its probabilities against them, less float32's own, per
+label - the diarizer's dlogp - with its paired t over recordings); DER
+against float32's labels and against the true speakers; the words that
+NeMo's rule gives another speaker; the changes of speaker that appear or
+vanish; and speakers split or merged. A rounding can renumber the speakers
+(they are numbered in the order they arrive), so each of a run's speakers
+is compared with the float32 speaker it matches best. The rule is run
+again with float32's cache cuts imposed, to tell the network's own
+rounding from the cache's choices parting, and float64 beside them, to
+show what a rounding does with no int8 at all.
 
-- the labels that differ, and DER between the two (as "transcripts not
-  float32's" and "WER between them");
-- a paired measure finer than labels: the mean binary cross-entropy of the
-  rounded model's probabilities against float32's labels, less float32's own
-  (the diarizer's dlogp);
-- DER against the corpus's labels, and the words that change speaker;
-- each twice: with the cache choosing its own frames, as it will, and with
-  float32's choices imposed, to tell the network's rounding from the
-  cache's choices parting.
+**The rule is Parakeet's.** Every matrix int8 with a float scale a row;
+the activations entering each int8 in blocks of 32 inputs, a scale a block,
+as the encoder's are; the attention's three products float, as they are in
+Parakeet's encoder; and float everything that is not a matrix: the norms,
+the biases, the mel tables, the learned silence frame. Where Nemotron 3
+has what Parakeet does not:
 
-What int8 costs here is not known. Parakeet's encoder lost nothing
-measurable to int8 in blocks of 32; this is a plainer network of the same
-kind, but its stacking matrix reads log-mels directly, and its output is cut
-at one half and fed back into its own cache, whose choices section 4 shows
-turn on gaps of 1e-7.
+- the stacking matrix (1024 to 512) is a matrix like the others, int8; its
+  input is the log-mels themselves, eight frames side by side, so a block of
+  32 is a quarter of one frame's 128 bands. Parakeet's layer that reads the
+  mels, a 3x3 convolution, stays float, so this was the matrix most likely
+  to need float, and it is measured both ways below: it does not.
+- GELU is elementwise and float, as SiLU is; its output is ff.down's input,
+  in blocks of 32 as SiLU's is ff2.down's.
+- the rotation turns the queries and keys, the attention's own operands,
+  so it is float, as they are.
+- the upsampler is a matrix over three frames side by side; 192 is six
+  blocks of 32, so no block straddles two frames and each frame is
+  quantized once.
+- the head's two matrices take the encoder's blocks of 32, not the joint's
+  row at a time: the joint runs a frame at a time, the head over a step's
+  frames, as the encoder does.
 
-The corpus cannot be tools/corpus.py's LibriSpeech, a speaker a recording,
-and for DER it should be recordings the model was not trained on. The card
-lists among its training data AMI's training and development meetings,
-DiPCo's development set and VoxConverse's development and test sets, so of
-the conversations with reference labels that can be downloaded, AMI's
-evaluation meetings and DiPCo's evaluation set are clean and VoxConverse is
-not (inferred from the card: nothing was fetched here, and their licences
-and speaker counts are to check). CALLHOME and DIHARD, behind NVIDIA's
-tables, are the LDC's and not free.
+**The recordings.** AMI's evaluation meetings: the 16 of the Full-corpus-ASR
+partition's evaluation set (ES2004, IS1009, TS3003 and EN2002, a to d),
+Mix-Headset, 9.06 hours, 3 or 4 speakers each. The card lists AMI's
+training and development meetings among Nemotron 3's training data, not
+these (and VoxConverse's development and test sets both, which is why
+they are not here). AMI's licence page puts the corpus and its
+annotations under CC BY 4.0. Two sets of true speakers: NTT's forced
+alignment of AMI's words
+(nttcslab-sp/diar-forced-alignment at 9527b7c, CC BY 4.0), which the card
+scores "AMI Test MHM" against, and BUT's, from AMI's manual annotations
+(BUTSpeechFIT/AMI-diarization-setup at 2509d89, only_words, Apache-2.0).
+And the nine synthetic conversations of section 8, rebuilt from the same
+LibriSpeech chapters at the same seeds: the same lengths and, from
+pktito-c, the same word counts as before.
+
+Float32 itself first. Against NTT's references, no collar, overlap scored,
+it makes 9.19% DER on AMI's 16 meetings, where the card gives 9.25% for
+Nemotron 3 on AMI Test MHM at 30.4 s (its evaluation command runs bf16
+on a GPU). Against BUT's it
+makes 25.96%, nearly all of it missed speech (24.05%): word times from the
+manual annotations count far more as speech than a forced alignment does.
+On the synthetic set it makes NeMo's own DER of section 8, recording for
+recording, to 0.01.
+
+Measured, against float32 on the same recordings, AMI's truth NTT's (26.1
+million labels, 74,737 words, 4,926 changes of speaker in float32's
+transcript):
+
+| AMI | labels changed | dBCE (t) | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
+|---|---|---|---|---|---|---|---|---|
+| float64, no int8: a rounding alone | 0.0054% | +0.00001 (0.8) | 0.06% | 9.19% (+0.004, t 1.2) | 30 | 848 | +19, -23 | 0, 0, 0 |
+| int8 weights, a scale a row | 0.089% | +0.00032 (1.9) | 0.91% | 9.25% (+0.067, t 2.5) | 269 | 866 | +158, -172 | 0, 0, 1 |
+| ... and their activations in blocks of 32: the rule | 0.085% | +0.00050 (4.9) | 0.89% | 9.21% (+0.010, t 0.4) | 221 | 836 | +140, -181 | 0, 0, 1 |
+| the rule, the cache cut where float32 cut it | 0.054% | +0.00036 (5.0) | 0.59% | 9.22% (+0.042, t 2.8) | 94 | 849 | +70, -83 | 0, 0, 0 |
+| the rule, activations a row at a time | 0.092% | +0.00050 (3.8) | 0.97% | 9.24% (+0.046, t 1.6) | 245 | 859 | +164, -189 | 0, 0, 1 |
+| the rule, the head's two matrices float | 0.066% | +0.00017 (1.8) | 0.70% | 9.22% (+0.030, t 1.4) | 182 | 856 | +123, -146 | 0, 0, 0 |
+| the rule, the stacking matrix float | 0.084% | +0.00073 (3.4) | 0.87% | 9.28% (+0.090, t 1.6) | 277 | 902 | +166, -171 | 1, 0, 0 |
+
+The synthetic set (9.4 million labels, 18,927 words, 816 changes of
+speaker):
+
+| synthetic | labels changed | dBCE (t) | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
+|---|---|---|---|---|---|---|---|---|
+| float64, no int8 | 0.0096% | +0.00003 (1.0) | 0.09% | 5.84% (+0.001, t 1.1) | 0 | 129 | +0, -0 | 43, 0, 0 |
+| int8 weights, a scale a row | 0.037% | +0.00045 (1.3) | 0.35% | 5.82% (-0.032, t -1.3) | 9 | 120 | +5, -0 | 42, 0, 0 |
+| the rule | 0.023% | +0.00007 (1.7) | 0.21% | 5.83% (-0.020, t -1.0) | 0 | 129 | +0, -0 | 43, 0, 0 |
+| the rule, float32's cuts | 0.016% | +0.00013 (3.0) | 0.15% | 5.82% (-0.037, t -1.7) | 0 | 129 | +0, -0 | 43, 0, 0 |
+| the rule, activations a row at a time | 0.025% | +0.00005 (2.0) | 0.24% | 5.84% (-0.001, t -0.0) | 0 | 129 | +0, -0 | 43, 0, 0 |
+| the rule, the head float | 0.023% | +0.00014 (1.8) | 0.21% | 5.85% (+0.003, t 0.2) | 0 | 129 | +0, -0 | 43, 0, 0 |
+| the rule, the stacking matrix float | 0.039% | +0.00073 (1.2) | 0.28% | 5.74% (-0.215, t -1.1) | 62 | 67 | +12, -1 | 42, 0, 1 |
+
+What it shows:
+
+- **The rule holds, and needs no float beyond Parakeet's.** On AMI it
+  changes 0.085% of float32's labels and moves DER against the true
+  speakers by +0.01 points (t 0.4 over the 16 meetings); on the synthetic
+  set, 0.023% and -0.02. It gives 221 of AMI's 74,737 words another
+  speaker, and none of the synthetic set's. It splits, merges, loses or
+  gains no speaker: it hears 64 on AMI, as float32 and every other
+  configuration do (the 63 there are, and one more for 3.5 s at the start
+  of ES2004b). In one meeting, EN2002b, two speakers' columns trade
+  places, which the output does not show: section 8 numbers speakers by
+  their first words.
+- **Float64 is the floor.** Rounding differently with no int8 at all moves
+  1,421 of AMI's labels and 30 of its words, all on 4 of the 16 meetings
+  and none on the other 12, the mark of a cache cut that went the other
+  way (section 5); its DER is float32's to 0.005. The rule moves 16 times
+  the labels and 7 times the words.
+- **The words that move are float32's near ties.** For each word the rule
+  gives another speaker, float32's two largest averages were a median
+  0.005 apart (over all words, 0.95), 171 of the 221 within 0.02, where
+  2.2% of all words are; 159 are the first or last word of one of
+  float32's turns: "Yeah", "I", "the", a reply's first word. 31 went from a
+  wrong speaker to the true one and 12 the other way (3 from one wrong
+  speaker to another), so the rule's transcripts have fewer words not the
+  true speaker's than float32's, 836 to 855. Imposing float32's cuts
+  leaves 94, all of them within 0.1: more than half of the 221 come from a
+  cache cut that went the other way, as float64's 30 do, and the rest from
+  the network's own rounding.
+- **What shifts is how much is speech, on AMI.** The rule labels 113
+  seconds less speaker time than float32's 23,690 (0.48%). Against NTT's
+  truth 66 s of them were speech and 48 s false alarms: missed speech
+  4.66% to 4.93%, false alarms 3.65% to 3.45%, confusion 0.87% to 0.82%.
+  BUT's truth counts 28% more time as speech, so there 86 s were speech
+  and 27 s false alarms: its +0.12 points (26.10% against 25.96%, t 3.3).
+  It is the weights' rounding, not the activations' or a cut's (the
+  weights alone do it, and float32's cuts imposed do not undo it), and
+  AMI's: the synthetic set's speech moves by 1 s in 9,925. Kept float,
+  the head's two matrices take back half of it (missed speech 4.80% and
+  false alarms 3.55% against NTT's truth; +0.085 against BUT's, t 3.9);
+  the other half is elsewhere in the network, and not in the stacking
+  matrix: with it float instead, the shift is all still there (4.93%,
+  3.47%). The head is 0.25%
+  of a step's multiply-adds, so float would cost it nothing measurable,
+  but it buys 0.035 points that only BUT's references score, and against
+  the card's own the head float's DER moves more than the rule's (+0.03
+  to +0.01): the head stays int8.
+- **Blocks of 32, not rows.** The activations a row at a time change more
+  of AMI's labels (0.092%) and words (245), and its DER by +0.05 (t 1.6):
+  as for Parakeet's encoder, blocks of 32, the head's too.
+- **The stacking matrix needs no float.** Kept float, it changes as many
+  of AMI's labels (0.084%) and more words (277), and leaves the shift
+  where it was. Its run is the one in which a speaker split: IS1009d's
+  least heard speaker lost 11 s of its 174 for a while, partly to
+  another's column, and that meeting's DER rose 0.78 points. On the
+  synthetic set the same run joined two of the three columns float32
+  gives conv5's host, which took 62 words to the true speaker. Run again
+  on those two recordings with float32's cuts imposed, it moves 1 word
+  and splits and merges nothing: both were a cache cut gone the other
+  way, which any rounding can do (section 10), and not the stacking
+  matrix's rounding.
+
+For a reader, then, the rule's cost is 3 words in 1,000 given another
+speaker, nearly all of them words float32 itself could have given either
+way, more of them to the true speaker than from it; DER within the
+meetings' own spread against the card's references, and 0.12 points of 26
+against BUT's.
+
+A third set was not run. CALLHOME's evaluation half, the card's telephone
+calls, is NIST's 2000 speaker recognition evaluation (LDC2001S97), which
+the LDC licenses, as it does DIHARD. TalkBank's CallHome on Hugging Face
+(talkbank/callhome: 140 English calls among five languages) is gated
+behind an account and a form, and CC BY-NC-SA 4.0; and the card's
+training data includes recordings "Licensed under agreement" that it
+does not name, so calls that are not an evaluation's cannot be shown held
+out. DiPCo's evaluation set, which the card's training data also leaves
+out (it lists DiPCo's development set), was not fetched; its licence is
+unchecked.
+
+The recordings, both references, pktito-c's words, every run's
+probabilities and the scripts that fetched and made them are on the 9950X
+in ~/diar-int8 (ami/ and synth/, asr/, corpus/ with a directory per set of
+references, cache/ with one per configuration, results/ with
+diarquant.py's JSON, scripts/). A run found in the cache is not computed
+again, so `diarquant.py ... --cache ~/diar-int8/cache` with another
+configuration computes only that one.
+
+Memory, measured (/usr/bin/time -v, each process alone): over the
+hour-long conv2h, one process peaks at 1.95 GB for an int8 configuration
+and 2.61 GB for float64 (EN2002c, 49.5 minutes: 1.75 and 2.42 GB), since
+sortformer.py computes a chunk's features from the samples it sees, not
+the whole recording's. The 150 runs above, six configurations over 25
+recordings, took 1 h 40 min in five processes of three threads, under a
+20 GB cgroup cap whose peak was 10.3 GB; the 50 that keep the head or the
+stacking matrix float, 28 min (peak 7.1 GB); the stacking matrix's two
+recordings with float32's cuts, 2 min in two processes (2.8 GB).
 
 ## 7. What it costs
 
@@ -756,21 +927,24 @@ What it shows:
 
 ## 9. The plan
 
-Each stage ends at a check that holds it there.
+libpktito, which owns the engine, reviews this plan before any C is
+written: stage 2 waits on that review. Each stage ends at a check that
+holds it there.
 
 0. **This study** (done): the float64 reference against NeMo at cd61689 and
    against Transformers at 0f7a876, and the two against each other; v2's
-   against NeMo 3.0.0; the merge; the costs.
+   against NeMo 3.0.0; the merge; the costs; the numerics (section 6).
 1. **The reference kept, the numerics chosen.** tests/diarcheck.py: the
    reference against NeMo at its commit and against Transformers (with the
    checkpoint's tables) on a handful of recordings, labels and DER, in `make
    check-python` and skipped where they are not installed; nemotron3.py's
    `_erfc` against the C library's. The quantcheck of section 6 over a
-   corpus of real conversations, its table in the README beside "Why int8".
-   The converter and the .pkf: the validator, the binder,
-   docs/MEMORY_SAFETY.md, a tiny diarizer for pkfcheck's corpus. Done when
-   the file loads with every byte checked and its numerics have their
-   measurement.
+   corpus of real conversations (done: AMI's evaluation meetings and the
+   synthetic set; Parakeet's rule holds), its table in the README beside
+   "Why int8". The converter (numpy alone) and the .pkf, in one change: the
+   validator, the binder, docs/MEMORY_SAFETY.md, a tiny diarizer for
+   pkfcheck's corpus, `make check-sanitize`. Done when the file loads with
+   every byte checked and its numerics have their measurement.
 2. **C on backend/ref.** `pk_erff` and its mathcheck sweep, `pk_k_gelu` in
    ref, the rotary table's angles in mathcheck's sweep of `pk_sincosf`;
    core/diar.c, core/speakers.c, the features with the model's tables and
@@ -780,7 +954,10 @@ Each stage ends at a check that holds it there.
    byte for byte, as it holds test.v2.json; DER and the words that change
    speaker against the reference's over the corpus; check-sanitize. Done
    when every backend writes ref's bytes and C's DER is the reference's
-   within int8's measured cost.
+   within int8's measured cost. Then the catalog: models.json gains an
+   entry of its own, task "diarize", status "preview", its needs the
+   libpktito version that adds GELU and the rotation; its file is
+   independent of the transcribers', one diarizer for both.
 3. **The tuned backends.** `pk_k_gelu` in each, held to ref by kcheck, its
    hypothesis and measurement in the backend's CLIMB.md; then `make
    PROFILE=1` on each board, the attention over a 684-frame step the likely
@@ -790,23 +967,78 @@ Each stage ends at a check that holds it there.
    arithmetic: the reference checked against it, and nemotron3.py's commit
    moved with a measurement, as any change to the arithmetic would be.
 
+### Against CLAUDE.md
+
+The diarizer is a second model in core/, so CLAUDE.md holds for it in
+full:
+
+- **Transcendentals from core/vmath.h, not libm.** GELU's erf is
+  `pk_erff`, new in core/vmath.h with its sweep in tests/mathcheck against
+  the platform's double erf; the rotation's sines and cosines are
+  `pk_sincosf`, its 21,888 angles added to mathcheck's sweep, and its 32
+  frequencies come in the file, so C takes no power; the head's sigmoid is
+  `pk_sigmoidf` and the cut's logarithms `pk_logf`. No libm function
+  reaches a label. (Stage 2.)
+- **Every matrix product through backend/kernels.h, ref the definition.**
+  Every matrix is `pk_k_gemm_q8`, the attention's products
+  `pk_k_gemm_f32`, the norms `pk_k_layernorm`, the softmax `pk_k_softmax`;
+  GELU is a new kernel, `pk_k_gelu`, in ref first and then in each tuned
+  backend, held to ref bit for bit by tests/kcheck. The rotation and the
+  cut's 80 ms means are plain loops in core/ over activations and
+  probabilities, the silence frame a copy as decoder.c's embedding row
+  is: the same bits everywhere under `-ffp-contract=off`, and core/ gains
+  no intrinsic. (Stages 2 and 3.)
+- **Numerics by quantcheck's method against float32.** tools/diarquant.py
+  is quantcheck.py's experiment for the diarizer, and section 6's "Why
+  int8" its measurement: Parakeet's rule, nothing more kept float. The
+  converter is nemotron3.py's `tensors()` and canon.py, Python and numpy
+  alone. (Done; the converter is stage 1's.)
+- **A new kind of .pkf extends its validator in the same change.** The
+  "sortformer" architecture, its params and its tensors: `pk_pkf_validate`,
+  the binder's ranges, docs/MEMORY_SAFETY.md, `pktito-tools tiny`'s
+  diarizer in pkfcheck's corpus with its flips and truncations, and `make
+  check-sanitize`, together (section 6, "The model file"; stage 1).
+- **A reader can follow it top down**, as core/encoder.c: core/diar.c in
+  the network's order - the stacking, the 31 layers on encoder.c's passes,
+  the projection, the upsampler, the head, then the cache - to be read
+  beside nemotron3.py and sortformer.py as encoder.c is beside
+  reference.py; core/speakers.c the merge alone. Anything dense stays in a
+  tuned backend's kernels.c, on measurements.
+- **No new dependency, no decision handed to the user.** The C library,
+  libm and pthreads; work bounded by a step of 684 frames and the cache,
+  the probabilities handed back a chunk at a time; one flag, --speakers,
+  for what only the user knows; the number of speakers found by the model.
+- **NeMo agrees, and every backend gives ref's bits.** diarcheck holds the
+  reference to NeMo at its commit and to Transformers (stage 1); check-c
+  holds every backend's --json on the two-speaker recording to ref's, byte
+  for byte (stage 2).
+
 ## 10. Risks
 
 - **The labels are NeMo's, the bits cannot be.** A cut is decided by gaps
   below float32's rounding, so float64 already moves 888 labels in 7.5
-  million, and int8 will move more. If it moves many more, some matrices
-  stay float, and pay for it.
+  million, and int8 moves more: 0.085% of AMI's, and 221 of its 74,737
+  words, float32's near ties nearly all (section 6). No matrix needs to
+  stay float for it; what it means is that pktito's labels are int8's,
+  within that much of NeMo's. A rounding can also send a cache cut the
+  other way, and with it a stretch of one voice to another's column: one
+  of the seven configurations of section 6 did, for 11 s of one of AMI's
+  16 meetings. C's int8 is another rounding and can do the same, so stage
+  2 holds it to the reference over the whole corpus, not one recording.
 - **A voice split in three.** On one conversation of nine the model heard
   one reader as three speakers; real recordings, with a voice that changes
-  between a laugh and a quote, may do that more. Measure it on real
-  conversations before relying on the speaker count.
+  between a laugh and a quote, may do that more. On AMI's 16 evaluation
+  meetings it did not (section 6: each meeting's speakers, and one more
+  for 3.5 s); podcasts are not meetings, so measure it on them before
+  relying on the speaker count.
 - **Synthetic conversations flatter**, the more so as Nemotron 3 was
   trained on mixtures of LibriSpeech readers. Real ones have music,
   laughter, cross-talk, a guest on a phone line, two voices alike. NVIDIA's
   tables
   for Nemotron 3 - DER 6 to 11% on telephone calls of two to four speakers,
   13% on DIHARD III's mix of domains, 11% in meetings - are closer to what a
-  reader will see.
+  reader will see; the reference itself makes 9.19% on AMI's evaluation
+  meetings against the card's references (section 6).
 - **More than eight speakers**: nothing measured; the ninth has nowhere to
   go, as v2's fifth had.
 - **The reference's NeMo is a commit**: a later NeMo may change the
@@ -823,9 +1055,10 @@ Each stage ends at a check that holds it there.
 
 ## 11. What would make me recommend against it
 
-- If int8 cannot hold Nemotron 3's labels near float32's and float makes the
-  diarizer slower than the recognizer: a Pi 3B+ would then take two hours
-  or more for an hour, and the labels would cost more than the words.
+- If int8 could not hold Nemotron 3's labels near float32's, and float
+  made the diarizer slower than the recognizer: a Pi 3B+ would then take
+  two hours or more for an hour. Measured, it can: Parakeet's rule moves
+  0.085% of AMI's labels and its DER by 0.01 points (section 6).
 - If Nemotron 3 splits real speakers often - the conv5 failure on real
   podcasts - so that a reader would trust its labels less than none. The
   reference can measure that on any recording before a line of C is
@@ -844,10 +1077,15 @@ Each stage ends at a check that holds it there.
    on real recordings.
 3. **The output**: `Speaker 1:` in the text and in SRT, `<v Speaker 1>` in
    WebVTT, numbered in the order the voices arrive?
-4. **A separate .pkf for the diarizer**, one for both recognizers, as I would
-   do it?
-5. **The corpus** for the numerics: AMI's evaluation meetings (VoxConverse
-   is in the model's training data), or recordings you have?
+4. **A separate .pkf for the diarizer**, one for both recognizers: libpktito's
+   catalog plans it so, an entry of its own (section 9). It stands unless
+   you want otherwise.
+5. **A third set of recordings?** AMI's evaluation meetings and the
+   synthetic set settled int8 (section 6), and I would not wait on a third
+   for it. CALLHOME's evaluation half, the card's telephone set, needs the
+   LDC's licence; TalkBank's CallHome is gated and non-commercial. Recordings
+   of yours - a podcast, an interview - would measure what neither can: a
+   voice heard as two (section 10).
 6. **Live speaker labels** (--stream): later, or never?
 7. **The CLI's whole-recording buffers**: fix them before stage 3, so that a
    Pi 3B+ can take an hour?
@@ -890,6 +1128,18 @@ Verified in this study:
 - reference.py's change leaves Parakeet's features, encoder output and
   tokens on the first 12 s of test.wav bit for bit, and `make check-c`
   passes on this machine.
+- what int8 does to the labels, the words' speakers and DER, on AMI's 16
+  evaluation meetings and the nine synthetic conversations, against
+  float32's numpy run, with float64's beside it (section 6); and the
+  reference's own DER on AMI, 9.19% against NTT's references where the
+  card gives 9.25%;
+- AMI's licence (CC BY 4.0, its licence page) and the evaluation set's
+  meetings (its Full-corpus-ASR partition page), NTT's references (CC BY
+  4.0 for AMI, its repository's LICENSE) and BUT's (Apache-2.0), read on
+  2026-11-08; the 16 WAVs' sha256s, kept with them;
+- sortformer.py's features a chunk at a time against reference.py's over
+  the whole recording, bit for bit, and diarquant.py's memory a process
+  (/usr/bin/time -v).
 
 Inferred, to be measured:
 
@@ -898,8 +1148,9 @@ Inferred, to be measured:
   count, from the shapes; the step's time is pktito's kernels in a scratch
   program, not core/diar.c);
 - GELU's cost as SiLU's;
-- what int8 costs the diarizer;
+- that C's integer sums, a scale a block, move section 6's labels about as
+  little as float64 moves float32's: the emulation rounds the same values
+  and differs only in how its sums are formed;
 - why the two float32 implementations make the same close calls;
 - v2.1's network being v2's;
-- the size of the .pkf;
-- the corpora's licences.
+- the size of the .pkf.
