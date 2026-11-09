@@ -21,11 +21,18 @@ allows.
    `pk_asr_transcribe`, adds processing on top - its retry of speech the
    model dropped - that leaves NeMo's transcript on purpose, measured and
    documented (README, "Transcribing a recording"), and off with
-   `--no-retry`; it never changes what the low level computes. The NPUs'
-   encoders (npu/, in a build with ANE=1 or QNN=1 and never in a default
-   one) are fp16 and outside `ref`'s bits, held to float32 and to the CPU
-   by measurement instead (tools/ane/CLIMB.md, tools/qnn/CLIMB.md); they
-   never change what the CPU's path computes.
+   `--no-retry`; it never changes what the low level computes.
+
+   The CPU path is the definition, and it always exists: a default build
+   computes `ref`'s bits, on every machine. Beside it, paths that give up a
+   little of NeMo's nearness for much faster or lower-power inference are
+   strongly encouraged, asked for and measured: the fast mode (`--fast`, `ref`'s
+   bits at blocks of 64, README, "Why int8"), and the NPUs' encoders
+   (npu/, in a build with ANE=1 or QNN=1 and never in a default one, fp16
+   and outside `ref`'s bits, held to float32 and to the CPU by measurement:
+   tools/ane/CLIMB.md, tools/qnn/CLIMB.md). None of them changes what the
+   CPU path computes.
+
 2. **Can a learner follow it?** The tree reads top down: core/encoder.c and
    core/decoder.c are the model, core/mel.c the features, backend/ref the
    arithmetic. Code outside the tuned backends is written for a reader first,
@@ -112,8 +119,8 @@ allows.
 - The boards: an i9-12900HK (AVX2, AVX-VNNI), a Pi 3B+ (Cortex-A53,
   905 MB), a Pi 5 (Cortex-A76, 4 GB; pi5a), a DGX Spark (GB10: ten
   Cortex-X925 and ten Cortex-A725; a vLLM worker lives there too), a
-  Snapdragon 7c laptop (Windows 11 on ARM: two Cortex-A76, six A55; 7.6 GB;
-  armlet), and the M4 Pro here, the one machine that is also in use while
+  Snapdragon 7c mini PC, a 4-inch box on Wi-Fi (Windows 11 on ARM: two
+  Cortex-A76, six A55; 7.6 GB; armlet), and the M4 Pro here, the one machine that is also in use while
   measuring. Their logins and addresses are in CLAUDE.local.md, which is
   not committed. One job at a time on a board when measuring.
 - When a request comes with a reason, weigh the reason. If it points

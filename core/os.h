@@ -44,12 +44,16 @@ int pk_os_cores(void);
  * them where the cores are of one kind or the OS does not say. */
 int pk_os_fast_cores(void);
 
-/* fn's answer, asked on those fastest cores where the process may use cores
- * of two kinds: on Linux, from a thread of its own held to them, the
- * caller's thread left as it was. Elsewhere, and where a thread cannot be
- * had, asked on the calling thread. For a probe of the core it runs on,
- * whose answer is the process's (backend/kernels.c). */
-int pk_os_on_fast_cores(int (*fn)(void));
+/* fn(arg, i, n) on n of the fastest kind's cores at once (pk_os_fast_cores's),
+ * all of them up to PK_OS_ON_FAST, or where the system gives no speeds,
+ * of every core: on Linux and Windows from a thread of its own held to
+ * each, the i-th to the i-th core, the caller's thread left as it was; on
+ * macOS, which holds no thread to a core, and where no thread can be had,
+ * fn(arg, 0, 1) on the calling thread. Thread 0's answer. For a probe of
+ * the cores as a transcription runs them, every one busy
+ * (backend/kernels.c). */
+#define PK_OS_ON_FAST 16
+int pk_os_on_fast_cores(int (*fn)(void *, int, int), void *arg);
 
 /* The calling thread out of what the operating system would hold the
  * library's work back with. On Windows that is the EcoQoS its heuristics

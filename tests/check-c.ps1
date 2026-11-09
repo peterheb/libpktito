@@ -32,6 +32,7 @@ function same([string]$a, [string]$b) { (Get-FileHash $a).Hash -eq (Get-FileHash
 
 run 'tests\mathcheck.exe'
 run "tests\kcheck.exe `"$Model`""
+run 'tests\q8check.exe'
 run "tests\pkfcheck.exe $tiny tests\pkfcheck.wav"
 run 'tests\wavcheck.exe tests\wavcheck.tmp'
 run "tests\pathcheck.exe $tiny"

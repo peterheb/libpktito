@@ -19,6 +19,7 @@
 #include "pktito.h"
 #include "asr.h"
 #include "editions.h"
+#include "kernels.h"
 #include "os.h"
 #include "resample.h"
 #include "wav.h"
@@ -1319,6 +1320,9 @@ static int info(pk_model *m) {
     for (uint32_t i = 0; i < mi.n_durations; i++)
         printf(" %u", mi.durations[i]);
     printf("\nbackend   %s, %d threads by default\n", pk_backend(), pk_os_cores());
+    char picks[256];                        /* what the pick timed, where a backend competed */
+    if (pk_k_picks(picks, sizeof picks))
+        printf("probe     %s\n", picks);
     printf("compiler  %s\n", pk_compiler());
     const char *k, *v;
     for (int i = 0; pk_model_meta_at(m, i, &k, &v) == 0; i++)
