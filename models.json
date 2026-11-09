@@ -3,7 +3,12 @@
   "models": [
     {
       "name": "parakeet-tdt-0.6b-v2",
+      "task": "transcribe",
+      "status": "stable",
       "about": "English",
+      "languages": ["en"],
+      "license": "CC-BY-4.0",
+      "source": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
       "editions": [
         {
           "id": "cpu",
@@ -187,7 +192,38 @@
     },
     {
       "name": "parakeet-tdt-0.6b-v3",
+      "task": "transcribe",
+      "status": "stable",
       "about": "25 European languages",
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "bg",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "et",
+        "fi",
+        "el",
+        "hu",
+        "it",
+        "lv",
+        "lt",
+        "mt",
+        "pl",
+        "pt",
+        "ro",
+        "sk",
+        "sl",
+        "sv",
+        "ru",
+        "uk"
+      ],
+      "license": "CC-BY-4.0",
+      "source": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
       "editions": [
         {
           "id": "cpu",
