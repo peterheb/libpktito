@@ -3,9 +3,10 @@
  * two editions of one model at the top, which would leave the choice to
  * the catalog's order. tests/editions-rules.tsv does the same for the
  * made-up models of tests/editions-rules.json (tests/rules-catalog.c),
- * whose preview and too-new editions hold choose() to its rules; and the
- * order of versions is checked on literal pairs, which no catalog's
- * entries go stale against. pktito-app's cargo test reads the same files.
+ * whose preview and too-new editions hold choose() to its rules. The
+ * order of versions, and what naming a model lifts, are checked on
+ * literal cases, which no catalog's entries go stale against. pktito-app's
+ * cargo test reads the same files.
  *
  *     tests/editioncheck tests/editions.tsv */
 #include "editions.h"
@@ -44,6 +45,37 @@ static int versions(void) {
             printf("editioncheck: FAIL - %s against %s orders %d, not %d\n", pairs[i].a, pairs[i].b, got,
                    pairs[i].order);
             ok = 0;
+        }
+    }
+    return ok;
+}
+
+/* What naming a model lifts, on the rules' catalog: its own preview, and
+ * nothing of an edition's, neither a preview nor a newer pktito's. pktito-c
+ * names a model when -m gives its file; the tables are of the unnamed. 1,
+ * or 0 having said which was wrong */
+static int named(void) {
+    static const struct { const char *model, *qnn, *id[2]; } cases[] = {
+        /* the model, the device's NPU, its edition unnamed and named */
+        { "rules-preview-model", "", { "-", "cpu" } },
+        { "rules-preview-model", "69,79,8,1,0", { "-", "cpu" } },
+        { "rules-preview-npu", "57,75,8,1,0", { "cpu", "cpu" } },
+        { "rules-too-new-npu", "57,75,8,1,0", { "cpu", "cpu" } },
+        { "rules-preview-npu", "69,79,8,1,0", { "qnn-sm8750", "qnn-sm8750" } },
+    };
+    int ok = 1;
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        const ed_model *m = model(cases[i].model);
+        ed_device d = { .system = "android", .os = { 36, 0 } };
+        snprintf(d.qnn, sizeof d.qnn, "%s", cases[i].qnn);
+        for (int n = 0; n < 2; n++) {
+            const ed_edition *e = m ? ed_choose(m, &d, NULL, n) : NULL;
+            const char *got = !m ? "no such model" : e ? e->id : "-";
+            if (strcmp(got, cases[i].id[n])) {
+                printf("editioncheck: FAIL - %s %s, on an Android with %s: %s, not %s\n", cases[i].model,
+                       n ? "named" : "unnamed", d.qnn[0] ? d.qnn : "no NPU", got, cases[i].id[n]);
+                ok = 0;
+            }
         }
     }
     return ok;
@@ -129,8 +161,11 @@ int main(int argc, char **argv) {
     }
     if (!versions())
         bad++;
+    if (!named())
+        bad++;
     if (!bad)
-        printf("editioncheck: %d devices, each model's edition as %s says, no ties; versions in order\n", devices,
-               argv[1]);
+        printf("editioncheck: %d devices, each model's edition as %s says, no ties; versions in order; "
+               "naming a model lifts its preview alone\n",
+               devices, argv[1]);
     return bad ? 1 : 0;
 }
