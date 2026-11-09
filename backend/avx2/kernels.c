@@ -99,6 +99,44 @@ static inline __m256 v_tanh(__m256 x) {
 
 static inline __m256 v_silu(__m256 x) { return _mm256_mul_ps(x, v_sigmoid(x)); }
 
+/* pk_erff's three outcomes in every lane, and each lane takes the one the
+ * scalar's branches would: below 1, from 1 to 4, and beyond, where a NaN
+ * goes too (the compares are false for it). 1 - e^-g is above 0.8 in the
+ * lanes that take it (g >= 1.8 from 1 to 4), so its copysignf is an or. */
+static inline __m256 v_erf(__m256 x) {
+    const __m256 sign = _mm256_set1_ps(-0.0f), one = _mm256_set1_ps(1.0f);
+    __m256 a = _mm256_andnot_ps(sign, x), xs = _mm256_and_ps(x, sign);
+    __m256 s = _mm256_mul_ps(x, x);
+    __m256 q = _mm256_set1_ps(PK_ERF_Q6);
+    q = _mm256_fmadd_ps(q, s, _mm256_set1_ps(PK_ERF_Q5));
+    q = _mm256_fmadd_ps(q, s, _mm256_set1_ps(PK_ERF_Q4));
+    q = _mm256_fmadd_ps(q, s, _mm256_set1_ps(PK_ERF_Q3));
+    q = _mm256_fmadd_ps(q, s, _mm256_set1_ps(PK_ERF_Q2));
+    q = _mm256_fmadd_ps(q, s, _mm256_set1_ps(PK_ERF_Q1));
+    q = _mm256_fmadd_ps(q, s, _mm256_set1_ps(PK_ERF_Q0));
+    __m256 below = _mm256_fmadd_ps(x, q, x);
+    __m256 t = _mm256_sub_ps(a, one);
+    __m256 g = _mm256_set1_ps(PK_ERF_G9);
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G8));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G7));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G6));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G5));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G4));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G3));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G2));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G1));
+    g = _mm256_fmadd_ps(g, t, _mm256_set1_ps(PK_ERF_G0));
+    __m256 mid = _mm256_or_ps(_mm256_sub_ps(one, v_exp(_mm256_xor_ps(g, sign))), xs);
+    __m256 r = _mm256_blendv_ps(_mm256_or_ps(one, xs), mid, _mm256_cmp_ps(a, _mm256_set1_ps(4.0f), _CMP_LT_OQ));
+    return _mm256_blendv_ps(r, below, _mm256_cmp_ps(a, one, _CMP_LT_OQ));
+}
+
+/* x * 0.5 * (1 + erf(x * sqrt(1/2))), ref's k_gelu in its order */
+static inline __m256 v_gelu(__m256 x) {
+    __m256 e = v_erf(_mm256_mul_ps(x, _mm256_set1_ps(PK_SQRT1_2F)));
+    return _mm256_mul_ps(_mm256_mul_ps(x, _mm256_set1_ps(0.5f)), _mm256_add_ps(_mm256_set1_ps(1.0f), e));
+}
+
 #ifdef __AVX512F__
 /* The AVX-512 builds (avx512-vnni, amx-int8) take the float kernels - the
  * float product, the quantizer, the layer norm, SiLU - in zmm too, a zmm
@@ -130,6 +168,47 @@ static inline __m512 z_silu(__m512 x) {
     const __m512 one = _mm512_set1_ps(1.0f);
     __m512 nx = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(x), _mm512_set1_epi32((int)0x80000000)));
     return _mm512_mul_ps(x, _mm512_div_ps(one, _mm512_add_ps(one, z_exp(nx))));
+}
+
+/* v_erf in zmm, the lanes chosen by mask registers. The sign's ands and
+ * ors are integer ones: the float forms are AVX512DQ, which these builds
+ * do not ask for. */
+static inline __m512 z_erf(__m512 x) {
+    const __m512 one = _mm512_set1_ps(1.0f);
+    const __m512i sign = _mm512_set1_epi32((int)0x80000000);
+    __m512 a = _mm512_abs_ps(x);
+    __m512i xs = _mm512_and_si512(_mm512_castps_si512(x), sign);
+    __m512 s = _mm512_mul_ps(x, x);
+    __m512 q = _mm512_set1_ps(PK_ERF_Q6);
+    q = _mm512_fmadd_ps(q, s, _mm512_set1_ps(PK_ERF_Q5));
+    q = _mm512_fmadd_ps(q, s, _mm512_set1_ps(PK_ERF_Q4));
+    q = _mm512_fmadd_ps(q, s, _mm512_set1_ps(PK_ERF_Q3));
+    q = _mm512_fmadd_ps(q, s, _mm512_set1_ps(PK_ERF_Q2));
+    q = _mm512_fmadd_ps(q, s, _mm512_set1_ps(PK_ERF_Q1));
+    q = _mm512_fmadd_ps(q, s, _mm512_set1_ps(PK_ERF_Q0));
+    __m512 below = _mm512_fmadd_ps(x, q, x);
+    __m512 t = _mm512_sub_ps(a, one);
+    __m512 g = _mm512_set1_ps(PK_ERF_G9);
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G8));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G7));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G6));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G5));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G4));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G3));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G2));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G1));
+    g = _mm512_fmadd_ps(g, t, _mm512_set1_ps(PK_ERF_G0));
+    __m512 ng = _mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(g), sign));
+    __m512i mid = _mm512_or_si512(_mm512_castps_si512(_mm512_sub_ps(one, z_exp(ng))), xs);
+    __m512i sat = _mm512_or_si512(_mm512_castps_si512(one), xs);
+    __m512 r = _mm512_mask_blend_ps(_mm512_cmp_ps_mask(a, _mm512_set1_ps(4.0f), _CMP_LT_OQ),
+                                    _mm512_castsi512_ps(sat), _mm512_castsi512_ps(mid));
+    return _mm512_mask_blend_ps(_mm512_cmp_ps_mask(a, one, _CMP_LT_OQ), r, below);
+}
+
+static inline __m512 z_gelu(__m512 x) {
+    __m512 e = z_erf(_mm512_mul_ps(x, _mm512_set1_ps(PK_SQRT1_2F)));
+    return _mm512_mul_ps(_mm512_mul_ps(x, _mm512_set1_ps(0.5f)), _mm512_add_ps(_mm512_set1_ps(1.0f), e));
 }
 #endif
 
@@ -1150,10 +1229,13 @@ static void k_silu(float *x, size_t n) {
     for (; i < n; i++) x[i] = x[i] * pk_sigmoidf(x[i]);
 }
 
-/* x * 0.5 * (1 + pk_erff(x * sqrt(1/2))): GELU, ref's loop as it stands
- * (backend/ref/kernels.c), kept scalar until a vector one measures faster */
 static void k_gelu(float *x, size_t n) {
-    for (size_t i = 0; i < n; i++) x[i] = x[i] * 0.5f * (1.0f + pk_erff(x[i] * PK_SQRT1_2F));
+    size_t i = 0;
+#ifdef __AVX512F__
+    for (; i + 16 <= n; i += 16) _mm512_storeu_ps(x + i, z_gelu(_mm512_loadu_ps(x + i)));
+#endif
+    for (; i + 8 <= n; i += 8) _mm256_storeu_ps(x + i, v_gelu(_mm256_loadu_ps(x + i)));
+    for (; i < n; i++) x[i] = x[i] * 0.5f * (1.0f + pk_erff(x[i] * PK_SQRT1_2F));
 }
 
 static void k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {

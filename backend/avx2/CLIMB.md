@@ -2926,11 +2926,11 @@ over a layer's values. A first count of the values, an atomic add in
 the timed build, cost the 16-thread runs 0.016 s in contention; the
 table's builds have none.
 
-The hypothesis: pk_erff with all three of its outcomes computed in every
+The hypothesis: pk*erff with all three of its outcomes computed in every
 lane, and masks choosing as its branches do. The polynomial below 1, the
 exp form from 1 to 4, and copysign(1, x) where neither holds (a NaN
 included, as the scalar's !(a < 4)). GELU around it keeps the scalar's
-order: x _ 0.5, times 1 + erf(x _ sqrt(1/2)). The code is ymm for avx2
+order: x * 0.5, times 1 + erf(x \_ sqrt(1/2)). The code is ymm for avx2
 and avx2-vnni, and zmm with mask registers for the AVX-512 builds, as
 SiLU is, with the tail scalar. Each operation is the scalar's: FMA for
 pk_fmaf, v_exp and z_exp for pk_expf, copysign by the sign bit. So the
@@ -2961,3 +2961,63 @@ Kept if all of these hold:
   and on the 12900HK (ymm, its own board) at its default threads and at 1.
 
 amx-int8 compiles the same zmm code, and no board here runs it.
+
+## 2026-11-09 - the diarizer's GELU in ymm and zmm (result: kept)
+
+The hypothesis above, as written.
+
+**Bits.** All of these give ref's bits:
+
+- kcheck for avx2, avx2-vnni and avx512-vnni, 1,740 cases each;
+- every float (2^32) through each of the three, tails of 0 to 6
+  included, by a scratch sweep (gelusweep, not in the tree);
+- check-c, with conv2's rows and speakers the same bytes.
+
+amx-int8 compiles the same zmm code, and no board here runs it.
+
+**Time.** `pktito-c bench` ran the diarizer's model over
+tests/data/conv2.wav. The base was 279b822 and the kernel was this
+change, both under gcc 15.2 and clang 21.1. Six rounds, the order turned
+each round, best of 5. Each build's change is against its own
+compiler's base a round, median (range).
+
+The 9950X ran in a window pinfer gave (03:15 to 03:20), avx2-vnni
+forced with PKTITO_KERNELS. The 12900HK ran builds made static on the
+9950X, its one-thread runs on P-core 0 (taskset), 14 threads by
+default.
+
+| board   | kernels     | threads | gcc 15.2                | clang 21.1              |
+| ------- | ----------- | ------- | ----------------------- | ----------------------- |
+| 9950X   | avx512-vnni | 1       | -38.1% (-38.8 to -38.0) | -65.5% (-65.7 to -65.4) |
+| 9950X   | avx512-vnni | 16      | -25.5% (-27.7 to -23.3) | -55.8% (-57.8 to -54.3) |
+| 9950X   | avx2-vnni   | 1       | -25.9% (-26.3 to -25.7) | -51.6% (-51.9 to -51.3) |
+| 9950X   | avx2-vnni   | 16      | -22.2% (-25.0 to -15.6) | -47.9% (-48.8 to -44.4) |
+| 12900HK | avx2-vnni   | 1       | -21.6% (-22.0 to -21.1) | -65.3% (-65.4 to -64.9) |
+| 12900HK | avx2-vnni   | 14      | -14.4% (-14.6 to -14.2) | -43.3% (-43.5 to -42.9) |
+| 12900HK | avx2        | 1       | -13.8% (-13.8 to -11.9) | -52.2% (-52.5 to -52.1) |
+| 12900HK | avx2        | 14      | -9.9% (-10.1 to -9.6)   | -33.5% (-33.6 to -33.5) |
+
+Under gcc on the 9950X, avx512-vnni at one thread went from 1.003 s to
+0.620 s, against 0.581 s with no GELU at all. So the kernel's 0.04 s is
+0.4 ns a value; the prediction was 0.3 to 0.6. avx2-vnni went from
+1.349 s to 0.998 s against 0.938 s, 0.66 ns a value; the prediction was
+0.5 to 1.0. Each change under gcc is in its predicted range, or past it:
+avx2-vnni at 16 threads (-22.2% against -15 to -18), whose rounds spread
+widest.
+
+**clang.** clang's base is far slower: 1.735-1.751 s at one thread with
+avx512-vnni, against gcc's 0.998-1.009. With the kernel the two are
+level, 0.600-0.602 s against 0.618-0.622. The reason:
+
+- clang 21 predefines no \_\_FP_FAST_FMAF on x86-64, with -mfma or
+  without. gcc 15 does, and on AArch64 both do.
+- So glibc's math.h leaves FP_FAST_FMAF undefined.
+- So core/vmath.h's pk_fmaf takes pk_fmaf_soft in every tuned x86
+  backend that clang builds.
+
+The base's GELU, ref's loop of pk_erff in those backends, did each of
+its FMAs in software. The bits are the same either way; only the time
+differs. Any scalar pk_fmaf left in the x86 backends under clang pays
+it too, in the vector kernels' tails, which are short.
+
+Kept: every criterion holds, under both compilers, on both boards.
