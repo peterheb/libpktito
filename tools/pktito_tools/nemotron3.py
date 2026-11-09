@@ -175,19 +175,20 @@ def pre_encode(feat, w, a):
     with no bias: [ceil(T / 8)][512]."""
     f = a["subsampling"]
     T, M = feat.shape
-    x = np.concatenate([feat, np.zeros((-T % f, M))]).reshape(-1, f * M)
+    x = np.concatenate([feat, np.zeros((-T % f, M), feat.dtype)]).reshape(-1, f * M)
     return mm(x, w, "stack")
 
 
-def rope(T, a):
+def rope(T, a, dtype=np.float64):
     """cos and sin [T][64] of the rotary positions 0 .. T-1: a head's
     dimensions i and i + 32 turn as a pair, by the position times
-    10000^(-i/32)."""
+    10000^(-i/32). Computed in float64 and rounded to dtype, the
+    precision the model runs in (float32 for tools/diarquant.py)."""
     dk = a["d_model"] // a["n_heads"]
     inv = 1.0 / a["rope_base"] ** (np.arange(0, dk, 2) / dk)
     ang = np.arange(T)[:, None] * inv[None, :]
     ang = np.concatenate([ang, ang], axis=1)
-    return np.cos(ang), np.sin(ang)
+    return np.cos(ang).astype(dtype), np.sin(ang).astype(dtype)
 
 
 def _turn(x, cos, sin):
@@ -230,7 +231,7 @@ def upsample(x, w, a):
     it (zeros past the step's ends) through a 1536 x 576 matrix - each
     output frame then eight 10 ms frames: [T][192] -> [8 T][192]."""
     T, C = x.shape
-    z = np.zeros((1, C))
+    z = np.zeros((1, C), x.dtype)
     taps = np.concatenate([np.concatenate([z, x[:-1]]), x, np.concatenate([x[1:], z])], axis=1)
     return lin(taps, w, "up").reshape(T * a["upsample"], C)
 
@@ -240,7 +241,7 @@ def forward(x, w, a):
     frames [T][512] of one step: the encoder, the projection, the
     upsampler and the head (ReLU, a 192 x 192 matrix, ReLU, one row a
     speaker, sigmoid). The positions start at 0 at every step."""
-    cos, sin = rope(len(x), a)
+    cos, sin = rope(len(x), a, x.dtype)
     h = _ln(x, w["embed_norm.w"], w["embed_norm.b"], a["ln_eps"])
     for i in range(a["n_layers"]):
         h = layer(h, cos, sin, w, i, a)

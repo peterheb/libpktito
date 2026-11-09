@@ -239,9 +239,10 @@ class Stream:
         self.w, self.a = w, a
         self.pre_encode, self.forward = pre_encode, forward
         D, S = a["d_model"], a["n_spk"]
-        self.cache, self.cache_p = np.zeros((0, D)), None
-        self.fifo = np.zeros((0, D))
-        self.sil, self.n_sil = (w["sil"] if a["learned_silence"] else np.zeros(D)), 0
+        dt = w["mel.fb"].dtype                  # the weights' precision: float64, or float32 (diarquant.py)
+        self.cache, self.cache_p = np.zeros((0, D), dt), None
+        self.fifo = np.zeros((0, D), dt)
+        self.sil, self.n_sil = (w["sil"] if a["learned_silence"] else np.zeros(D, dt)), 0
         self.ties = 0
         self.steps = 0
         self.S = S
@@ -295,13 +296,23 @@ class Stream:
 
     def _compress(self, emb, p):
         """SortformerModules._compress_spkcache: keep spkcache_len of the
-        frames, by speaker. A frame's score for a speaker is how much more
-        likely it is that speaker alone than not; frames that are not that
-        speaker's speech, and (once a speaker has enough frames of its own)
-        frames shared with another, never qualify; the newest frames get a
-        little extra, each speaker's best few a lot (so that every speaker
-        keeps frames) and its next best some (so that none takes over); and
-        each speaker's run ends in silence frames (self.sil)."""
+        frames, the ones _choose picks, in order, with silence frames
+        (self.sil) where it says so."""
+        idx, off = self._choose(p)
+        emb2 = np.where(off[:, None], self.sil[None, :], emb[idx])
+        p2 = np.where(off[:, None], 0.0, p[idx])
+        return emb2, p2
+
+    def _choose(self, p):
+        """Which frames the cut keeps, by speaker: spkcache_len indices into
+        p, in order, and where a silence frame goes instead (off). A frame's
+        score for a speaker is how much more likely it is that speaker alone
+        than not; frames that are not that speaker's speech, and (once a
+        speaker has enough frames of its own) frames shared with another,
+        never qualify; the newest frames get a little extra, each speaker's
+        best few a lot (so that every speaker keeps frames) and its next best
+        some (so that none takes over); and each speaker's run ends in
+        silence frames."""
         a, S = self.a, self.S
         L, nsil = a["spkcache_len"], a["spkcache_sil_frames_per_spk"]
         per = L // S - nsil
@@ -332,9 +343,7 @@ class Stream:
         idx = idx % (n + nsil)
         off |= idx >= n
         idx[off] = 0
-        emb2 = np.where(off[:, None], self.sil[None, :], emb[idx])
-        p2 = np.where(off[:, None], 0.0, p[idx])
-        return emb2, p2
+        return idx, off
 
 
 def chunks(T0, a):
@@ -356,8 +365,10 @@ def run(audio, w, a, pre_encode, forward, log=None):
     a["frame"] seconds, and the Stream: the features, then the chunks
     through the network and the cache. The rows are as many as NeMo
     returns: one for every 8 feature frames or part of 8 (v2), one for
-    every feature frame (Nemotron 3)."""
-    feat = reference.features(audio, w, a)
+    every feature frame (Nemotron 3). The features are computed in float64
+    and the rest in the weights' precision, as quantcheck.py runs
+    Parakeet."""
+    feat = reference.features(audio, w, a).astype(w["mel.fb"].dtype, copy=False)
     st = Stream(w, a, pre_encode, forward)
     f, up = a["subsampling"], a["upsample"]
     out = []
