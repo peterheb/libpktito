@@ -12,6 +12,7 @@
  * from; and the seam's and the retry level's, on tokens and samples built
  * for them. Includes core/transcribe.c, for its static parts. */
 #include "../core/transcribe.c"
+#include "os.h"
 #include "wav.h"
 
 #include <stdatomic.h>
@@ -148,7 +149,8 @@ static void forget(seen *s) {
 }
 
 /* A recording read through checks: every stretch inside [0, n), no two
- * reads at once (each lingers, so that two unlocked would meet), and with
+ * reads at once (each lasts a millisecond, so that two lanes starting
+ * their first chunks together would meet without the lock), and with
  * fail_at, that read and every one after it failing */
 typedef struct {
     const float *x;
@@ -167,7 +169,7 @@ static int probe_read(void *arg, int64_t at, float *out, size_t count) {
         atomic_store(&p->bad, 1);
     else
         memcpy(out, p->x + at, count * sizeof *out);
-    for (volatile int i = 0; i < 2000; i++)
+    for (const double t = pk_os_now(); pk_os_now() - t < 1e-3;)
         ;
     atomic_fetch_sub(&p->busy, 1);
     return p->fail_at && k >= p->fail_at ? -1 : 0;
