@@ -3054,3 +3054,22 @@ avx2-vnni they cost the same 7 ms, out of a run of 0.129 s:
 
 Kept on the criteria in the NEON entry, and if the 9950X at 16 threads
 is faster than its base by more than the spread under both compilers.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (result: not kept)
+
+backend/neon/CLIMB.md's entry of the same day has the bits, the Pi's
+times, and the reason it is not kept. The 9950X ran six rounds in a
+window pinfer gave (04:57 to 05:01): base 30ae9b6 against the change,
+best of 5. Each build's change is against its own compiler's base a
+round, median (range).
+
+| kernels     | threads | gcc 15.2             | clang 21.1           |
+| ----------- | ------- | -------------------- | -------------------- |
+| avx512-vnni | 1       | +0.1% (-0.6 to +0.3) | +0.5% (+0.2 to +0.8) |
+| avx512-vnni | 16      | -1.6% (-7.1 to +6.7) | -2.1% (-7.2 to +2.2) |
+| avx2-vnni   | 1       | -0.1% (-0.1 to +0.0) | +0.2% (+0.1 to +0.4) |
+| avx2-vnni   | 16      | -2.3% (-6.7 to +1.6) | -2.7% (-8.5 to -0.8) |
+
+At 16 threads the medians are under the predicted -3 to -5%, and three
+of the four ranges cross zero. Under clang the one-thread runs are
+slower in every round. Not kept.

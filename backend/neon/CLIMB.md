@@ -1519,3 +1519,45 @@ Kept if all of these hold:
   under both compilers.
 - No board and thread count is slower than its base by more than the
   spread.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (result: not kept)
+
+The hypothesis above, as written.
+
+**Bits.** No row changed. `pktito-c probs` over conv2.wav gives the
+base's rows (sha256 dbb36070...) on each of these:
+
+- pi5a: neon, neon-dp and neon-dp-a76, under both compilers;
+- the A53, under both compilers;
+- the 9950X: avx512-vnni and avx2-vnni, under both compilers.
+
+check-c passes on the 9950X. pkfcheck passes with the new case (22,809),
+and check-sanitize passes. ThreadSanitizer finds no race at 6 or 16
+threads.
+
+**Time.** Base 30ae9b6 against the change. pi5a ran six rounds (gcc
+14.2 native, clang 21.1 cross and static); the A53 ran four at four
+threads. The order was turned each round, best of 5. Each build's
+change is against its own compiler's base a round, median (range).
+
+| board           | threads | gcc                  | clang                |
+| --------------- | ------- | -------------------- | -------------------- |
+| pi5a (A76)      | 1       | +0.1% (-0.4 to +0.4) | +0.9% (+0.2 to +1.0) |
+| pi5a (A76)      | 4       | -0.6% (-1.1 to -0.1) | -0.8% (-1.0 to -0.1) |
+| Orange Pi (A53) | 4       | -0.0% (-0.1 to -0.0) | +0.1% (+0.0 to +0.2) |
+
+The prediction was -3 to -4.5% on pi5a at four threads. Of the two
+passes' 74 ms there, about 10 ms went. Under clang the one-thread run
+is slower in every round.
+
+Likely, though not measured: at four threads pk_gemm_on cuts q's and
+k's 512 rows into eight slices of 64, and each slice keeps all 684
+frames. So an item's tile is 175 KB, and its product streams 350 KB of
+activations past it. By the time the item turns the tile, most of it
+has left the A76's 512 KB L2, and the reads still come from memory. At
+one thread a tile is 256 rows, 700 KB.
+
+Not kept: pi5a's gain at four threads is less than its base's spread
+(1.558 to 1.575 s), and clang's one-thread run is slower by more than
+its spread. rope_item and kpan_item stay. The validator stays as it
+was, so a head need not divide 64.

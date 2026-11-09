@@ -1007,7 +1007,9 @@ check-python` and skipped where they are not installed; nemotron3.py's
 PROFILE=1` on each board, the attention over a 684-frame step the likely
    next candidate (profiled 2026-11-09 on the 9950X, a Pi 5 and an A53:
    the feed-forward with its GELU 38 to 51% of the time, the attention 24
-   to 34%, the queries, keys and values 11 to 17%); then a Pi 5 and a Pi 3B+ over an hour-long recording:
+   to 34%, the queries, keys and values 11 to 17%; the rotation and K's
+   panels made in the products' tiles, measured and not kept, in
+   backend/neon/CLIMB.md); then a Pi 5 and a Pi 3B+ over an hour-long recording:
    time, peak memory, major faults.
 4. **When NeMo releases a version that runs the model**, or moves the
    arithmetic: the reference checked against it, and nemotron3.py's commit
