@@ -109,7 +109,7 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 ./pktito-c --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
 ./pktito-c --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito-c a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
-./pktito-c --speakers talk.wav             # who said what, a paragraph a turn (below, "Who said what")
+./pktito-c -m models/nemotron-3-diarization.pkf talk.wav   # who said what (below, "Who said what")
 arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a line a pause
 ./pktito-c segments talk.wav               # Silero VAD's speech segments, as vadito prints them
 ./pktito-c bench talk.wav                  # this machine's speed
@@ -943,7 +943,7 @@ With `--json`, each word gains a `speaker`; after the chunks, `turns`
 lists each run of one speaker's words (its `speaker`, `start` and `end`,
 and as `word` and `words` the index of its first word in the file and how
 many); and `meta` gains the `diarizer` and how many `speakers` said a word.
-`pktito-c speakers FILE` prints the diarizer's answer alone, with no
+`pktito-c speakers` prints the diarizer's answer alone, with no
 transcript: each speaker's stretches of speech, a line each, the start and
 end in seconds and the speaker. `pktito-c probs` with the diarizer's `-m`
 prints the probabilities themselves, a line each 10 ms.
@@ -960,15 +960,16 @@ frames to words"), so where two people talk at once each word still has
 one speaker. How many speakers there are is not an option: the model finds
 up to eight.
 
-Its file is made from NVIDIA's checkpoint as a recognizer's is. pktito-c
-looks for it in `models/` beside the recognizer's, or takes it as a second
-`-m`:
+Its file is made from NVIDIA's checkpoint as a recognizer's is. It is a
+preview model, which pktito-c runs only when `-m` names it; the recognizer
+is found as always, and a diarizer's `-m` asks for `--speakers` by itself:
 
 ```sh
 .venv/bin/hf download nvidia/Nemotron-3-Diarization Nemotron-3-Diarization.nemo README.md \
     --local-dir models/src/Nemotron-3-Diarization
 .venv/bin/python tools/pktito-tools convert \
     models/src/Nemotron-3-Diarization/Nemotron-3-Diarization.nemo models/nemotron-3-diarization.pkf  # 100 MB
+./pktito-c -m models/nemotron-3-diarization.pkf talk.wav
 ```
 
 Its numerics are Parakeet's: every matrix int8 with a scale a row, the

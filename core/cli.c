@@ -6,8 +6,8 @@
  *   pktito-c bench talk.wav             how fast this machine transcribes it
  *   pktito-c info                       the model file: where it came from
  *   pktito-c models                     the files for this machine, and where to get them
- *   pktito-c --speakers talk.wav        who said what: a paragraph a speaker's turn
- *   pktito-c speakers talk.wav          who speaks when, from the diarizer alone
+ *   pktito-c -m DIAR.pkf talk.wav       who said what: a paragraph a speaker's turn
+ *   pktito-c speakers -m DIAR.pkf talk.wav   who speaks when, from the diarizer alone
  *
  * A file is read (mean of the channels; another rate is brought to 16 kHz)
  * and transcribed by pk_asr_transcribe, the library's high-level path: a
@@ -18,9 +18,11 @@
  * "Transcribing a recording"). --no-context and --no-retry leave those
  * out: each chunk NeMo's transcript of it.
  *
- * With --speakers the diarizer (core/diar.c) hears the whole file first,
- * and each word goes to a speaker by NeMo's rule (pk_speakers), the
- * speakers numbered from 1 in the order they first say a word.
+ * With a diarizer's model named by -m (--speakers says so too) the
+ * diarizer (core/diar.c) hears the whole file first, and each word goes to
+ * a speaker by NeMo's rule (pk_speakers), the speakers numbered from 1 in
+ * the order they first say a word. The diarizer is a preview model, which
+ * pktito-c runs only when it is named (models.json's design).
  */
 #include "pktito.h"
 #include "asr.h"
@@ -35,10 +37,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* The diarizer's file, which --speakers looks for in models/ as the
- * recognizer's is looked for (until models.json lists it) */
-#define DIARIZER_FILE "nemotron-3-diarization.pkf"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -148,8 +146,8 @@ static const char *usage =
     "      --no-retry      don't retranscribe speech that gave no words\n"
     "      --no-context    don't extend a cut made mid-sentence\n"
     "                      (with --no-retry: each chunk exactly as NeMo has it)\n"
-    "      --speakers      who said what, a paragraph a turn: the diarizer's model\n"
-    "                      (" DIARIZER_FILE ") in models/, or -m\n"
+    "      --speakers      who said what, a paragraph a turn, with a diarizer's model\n"
+    "                      named by -m (nemotron-3-diarization.pkf), as -m alone asks\n"
     "      --json          chunks with word and token times, and metadata\n"
     "      --srt, --vtt    subtitles\n"
     "      --stream        transcribe FILE as it arrives, a line per pause\n"
@@ -418,23 +416,12 @@ static pk_model *load_model(const char *flag, const char *argv0) {
     return m;
 }
 
-/* the diarizer where -m names none: models/'s, in the working directory
- * or beside pktito-c */
-static pk_model *load_diarizer(const char *argv0) {
-    char dir[4096], p[4608];
-    for (int d = 0; d < 2; d++) {
-        models_dir(d, argv0, dir, sizeof dir);
-        snprintf(p, sizeof p, "%s%s", dir, DIARIZER_FILE);
-        if (file_size(p) >= 0) {
-            pk_model *m = open_model(p);
-            if (!pk_model_speakers(m))
-                die("%s is not a diarizer's model", p);
-            return m;
-        }
-    }
-    die("no diarizer: -m FILE.pkf, or %s in models/ (README, \"Who said what\", says how to make it)",
-        DIARIZER_FILE);
-    return NULL;
+/* -m names no diarizer: the diarizer is a preview model, which runs only
+ * when it is named (models.json's design: none is chosen by itself until
+ * one is stable) */
+static void no_diarizer(const char *what) {
+    die("%s needs a diarizer's model named by -m, such as nemotron-3-diarization.pkf (README, \"Who said "
+        "what\", says how to make it)", what);
 }
 
 /* A slim model's encoder, beside it: its edition's for this machine, as
@@ -1732,7 +1719,9 @@ int main(int argc, char **argv) {
     }
     int rc;
     if (!strcmp(o.cmd, "speakers")) {
-        rc = speakers(&o, dm ? dm : (dm = load_diarizer(argv[0])));
+        if (!dm)
+            no_diarizer("pktito-c speakers");
+        rc = speakers(&o, dm);
     } else if (!strcmp(o.cmd, "info")) {
         if (!m && !dm)
             m = load_model(NULL, argv[0]);
@@ -1753,10 +1742,10 @@ int main(int argc, char **argv) {
         if (dm && strcmp(o.cmd, "text"))
             die("a diarizer's model is for a transcript with --speakers, pktito-c speakers or probs; not %s",
                 o.cmd);
+        if (o.speakers && !dm)
+            no_diarizer("--speakers");
         if (!m)
             m = load_model(NULL, argv[0]);
-        if (o.speakers && !dm)
-            dm = load_diarizer(argv[0]);
         rc = !strcmp(o.cmd, "bench") ? bench(&o, m)
            : !strcmp(o.cmd, "segments") || !strcmp(o.cmd, "probs") ? vad(&o, m)
            : o.stream ? stream(&o, m) : transcribe(&o, m, dm);
