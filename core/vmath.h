@@ -173,6 +173,10 @@ static inline float pk_tanhf(float x) {
  * nothing cancels. From 4 on, erf is 1 in float (erfc(4) = 1.5e-8, under
  * half an ulp below 1). Both fits are minimax in relative error, 1.2e-9
  * and 1.0e-9, by tools/fit_vmath.py. */
+/* sqrt(1/2) rounded to float, GELU's scale of x into erf (torch's M_SQRT1_2
+ * in float) */
+#define PK_SQRT1_2F 0x1.6a09e6p-1f
+
 #define PK_ERF_Q0 0x1.06eba8p-3f
 #define PK_ERF_Q1 -0x1.81273ep-2f
 #define PK_ERF_Q2 0x1.ce2cf8p-4f

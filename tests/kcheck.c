@@ -319,6 +319,10 @@ static void rows_cases(void) {
         kt->silu(u1, ns);
         kr->silu(u2, ns);
         same("silu", u1, u2, ns, 4);
+        for (size_t i = 0; i < ns; i++) u1[i] = u2[i] = awkward(rep % 2 ? 6.0f : 80.0f);
+        kt->gelu(u1, ns);
+        kr->gelu(u2, ns);
+        same("gelu", u1, u2, ns, 4);
 
         uint32_t gn = 16 * (1 + rnd() % 40);
         float *g = xmalloc((size_t)T * 2 * gn * sizeof *g);
