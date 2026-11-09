@@ -2897,3 +2897,67 @@ before each run, 16:34 to 16:57:
 
 So 0.9.5's drop on armlet is not the lanes, which gain a tenth there as
 on the phones.
+
+## 2026-11-09 - the diarizer's GELU in ymm and zmm (hypothesis)
+
+The diarizer (core/diar.c, on the local branch diar) runs torch's exact
+GELU over each feed-forward's hidden: 31 layers of 2048 values a frame.
+For tests/data/conv2.wav, a minute of two speakers, that is 91,295,744
+values: 1,438 frames in its steps, counted by a scratch build. Every
+backend's pk_k_gelu is ref's scalar loop, and pk_erff branches on each
+value: below 1, from 1 to 4, and beyond.
+
+GELU's share was timed on the 9950X (gcc 15.2, eddb23b) by `pktito-c
+bench` with the diarizer's model over conv2.wav, against the same build
+with the call to pk_k_gelu left out. The WSL side was idle (load under
+0.1 before the runs), outside a window asked of pinfer. Three rounds,
+alternated, best of 5:
+
+| kernels            | threads | with GELU     | without       | GELU's share |
+| ------------------ | ------- | ------------- | ------------- | ------------ |
+| avx512-vnni        | 1       | 0.999-1.009 s | 0.580-0.584 s | 42%          |
+| avx512-vnni        | 16      | 0.126-0.130 s | 0.088-0.094 s | 29%          |
+| avx2-vnni (forced) | 1       | 1.347-1.351 s | 0.938 s       | 30%          |
+| avx2-vnni (forced) | 16      | 0.153-0.159 s | 0.124-0.126 s | 20%          |
+
+At one thread that is 4.6 ns a value. The scalar loop's two Horner
+chains and its exp are serial, and its branches go each way at random
+over a layer's values. A first count of the values, an atomic add in
+the timed build, cost the 16-thread runs 0.016 s in contention; the
+table's builds have none.
+
+The hypothesis: pk_erff with all three of its outcomes computed in every
+lane, and masks choosing as its branches do. The polynomial below 1, the
+exp form from 1 to 4, and copysign(1, x) where neither holds (a NaN
+included, as the scalar's !(a < 4)). GELU around it keeps the scalar's
+order: x _ 0.5, times 1 + erf(x _ sqrt(1/2)). The code is ymm for avx2
+and avx2-vnni, and zmm with mask registers for the AVX-512 builds, as
+SiLU is, with the tail scalar. Each operation is the scalar's: FMA for
+pk_fmaf, v_exp and z_exp for pk_expf, copysign by the sign bit. So the
+bits are ref's: kcheck, and every float through each build's kernel
+against ref's.
+
+About 50 vector operations make 16 values in zmm and 8 in ymm, with no
+branch. Predicted on the 9950X: the kernel at 0.3 to 0.6 ns a value in
+zmm and 0.5 to 1.0 ns in ymm. The diarizer's time is predicted to fall
+as follows:
+
+| kernels     | threads | change      |
+| ----------- | ------- | ----------- |
+| avx512-vnni | 1       | -37 to -39% |
+| avx512-vnni | 16      | -25 to -27% |
+| avx2-vnni   | 1       | -24 to -27% |
+| avx2-vnni   | 16      | -15 to -18% |
+
+The recognizer's time does not move, since it never calls pk_k_gelu.
+
+Kept if all of these hold:
+
+- kcheck gives ref's bits for avx2, avx2-vnni and avx512-vnni.
+- Every float through each of the three gives ref's bits.
+- check-c's conv2 rows and speakers are the same bytes.
+- The diarizer's bench is faster by more than its spread at 1 and 16
+  threads under gcc 15.2 and clang 21.1 on the 9950X, in a quiet window,
+  and on the 12900HK (ymm, its own board) at its default threads and at 1.
+
+amx-int8 compiles the same zmm code, and no board here runs it.
