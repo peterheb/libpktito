@@ -2897,3 +2897,113 @@ before each run, 16:34 to 16:57:
 
 So 0.9.5's drop on armlet is not the lanes, which gain a tenth there as
 on the phones.
+
+## 2026-11-09 - the zmm tile: what bounds its block on Zen 5 (a measurement)
+
+519554b on the Ryzen 9 9950X (WSL2), gcc 15.2.0 and clang 21.1.8, one
+sitting of three interleaved rounds, load under 0.3. q8bench at T 256 on
+core 4 (GMAC/s; up 4096x1024, down 1024x4096, attention 1024x1024, at
+blocks of 32, then the decoder's one column), `pktito-c bench` on
+test.wav (seconds, best of five; one thread on core 4, and 16):
+
+| avx512-vnni            | gcc 15.2                              | clang 21.1                            |
+| ---------------------- | ------------------------------------- | ------------------------------------- |
+| q8bench, 64-row slices | 423-432 / 413-417 / 433-444 / 95-96   | 472-474 / 429-433 / 484-485 / 105-107 |
+| q8bench, whole         | 461-467 / 443-448 / 468-470 / 102-104 | 503-505 / 461-467 / 507-509 / 114-118 |
+| bench, 1 thread        | 1.403-1.407                           | 1.325-1.329                           |
+| bench, 16 threads      | 0.190-0.194                           | 0.183-0.191                           |
+
+PROFILE=1 under clang, one thread: the int8 product's stages
+(feed-forward 52.4%, q k v pos 16.8%, conv pw1 pw2 9.0%, attention out
+3.1%) are 81% of the run, the attention's float work 9.9%.
+
+What the core issues a cycle, from loops of 16 of one instruction (32
+where two kinds are mixed), the clock from a chain of dependent adds
+(5.64-5.67 GHz), `~/x86climb/mb/rates`:
+
+| instruction, zmm                         | a cycle                        | beside 16 VPDPBUSD      |
+| ---------------------------------------- | ------------------------------ | ----------------------- |
+| VPDPBUSD (16 accumulators)               | 2.00                           |                         |
+| VPDPBUSD, 8 accumulators / 4 / 1         | 1.87 / 1.01 / 0.25 (latency 4) |                         |
+| a vector load: 512, 256, 128 bits, VMOVD | 2.00                           | 8.2 cycles: no conflict |
+| VPBROADCASTD or VPBROADCASTQ from memory | 2.00                           | 8.1-8.2: no conflict    |
+| VBROADCASTI32X4 from memory              | 2.00                           | 11.6: shares a pipe     |
+| a general-register load                  | 3.97                           |                         |
+| VPXORD from memory {1to16}               | 2.00                           | 8.1: no conflict        |
+| VFMADD231PS                              | 2.00                           | 16.1: the same pipes    |
+| VPMADDUBSW, VPMADDWD                     | 2.02                           | 15.9: the same pipes    |
+| VCVTDQ2PS                                | 2.00                           | 8.2: no conflict        |
+| VPSHUFD                                  | 3.95                           | 8.1: no conflict        |
+| VPERMD, VPBROADCASTD from a register     | 2.00                           | 11.3-11.5: share a pipe |
+| VPADDD                                   | 4.02                           | 8.1: no conflict        |
+| a register move, a zeroing XOR           | 6.1                            | 7.9: none               |
+
+So a vector load of any width goes two a cycle, where a general
+register's go four. The tile's block (8 columns of one panel, blocks of 32) is 64 VPDPBUSD and 8 FMA on the two multiplier pipes, 36 cycles, and
+81 vector loads (64 broadcasts, 8 weight vectors, 8 scales, the panel's
+sums), 40.5 cycles: the loads bound it, not the pipes, which is why two
+sets of accumulators gained nothing on 10-24 (the entry "where it
+stands" put the 41 cycles down to the pipes). The integer multiplies
+share VPDPBUSD's two pipes, so there is no third multiplier to find; the
+other two pipes take adds, XORs, converts and VPSHUFD.
+
+The block's forms as loops in assembly on L1-resident random data, each
+checked against scalar C for the bits and timed (`~/x86climb/mb/tile`,
+n 1024; cycles for 4096 MAC, and GMAC/s):
+
+| form                                                          | cycles | GMAC/s  | n 4096 |
+| ------------------------------------------------------------- | ------ | ------- | ------ |
+| one panel x 8 columns, broadcasts from the copy (today's)     | 41.9   | 551     | 524    |
+| the same, two sets of accumulators                            | 42.0   | 550     | 519    |
+| the same, half the broadcasts as VPBROADCASTQ and two VPSHUFD | 38.5   | 601     | 581    |
+| two panels x 4 columns, from the copy, two sets               | 37.3   | 620     | 589    |
+| two panels x 4 columns, VPXORD {1to16} from a->q, two sets    | 38.4   | 602-607 | 570    |
+| two panels x 6 columns, from the copy                         | 37.3   | 620     | 601    |
+| two panels x 6 columns, VPXORD {1to16} from a->q              | 37.9   | 610-612 | 590    |
+| four panels x 2 columns, VPXORD from a->q                     | 52.7   | 440     | 427    |
+
+Two panels to a tile make a broadcast serve two VPDPBUSD: a group is 2
+weight loads and 6 broadcasts for 12 VPDPBUSD, 72 loads for a block's 96
+VPDPBUSD and 12 FMA, and the multiplier pipes are the bound again (36
+cycles for 4096 MAC; the forms above come to within 4%). Twelve chains
+of 8 VPDPBUSD (32 cycles of latency) fit a block's 54 cycles, so one set
+of accumulators is enough at six columns, and the registers come to 32:
+12 sums, 12 floats, 2 weight vectors, 4 broadcasts, a scratch, the
+offset. Four panels do not fit L1 at n 1024 (64 KB of weights a tile).
+Orders tried and level or worse: each broadcast just before its
+VPDPBUSDs, the scales from memory at each FMA, a panel's VPDPBUSDs
+together.
+
+## 2026-11-09 - the zmm tile two panels by six columns, its block loop in assembly (hypothesis)
+
+From the measurement above. The change: at T >= PK_Q8_XOFF the zmm
+product takes its panels two at a time and its columns six at a time,
+the tile's block loop written in assembly (inline, as backend/neon's
+tiles are): a group's two weight vectors loaded once, six broadcasts
+from the offset copy, twelve VPDPBUSD; each block's sums start at minus
+the panel's 128 x weight sums (a register move, so the subtract is
+gone), and its finish (convert, FMA with the column's scale) is inside
+the loop. Blocks of any multiple of 32 by an inner count, so the fast
+mode's 64 and a row a block are the same loop. A last tile of fewer than
+six columns is the six ending at the last column, and an odd last panel
+the pair ending at it: the columns or panel made again are not written.
+The tile's scale by the row, bias and add stay C; so does the path below
+PK_Q8_XOFF columns (the decoder). Every sum is the same integer and every
+float chain the same FMAs in the same order: ref's bits.
+
+Predicted, 9950X, against the baseline above: both compilers level with
+each other on q8bench (the loop is one text), up and attention whole
+560-570 GMAC/s and 525-535 in 64-row slices, down 520-530 and 485-495:
++11 to 14% on clang's, +20 to 25% on gcc's. `pktito-c bench` at one
+thread 1.20-1.22 s under both (clang -8 to -9%, gcc -13 to -14%); at 16
+threads -4 to -8%.
+
+Not covered by a measurement here: Intel and Zen 4. By the counts, a core
+with two load ports (Ice Lake, Cascade Lake) is bound by the same 81
+loads today, and one with three (Golden Cove) is not; the uops on the
+multiplier pipes are the same either way. A tile is now 32n bytes of
+weights and 6n of activations, 38 KB at n 1024: inside a 48 KB L1 and
+not inside Skylake-X's and Cascade Lake's 32 KB, where today's 24 KB is.
+amx-int8 takes this path for blocks other than 32 (the fast mode) and
+for the columns past its own. Each needs an EC2 run before it is called
+measured.
