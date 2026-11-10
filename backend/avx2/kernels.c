@@ -766,7 +766,9 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
  * 16 rows), A is 16 columns' 32 bytes of the block, n apart, and C the 16
  * columns by the panel's 16 rows. Signed by signed, so no offset. Each
  * block's C goes to L1 and comes back a column at a time into that
- * column's float chain, as the zmm tile's sums do.
+ * column's float chain, as the zmm tile's sums do. The fast mode's block
+ * of 64 is a B tile of all 16 rows and an A of 64 bytes a column: the same
+ * product, store and chains a block for twice the inputs.
  *
  * The blocks are a software pipeline. A TDPBSSD takes 16 cycles at K = 32
  * as at 64, a TILESTORED 17 and 19 uops on port 5, and beside them every
@@ -779,10 +781,14 @@ static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, cons
  * in a loop of it alone, and a c7i.large's `pktito bench` 25.8x became
  * 28.9x (CLIMB.md, 2026-10-24, AMX's pipelined loop). A last group short
  * of 16 columns is padded to 16 (k_gemm_q8); blocks no multiple of 4 (none
- * of the model's) take the zmm tile. */
-static void amx_config(void) {
-    static _Thread_local int ready;
-    if (ready)
+ * of the model's) take the zmm tile.
+ *
+ * A thread's tiles are shaped for the blocks of its last call, 32 or 64,
+ * and reshaped when a call's differ: once a thread a run, since a run's
+ * products are all one or the other. */
+static void amx_config(uint32_t qb) {
+    static _Thread_local uint32_t shaped;
+    if (shaped == qb)
         return;
     _Alignas(64) struct {
         uint8_t palette, start, reserved[14];
@@ -791,14 +797,14 @@ static void amx_config(void) {
     } cfg;
     memset(&cfg, 0, sizeof cfg);
     cfg.palette = 1;
-    cfg.colsb[0] = 32, cfg.rows[0] = 16;                         /* A, even blocks */
-    cfg.colsb[1] = 64, cfg.rows[1] = 8;                          /* B, even blocks */
+    cfg.colsb[0] = (uint16_t)qb, cfg.rows[0] = 16;               /* A, even blocks */
+    cfg.colsb[1] = 64, cfg.rows[1] = (uint8_t)(qb / 4);          /* B, even blocks */
     cfg.colsb[2] = 64, cfg.rows[2] = 16;                         /* C, even blocks */
     cfg.colsb[3] = 64, cfg.rows[3] = 16;                         /* C, odd blocks */
-    cfg.colsb[4] = 32, cfg.rows[4] = 16;                         /* A, odd blocks */
-    cfg.colsb[5] = 64, cfg.rows[5] = 8;                          /* B, odd blocks */
+    cfg.colsb[4] = (uint16_t)qb, cfg.rows[4] = 16;               /* A, odd blocks */
+    cfg.colsb[5] = 64, cfg.rows[5] = (uint8_t)(qb / 4);          /* B, odd blocks */
     _tile_loadconfig(&cfg);
-    ready = 1;
+    shaped = qb;
 }
 
 /* One panel by 16 columns, the blocks in the pipeline above: block b's
@@ -806,13 +812,14 @@ static void amx_config(void) {
  * buffer b % 4, from which step b + 3 takes them. The steady state is four
  * steps a turn so that every tile and buffer is a constant; nb is a
  * multiple of 4, and a constant where the caller can make it one (the
- * encoder's 32 and 128), so that the scales' offsets m nb are too: with nb
- * a variable the 16 offsets take as many registers, and the c7i.large ran
- * 26.8x against 28.6x (CLIMB.md, as above). */
+ * encoder's 32 and 128, and 16 and 64 in the fast mode), so that the
+ * scales' offsets m nb are too: with nb a variable the 16 offsets take as
+ * many registers, and the c7i.large ran 26.8x against 28.6x (CLIMB.md, as
+ * above). QB is the block, 32 or 64, a constant at every call. */
 #define AMX_TILES(A, B, C, bl)                                                                 \
     do {                                                                                       \
-        _tile_loadd(A, x + (size_t)(bl) * 32, n);                                              \
-        _tile_loadd(B, wp + (size_t)(bl) * 512, 64);                                           \
+        _tile_loadd(A, x + (size_t)(bl) * QB, n);                                              \
+        _tile_loadd(B, wp + (size_t)(bl) * (16 * QB), 64);                                     \
         _tile_zero(C);                                                                         \
         _tile_dpbssd(C, A, B);                                                                 \
     } while (0)
@@ -843,7 +850,8 @@ static void amx_config(void) {
 
 static inline __attribute__((always_inline))
 void amx_panel(float *out, size_t os, const int8_t *x, uint32_t n, const int8_t *wp, const float *d,
-               uint32_t nb, const float *ws, const float *bias, int add, int32_t cbuf[4][256]) {
+               uint32_t nb, const float *ws, const float *bias, int add, int32_t cbuf[4][256],
+               const uint32_t QB) {
     __m512 f0 = _mm512_setzero_ps(), f1 = f0, f2 = f0, f3 = f0, f4 = f0, f5 = f0, f6 = f0, f7 = f0;
     __m512 f8 = f0, f9 = f0, f10 = f0, f11 = f0, f12 = f0, f13 = f0, f14 = f0, f15 = f0;
     AMX_TILES(0, 1, 2, 0);
@@ -882,11 +890,11 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
                       uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, qb = a->qb, nb = n / qb, T = a->T;
     const uint32_t Tamx = n <= AMX_SHORT_N ? T : T & ~15u;      /* the columns AMX takes */
-    if (qb != 32 || nb % 4 || Tamx == 0) {
+    if ((qb != 32 && qb != 64) || nb % 4 || Tamx == 0) {
         q8_zmm(out, os, w, ws, bias, rows, a, add);
         return;
     }
-    amx_config();
+    amx_config(qb);
     _Alignas(64) int32_t cbuf[4][256];
     static _Thread_local _Alignas(64) int8_t xshort[16 * AMX_SHORT_N];
     static _Thread_local _Alignas(64) float dshort[16 * (AMX_SHORT_N / 32)];
@@ -915,12 +923,19 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
                 po = oshort;
                 pos = 16;
             }
-            if (nb == 32)
-                amx_panel(po, pos, x, n, wp, d, 32, ws + r, b, add, cbuf);
-            else if (nb == 128)
-                amx_panel(po, pos, x, n, wp, d, 128, ws + r, b, add, cbuf);
+            if (qb == 32) {
+                if (nb == 32)
+                    amx_panel(po, pos, x, n, wp, d, 32, ws + r, b, add, cbuf, 32);
+                else if (nb == 128)
+                    amx_panel(po, pos, x, n, wp, d, 128, ws + r, b, add, cbuf, 32);
+                else
+                    amx_panel(po, pos, x, n, wp, d, nb, ws + r, b, add, cbuf, 32);
+            } else if (nb == 16)
+                amx_panel(po, pos, x, n, wp, d, 16, ws + r, b, add, cbuf, 64);
+            else if (nb == 64)
+                amx_panel(po, pos, x, n, wp, d, 64, ws + r, b, add, cbuf, 64);
             else
-                amx_panel(po, pos, x, n, wp, d, nb, ws + r, b, add, cbuf);
+                amx_panel(po, pos, x, n, wp, d, nb, ws + r, b, add, cbuf, 64);
             if (nt < 16)
                 for (uint32_t m = 0; m < nt; m++) memcpy(o + (size_t)m * os, oshort + 16 * m, 64);
         }

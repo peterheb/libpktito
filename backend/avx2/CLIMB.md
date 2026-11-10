@@ -3269,3 +3269,52 @@ of a block of 32, which runs 385-413); `pktito-c bench --fast` at one
 thread 2.58 s to 1.40-1.55 s, at two threads 1.41 s to 0.80-0.90 s, under
 gcc and clang; the normal mode untouched. The c8i the same in
 proportion.
+
+## 2026-11-10 - AMX: the fast mode's blocks of 64, a full tile a block (result: kept)
+
+As the hypothesis above has it: amx_panel takes its block, 32 or 64, as
+a constant; the tiles' shapes follow the block of the thread's last
+call. kcheck (1918 cases) and q8check (385), ref's bits on amx-int8 and
+the three backends under it, and check-c, under gcc 13.3 and clang
+18.1.3 on a c7i.xlarge (Xeon 8488C); test.wav's v2 and v3 in the fast
+mode through amx-int8 are ref's bytes. With a block of 64's sixth B
+tile loaded 64 bytes off, kcheck fails on its blocks of 64 at every
+shape: the path is the one checked. Without AMX, check-c under gcc 15.2
+and clang 21.1 on the 9950X.
+
+One sitting on that c7i.xlarge, each tree built there under both
+compilers, four interleaved rounds against 33468d0, amx-int8. q8bench at
+T 256, GMAC/s, up / down / attention:
+
+|                                | gcc 13.3, before          | gcc 13.3, this             | clang 18.1.3, before      | clang 18.1.3, this         |
+| ------------------------------ | ------------------------- | -------------------------- | ------------------------- | -------------------------- |
+| blocks of 64, in 64-row slices | 311-312, 292-294, 319-323 | 657-665, 738-747, 697-722  | 310-313, 292-297, 317-322 | 704-723, 735-746, 766-791  |
+| blocks of 64, whole            | 337-341, 289-293, 357-359 | 434-438, 446-452, 958-1002 | 334-336, 287-291, 349-356 | 422-441, 436-443, 911-1016 |
+| blocks of 32, in 64-row slices | 474-487, 487-504, 502-518 | 477-488, 493-499, 495-518  | 463-481, 486-496, 482-510 | 481-502, 492-495, 510-530  |
+
+`pktito-c bench` on test.wav through v2, seconds, and this tree against
+the one before a round, median (range):
+
+|                   | gcc 13.3                                            | clang 18.1.3                                        |
+| ----------------- | --------------------------------------------------- | --------------------------------------------------- |
+| --fast, 1 thread  | 2.284-2.298 to 1.372-1.404, -39.2% (-39.9 to -38.9) | 2.254-2.308 to 1.357-1.400, -39.8% (-39.9 to -38.9) |
+| --fast, 2 threads | 1.249-1.252 to 0.795-0.800, -36.2% (-36.3 to -36.1) | 1.238-1.256 to 0.784-0.795, -36.7% (-36.7 to -36.7) |
+| normal, 1 thread  | 1.686-1.716 to 1.695-1.730, +0.8% (+0.5 to +1.1)    | 1.717-1.744 to 1.689-1.732, -0.7% (-1.6 to -0.3)    |
+| normal, 2 threads | 0.964-0.977 to 0.968-0.983, +0.4% (-0.4 to +0.6)    | 0.978-0.995 to 0.974-0.980, -1.3% (-1.9 to -0.4)    |
+
+As predicted: the product at blocks of 64 2.1 to 2.5 times in slices
+(600-750 predicted), the fast mode 1.36-1.40 s at one thread (1.40-1.55)
+and 0.78-0.80 s at two (0.80-0.90). The fast mode is now the faster one
+on AMX: 0.79 s against 0.97. The normal mode's block is the same
+instructions and its product is level; its run moves under 1%, one way
+under gcc and the other under clang.
+
+PROFILE=1 there, one thread, gcc: the fast mode's four int8 stages 902
+ms of 1,405 (the feed-forward 605), where the normal mode's are 1,208 of
+1,725. A whole matrix of the feed-forward's shapes at blocks of 64 runs
+434-452 GMAC/s where its slices run 657-747: 4 MB of weights a matrix
+are past the 2 MB L2 and come from L3 a group of columns at a time; the
+encoder's calls are 64 and 256 rows.
+
+Not measured here: Granite Rapids, and Windows (the tiles are shaped
+by the same LDTILECFG the normal mode's are).
