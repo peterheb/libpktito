@@ -3411,3 +3411,37 @@ Not measured: Windows on any of these; a client Ice Lake or Tiger Lake
 (one 512-bit multiplier port). Open on Ice Lake: with a zmm load 1.1 a
 cycle the loads still bound the pair's tile (72 a block of 6,144 MACs);
 four panels by three columns would make it 63 a block of the same.
+
+## 2026-11-10 - AMX: four C tiles in turn at blocks of 64 (hypothesis)
+
+Where a block's cycles go now, on the c7i.xlarge of the entry before
+last: a loop of pk_k_gemm_q8 on one panel by 16 columns, n 1024, under
+`perf stat` (cycles, exe.amx_busy, uops_dispatched.port\_\*), a block:
+
+|                            | cycles | AMX busy | port 0 | port 5 | loads | store data |
+| -------------------------- | ------ | -------- | ------ | ------ | ----- | ---------- |
+| blocks of 32, one panel    | 38.2   | 15.9     | 33.4   | 24.1   | 59.3  | 21.8       |
+| blocks of 32, four panels  | 40.1   | 16.1     | 33.9   | 22.7   | 59.0  | 18.7       |
+| blocks of 32, four, n 4096 | 48.9   | 16.6     | 35.1   | 22.5   | 59.0  | 17.4       |
+| blocks of 64, one panel    | 46.0   | 16.0     | 35.6   | 27.0   | 71.8  | 27.9       |
+| blocks of 64, four panels  | 52.0   | 16.1     | 35.2   | 23.7   | 69.4  | 21.3       |
+| blocks of 64, four, n 4096 | 63.7   | 16.6     | 35.1   | 22.7   | 67.9  | 18.1       |
+
+A block of 32 runs at port 0's count, the floor 2026-10-24 named. A
+block of 64 does not: 36 uops on port 0 in 46 cycles, the unit busy 16.
+What is left is a loop through the tiles: C alternates between two, and
+tile registers are not renamed, so block b + 2's TILEZERO and product
+wait for block b's product (TDPBSSD's latency, some 50 cycles for a full
+tile where its throughput is 16) and then for its store: two blocks a
+turn of load, product and store.
+
+The change, for blocks of 64 only: four C tiles in turn (2, 3 and the
+two the configuration leaves free, 6 and 7), block b's sums stored two
+steps behind it and its chains three, as now. The A and B pairs stay
+two. Predicted, the same loop: one panel 46 to 38-41 cycles a block (to
+port 0's count), four panels 52 to 44-47; q8bench at blocks of 64 in
+64-row slices 5 to 15% faster, `pktito-c bench --fast` 3 to 8% on the
+c7i. If the pairs of A and B bind as C does (a product holding its
+sources its whole latency), less. Blocks of 32 keep two: four were tried
+there before the pipeline (2026-10-24) and port 0 is its bound. The bits
+are untouched: the same sums into the chains in block order.
