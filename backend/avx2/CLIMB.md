@@ -3189,3 +3189,12 @@ Left open by it: the attention's V comes a panel a call (core/encoder.c,
 panel_item), so its copy is made 64 times a matrix, a quarter of that
 product's time by the count above. A kernel entry that writes a call's
 panels in V's layout would let one call take a slice's four.
+
+## 2026-11-09 - the offset copy's loads and stores in zmm (a measurement: level)
+
+The copy is 32 bytes a step. A scratch build (`~/x86climb/zc`) made it
+64, with a ymm step for an odd 32: q8bench in 64-row slices, three
+rounds on the 9950X, up / down / attention: gcc 15.2 532-536 / 496-500 /
+541-543 to 526-537 / 492-497 / 532-540, clang 21.1 536-537 / 496-499 /
+538-539 to 533-537 / 493-499 / 537-539. Level: the copy's cost in a
+call of 64 rows is not its instructions. Not changed.
