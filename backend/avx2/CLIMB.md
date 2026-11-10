@@ -3068,3 +3068,32 @@ whatever the pipes could take: a climb of its own.
 Not measured, as the hypothesis said: Intel, Zen 4, and amx-int8, which
 takes this path in the fast mode and for columns past its own. amx-int8
 is unverified from this commit until an EC2 run.
+
+## 2026-11-09 - the decoder's one column on eight chains (hypothesis)
+
+Every product the decoder makes is one column (core/decoder.c, gemv: the
+LSTMs' 2560 x 640 and the joint's, a row a block), and the VNNI tiles
+give a column one sum a panel: one chain of VPDPBUSD, 4 cycles a group
+on a Zen 5 (the rates above; 5 on Golden Cove), 16 MAC a cycle where the
+encoder's tile makes over 100. q8bench's decoder row is 95-115 GMAC/s
+on avx512-vnni and 93-102 on avx2-vnni. What a group of one column needs
+is two vector loads, its weights and its broadcast, so the loads would
+allow a group a cycle, four times that.
+
+The decoder's stage is 19.8 ms of v2's 1.23 s on one thread (1.6%) and
+37.5 ms of v3's 1.24 s (3.0%: its joint is 8208 rows a step).
+
+The change: a product of one column takes a path of its own in both VNNI
+tiles, its groups dealt in turn to eight sums a panel (zmm: eight
+vectors; ymm: four for each half of the panel), added at the block's
+end. The sums are integers, so their order is free and the bits are
+ref's. C, no assembly: eight sums, the weights, the offset and a float
+are well inside the registers. The VPMADDUBSW tile's chain is a VPADDD,
+one cycle, and stays.
+
+Predicted, 9950X: q8bench's decoder row 280-330 GMAC/s on avx512-vnni
+(a group a cycle less the panel's finish) and 200 or more on avx2-vnni
+(three loads for a group's two VPDPBUSD), under both compilers;
+`pktito-c bench` on one thread -0.7 to -0.9% for v2 and -1.5 to -2% for
+v3; at 16 threads inside the spread. On the 12900HK (avx2-vnni, gcc 15)
+the decoder row 2.5x or more.
