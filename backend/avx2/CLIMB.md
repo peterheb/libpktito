@@ -3484,3 +3484,30 @@ for all of a slice's panels, with their chains in memory (a load and a
 store more a column a block): by the table, the down shape from 64
 cycles a block toward 52 in the fast mode and from 49 toward 41 in the
 normal one, a third of the int8 MACs. Not built.
+
+## 2026-11-10 - AMX's blocks of 64 and the kept add on fresh instances (a measurement)
+
+The fast mode's result above was one c7i's. A fresh c7i.xlarge (Xeon
+8488C) and c8i.xlarge (Xeon 6975P-C), Ubuntu 24.04, 097b4d2 and 39c91e6
+each built there under gcc 13.3 and clang 18.1.3. check-c passes under
+both compilers on both (clang 18's, which failed before 097b4d2, with
+it); kcheck 1918 cases and q8check 385, ref's bits on amx-int8;
+test.wav's v2 and v3, normal and fast, ref's bytes through all four
+backends, 32 transcripts an instance. Six interleaved rounds, amx-int8,
+test.wav through v2, 39c91e6 against 097b4d2 a round, median (range):
+
+|                   | c7i, gcc                | c7i, clang              | c8i, gcc                | c8i, clang              |
+| ----------------- | ----------------------- | ----------------------- | ----------------------- | ----------------------- |
+| --fast, 1 thread  | -40.0% (-40.3 to -39.8) | -40.3% (-40.8 to -40.0) | -43.0% (-43.2 to -42.7) | -42.5% (-42.8 to -41.9) |
+| --fast, 2 threads | -37.1% (-37.5 to -36.5) | -37.4% (-37.9 to -37.0) | -39.4% (-39.5 to -38.9) | -38.9% (-39.2 to -38.7) |
+| normal, 1 thread  | +0.2% (-1.3 to +0.9)    | -0.2% (-0.5 to +0.6)    | 0.0% (-0.9 to +1.1)     | +0.8% (0.0 to +2.1)     |
+| normal, 2 threads | +0.2% (-0.6 to +0.8)    | -1.3% (-1.4 to +0.6)    | -0.5% (-1.0 to +1.4)    | +0.2% (-0.3 to +1.2)    |
+
+In seconds, two threads, gcc: the c7i's fast mode 1.184-1.192 to
+0.741-0.752 beside a normal mode of 0.902-0.911; the c8i's 1.274-1.283
+to 0.772-0.778 beside 0.946-0.958. q8bench at blocks of 64 in 64-row
+slices, up / down / attention, gcc: the c7i 318-323 / 297-301 / 322-333
+to 694-718 / 770-806 / 712-797 GMAC/s, the c8i 278-280 / 253-261 /
+280-287 to 718-731 / 674-685 / 736-767. The normal mode is level on
+both, which the first sitting's rounds (under 1.3% either way) had left
+open.
