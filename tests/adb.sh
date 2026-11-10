@@ -37,7 +37,7 @@ mkdir -p $s/tests/data $s/examples
 cp $b/pktito-c $s/
 cp $b/examples/transcribe $s/examples/
 for t in $TESTS; do cp $b/$t $s/tests/; done
-cp tests/check-c.sh $s/tests/
+cp tests/check-c.sh tests/editions.tsv tests/editions-rules.tsv $s/tests/   # editioncheck's tables
 cp tests/data/* $s/tests/data/
 $ADB shell mkdir -p $ADIR/models
 $ADB push --sync $s/. $ADIR/ | tail -1
