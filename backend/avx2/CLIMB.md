@@ -3318,3 +3318,96 @@ encoder's calls are 64 and 256 rows.
 
 Not measured here: Granite Rapids, and Windows (the tiles are shaped
 by the same LDTILECFG the normal mode's are).
+
+## 2026-11-10 - the pair's tile and the one-column path on Intel, Zen 4 and a Zen 5 server (a measurement)
+
+The two results of 2026-11-09 were the 9950X's. EC2, us-east-1b, one
+fresh xlarge instance a CPU, Ubuntu 24.04: 519554b and 33468d0 each built
+there under gcc 13.3 and clang 18.1.3. kcheck, 1918 cases, ref's bits on
+every backend each CPU has under both compilers (amx-int8 on the c7i and
+the c8i); test.wav's v2 and v3, normal and fast, ref's bytes through
+every backend each has, 136 transcripts; check-c passes under gcc
+everywhere, and under clang 18 fails in q8check on the plain avx2 tile,
+as it does at 519554b (this date's fix, above). Six interleaved
+rounds, the order turned each round, test.wav; one thread on a pinned
+core, and the default threads (two on the Intel ones, four on AMD's).
+
+`pktito-c bench`, v2, 33468d0 against 519554b a round, median (range):
+
+| instance | CPU                          | backend            | gcc 13.3, 1 thread      | clang 18.1.3, 1 thread  | gcc, default threads    | clang, default threads  |
+| -------- | ---------------------------- | ------------------ | ----------------------- | ----------------------- | ----------------------- | ----------------------- |
+| c6i      | Xeon 8375C, Ice Lake         | avx512-vnni        | -30.8% (-32.4 to -30.2) | -28.3% (-28.7 to -24.0) | -30.3% (-30.8 to -29.5) | -27.3% (-28.2 to -23.2) |
+| m5zn     | Xeon 8252C, Cascade Lake     | avx512-vnni        | -15.8% (-16.5 to -15.0) | -12.1% (-12.5 to -11.8) | -15.3% (-15.7 to -14.4) | -11.6% (-12.7 to -11.1) |
+| c7i      | Xeon 8488C, Sapphire Rapids  | avx512-vnni, named | -15.7% (-16.0 to -15.5) | -16.8% (-17.0 to -16.6) | -14.7% (-15.4 to -14.4) | -16.2% (-16.4 to -15.9) |
+| c7i      |                              | amx-int8           | +0.4% (-0.7 to +1.1)    | -0.1% (-0.8 to +1.0)    | +0.1% (-0.2 to +0.4)    | -0.2% (-0.4 to +0.1)    |
+| c8i      | Xeon 6975P-C, Granite Rapids | avx512-vnni, named | -14.1% (-14.3 to -13.9) | -13.2% (-13.5 to -12.9) | -13.8% (-14.7 to -13.5) | -13.2% (-13.7 to -11.9) |
+| c8i      |                              | amx-int8           | -0.2% (-0.6 to -0.1)    | -0.1% (-0.7 to +0.6)    | -0.3% (-1.5 to +0.1)    | -0.5% (-0.7 to +0.3)    |
+| c7a      | EPYC 9R14, Zen 4             | avx512-vnni        | -0.8% (-1.0 to +0.1)    | +1.4% (+0.9 to +1.6)    | -1.0% (-1.8 to +0.6)    | +0.4% (-0.7 to +1.2)    |
+| c8a      | EPYC 9R45, Zen 5             | avx512-vnni        | -13.1% (-13.5 to -12.5) | -8.0% (-8.4 to -7.7)    | -11.9% (-11.9 to -11.0) | -6.8% (-6.9 to -6.7)    |
+
+In seconds, one thread, gcc: the c6i 4.740-4.767 to 3.206-3.322, the
+m5zn 3.814-3.888 to 3.209-3.248, the c7a 3.319-3.337 to 3.301-3.322, the
+c8a 1.668-1.684 to 1.453-1.459. v3 moves as v2 does, within a point.
+The fast mode at the default threads: c6i -27.3% and -25.6% (gcc,
+clang), m5zn -11.8% and -8.5%, c8a -7.7% and -5.5%, c7a -1.5% and -0.1%,
+and amx-int8, whose fast mode was the zmm tile, -13.8% and -14.7% on the
+c7i, -12.4% and -11.6% on the c8i.
+
+q8bench at T 256, blocks of 32, in 64-row slices, GMAC/s, up / down /
+attention, then the decoder's row; gcc 13.3 (clang 18 within 4% of it
+after, and as far as 6% from it before):
+
+| instance, backend | 519554b                     | 33468d0                     | decoder          |
+| ----------------- | --------------------------- | --------------------------- | ---------------- |
+| c6i, avx512-vnni  | 122-126 / 119-120 / 126     | 203-209 / 188-193 / 207-209 | 34-35 to 42-43   |
+| m5zn, avx512-vnni | 180-183 / 152-154 / 173-182 | 208-227 / 197-203 / 216-224 | 29 to 29-31      |
+| c7i, avx512-vnni  | 201-202 / 189-191 / 205-207 | 250-252 / 236-240 / 254-256 | 39 to 76-85      |
+| c7i, amx-int8     | 385-399 / 383-390 / 393-413 | 385-396 / 385-390 / 396-413 | 39 to 73-84      |
+| c8i, avx512-vnni  | 201-205 / 190-197 / 205-211 | 254-258 / 235-242 / 256-262 | 47-49 to 72-85   |
+| c8i, amx-int8     | 503-513 / 474-490 / 523-537 | 497-512 / 472-480 / 507-550 | 46-49 to 73-84   |
+| c7a, avx512-vnni  | 176-185 / 173-176 / 184-187 | 180-186 / 176-180 / 186-188 | 60 to 87-88      |
+| c8a, avx512-vnni  | 370-373 / 351-352 / 372-376 | 441-445 / 416-418 / 445-447 | 75-77 to 120-123 |
+
+Why, by `~/x86climb/mb` run on each (the block loop's forms on L1 data,
+each checked against scalar C; GMAC/s at n 1024, then at n 4096):
+
+| CPU             | 1 panel x 8 columns (before) | 2 x 6 (now)      | 1 x 12 (a lone panel) |
+| --------------- | ---------------------------- | ---------------- | --------------------- |
+| Ice Lake        | 154, 154                     | 256, 252         | 161, 155              |
+| Cascade Lake    | 245-248, 215                 | 256-258, 252-257 | 261, 171-172          |
+| Sapphire Rapids | 265, 254                     | 308, 304         | 298, 269              |
+| Granite Rapids  | 275-276, 273-275             | 312-314, 305-309 | 284-287, 268-269      |
+| Zen 4           | 208, 206                     | 207, 208         | 208, 147              |
+| Zen 5 (9R45)    | 449, 430-432                 | 506-507, 505-507 | 463-466, 408          |
+
+- Ice Lake is the largest, and what 2026-10-24 called its clock was its
+  loads. The rates bench there: VPDPBUSD zmm 1.60 a cycle of the scalar
+  clock, a ymm load 1.90, and a load into a zmm register 1.09, whole or
+  a broadcast dword, and 0.90 as VPDPBUSD's operand; VPDPBUSD and a
+  broadcast load together 0.90 each. So the old tile's 81 loads a block
+  bound it at 1.1 a cycle, harder than a Zen 5's at 2, and a run is 28 to
+  31% shorter: PROFILE=1, one thread, gcc, 4.758 s to 3.324, the
+  feed-forward 2,617 ms to 1,688, q k v pos 816 to 572.
+- Cascade Lake takes two zmm loads and two VPDPBUSD a cycle (1.69 and
+  1.46 a cycle of the scalar clock, which its 512-bit work lowers), so
+  its old tile was load-bound as a Zen 5's was. Its 32 KB L1 does not hold the pair's 38
+  KB tile at n 1024 and the run is still 12 to 16% shorter; its decoder
+  row does not move (29 GMAC/s: 1.6 MB of weights past a 1 MB L2).
+- Zen 4 issues a zmm VPDPBUSD a cycle, its two halves on the two
+  multiplier pipes, and every form runs 207-208 GMAC/s on L1 data: the
+  pipes bound it before and bound it now. A run is level, 0.8% shorter
+  under gcc and 1.4% longer under clang at one thread, whose own tile
+  was the faster of the two there (q8bench before, up: 177-187 clang,
+  176-185 gcc; after, 174-180 and 180-186). The decoder's row is 32 to
+  46% faster and its stage 34 ms to 25.
+- On Sapphire and Granite Rapids the rates bench's clock, a chain of
+  LEAs, reads 12.7 and 20.6 GHz (the core adds a small constant at
+  rename), so its counts a cycle are not kept; the forms' GMAC/s are
+  time.
+- amx-int8 is ref's bits at 33468d0 and its normal mode is level, as it
+  should be: its own blocks of 32 were not touched.
+
+Not measured: Windows on any of these; a client Ice Lake or Tiger Lake
+(one 512-bit multiplier port). Open on Ice Lake: with a zmm load 1.1 a
+cycle the loads still bound the pair's tile (72 a block of 6,144 MACs);
+four panels by three columns would make it 63 a block of the same.
