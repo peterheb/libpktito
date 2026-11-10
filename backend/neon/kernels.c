@@ -1045,7 +1045,7 @@ void q8_mm4(float32x4_t f[4][2], const int8_t *g, int8_t *c, const int8_t *const
 
 /* A thread's copy, 8 rows of the widest input (core/model.c holds every
  * matrix to PK_MAX_BLOCKS of 32), its address taken once a call from a
- * function the compiler does not inline, as backend/avx2's zmm_xoff: in a
+ * function the compiler does not inline, as backend/avx2's zmm_scratch: in a
  * shared library gcc reaches a thread-local through a call it may repeat
  * at each use. */
 static __attribute__((noinline)) int8_t *mm_buf(void) {

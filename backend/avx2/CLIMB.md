@@ -3007,3 +3007,64 @@ not inside Skylake-X's and Cascade Lake's 32 KB, where today's 24 KB is.
 amx-int8 takes this path for blocks other than 32 (the fast mode) and
 for the columns past its own. Each needs an EC2 run before it is called
 measured.
+
+## 2026-11-09 - the zmm tile two panels by six columns, its block loop in assembly (result: kept)
+
+As the hypothesis above, with one thing it did not have. Its "odd last
+panel the pair ending at it" made a call of one panel compute the panel
+twice, and the attention's V comes a panel a call (core/encoder.c,
+panel_item, os 16): PROFILE=1 showed q k v pos 5% slower (225 to 236 ms
+a run, one thread, clang) while feed-forward gained 11%. So a panel left
+over, and a call of one, has a tile of its own: one panel by twelve
+columns, the same registers (q8z_lone; 577 GMAC/s on L1-resident data at
+n 1024, eight columns 554, the pair's tile 620; at n 4096 twelve columns
+are 48 KB and ran 475 against eight's 524, and no product of one panel
+is that wide). Columns short of a tile are the tile ending at the last
+column, as planned.
+
+tests/kcheck: 1918 cases at ref's bits under gcc 15.2 and clang 21.1
+(avx512-vnni, avx2-vnni, avx2), 12 of them new: products of more columns
+than the copy's block (47 to 101 at n 4096, 193 to 385 at n 1024), which
+the 1906 never reached; with the block's first column set wrong on
+purpose, they are the cases that fail. `make check-c` passes under both
+compilers.
+
+One sitting, three interleaved rounds, the 9950X, 519554b against this
+tree. q8bench T 256 on core 4, GMAC/s, up / down / attention:
+
+| avx512-vnni            | gcc 15.2, before            | gcc 15.2, after             | clang 21.1, before          | clang 21.1, after           |
+| ---------------------- | --------------------------- | --------------------------- | --------------------------- | --------------------------- |
+| 64-row slices          | 423-428 / 414-416 / 436-442 | 492-534 / 488-495 / 537-541 | 472-475 / 432-433 / 476-487 | 525-526 / 489-494 / 529-532 |
+| whole                  | 442-463 / 446-448 / 470-472 | 574-578 / 530-534 / 576-577 | 504-511 / 462-471 / 510-511 | 561-564 / 531-536 / 562-566 |
+| slices, blocks of 64   | 477-481 / 425-459 / 486-488 | 549-552 / 508-513 / 551-554 | 501-506 / 455-458 / 507-510 | 548-550 / 509-512 / 551-554 |
+| bench, 1 thread (s)    | 1.405-1.407                 | 1.227-1.230 (-12.7%)        | 1.328-1.331                 | 1.225-1.231 (-7.6%)         |
+| bench, 16 threads      | 0.188-0.193                 | 0.166-0.173 (-11%)          | 0.185-0.187                 | 0.167-0.172 (-9%)           |
+| bench --fast, 1 thread | 1.294-1.296                 | 1.185-1.192 (-8.2%)         | 1.259-1.268                 | 1.176-1.177 (-6.8%)         |
+| bench --fast, 16       | 0.177-0.180                 | 0.160-0.165                 | 0.172-0.180                 | 0.161-0.168                 |
+
+(gcc's 492 in slices is one reading of three; the other two are 525 and
+534.) PROFILE=1, clang, one thread, ms a run before and after:
+feed-forward 700 to 632, q k v pos 225 to 211, conv pw1 pw2 120 to 109,
+attention out 41.7 to 40.3; the other stages level.
+
+Against the prediction: q8bench as predicted (up and attention whole
+561-578 for 560-570, in slices 525-541 for 525-535; down 530-536 and
+488-495 for 520-530 and 485-495), +11 to 14% on clang's product and +20
+to 25% on gcc's, and the two compilers level in slices; whole matrices
+are 2% apart, the C around the tiles. A run at one thread is 1.23 s
+under both where 1.20-1.22 was predicted: the stages gain 7 to 10%, not
+the product's 11 to 14%, having more in them than the product. At 16
+threads -9 to -11%, where -4 to -8% was predicted.
+
+The decoder's one-column product, which is still the C tile (its code
+changed only by losing the parameters of the path this replaces), reads
+1 to 4% lower in q8bench under both compilers (gcc 94.5-95.8 to
+92.3-93.1, clang 106.5-110.0 to 101.6-104.6), with the same 26
+instructions in its block loop at the same alignment under clang
+(objdump), and the decoder's stage in a run does not move (19.9-20.3 ms
+to 19.6-19.8). Its loop is one chain of VPDPBUSD, 4 cycles a group
+whatever the pipes could take: a climb of its own.
+
+Not measured, as the hypothesis said: Intel, Zen 4, and amx-int8, which
+takes this path in the fast mode and for columns past its own. amx-int8
+is unverified from this commit until an EC2 run.

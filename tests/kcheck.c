@@ -512,6 +512,21 @@ static void fast_cases(const char *model) {
         model_cases(model, 64);
 }
 
+/* Products of more columns than a backend takes at a time. x86's copy
+ * 192 KB of activations, 48 columns of 4096 inputs and 192 of 1024, and
+ * tile them by 4, 6 or 12: these end a block on its edge, one column
+ * over, and short of a tile, for one panel, a pair, three and four. */
+static void blocks_cases(void) {
+    static const uint32_t shape[][2] = { { 4096, 47 }, { 4096, 48 }, { 4096, 49 }, { 4096, 53 },
+                                         { 4096, 59 }, { 4096, 61 }, { 4096, 97 }, { 4096, 101 },
+                                         { 1024, 193 }, { 1024, 199 }, { 1024, 204 }, { 1024, 385 } };
+    for (uint32_t i = 0; i < sizeof shape / sizeof shape[0]; i++) {
+        uint32_t n = shape[i][0];
+        uint32_t qb = i % 3 == 0 ? 32 : i % 3 == 1 ? 64 : n;
+        gemm_q8_case("blocks", 16 * (1 + i % 4), n, shape[i][1], qb, (int)(i % 2), (int)(i / 2 % 2), NULL, NULL, NULL);
+    }
+}
+
 static void run(const char *model) {
     /* each rnd() in a statement of its own: the order a compiler evaluates
      * a call's arguments in is its own, and the cases should be the same
@@ -554,6 +569,7 @@ static void run(const char *model) {
         model_cases(model, 32);
     quant_tiny_case();      /* it draws from rnd() and moves no case before it */
     fast_cases(model);
+    blocks_cases();         /* likewise */
 }
 
 /* Each backend sees the same cases: the generator starts again for each.
