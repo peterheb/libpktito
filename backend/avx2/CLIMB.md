@@ -3511,3 +3511,37 @@ to 694-718 / 770-806 / 712-797 GMAC/s, the c8i 278-280 / 253-261 /
 280-287 to 718-731 / 674-685 / 736-767. The normal mode is level on
 both, which the first sitting's rounds (under 1.3% either way) had left
 open.
+
+## 2026-11-10 - the branch on the other backends and on Windows, before a merge (a check)
+
+The tree at 9c3ac84, whose tests/kcheck and tests/q8check hold every
+backend to the new cases (12 and 6), run where the x86 work did not go:
+`make check-c`, tests/check-c.ps1 on Windows, no timing. Every one
+passes.
+
+| machine                                     | compiler                                  | backends kcheck (1918) and q8check (385) held   |
+| ------------------------------------------- | ----------------------------------------- | ----------------------------------------------- |
+| GB10 (DGX Spark), Ubuntu 24.04              | gcc 13.3; clang 18.1.3                    | neon-sve, neon-i8mm, neon-dp-a76, neon-dp, neon |
+| Graviton3 (EC2 c7g, SVE of 256 bits)        | gcc 13.3; clang 18.1.3                    | the same five                                   |
+| M4 Pro, macOS                               | Apple clang 21.0.0                        | neon-i8mm, neon-dp-a76, neon-dp, neon           |
+| Pi 5                                        | gcc 14.2                                  | neon-dp-a76, neon-dp, neon                      |
+| Pi 400 (Cortex-A72)                         | gcc 14.2                                  | neon                                            |
+| RTX Spark N1X, Windows 11 on ARM            | llvm-mingw clang 23.1.2                   | the five (v2 alone is there; v3 skipped)        |
+| Snapdragon 7c, Windows 11 on ARM            | llvm-mingw clang 23.1.2                   | neon-dp-a76, neon-dp, neon                      |
+| 9950X, Windows 11                           | llvm-mingw clang 23.1.2; mingw-w64 gcc 13 | avx512-vnni, avx2-vnni, avx2                    |
+| EC2 c7i (Xeon 8488C), Windows Server 2025   | the same two builds                       | amx-int8, avx512-vnni, avx2-vnni, avx2          |
+| EC2 c8i (Xeon 6975P-C), Windows Server 2025 | the same two builds                       | the same four                                   |
+
+So the NEON tiles, which end in the same `if (add)` C as x86's, are
+ref's bits in every rounding q8check has under clang 18, on the GB10 and
+on a Graviton3; this date's fix needed no counterpart there. The Windows
+builds were made on the 9950X (the block loop's assembly under clang for
+Windows among them). On the two AMX Xeons under Windows, test.wav
+through each of the four backends by name, v2 and v3, normal and fast,
+is ref's bytes from both builds, 32 transcripts an instance, and the
+tiles reshape between the modes in one sitting as on Linux (one run
+each, two threads, gcc: the c7i 1.098 s normal and 0.929 s fast, the c8i
+0.828 and 0.682).
+
+Not run: Android; the Pi 3B+ (its backend, neon, ran on the Pi 400 and
+on every machine above it).
