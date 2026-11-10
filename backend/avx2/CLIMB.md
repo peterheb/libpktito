@@ -3230,3 +3230,42 @@ no timing made.
 
 Not checked: the NEON backends under clang 18, whose tiles end in the
 same C.
+
+## 2026-11-10 - AMX: the fast mode's blocks of 64, a full tile a block (hypothesis)
+
+amx-int8 takes blocks of 32 through AMX and every other block through
+the zmm tile, so in the fast mode (blocks of 64) it is the zmm backend.
+Measured today on EC2 (xlarge, two threads, gcc 13.3, this branch at
+33468d0, test.wav through v2): a c7i (Xeon 8488C) 1.139-1.144 s normal
+and 1.410-1.411 s fast; a c8i (Xeon 6975P-C) 0.935-0.940 and 1.263-1.264.
+The fast mode is the slower one there. q8bench in 64-row slices on the
+c7i, up / down / attention: 385-397 / 386-390 / 397-413 GMAC/s at blocks
+of 32 (AMX) and 272-274 / 258-260 / 269-278 at 64 (zmm). PROFILE=1, one
+thread: 2.062 s normal and 2.575 fast, the int8 products' four stages
+1,445 ms and 1,980.
+
+A block of 64 inputs of one panel is a whole B tile as the file holds
+it: 16 rows of a group's 64 bytes, 1 KB. A is 16 columns' 64 bytes, and
+TDPBSSD takes the same 16 cycles at K = 64 as at 32 (2026-10-24, where a
+block's 57 cycles go). So the pipeline as it is, on tiles of 16 rows by
+64 bytes: a block's product, store, 16 converts and 16 FMAs are the
+same instructions for twice the MACs, and only the tile loads grow (16
+lines each of A and B, where a block of 32 loads 16 half lines and 8
+lines).
+
+The change: amx_panel takes its block as a constant, 32 or 64, and the
+tiles' shapes follow it; a thread loads the configuration its call needs
+when the last one differs (LDTILECFG, about 200 cycles as measured
+2026-10-24, once a thread a run: every int8 product of a Parakeet
+encoder in the fast mode is blocks of 64). nb a constant for the
+encoder's 16 and 64 as it is for 32 and 128. A block's sums are at most
+64 x 127 x 128, exact in int32 and in the convert; the chains take them
+in block order: ref's bits, which kcheck's blocks of 64 and q8check's
+hold it to.
+
+Predicted, c7i.xlarge: q8bench at blocks of 64 in 64-row slices from
+258-278 to 600-750 GMAC/s on the three shapes (a block near the cycles
+of a block of 32, which runs 385-413); `pktito-c bench --fast` at one
+thread 2.58 s to 1.40-1.55 s, at two threads 1.41 s to 0.80-0.90 s, under
+gcc and clang; the normal mode untouched. The c8i the same in
+proportion.
