@@ -699,10 +699,47 @@ static void q8_zmm_wide(float *out, size_t os, const int8_t *w, const float *ws,
     }
 }
 
+/* One column, which every product of the decoder is: its groups dealt in
+ * turn to eight sums and added at the block's end, the same integer. One
+ * sum a panel is one chain of VPDPBUSD, 4 cycles a group on a Zen 5, where
+ * the group's two loads would allow one a cycle (CLIMB.md, 2026-11-09). */
+static void q8_zmm_one(float *out, const int8_t *w, const float *ws, const float *bias,
+                       uint32_t rows, const pk_act *a, int add) {
+    const uint32_t n = a->n, qb = a->qb, nb = n / qb;
+    const __m512i off = _mm512_set1_epi8((char)0x80);
+    int32_t cs[PK_MAX_BLOCKS];
+    colsums(cs, a);
+    for (uint32_t r = 0; r < rows; r += 16) {
+        const int8_t *g = w + (size_t)r * n;
+        __m512 f = _mm512_setzero_ps();
+        for (uint32_t b = 0; b < nb; b++) {
+            __m512i s[8];
+            for (int j = 0; j < 8; j++) s[j] = _mm512_setzero_si512();
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 32)
+                for (uint32_t j = 0; j < 8; j++) {
+                    const __m512i wv = _mm512_loadu_si512((const void *)(g + (size_t)(k + 4 * j) * 16));
+                    s[j] = _mm512_dpbusd_epi32(s[j], _mm512_xor_si512(wv, off),
+                                               _mm512_set1_epi32(load32(a->q + k + 4 * j)));
+                }
+            const __m512i t = _mm512_add_epi32(
+                _mm512_add_epi32(_mm512_add_epi32(s[0], s[1]), _mm512_add_epi32(s[2], s[3])),
+                _mm512_add_epi32(_mm512_add_epi32(s[4], s[5]), _mm512_add_epi32(s[6], s[7])));
+            f = _mm512_fmadd_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(t, _mm512_set1_epi32(cs[b]))),
+                                _mm512_set1_ps(a->d[b]), f);
+        }
+        __m512 v = _mm512_mul_ps(f, _mm512_loadu_ps(ws + r));
+        if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias + r));
+        if (add) v = _mm512_add_ps(_mm512_loadu_ps(out + r), v);
+        _mm512_storeu_ps(out + r, v);
+    }
+}
+
 static void q8_zmm(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                    uint32_t rows, const pk_act *a, int add) {
     if (a->T >= PK_Q8_XOFF)
         q8_zmm_wide(out, os, w, ws, bias, rows, a, add);
+    else if (a->T == 1)
+        q8_zmm_one(out, w, ws, bias, rows, a, add);
     else if (a->qb == 64)
         q8_zmm_few64(out, os, w, ws, bias, rows, a, add);
     else
@@ -1050,9 +1087,55 @@ void k_gemm_q8_64(float *out, size_t os, const int8_t *w, const float *ws, const
     k_gemm_q8_with(out, os, w, ws, bias, rows, a, add, 64);
 }
 
+/* One column, as q8_zmm_one and for its reason: the panel's two halves,
+ * four sums each. */
+static void q8_ymm_one(float *out, const int8_t *w, const float *ws, const float *bias,
+                       uint32_t rows, const pk_act *a, int add) {
+    const uint32_t n = a->n, qb = a->qb, nb = n / qb;
+    const __m256i off = _mm256_set1_epi8((char)0x80);
+    int32_t cs[PK_MAX_BLOCKS];
+    colsums(cs, a);
+    for (uint32_t r = 0; r < rows; r += 16) {
+        const int8_t *g = w + (size_t)r * n;
+        __m256 f0 = _mm256_setzero_ps(), f1 = f0;
+        for (uint32_t b = 0; b < nb; b++) {
+            __m256i s0[4], s1[4];
+            for (int j = 0; j < 4; j++) s0[j] = s1[j] = _mm256_setzero_si256();
+            for (uint32_t k = b * qb; k < (b + 1) * qb; k += 16)
+                for (uint32_t j = 0; j < 4; j++) {
+                    const int8_t *gw = g + (size_t)(k + 4 * j) * 16;
+                    const __m256i w0 = _mm256_loadu_si256((const __m256i *)(const void *)gw);
+                    const __m256i w1 = _mm256_loadu_si256((const __m256i *)(const void *)(gw + 32));
+                    const __m256i xb = _mm256_set1_epi32(load32(a->q + k + 4 * j));
+                    s0[j] = PK_DPBUSD(s0[j], _mm256_xor_si256(w0, off), xb);
+                    s1[j] = PK_DPBUSD(s1[j], _mm256_xor_si256(w1, off), xb);
+                }
+            const __m256i t0 = _mm256_add_epi32(_mm256_add_epi32(s0[0], s0[1]), _mm256_add_epi32(s0[2], s0[3]));
+            const __m256i t1 = _mm256_add_epi32(_mm256_add_epi32(s1[0], s1[1]), _mm256_add_epi32(s1[2], s1[3]));
+            const __m256i cv = _mm256_set1_epi32(cs[b]);
+            const __m256 d = _mm256_set1_ps(a->d[b]);
+            f0 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(t0, cv)), d, f0);
+            f1 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(t1, cv)), d, f1);
+        }
+        __m256 v0 = _mm256_mul_ps(f0, _mm256_loadu_ps(ws + r)), v1 = _mm256_mul_ps(f1, _mm256_loadu_ps(ws + r + 8));
+        if (bias) {
+            v0 = _mm256_add_ps(v0, _mm256_loadu_ps(bias + r));
+            v1 = _mm256_add_ps(v1, _mm256_loadu_ps(bias + r + 8));
+        }
+        if (add) {
+            v0 = _mm256_add_ps(_mm256_loadu_ps(out + r), v0);
+            v1 = _mm256_add_ps(_mm256_loadu_ps(out + r + 8), v1);
+        }
+        _mm256_storeu_ps(out + r, v0);
+        _mm256_storeu_ps(out + r + 8, v1);
+    }
+}
+
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
-    if (a->qb == 32)
+    if (a->T == 1)
+        q8_ymm_one(out, w, ws, bias, rows, a, add);
+    else if (a->qb == 32)
         k_gemm_q8_32(out, os, w, ws, bias, rows, a, add);
     else if (a->qb == 64)
         k_gemm_q8_64(out, os, w, ws, bias, rows, a, add);

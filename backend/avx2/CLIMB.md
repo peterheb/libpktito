@@ -3097,3 +3097,95 @@ Predicted, 9950X: q8bench's decoder row 280-330 GMAC/s on avx512-vnni
 `pktito-c bench` on one thread -0.7 to -0.9% for v2 and -1.5 to -2% for
 v3; at 16 threads inside the spread. On the 12900HK (avx2-vnni, gcc 15)
 the decoder row 2.5x or more.
+
+## 2026-11-09 - the decoder's one column on eight chains (result: kept, a third of the prediction)
+
+As the hypothesis: q8_zmm_one and q8_ymm_one, a product of one column
+dealt to eight sums a panel. tests/kcheck 1918 cases at ref's bits under
+gcc 15.2 and clang 21.1 on the 9950X and under gcc 15.2 on the 12900HK;
+`make check-c` passes on both boards.
+
+q8bench's decoder row (2560 x 640, one column), GMAC/s, three rounds:
+
+| board, backend     | gcc 15.2, before | after       | clang 21.1, before | after       |
+| ------------------ | ---------------- | ----------- | ------------------ | ----------- |
+| 9950X, avx512-vnni | 98.6-100.9       | 158.8-160.2 | 111.3-112.8        | 164.8-165.6 |
+| 9950X, avx2-vnni   | 97.2-98.3        | 141.6-143.1 | 105.8-106.6        | 153.8-155.0 |
+| 12900HK, avx2-vnni | 63.2-64.2        | 81.2-85.1   |                    |             |
+
+Half again, where 280-330 was predicted. The prediction counted loads
+and forgot where they come from: one column reads each weight byte once,
+and q8bench's matrix is 1.6 MB, past the 9950X's 1 MB of L2. The same
+product by the matrix's rows (640 inputs, avx512-vnni, clang; gcc's in
+brackets; `~/x86climb/mb/q8one.c`):
+
+| rows (weights) | before | after         |
+| -------------- | ------ | ------------- |
+| 32 (20 KB)     | 93     | 293 (228)     |
+| 160 (100 KB)   | 111    | 233-250 (193) |
+| 640 (410 KB)   | 116    | 268-275 (235) |
+| 1024 (655 KB)  | 121    | 239-290 (260) |
+| 2560 (1.6 MB)  | 110    | 156-162 (148) |
+| 8208 (5.25 MB) | 108    | 128-130 (129) |
+
+Inside L2 it runs the predicted 270-290 under clang; from L3 it is the
+memory's 23 to 28 bytes a cycle. The decoder's weights are 7 MB (v2) and
+12 MB (v3), read beside an encoder that streams 600 MB.
+
+In a run, PROFILE=1, clang, one thread: the decoder's stage 19.6-19.7 ms
+to 15.6 for v2, 37.2-37.3 to 30.6-31.0 for v3. `pktito-c bench`,
+test.wav, one thread on the 9950X, nine interleaved rounds (seconds; the
+last six rounds' means):
+
+| model | gcc 15.2, before | after                | clang 21.1, before | after                |
+| ----- | ---------------- | -------------------- | ------------------ | -------------------- |
+| v2    | 1.224-1.231      | 1.217-1.223 (-0.65%) | 1.222-1.230        | 1.222-1.226 (-0.1%)  |
+| v3    | 1.237-1.242      | 1.229-1.233 (-0.73%) | 1.240-1.247        | 1.234-1.245 (-0.45%) |
+
+At 16 threads, three rounds: v2 0.171-0.172 to 0.165-0.171 (gcc) and
+0.166-0.172 to 0.168-0.172 (clang), v3 0.171-0.174 to 0.169-0.171 and
+0.177-0.178 to 0.172-0.177. On the 12900HK the run does not move outside
+what the laptop's heat moves it between rounds: one thread v2
+2.774-2.854 to 2.768-2.856, v3 2.848-2.929 to 2.838-2.944; 14 threads v2
+0.731-0.798 to 0.728-0.790, v3 0.752-0.754 to 0.747-0.759.
+
+Kept: past the spread under gcc for both models and under clang for v3,
+level under clang for v2, slower nowhere. Predicted -0.7 to -0.9% (v2)
+and -1.5 to -2% (v3) on one thread; measured -0.1 to -0.7%.
+
+Tried on top and not taken: a prefetch of the weights 4 KB ahead in the
+one-column loop ran the 8208-row matrix 156-159 GMAC/s for 128-130, the
+2560-row one level (157-158 for 156-162) and the 32-row one 256 for 293.
+
+## 2026-11-09 - the zmm tiles reading the activations in place (a measurement, not built)
+
+The offset copy is made a call, and pk_gemm's calls are 64 rows at the
+thread counts that matter: after the pair's tile, q8bench in 64-row
+slices is 521-543 GMAC/s where whole matrices are 558-577. On a Zen 5 an
+XOR runs on the two pipes VPDPBUSD does not use (the rates above), so a
+scratch build (`~/x86climb/xp`) made the tiles' broadcasts VPXORD
+{1to16} from a->q against the offset in zmm31, with no copy; kcheck at
+ref's bits under both compilers. Three interleaved rounds against the
+tree with the one-column path, the 9950X, up / down / attention:
+
+| avx512-vnni            | gcc 15.2, copy              | gcc 15.2, in place          | clang 21.1, copy            | clang 21.1, in place        |
+| ---------------------- | --------------------------- | --------------------------- | --------------------------- | --------------------------- |
+| q8bench, 64-row slices | 521-531 / 494-495 / 539-543 | 553-557 / 524-527 / 556-561 | 518-523 / 488-494 / 533-535 | 535-537 / 513-521 / 535-536 |
+| q8bench, whole         | 571-577 / 529-537 / 576-577 | 552-554 / 518-522 / 557-562 | 558-561 / 528-534 / 562-566 | 528-536 / 509-512 / 536-538 |
+| bench, 1 thread (s)    | 1.220-1.222                 | 1.225-1.229                 | 1.223-1.228                 | 1.233-1.238                 |
+| bench, 16 threads      | 0.160-0.171                 | 0.157-0.162                 | 0.167-0.172                 | 0.162-0.167                 |
+
+In place is 3 to 7% faster where a call is 64 rows (level for the
+attention's shape under clang) and 3 to 7% slower where it is a whole
+matrix or pk_gemm's 256 rows: the XOR costs more in the product than the
+1.6% it cost on L1-resident data, and a copy shared by 16 panels is 2%.
+So a run is 2 to 3% faster at 16 threads and 0.5 to 0.8% slower at one.
+Not built: it would be right only below some number of rows a call, and
+only on a core whose XORs have pipes of their own, which a two-FMA Intel
+core's do not (ports 0 and 5 both), so it would be a competing backend
+with a probe (backend/kernels.c) for 2 to 3% at 16 threads on one family.
+
+Left open by it: the attention's V comes a panel a call (core/encoder.c,
+panel_item), so its copy is made 64 times a matrix, a quarter of that
+product's time by the count above. A kernel entry that writes a call's
+panels in V's layout would let one call take a slice's four.
