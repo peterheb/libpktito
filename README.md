@@ -101,19 +101,21 @@ recording run several chunks at once (below, "How fast") takes about 45
 MB more for each chunk beyond the first: AliceBench's longest chapter,
 23 minutes, peaked at 693 MB a chunk at a time on a 9950X's 16 threads,
 831 MB four at once, and an hour at the same, since pktito-c reads a file a
-stretch at a time; from a pipe it holds the recording whole, as floats, 64
-kB a second. On a Pi 3B+, v2 so transcribes an hour in 61 minutes without
-paging; holding the recording whole, it paged 12,200 times a minute and
-had not finished after 100. The VAD's encoder keeps 0.85 MB a thread
-besides, 3.4 MB on a Pi's four (below, "Transcribing a recording"). A 512
-MB board (a Pi Zero 2 W) cannot hold an int8 0.6B model; README, "Why
-int8", has what 4-bit would cost. Then:
+stretch at a time. On a Pi 3B+, v2 so transcribes an hour in 61 minutes
+without paging; holding the recording whole, it paged 12,200 times a minute
+and had not finished after 100. A pipe is read the same way, once its
+samples are copied to a scratch file on disk ($TMPDIR, else /var/tmp). The
+VAD's encoder keeps 0.85 MB a thread besides, 3.4 MB on a Pi's four
+(below, "Transcribing a recording"). A 512 MB board (a Pi Zero 2 W)
+cannot hold an int8 0.6B model; README, "Why int8", has what 4-bit would
+cost. Then:
 
 ```sh
 ./pktito-c talk.wav                        # the transcript, a sentence a line
 ./pktito-c --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
 ./pktito-c --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito-c a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
+ffmpeg -i talk.mp4 -f wav - | ./pktito-c -  # any format ffmpeg reads, down a pipe
 arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a line a pause
 ./pktito-c segments talk.wav               # Silero VAD's speech segments, as vadito prints them
 ./pktito-c bench talk.wav                  # this machine's speed
@@ -738,6 +740,10 @@ measurements in its comments.
   833 MB rather than 1,048, a chunk at a time 692 rather than 914, the same
   as 23 minutes' and the same bits; a Pi 3B+'s hour in 61 minutes, which
   had not finished in 100.
+- **2026-11-09**: a pipe's samples copied to a scratch file on disk and
+  read a stretch at a time, as a file's are, not held whole: an hour down a
+  pipe peaked at 832 MB on a 9950X's 16 threads rather than 1,057, a chunk
+  at a time 692 rather than 918, a file's figures and the same bits.
 
 ## Long recordings
 

@@ -209,6 +209,25 @@ void pk_unmap(const unsigned char *p, size_t size) {
         munmap((void *)p, size);
 }
 
+/* the name unlinked once the file is open, so nothing is left behind */
+FILE *pk_os_temp(void) {
+    const char *dirs[] = { getenv("TMPDIR"), "/var/tmp", "/tmp" };
+    for (size_t i = 0; i < sizeof dirs / sizeof *dirs; i++) {
+        char path[4096];
+        if (!dirs[i] || !dirs[i][0] || snprintf(path, sizeof path, "%s/pktito-XXXXXX", dirs[i]) >= (int)sizeof path)
+            continue;
+        const int fd = mkstemp(path);
+        if (fd < 0)
+            continue;
+        unlink(path);
+        FILE *f = fdopen(fd, "w+b");
+        if (f)
+            return f;
+        close(fd);
+    }
+    return NULL;
+}
+
 #ifdef __linux__
 static long sysfs_long(long cpu, const char *what) {
     char path[128];
@@ -501,6 +520,18 @@ void pk_unmap(const unsigned char *p, size_t size) {
         UnmapViewOfFile(p);
 }
 
+/* D: deleted when its last handle closes, which the process's end does too */
+FILE *pk_os_temp(void) {
+    wchar_t dir[MAX_PATH + 1], name[MAX_PATH];
+    const DWORD n = GetTempPathW(MAX_PATH + 1, dir);
+    if (n == 0 || n > MAX_PATH || !GetTempFileNameW(dir, L"pkt", 0, name))
+        return NULL;
+    FILE *f = _wfopen(name, L"w+bD");
+    if (!f)
+        DeleteFileW(name);
+    return f;
+}
+
 /* As on POSIX, the physical cores (pk_os_cores there says why): one
  * processor record a core, counted where the process may run (`start
  * /affinity`), in processor group 0, which holds every machine with up to
@@ -695,6 +726,8 @@ void pk_unmap(const unsigned char *p, size_t size) {
     if (p)
         free((void *)(p - p[-1]));
 }
+
+FILE *pk_os_temp(void) { return tmpfile(); }
 
 int pk_os_cores(void) { return 1; }
 int pk_os_fast_cores(void) { return 1; }

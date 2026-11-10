@@ -24,6 +24,7 @@
 #include "resample.h"
 #include "wav.h"
 
+#include <errno.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -469,7 +470,7 @@ static void run_failed(const pk_model *m) {
 }
 
 /* The rest of an open file, front to back, as 16 kHz mono float, whole:
- * stdin's, or a pipe's, which can't be read twice */
+ * stdin's, or a pipe's, where no scratch file can be made for it */
 static float *read_all(pk_wav *w, const pk_wav_info *info, const char *path, int rate, size_t *n) {
     pk_resampler *rs = NULL;
     if (info->rate != (uint32_t)rate && !(rs = pk_resampler_new(info->rate, (uint32_t)rate)))
@@ -512,17 +513,19 @@ static float *read_all(pk_wav *w, const pk_wav_info *info, const char *path, int
     return x;
 }
 
-/* A recording (pk_audio) from a WAV or AIFF file. A regular file is read a
- * stretch at a time as the library asks for it: a seek and a read
- * (pk_wav_seek), and at another rate the window of input that stretch's
- * outputs need (pk_resampler_seek), so that each stretch has the bits
- * the whole file resampled gives it. stdin, or a pipe, which can't be
- * read twice, is read whole first. */
+/* A recording (pk_audio) from a WAV or AIFF file, read a stretch at a time
+ * as the library asks for it: a seek and a read (pk_wav_seek), and at
+ * another rate the window of input that stretch's outputs need
+ * (pk_resampler_seek), so that each stretch has the bits the whole file
+ * resampled gives it. stdin, or a pipe, which can't seek, has its samples
+ * copied to a scratch file first (pk_wav_spool), on disk where pages can
+ * leave memory, and is read whole only where no scratch file can be made. */
 typedef struct {
-    pk_wav *w;                  /* a regular file's */
+    pk_wav *w;                  /* the file's, or the scratch file's */
     pk_resampler *rs;           /* at another rate */
     float *in, *out;            /* a read's input frames, and their outputs */
-    float *all;                 /* stdin's samples, or a pipe's */
+    FILE *scratch;              /* stdin's samples, or a pipe's */
+    float *all;                 /* the same, whole, without a scratch file */
     int failed;                 /* a read failed */
 } file_audio;
 
@@ -559,8 +562,15 @@ static pk_audio open_audio(const char *path, int rate, const opts *o, file_audio
     if (!w)
         cannot_open(path, err);
     uint64_t frames;
+    int seekable = !pk_wav_seekable(w, &frames);
+    if (!seekable && (f->scratch = pk_os_temp())) {
+        if (pk_wav_spool(w, f->scratch, &frames))
+            die("%s: its samples could not be copied to a scratch file: %s (TMPDIR names its folder)", path,
+                strerror(errno));
+        seekable = 1;
+    }
     pk_audio x;
-    if (pk_wav_seekable(w, &frames)) {
+    if (!seekable) {
         size_t n;
         f->all = read_all(w, &info, path, rate, &n);
         x = pk_audio_floats(f->all, n);
@@ -585,14 +595,17 @@ static pk_audio open_audio(const char *path, int rate, const opts *o, file_audio
         }
     }
     if (o->verbose)
-        fprintf(stderr, "pktito-c: %s: %u Hz, %u channel%s, %.1f s%s\n", path, (unsigned)info.rate,
+        fprintf(stderr, "pktito-c: %s: %u Hz, %u channel%s, %.1f s%s%s\n", path, (unsigned)info.rate,
                 (unsigned)info.channels, info.channels == 1 ? "" : "s", (double)x.n / rate,
-                info.rate != (uint32_t)rate ? ", resampled to 16 kHz" : "");
+                info.rate != (uint32_t)rate ? ", resampled to 16 kHz" : "",
+                f->scratch ? ", by way of a scratch file" : "");
     return x;
 }
 
 static void close_audio(file_audio *f) {
     pk_wav_close(f->w);
+    if (f->scratch)
+        fclose(f->scratch);
     pk_resampler_free(f->rs);
     free(f->in);
     free(f->out);

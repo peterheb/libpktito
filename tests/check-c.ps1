@@ -109,6 +109,23 @@ foreach ($hz in 8000, 48000) {
 }
 Remove-Item "$s-in.wav", "$s-16k.wav", "$s-in.json", "$s-16k.json"
 
+# check-c.sh's pipe, through cmd's, which passes the bytes as they are
+$p = 'tests\pipecheck'
+cmd /c "tests\streamcheck.exe tests\data\test.wav 48000 $p-48k.wav $p-16k.wav"
+$ok = -not $LASTEXITCODE
+foreach ($w in 'tests\data\test.wav', "$p-48k.wav") {
+    if ($ok) { cmd /c "pktito-c.exe --json -m `"$Model`" $w > $p-a.json"; $ok = -not $LASTEXITCODE }
+    if ($ok) { cmd /c "type $w | pktito-c.exe --json -m `"$Model`" - > $p-b.json"; $ok = -not $LASTEXITCODE }
+    $ok = $ok -and (same "$p-a.json" "$p-b.json")
+}
+if ($ok) {
+    $v = cmd /c "type tests\data\test.wav | pktito-c.exe -v -m `"$Model`" - 2>&1 > NUL"
+    $ok = ($v -join ' ') -match 'by way of a scratch file'
+}
+Remove-Item "$p-48k.wav", "$p-16k.wav", "$p-a.json", "$p-b.json" -ErrorAction SilentlyContinue
+if (-not $ok) { "pktito-c -: FAIL - a pipe's lines are not the file's, or it took no scratch file"; exit 1 }
+"pktito-c -: a pipe at 16 and 48 kHz, by way of a scratch file, as the file reads"
+
 # Line by line, as PowerShell gives a program's output, without the line
 # ends (examples/transcribe writes the C runtime's CR LF) and less the two
 # times it puts before a chunk's text, then joined: the example writes a

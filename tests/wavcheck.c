@@ -14,8 +14,11 @@
  *   pieces     any file read a frame at a time, in odd-sized reads and all at
  *              once comes out the same
  *   seek       any file read from a frame (pk_wav_seekable, pk_wav_seek) comes
- *              out as a front to back read does there; a seek past the end,
- *              or one before pk_wav_seekable, refused
+ *              out as a front to back read does there, and so does one whose
+ *              samples are first copied to a scratch file, as a pipe's are
+ *              (pk_wav_spool); a seek past the end, or one before either,
+ *              refused, and pk_wav_spool after a read, after
+ *              pk_wav_seekable, or into a file that is not empty
  *   writer     16-bit and float, read back
  *   open FILE  pk_wav_open_file on a FILE read part way: pk_wav_open's
  *              samples, and the FILE left open, a refused one too
@@ -38,6 +41,7 @@
  *     ./tests/wavcheck [scratch-file]
  */
 #include "wav.h"
+#include "os.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -234,30 +238,39 @@ static float *read_all(const char *path, size_t piece, size_t *frames, pk_wav_in
 }
 
 /* the file at g_tmp read from frames here and there, against want[frames],
- * a front to back read's mono samples */
+ * a front to back read's mono samples: as the regular file it is
+ * (pk_wav_seekable), and as a pipe's, its samples copied to a scratch file
+ * (pk_wav_spool) */
 static void seek_case(const char *what, uint32_t frames, const float *want) {
-    pk_wav_info info;
-    char err[256];
-    pk_wav *w = pk_wav_open(g_tmp, &info, err, sizeof err);
-    uint64_t nf = 0;
-    float y[64];
-    g_cases++;
-    if (!w || pk_wav_seek(w, 0) == 0 || pk_wav_seekable(w, &nf) || nf != frames) {
-        FAIL("%s: seekable, %llu frames of %u", what, (unsigned long long)nf, frames);
-        pk_wav_close(w);
-        return;
-    }
-    const uint32_t at[] = { frames / 3, 0, frames - 1, frames / 2 + 1, frames, 1 };
-    for (size_t i = 0; i < sizeof at / sizeof *at; i++) {
-        const size_t n = frames - at[i] < 64 ? frames - at[i] : 64;
+    for (int spool = 0; spool < 2; spool++) {
+        const char *how = spool ? "spooled" : "seekable";
+        pk_wav_info info;
+        char err[256];
+        pk_wav *w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        FILE *to = spool ? pk_os_temp() : NULL;
+        uint64_t nf = 0;
+        float y[64];
         g_cases++;
-        if (pk_wav_seek(w, at[i]) || pk_wav_read(w, y, 64) != n || memcmp(y, want + at[i], n * sizeof *y))
-            FAIL("%s: read from frame %u, not what a front to back read has there", what, at[i]);
+        if (!w || pk_wav_seek(w, 0) == 0 || (spool && !to)
+            || (spool ? pk_wav_spool(w, to, &nf) : pk_wav_seekable(w, &nf)) || nf != frames) {
+            FAIL("%s: %s, %llu frames of %u", what, how, (unsigned long long)nf, frames);
+        } else {
+            const uint32_t at[] = { frames / 3, 0, frames - 1, frames / 2 + 1, frames, 1 };
+            for (size_t i = 0; i < sizeof at / sizeof *at; i++) {
+                const size_t n = frames - at[i] < 64 ? frames - at[i] : 64;
+                g_cases++;
+                if (pk_wav_seek(w, at[i]) || pk_wav_read(w, y, 64) != n
+                    || memcmp(y, want + at[i], n * sizeof *y))
+                    FAIL("%s, %s: read from frame %u, not what a front to back read has there", what, how, at[i]);
+            }
+            g_cases++;
+            if (pk_wav_seek(w, (uint64_t)frames + 1) == 0 || pk_wav_status(w, err, sizeof err))
+                FAIL("%s, %s: a seek past the end taken, or the status not 0", what, how);
+        }
+        pk_wav_close(w);
+        if (to)
+            fclose(to);
     }
-    g_cases++;
-    if (pk_wav_seek(w, (uint64_t)frames + 1) == 0 || pk_wav_status(w, err, sizeof err))
-        FAIL("%s: a seek past the end taken, or the status not 0", what);
-    pk_wav_close(w);
 }
 
 static void format_case(spec s, uint32_t frames) {
@@ -965,12 +978,43 @@ int main(int argc, char **argv) {
             FAIL("cut short, read from a frame: %llu frames (want 100, an error, the last four)",
                  (unsigned long long)nf);
         pk_wav_close(w);
+        /* as a pipe's, its samples copied to a scratch file: the same */
+        w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        FILE *to = pk_os_temp();
+        nf = 0;
+        g_cases++;
+        if (!w || !to || pk_wav_spool(w, to, &nf) || nf != 100 || pk_wav_status(w, err, sizeof err) == 0
+            || pk_wav_seek(w, 96) || pk_wav_read(w, y, 8) != 4 || memcmp(y, x + 96, 4 * sizeof *y))
+            FAIL("cut short, spooled: %llu frames (want 100, an error, the last four)", (unsigned long long)nf);
+        pk_wav_close(w);
+        if (to)
+            fclose(to);
         /* and pk_wav_seekable after a read, refused */
         w = pk_wav_open(g_tmp, &info, err, sizeof err);
         g_cases++;
         if (!w || pk_wav_read(w, y, 1) != 1 || pk_wav_seekable(w, &nf) == 0)
             FAIL("pk_wav_seekable after a read: taken");
         pk_wav_close(w);
+        /* pk_wav_spool after a read, after pk_wav_seekable, or into a file
+         * that is not empty, refused */
+        to = pk_os_temp();
+        w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        g_cases++;
+        if (!w || !to || pk_wav_read(w, y, 1) != 1 || pk_wav_spool(w, to, &nf) == 0)
+            FAIL("pk_wav_spool after a read: taken");
+        pk_wav_close(w);
+        w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        g_cases++;
+        if (!w || !to || pk_wav_seekable(w, &nf) || pk_wav_spool(w, to, &nf) == 0)
+            FAIL("pk_wav_spool after pk_wav_seekable: taken");
+        pk_wav_close(w);
+        w = pk_wav_open(g_tmp, &info, err, sizeof err);
+        g_cases++;
+        if (!w || !to || fputc(0, to) == EOF || fflush(to) || pk_os_seek(to, 0) || pk_wav_spool(w, to, &nf) == 0)
+            FAIL("pk_wav_spool into a file that is not empty: taken");
+        pk_wav_close(w);
+        if (to)
+            fclose(to);
         free(x);
         free(b.p);
     }

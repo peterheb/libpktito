@@ -1,7 +1,9 @@
 /* A WAV opened repeatedly from the same bytes must not depend on how its
  * caller partitions reads.  The interleaved and mono APIs must see the same
  * frames, including NaNs and infinities stored by a float WAV, and a read
- * from a frame (pk_wav_seek) what a front to back read has there. */
+ * from a frame (pk_wav_seek) what a front to back read has there, in the
+ * bytes as a regular file and with the samples copied out of a stream that
+ * can't seek (pk_wav_spool). */
 #define _GNU_SOURCE                   /* memfd_create */
 #include "wav.c"                      /* for parse(), reached without a path */
 
@@ -97,19 +99,21 @@ static int frames(const uint8_t *data, size_t size, size_t piece, decoded *d) {
 #ifdef __linux__
 #include <sys/mman.h>
 
-/* reads from frames here and there, against a, a front to back read: the
- * bytes as a regular file, which pk_wav_seekable needs and fmemopen's
- * stream is not, a memfd, in memory too */
-static void seeks(const uint8_t *data, size_t size, const decoded *a) {
+/* the bytes as a regular file, which pk_wav_seekable needs and fmemopen's
+ * stream is not: a memfd, in memory too */
+static FILE *memfile(const uint8_t *data, size_t size) {
     const int fd = memfd_create("wav_bytes", 0);
     FZ_ASSERT(fd >= 0);
     FILE *f = fdopen(fd, "w+b");
     FZ_ASSERT(f && fwrite(data, 1, size, f) == size && fseek(f, 0, SEEK_SET) == 0);
+    return f;
+}
+
+/* reads from frames here and there in w, which nf frames can be read from,
+ * against a, a front to back read */
+static void reads(pk_wav *w, uint64_t nf, size_t size, const decoded *a) {
     char err[256];
-    pk_wav *w = open_file(f, 1, "wav_bytes", NULL, err, sizeof err);
-    FZ_ASSERT(w);
-    uint64_t nf = 0;
-    FZ_ASSERT(pk_wav_seekable(w, &nf) == 0 && nf == a->frames);
+    FZ_ASSERT(nf == a->frames);
     FZ_ASSERT((pk_wav_status(w, err, sizeof err) != 0) == (a->status != 0));
     float y[64];
     const uint64_t at[] = { 0, nf / 2, nf ? nf - 1 : 0, nf, (uint64_t)size * 2654435761u % (nf + 1) };
@@ -119,7 +123,25 @@ static void seeks(const uint8_t *data, size_t size, const decoded *a) {
         FZ_ASSERT(!memcmp(y, a->x + at[i], n * sizeof *y));
     }
     FZ_ASSERT(pk_wav_seek(w, nf + 1) == -1);
+}
+
+/* the bytes as a regular file (pk_wav_seekable), and as fmemopen's stream,
+ * which can't seek, with its samples copied into an empty memfd
+ * (pk_wav_spool) */
+static void seeks(const uint8_t *data, size_t size, const decoded *a) {
+    char err[256];
+    pk_wav *w = open_file(memfile(data, size), 1, "wav_bytes", NULL, err, sizeof err);
+    uint64_t nf = 0;
+    FZ_ASSERT(w && pk_wav_seekable(w, &nf) == 0);
+    reads(w, nf, size, a);
     pk_wav_close(w);
+    pk_wav_info info;
+    FILE *to = memfile(data, 0);
+    w = open_bytes(data, size, &info, err, sizeof err);
+    FZ_ASSERT(w && pk_wav_seek(w, 0) == -1 && pk_wav_spool(w, to, &nf) == 0);
+    reads(w, nf, size, a);
+    pk_wav_close(w);
+    fclose(to);
 }
 #endif
 

@@ -61,7 +61,10 @@ is reproduced with `build/fuzz/<target> findings/<id>/input`.
   library keeps one way in and no iteration writes a file. On Linux it opens
   them a fourth time as a memfd, a regular file in memory, which
   `pk_wav_seekable` takes: its frames and status must be the front to back
-  read's, and a read from each of five frames that read's samples there.
+  read's, and a read from each of five frames that read's samples there. And
+  the `fmemopen` stream, which can't seek, has its samples copied into an
+  empty memfd (`pk_wav_spool`, as pktito-c copies a pipe's), which must give
+  the same.
 - `resample` makes bounded rate pairs and arbitrary float bit patterns. The
   output sent in one call and in fuzz-selected pieces must have the same bits,
   the documented room must bound every call, and the final count must be

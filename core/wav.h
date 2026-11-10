@@ -13,7 +13,8 @@
  * so stdin works as well as a file, and so does a file the caller already
  * has open, and it keeps one block of bytes, so a file of any length reads
  * in the same memory. A regular file can also be read from any frame
- * (pk_wav_seekable), which is how pktito-c reads a recording a stretch at a
+ * (pk_wav_seekable), and a pipe's samples copied into one that then can
+ * (pk_wav_spool), which is how pktito-c reads a recording a stretch at a
  * time (pk_audio).
  *
  * Samples come out as float in [-1, 1) by the conventions torchaudio.load
@@ -76,6 +77,16 @@ size_t pk_wav_read_frames(pk_wav *w, float *out, size_t n);
  * to back alone. A file that holds less than its header said is cut short
  * for pk_wav_status from here on, as a read to its end would find it. */
 int pk_wav_seekable(pk_wav *w, uint64_t *frames);
+
+/* For a file that can't seek, a pipe or stdin from one, asked before the
+ * first read: the bytes a front to back read would decode (to the header's
+ * size, or a streamed file's end) copied into to, an empty file open for
+ * writing and reading (core/os.h's pk_os_temp makes one), which w reads from
+ * then on as pk_wav_seekable reads a regular file, with *frames and 0 as
+ * there. A file w opened is closed; to stays the caller's, to close after
+ * pk_wav_close. -1 if to is not an empty regular file or a write to it fails
+ * (errno says why), and w is then for pk_wav_close alone. */
+int pk_wav_spool(pk_wav *w, FILE *to, uint64_t *frames);
 
 /* For a file pk_wav_seekable took, frame `frame` next: pk_wav_read goes on
  * from it, the samples a front to back read gives there. 0, or -1 if frame

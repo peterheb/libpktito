@@ -63,6 +63,18 @@ for hz in 8000 48000; do
     || { echo "pktito-c --stream: FAIL at $hz Hz - not the lines of the same samples resampled first"; exit 1; }
 done
 rm -f $s-in.wav $s-16k.wav $s-in.json
+# stdin from a pipe, its samples copied to a scratch file and read a stretch
+# at a time as a file's are: the file's lines, at 16 kHz and at 48 kHz
+p=tests/pipecheck
+./tests/streamcheck tests/data/test.wav 48000 $p-48k.wav $p-16k.wav; r=$?
+for w in tests/data/test.wav $p-48k.wav; do
+  [ $r = 0 ] && ./pktito-c --json -m "$MODEL" $w > $p-a.json \
+    && cat $w | ./pktito-c --json -m "$MODEL" - > $p-b.json && cmp -s $p-a.json $p-b.json; r=$?
+done
+[ $r = 0 ] && cat tests/data/test.wav | ./pktito-c -v -m "$MODEL" - 2>&1 >/dev/null | grep -q 'by way of a scratch file'; r=$?
+rm -f $p-48k.wav $p-16k.wav $p-a.json $p-b.json
+[ $r = 0 ] && echo "pktito-c -: a pipe at 16 and 48 kHz, by way of a scratch file, as the file reads" \
+  || { echo "pktito-c -: FAIL - a pipe's lines are not the file's, or it took no scratch file"; exit 1; }
 # the example writes a chunk a line, the CLI a sentence: the words held in order
 ./examples/transcribe "$MODEL" tests/data/test.wav | tr -d '\r' | cut -d' ' -f3- | tr -s '\n' ' ' > tests/example.out
 ./pktito-c --no-context --no-retry -m "$MODEL" tests/data/test.wav | tr -s '\n' ' ' | cmp -s - tests/example.out \

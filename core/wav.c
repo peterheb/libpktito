@@ -548,6 +548,32 @@ int pk_wav_seekable(pk_wav *w, uint64_t *frames) {
     return 0;
 }
 
+int pk_wav_spool(pk_wav *w, FILE *to, uint64_t *frames) {
+    if (!to || w->seekable || w->have || w->pos || pk_os_tell(to) != 0 || pk_os_file_size(to) != 0)
+        return -1;
+    /* the bytes read_frames would read, through its buffer, ending where it
+     * would: at the header's size, or the end of the file */
+    for (uint64_t got = 0; got < w->left;) {
+        const size_t want = w->left - got < PK_WAV_BUF ? (size_t)(w->left - got) : PK_WAV_BUF;
+        const size_t k = fread(w->buf, 1, want, w->f);
+        if (fwrite(w->buf, 1, k, to) != k)
+            return -1;
+        got += k;
+        if (k < want) {
+            if (ferror(w->f))
+                w->io_error = 1;
+            break;
+        }
+    }
+    if (fflush(to) || pk_os_seek(to, 0))
+        return -1;
+    if (w->own)
+        fclose(w->f);
+    w->f = to;
+    w->own = 0;
+    return pk_wav_seekable(w, frames);
+}
+
 int pk_wav_seek(pk_wav *w, uint64_t frame) {
     if (!w->seekable || frame > w->data_bytes / w->block)
         return -1;

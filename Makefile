@@ -331,7 +331,8 @@ benches: $(BENCHES)
 # computes the same ones (backend/kernels.h), and this is where a board
 # that does not would say so. --stream, which resamples as it reads, must
 # print for test.wav at 8 and 48 kHz what it prints for the same samples
-# resampled first (tests/streamcheck writes the pairs). A model file that is
+# resampled first (tests/streamcheck writes the pairs), and test.wav down a
+# pipe, at 16 and 48 kHz, by way of a scratch file, what the file does. A model file that is
 # not there is skipped, with a line. The commands are tests/check-c.sh, so
 # that a board without make, Android over adb, runs the same ones, and
 # tests/check-c.ps1 runs them on Windows without MSYS2.

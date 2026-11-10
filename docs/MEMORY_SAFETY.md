@@ -33,8 +33,9 @@ longest, and refuses bytes that are not UTF-8. The in-memory model loader also c
 slack fits in `size_t` before it allocates and copies.
 Counts derived while resampling a WAV saturate instead of wrapping, and the
 front ends check sample-count additions and byte multiplications before they
-grow a whole-recording buffer, which pktito-c keeps only for a pipe: a file
-it reads a stretch at a time, and the library asks a `pk_audio` only for
+grow a whole-recording buffer, which pktito-c keeps only for a pipe it can
+make no scratch file for: a file, and a pipe's samples copied to one, it
+reads a stretch at a time, and the library asks a `pk_audio` only for
 stretches inside its length.
 
 ## The model file
@@ -157,7 +158,11 @@ in a regular file it has measured: `pk_wav_seekable`, asked before the first
 read, takes the bytes from the first frame to the end of the file, or the
 header's size where that is less, and `pk_wav_seek` goes to a whole frame
 inside them or refuses, so a read from the middle is a front to back read's
-from there. It never allocates from a size the file states: it keeps one fixed buffer
+from there. `pk_wav_spool` gives a pipe the same: before the first read, it
+copies the bytes a front to back read would decode, to the header's size or
+a stream's end, through the same fixed buffer into an empty regular file the
+caller made, and measures that file as `pk_wav_seekable` measures any other.
+It never allocates from a size the file states: it keeps one fixed buffer
 and decodes whole frames out of it. Every chunk's size is checked before it is
 read past (by reading, so that a pipe can be read past, and with its pad byte
 added in 64 bits, so that a size of 2^32 - 1 cannot wrap), the fmt chunk is

@@ -38,6 +38,13 @@ int64_t pk_os_file_size(FILE *f);
 int     pk_os_seek(FILE *f, int64_t off);
 int64_t pk_os_tell(FILE *f);
 
+/* A scratch file, open for writing and reading, that goes when it is closed
+ * or the process ends; NULL if none can be made. It is on disk where the
+ * system has one, so that its pages can leave memory: in $TMPDIR, else
+ * /var/tmp, else /tmp (a Pi's Debian 13 keeps /tmp in memory, tmpfs), and
+ * on Windows in its temporary folder. */
+FILE *pk_os_temp(void);
+
 /* rename and remove, the same: 0, or -1 with errno set. pk_os_rename
  * replaces a file already at to, which Windows' rename refuses to. */
 int pk_os_rename(const char *from, const char *to);
