@@ -3445,3 +3445,42 @@ c7i. If the pairs of A and B bind as C does (a product holding its
 sources its whole latency), less. Blocks of 32 keep two: four were tried
 there before the pipeline (2026-10-24) and port 0 is its bound. The bits
 are untouched: the same sums into the chains in block order.
+
+## 2026-11-10 - AMX: four C tiles in turn at blocks of 64 (result: rejected)
+
+As the hypothesis above has it: C tiles 2, 3, 6 and 7 in turn for blocks
+of 64, a block's sums stored two steps behind it. kcheck (1918 cases)
+and q8check, ref's bits on amx-int8 under gcc 13.3 and clang 18.1.3, the
+same c7i.xlarge. The same loop under `perf stat`, two C tiles and four
+by turns, twice each, cycles a block: one panel 45.9, 46.6 against 47.0,
+46.9; four panels 51.8, 51.9 against 51.2, 51.0; four panels at n 4096
+64.0, 64.5 against 64.2, 63.7. Level, where 38-41 was predicted: the
+loop through C is not what holds a block of 64. Not kept.
+
+What does, by the same loop at other shapes (blocks of 64; of 32):
+
+| shape                             | cycles a block | where A and B are    |
+| --------------------------------- | -------------- | -------------------- |
+| one panel, n 1024                 | 46.8; 38.7     | L1 (16 KB each)      |
+| four panels, n 1024               | 51.8; 40.1     | A in L1, B in L2     |
+| one panel, n 4096                 | 64.0; 48.9     | L2 (64 KB each)      |
+| four panels, n 4096               | 64.0; 48.9     | L2                   |
+| four panels, n 8192 (nb variable) | 78.9; 58.1     | L2                   |
+| four panels, n 8448 (nb variable) | 79.0; 54.3     | L2, A off one L1 set |
+
+A block of 64 loads 2 KB, its A and its B, and what it costs follows
+where they come from: 47 cycles from L1, 52 with B from L2, 64 with
+both. The 16 rows of A a page apart in one L1 set, which 2026-10-24
+blamed for the down shape, are 4 cycles of a block of 32 (58.1 against
+54.3) and none of a block of 64. Other widths tried (n 512, 2048, 3072:
+50 to 69 cycles a block) take nb as a variable and are none of the
+model's; what part of theirs is the variable and what part the cache is
+not separated here.
+
+Left open: at n 4096 a group's A is 64 KB, past L1, and every panel of
+a slice loads it again from L2 (four times in a slice of 64 rows, 16 in
+one of 256). Blocks outer and panels inner would load a block's A once
+for all of a slice's panels, with their chains in memory (a load and a
+store more a column a block): by the table, the down shape from 64
+cycles a block toward 52 in the fast mode and from 49 toward 41 in the
+normal one, a third of the int8 MACs. Not built.
