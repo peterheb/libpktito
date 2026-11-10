@@ -236,6 +236,17 @@ static void k_quantize(pk_act *a, const float *x, size_t xs) {
 #define PK_Q8_BLOCK_BYTES (192 * 1024)
 #endif
 
+/* An output added to what is there keeps the add inside its branch: clang 18
+ * otherwise adds -0.0f where the caller adds nothing, the same bits rounding
+ * to nearest and a -0 for a zero sum rounding toward -infinity, where ref's
+ * is +0 (tests/q8check; CLIMB.md, 2026-11-10). The empty asm is what the
+ * compiler will not run ahead of the branch. */
+#ifdef __AVX512F__
+#define PK_HELD(v) __asm__("" : "+v"(v))
+#else
+#define PK_HELD(v) __asm__("" : "+x"(v))
+#endif
+
 /* 32 inputs from k on into a tile, g their weights: eight of the tile's
  * PK_Q8_GROUPs at constant offsets, which gcc keeps the accumulators in
  * place across (CLIMB.md, H2). The encoder's blocks are one of these, or
@@ -365,7 +376,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
         float *o = out + (size_t)(t0 + c) * os;
         __m512 v = _mm512_mul_ps(f[c], sc);
         if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias));
-        if (add) v = _mm512_add_ps(_mm512_loadu_ps(o), v);
+        if (add) { v = _mm512_add_ps(_mm512_loadu_ps(o), v); PK_HELD(v); }
         _mm512_storeu_ps(o, v);
     }
 }
@@ -648,7 +659,7 @@ void q8z_out(float *o, size_t os, const float *f, uint32_t nc, const float *ws, 
     for (uint32_t c = 0; c < nc; c++, o += os, f += 16) {
         __m512 v = _mm512_mul_ps(_mm512_load_ps(f), sc);
         if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias));
-        if (add) v = _mm512_add_ps(_mm512_loadu_ps(o), v);
+        if (add) { v = _mm512_add_ps(_mm512_loadu_ps(o), v); PK_HELD(v); }
         _mm512_storeu_ps(o, v);
     }
 }
@@ -729,7 +740,7 @@ static void q8_zmm_one(float *out, const int8_t *w, const float *ws, const float
         }
         __m512 v = _mm512_mul_ps(f, _mm512_loadu_ps(ws + r));
         if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias + r));
-        if (add) v = _mm512_add_ps(_mm512_loadu_ps(out + r), v);
+        if (add) { v = _mm512_add_ps(_mm512_loadu_ps(out + r), v); PK_HELD(v); }
         _mm512_storeu_ps(out + r, v);
     }
 }
@@ -826,7 +837,7 @@ static void amx_config(void) {
         float *o = out + (size_t)(m) * os;                                                     \
         __m512 v = _mm512_mul_ps(f##m, sc);                                                    \
         if (bias) v = _mm512_add_ps(v, _mm512_loadu_ps(bias));                                 \
-        if (add) v = _mm512_add_ps(_mm512_loadu_ps(o), v);                                     \
+        if (add) { v = _mm512_add_ps(_mm512_loadu_ps(o), v); PK_HELD(v); }                     \
         _mm512_storeu_ps(o, v);                                                                \
     } while (0)
 
@@ -1000,6 +1011,8 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, const float *ws
         if (add) {
             v0 = _mm256_add_ps(_mm256_loadu_ps(o), v0);
             v1 = _mm256_add_ps(_mm256_loadu_ps(o + 8), v1);
+            PK_HELD(v0);
+            PK_HELD(v1);
         }
         _mm256_storeu_ps(o, v0);
         _mm256_storeu_ps(o + 8, v1);
@@ -1125,6 +1138,8 @@ static void q8_ymm_one(float *out, const int8_t *w, const float *ws, const float
         if (add) {
             v0 = _mm256_add_ps(_mm256_loadu_ps(out + r), v0);
             v1 = _mm256_add_ps(_mm256_loadu_ps(out + r + 8), v1);
+            PK_HELD(v0);
+            PK_HELD(v1);
         }
         _mm256_storeu_ps(out + r, v0);
         _mm256_storeu_ps(out + r + 8, v1);
@@ -1196,7 +1211,7 @@ void q8_tile(float *out, size_t os, const int8_t *w, uint32_t n, uint32_t h, con
         float *o = out + (size_t)(t0 + c) * os + 8 * h;
         __m256 v = _mm256_mul_ps(f[c], sc);
         if (bias) v = _mm256_add_ps(v, _mm256_loadu_ps(bias + 8 * h));
-        if (add) v = _mm256_add_ps(_mm256_loadu_ps(o), v);
+        if (add) { v = _mm256_add_ps(_mm256_loadu_ps(o), v); PK_HELD(v); }
         _mm256_storeu_ps(o, v);
     }
 }

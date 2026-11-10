@@ -149,6 +149,7 @@ static int run(void) {
         if (fesetround(modes[i]))
             return bad + 1;
         bad += q8_case(128, 32, 5, 0) + q8_case(128, 64, 5, 3);
+        bad += q8_case(128, 32, 37, 0) + q8_case(128, 64, 37, 3); /* the tiles of many columns */
     }
     if (fesetround(FE_TONEAREST))
         return bad + 1;

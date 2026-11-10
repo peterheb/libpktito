@@ -3198,3 +3198,35 @@ rounds on the 9950X, up / down / attention: gcc 15.2 532-536 / 496-500 /
 541-543 to 526-537 / 492-497 / 532-540, clang 21.1 536-537 / 496-499 /
 538-539 to 533-537 / 493-499 / 537-539. Level: the copy's cost in a
 call of 64 rows is not its instructions. Not changed.
+
+## 2026-11-10 - an output's add kept in its branch: clang 18 and the rounding modes (a fix)
+
+`make check-c` failed on main (519554b) under clang 18.1.3, Ubuntu
+24.04's, on every x86 machine tried (EC2 c6i, m5zn, c7i, c8i, c7a, c8a):
+tests/q8check, the plain avx2 tile, n 128, blocks of 32, 5 columns,
+rounding toward -infinity: -0 where ref's is +0, in the fifth column's
+rows whose sums are zero. gcc 13.3 passes there, as gcc 15.2 and clang
+21.1 do on the 9950X. q8check is of 2026-11-08, and no x86 run under
+clang 18 had been made since.
+
+The tile's last step is `if (add) v = out + v`. clang 18 made it, in the
+one-column tile alone, `v + (add ? out : -0.0f)`: one add either way, its
+other operand chosen. -0 is the float add's identity rounding to nearest,
+which a compiler may assume; rounding toward -infinity, +0 + -0 is -0.
+The transcripts are untouched (the engine runs in the default rounding),
+but ref's bits in every rounding is what q8check holds a backend to, and
+a build's check-c fails without it.
+
+The fix: every such add in this file (the VPMADDUBSW tile, the ymm and
+zmm VNNI tiles, the one-column paths, the wide tiles' and AMX's outputs)
+is followed, inside its branch, by an empty asm on its register, which a
+compiler does not run ahead of a branch. q8check gains the tiles of many
+columns in each rounding (n 128, 37 columns: six cases, 385 in all).
+kcheck (1918 cases) and q8check, ref's bits on amx-int8, avx512-vnni,
+avx2-vnni and avx2 under clang 18.1.3 and gcc 13.3 on a c7i (Xeon 8488C),
+and without AMX under gcc 15.2 and clang 21.1 on the 9950X; check-c
+passes under all four. The add is once a tile, outside the block loop:
+no timing made.
+
+Not checked: the NEON backends under clang 18, whose tiles end in the
+same C.
