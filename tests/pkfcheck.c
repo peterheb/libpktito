@@ -1611,8 +1611,9 @@ static void diar_engine_cases(const pk_model *m, int deep) {
 }
 
 /* pk_speakers and pk_speaker_segments on rows made to give known answers:
- * NeMo's word rule (the frame before a word's counts, an average under
- * 0.01 counts as 0.01, the first of equals wins), words past the rows or
+ * NeMo's word rule (the frame before a word's counts, the first of equals
+ * wins) without its floor (an average under 0.01 counts as itself), words
+ * past the rows or
  * of no samples, no rows at all, and the most stretches rows can hold, in
  * exactly the room pktito.h asks for */
 static void speakers_cases(const pk_model *m) {
@@ -1648,7 +1649,7 @@ static void speakers_cases(const pk_model *m) {
         { 100 * 1280, 101 * 1280, 0, 1, "past the rows: the last frame" },
         { 13 * 1280 - 1, 13 * 1280, 0, 1, "the last frame's last sample" },
         { 1280, 2 * 1280, 1, 2, "two speakers equal: the first" },
-        { 8 * 1280, 9 * 1280, 1, 0, "an average of 0.005, raised to 0.01 like the others: speaker 0" },
+        { 8 * 1280, 9 * 1280, 1, 4, "an average of 0.005, the only one over 0: speaker 4 (NeMo's floor gives 0)" },
     };
     const size_t n = sizeof w / sizeof w[0];
     pk_seg *at = malloc(n * sizeof *at);

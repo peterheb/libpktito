@@ -10,6 +10,11 @@ it is heard), is highest, each average raised to at least 0.01 first and
 the first of equals winning. So a word the diarizer heard no one say, every
 average under 0.01, goes to speaker 0: whoever spoke first.
 
+rule "pktito" is the one core/speakers.c computes: NeMo's without the
+floor, so that the faint averages of a word no one was heard saying still
+order the speakers (Peter, 2026-11-15; on four podcasts it changes 5 of
+21,114 words, the five unheard ones, each to the right speaker).
+
 rule "near" is the alternative DIARIZATION.md measures against it: a word
 whose averages are all under one half takes the speaker heard nearest it
 within NEAR seconds, and failing that the previous word's.
@@ -32,8 +37,9 @@ def word_frames(start, end, frame):
 
 def assign(words, probs, frame=0.08, rule="nemo"):
     """[(speaker, mean)] for words [(start, end)] in seconds; mean is the
-    word's averaged probabilities [n_spk]. Under "near", speaker is -1 only
-    when the recording has no speaker at all."""
+    word's averaged probabilities [n_spk]; rule is "nemo", "pktito" or
+    "near". Under "near", speaker is -1 only when the recording has no
+    speaker at all."""
     T, S = probs.shape
     out = []
     active = probs > 0.5
@@ -43,6 +49,9 @@ def assign(words, probs, frame=0.08, rule="nemo"):
         m = probs[lo:hi].mean(0) if hi > lo else np.zeros(S)
         if rule == "nemo":
             out.append((int(np.argmax(np.clip(m, FLOOR, 1.0))), m))
+            continue
+        if rule == "pktito":
+            out.append((int(np.argmax(m)), m))
             continue
         if m.max() >= 0.5:
             out.append((int(np.argmax(m)), m))

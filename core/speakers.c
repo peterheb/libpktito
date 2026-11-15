@@ -3,13 +3,19 @@
  *
  * The word rule is NeMo's (SpeakerTaggedASR's offline merge,
  * get_word_dict_content_offline in multispk_transcribe_utils, the same at
- * 3.0.0 and at cd61689; docs/DIARIZATION.md, "From frames to words"). NeMo
- * hands it the diarizer's probabilities averaged to the recognizer's
- * encoder frame (80 ms, eight 10 ms rows), and a word's speaker is the one
- * whose probability, averaged over the word's frames and the frame before
- * them (a transducer emits a token a little after it is heard), is largest,
- * each average raised to at least 0.01 first, the first of equals winning.
- * So a word no one was heard saying goes to speaker 0, whoever spoke first.
+ * 3.0.0 and at cd61689; docs/DIARIZATION.md, "From frames to words") but
+ * for one thing. NeMo hands it the diarizer's probabilities averaged to the
+ * recognizer's encoder frame (80 ms, eight 10 ms rows), and a word's
+ * speaker is the one whose probability, averaged over the word's frames and
+ * the frame before them (a transducer emits a token a little after it is
+ * heard), is largest, the first of equals winning. NeMo raises each average
+ * to at least 0.01 first, so a word no one was heard saying, every average
+ * under 0.01, goes to speaker 0, whoever spoke first: in four podcasts
+ * (21,114 words) that made 5 one-word turns of the first speaker inside
+ * others' sentences. Without the floor the faint averages still order the
+ * speakers, and those 5 words go to the speaker around them, each the right
+ * one, and no other word changes (Peter, 2026-11-15; DIARIZATION.md). The
+ * merge in NVIDIA's NeMo-Speech.cpp has no floor either.
  *
  * Here a word's frames come from its samples, counted from the recording's
  * start in integers, and every sum is taken in one order, so a word's
@@ -62,9 +68,9 @@ void pk_speakers(const pk_model *d, const float *p, size_t rows, uint32_t frame,
             add_mean(p, S, r0, r1 < (int64_t)rows ? r1 : (int64_t)rows, avg);
         }
         int32_t best = 0;
-        float top = 0;
-        for (size_t s = 0; s < S; s++) {
-            const float v = fmaxf(avg[s] / (float)(hi - lo), 0.01f);
+        float top = avg[0] / (float)(hi - lo);
+        for (size_t s = 1; s < S; s++) {
+            const float v = avg[s] / (float)(hi - lo);
             if (v > top)
                 top = v, best = (int32_t)s;
         }

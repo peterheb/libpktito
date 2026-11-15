@@ -618,9 +618,10 @@ int pk_diar_run(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
  * samples (pk_model_frame_seconds times pk_model_rate, 1280 for
  * Parakeet's). NeMo's rule: the rows averaged over frames of that size,
  * then each speaker's averaged over the word's frames and the frame before
- * them; the largest wins, each raised to at least 0.01 first, the first of
- * equals (core/speakers.c; docs/DIARIZATION.md, "From frames to words"). A
- * word no one was heard saying goes to speaker 0. */
+ * them; the largest wins, the first of equals (core/speakers.c;
+ * docs/DIARIZATION.md, "From frames to words"). Unlike NeMo, no average is
+ * raised to 0.01 first, so a word no one was heard saying still goes to the
+ * speaker likeliest over it, not to speaker 0. */
 void pk_speakers(const pk_model *d, const float *p, size_t rows, uint32_t frame, const pk_seg *w, size_t n,
                  int32_t *out);
 

@@ -53,13 +53,16 @@ relies on it.
   boards): a Pi 5 would transcribe and label an hour in 5 to 5.5 minutes, a
   Pi 3B+ in 61 to 66. Memory: a 100 MB file beside the recognizer's, 20 to
   40 MB of work.
-- **The merge: NeMo's rule**, each word to the speaker most probable over
-  its frames, on the probabilities averaged to 80 ms as NeMo's own pipeline
-  takes them. On synthetic conversations of two to four speakers, 8 of
-  14,017 words went to the wrong speaker (v2: 15); of six and eight
-  speakers, 11 of 3,590 (v2, which has four, 1,569). A fallback for words
-  no one was heard saying takes the 8 to 0, but departs from NeMo: a
-  question for Peter.
+- **The merge: NeMo's rule without its floor**, each word to the speaker
+  most probable over its frames, on the probabilities averaged to 80 ms as
+  NeMo's own pipeline takes them. On synthetic conversations of two to four
+  speakers, 8 of 14,017 words went to the wrong speaker (v2: 15); of six
+  and eight speakers, 11 of 3,590 (v2, which has four, 1,569). The 8 are
+  words no one was heard saying, every average under 0.01, which NeMo raises
+  to 0.01 and so gives to whoever spoke first. pktito leaves the averages as
+  they are (Peter, 2026-11-15; section 8): on four podcasts it changes 5 of
+  21,114 words, those 5, each to the right speaker, and no other. The
+  synthetic sets have not been measured again with it.
 - **The new C:** no new matrix kernel. GELU (erf in core/vmath.h, and an
   elementwise kernel beside SiLU's), the rotation of the attention's
   queries and keys (a table of sines and cosines and a loop in core/), the
@@ -899,7 +902,8 @@ word one speaker. Each speaker's probability is averaged over the word's
 frames and the frame before them (a transducer emits a token a little after
 it is heard), each average raised to at least 0.01, and the largest wins,
 the first of equals. A turn - NeMo's "sentence" - is a run of words with one
-speaker. Nothing is smoothed. The rule considers the first
+speaker. Nothing is smoothed. (pktito departs from it in one place: no
+average is raised to 0.01; below.) The rule considers the first
 `max_num_of_spks` speakers of its own configuration and zeroes the rest
 before choosing, and the multitalker example's configuration sets 4: with
 Nemotron 3 it has to be 8, as it was for every number below, or no word can
@@ -994,6 +998,44 @@ What it shows:
   one half takes the speaker heard nearest it within 0.5 s, else the
   previous word's) took those 8 to 0 and the 19 changes to 4. It departs
   from NeMo, so it is a question (section 12).
+
+### Without the floor, on four podcasts (2026-11-15)
+
+NeMo's floor is what sends an unheard word to speaker 0: every average
+under 0.01 becomes 0.01, and the first of equals wins. The averages under
+it are faint but not equal, and they still order the speakers. Measured on
+an M4 Pro, on four Prof G Markets episodes (2 h 3 min, 21,114 words, one to
+eight speakers; libpktito diar 149c726's probabilities, the merge in numpy
+and then in C):
+
+| merge                            | words changed | turns | changes of speaker inside a sentence |
+| -------------------------------- | ------------- | ----- | ------------------------------------ |
+| NeMo's rule                      | -             | 144   | 11                                   |
+| NeMo's rule, no floor (pktito's) | 5             | 135   | 4                                    |
+| NeMo-Speech.cpp's (below)        | 13            | 140   | 6                                    |
+| its 160 ms, with NeMo's floor    | 27            | 181   | 44                                   |
+
+The 5 are the episodes' unheard words ("The", "you", "you", "on.", "it."
+in one, each a one-word turn of the first speaker inside another's
+sentence), and each goes to the speaker around it, the right one. In C,
+pktito-c with core/speakers.c's change against 149c726's own transcripts:
+the same 5 words, no other, 146 turns to 137 and 13 changes inside a
+sentence to 6 (numpy recomputes NeMo's rule to all but 2 of the words, so
+its counts above are 2 lower). Of the
+four podcasts' other unheard words (5 more) none changes: their faint
+averages already favoured speaker 0, among them a host's real "Yeah." The
+4 changes inside a sentence that remain are a word said over another
+speaker (2) and an advertisement's phone-tree voice (2).
+
+NVIDIA's NeMo-Speech.cpp (its ggml runtime, at e790e46) merges without the
+floor too, and differs otherwise: a word's first 160 ms of 10 ms rows
+rather than its 80 ms frames and the one before (speaker_for_word_time:
+transducer punctuation stretches a word's end into the next turn). That
+also fixes the two words said over another speaker, but makes a new one in
+a third episode (a word whose start the other speaker overlapped) and moves
+5 words in the advertisement. The floor is the part that matters, so
+pktito takes that part alone (speakers.py's "pktito"; core/speakers.c).
+
 - conv8b's 10 are seven words that Parakeet wrote twice over at one instant
   at a change of speaker ("of the power of the power of the power of the
   family") and three unheard ones: a recognizer's error, scored here.
@@ -1179,9 +1221,9 @@ check-sanitize`, together (section 6, "The model file"; stage 1).
    them as "sufficiently open and commercial-safe for our users"; the
    licence's text and the model's origin go in the .pkf's metadata and on
    the download page, as it requires.
-2. **NeMo's rule, or the fallback for unheard words?** I would keep NeMo's
-   rule as the definition and propose the fallback again after measuring it
-   on real recordings.
+2. **NeMo's rule, or the fallback for unheard words?** Peter, 2026-11-15:
+   neither; NeMo's rule without its 0.01 floor, which on four podcasts gives
+   the 5 unheard words the right speaker and changes no other (section 8).
 3. **The output**: `Speaker 1:` in the text and in SRT, `<v Speaker 1>` in
    WebVTT, numbered in the order the voices arrive?
 4. **A separate .pkf for the diarizer**, one for both recognizers: libpktito's
