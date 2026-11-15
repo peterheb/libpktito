@@ -1,7 +1,7 @@
 /* pktito-c: speech in a WAV or AIFF file to text, from the command line.
  *
  *   pktito-c talk.wav                   the transcript, a sentence a line
- *   pktito-c --json talk.wav            chunks with their times, text and tokens
+ *   pktito-c --json talk.wav            the transcript as JSON (pktito/1), tokens and all
  *   pktito-c --srt talk.wav             subtitles, or --vtt as WebVTT: pk_captions' cues
  *   pktito-c bench talk.wav             how fast this machine transcribes it
  *   pktito-c info                       the model file: where it came from
@@ -151,7 +151,8 @@ static const char *usage =
     "                      (with --no-retry: each chunk exactly as NeMo has it)\n"
     "      --speakers      who said what, each turn named, with a diarizer's model\n"
     "                      named by -m (nemotron-3-diarization.pkf), as -m alone asks\n"
-    "      --json          chunks with word and token times, and metadata\n"
+    "      --json          the transcript as JSON (pktito/1): sentences, words,\n"
+    "                      captions, and chunks with their tokens\n"
     "      --srt, --vtt    subtitles\n"
     "      --stream        transcribe FILE as it arrives, a line per pause\n"
     "      --pause MS      with --stream, the pause that ends a line (1000)\n"
@@ -601,75 +602,122 @@ static pk_seg *chunks_of(pk_asr *a, const pk_model *m, const float *x, size_t n,
     return c;
 }
 
-static void json_str(const char *s) {
-    putchar('"');
-    for (; *s; s++) {
-        unsigned char ch = (unsigned char)*s;
-        if (ch == '"' || ch == '\\') printf("\\%c", ch);
-        else if (ch < 0x20) printf("\\u%04x", ch);
-        else putchar(ch);
+/* --json's text, built in memory as a file is heard and written once the
+ * file is done: the document opens with the file's language and speakers,
+ * which only all of its words say */
+typedef struct {
+    char *s;
+    size_t n, cap;
+} sbuf;
+
+static void sb_put(sbuf *b, const char *s, size_t n) {
+    if (b->n + n + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap : 4096;
+        while (cap < b->n + n + 1)
+            cap *= 2;
+        if (!(b->s = realloc(b->s, cap)))
+            die("out of memory");
+        b->cap = cap;
     }
-    putchar('"');
+    memcpy(b->s + b->n, s, n);
+    b->n += n;
+    b->s[b->n] = 0;
 }
 
-/* --speakers' part of a meta: the diarizer, the speakers a file's words
- * went to (-1: none to say), the seconds it took */
-typedef struct {
-    const pk_model *dm;
-    int heard;
-    double secs;
-} spk_meta;
+static void sb_printf(sbuf *b, const char *fmt, ...) {
+    char small[256];
+    va_list ap;
+    va_start(ap, fmt);
+    const int k = vsnprintf(small, sizeof small, fmt, ap);
+    va_end(ap);
+    if (k < 0)
+        die("out of memory");
+    if ((size_t)k < sizeof small) {
+        sb_put(b, small, (size_t)k);
+        return;
+    }
+    char *big = malloc((size_t)k + 1);
+    if (!big)
+        die("out of memory");
+    va_start(ap, fmt);
+    vsnprintf(big, (size_t)k + 1, fmt, ap);
+    va_end(ap);
+    sb_put(b, big, (size_t)k);
+    free(big);
+}
 
-/* --json's "meta": the model (and "fast", with --fast), the audio's length
- * and its language, the same on every machine and every run, so that a
- * transcript compares byte for byte (as check-c compares test.wav's); with
- * -v, also what the -v line on stderr says of the run. top: the whole
- * run's, with the model and the machine, or else one file's of several; a
- * language for a file's, or for the run's of one file (lang NULL: none
- * found); sm, with --speakers, the diarizer and its speakers. */
-static void json_meta(const opts *o, const pk_model *m, const pk_asr *a, int top, double audio_s,
-                      double asr_s, int with_lang, const char *lang, const spk_meta *sm) {
-    printf("{");
-    if (top) {
-        printf("\"model\": ");
-        json_str(pk_model_name(m));
-        printf(o->fast ? ", \"fast\": true, " : ", ");
-    }
-    printf("\"audio\": %.3f", audio_s);
-    if (with_lang) {
-        printf(", \"language\": ");
-        if (lang)
-            json_str(lang);
+/* s as a JSON string, with the escapes serde_json writes, so that pktito-c
+ * and the apps' format.rs write the same bytes */
+static void sb_str(sbuf *b, const char *s) {
+    sb_put(b, "\"", 1);
+    for (const char *run = s;; s++) {
+        const unsigned char ch = (unsigned char)*s;
+        if (ch >= 0x20 && ch != '"' && ch != '\\')
+            continue;
+        sb_put(b, run, (size_t)(s - run));
+        if (!ch)
+            break;
+        const char *e = ch == '"' ? "\\\"" : ch == '\\' ? "\\\\" : ch == '\n' ? "\\n" : ch == '\r' ? "\\r"
+                      : ch == '\t' ? "\\t" : ch == '\b' ? "\\b" : ch == '\f' ? "\\f" : NULL;
+        if (e)
+            sb_put(b, e, 2);
         else
-            printf("null");
+            sb_printf(b, "\\u%04x", ch);
+        run = s + 1;
     }
-    if (sm && sm->dm) {
-        if (top) {
-            printf(", \"diarizer\": ");
-            json_str(pk_model_name(sm->dm));
+    sb_put(b, "\"", 1);
+}
+
+/* x seconds as the document writes a time: to the millisecond, in the
+ * fewest digits that read back the same ("60", "0.5", "21.793"), as
+ * format.rs's r3 writes one */
+static void sb_time(sbuf *b, double x) {
+    long long ms = llround(x * 1000);
+    if (ms < 0) {
+        sb_put(b, "-", 1);
+        ms = -ms;
+    }
+    sb_printf(b, "%lld", ms / 1000);
+    if (ms % 1000) {
+        char d[8];
+        int k = snprintf(d, sizeof d, ".%03d", (int)(ms % 1000));
+        while (d[k - 1] == '0')
+            k--;
+        sb_put(b, d, (size_t)k);
+    }
+}
+
+static void json_str(const char *s) {
+    sbuf b = { 0 };
+    sb_str(&b, s);
+    fwrite(b.s, 1, b.n, stdout);
+    free(b.s);
+}
+
+/* -v's part of the document, "run": the seconds the transcription took,
+ * its VAD's with it, and with --speakers the diarizer's (diar_s, else
+ * negative); with top, the run's as a whole: its audio, its speed and the
+ * machine, what the -v line on stderr says. Without -v the document is the
+ * same on every machine and every run, so that a transcript compares byte
+ * for byte, as check-c compares test.wav's. */
+static void json_run(sbuf *b, const pk_asr *a, int top, double audio_s, double asr_s, double diar_s) {
+    sb_printf(b, "{\"transcription\": %.3f", asr_s);
+    if (diar_s >= 0)
+        sb_printf(b, ", \"diarization\": %.3f", diar_s);
+    if (top) {
+        sb_printf(b, ", \"audio\": %.3f, \"speed\": %.1f, \"version\": ", audio_s, asr_s > 0 ? audio_s / asr_s : 0.0);
+        sb_str(b, PKTITO_VERSION);
+        sb_printf(b, ", \"backend\": ");
+        sb_str(b, pk_backend());
+        sb_printf(b, ", \"compiler\": ");
+        sb_str(b, pk_compiler());
+        sb_printf(b, ", \"threads\": %d", pk_asr_threads(a));
+        if (npu_name) {
+            sb_printf(b, ", \"npu\": ");
+            sb_str(b, npu_file);
         }
-        if (sm->heard >= 0)
-            printf(", \"speakers\": %d", sm->heard);
     }
-    if (o->verbose) {
-        printf(", \"transcription\": %.3f", asr_s);   /* the VAD's time with it */
-        if (sm && sm->dm)
-            printf(", \"diarization\": %.3f", sm->secs);
-        if (top) {
-            printf(", \"speed\": %.1f, \"version\": ", asr_s > 0 ? audio_s / asr_s : 0.0);
-            json_str(PKTITO_VERSION);
-            printf(", \"backend\": ");
-            json_str(pk_backend());
-            printf(", \"compiler\": ");
-            json_str(pk_compiler());
-            printf(", \"threads\": %d", pk_asr_threads(a));
-            if (npu_name) {
-                printf(", \"npu\": ");
-                json_str(npu_file);
-            }
-        }
-    }
-    printf("}");
+    sb_printf(b, "}");
 }
 
 /* Subtitles: every word of the file with its time, gathered chunk by
@@ -717,45 +765,58 @@ static void cap_texts(capwords *c) {
         c->w[i].text = c->text + (uintptr_t)c->w[i].text;
 }
 
-/* A file's language, for --json's meta: the English model's, or what its
- * words say (pk_language), NULL when they say too little. The words go. */
-static const char *file_language(const pk_model *m, capwords *c) {
-    const char *langs = pk_model_meta(m, "languages"), *lang = "en";
-    if (!langs || strcmp(langs, "en")) {
-        cap_texts(c);
-        lang = pk_language(c->w, c->n);
-    }
-    free(c->w);
-    free(c->spk);
-    free(c->text);
-    *c = (capwords){ 0 };
-    return lang;
+/* A file's language: the English model's, or what all of its words say
+ * (pk_language), NULL when they say too little. The texts are pointers
+ * (cap_texts). */
+static const char *file_language(const pk_model *m, const capwords *c) {
+    const char *langs = pk_model_meta(m, "languages");
+    return langs && !strcmp(langs, "en") ? "en" : pk_language(c->w, c->n);
 }
 
-/* With speakers, a change of speaker ends a cue, and the first word of
- * each turn carries "Speaker N: ", so that the line counts the name; in
- * WebVTT each cue's voice is named as well, <v Speaker N>. */
-static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end, int speakers) {
-    cap_texts(c);
-    if (!lang)
-        lang = pk_language(c->w, c->n);   /* the words' own, before any name */
-    char **named = speakers ? calloc(c->n ? c->n : 1, sizeof *named) : NULL;
-    if (speakers && !named)
+/* The cues of c's words (pk_captions), their texts pointers (cap_texts)
+ * and lang the words' own. With speakers, a change of speaker ends a cue,
+ * and the first word of each turn carries "Speaker N: ", so that the line
+ * counts the name. cap_free frees what this leaves. */
+static long cues_of(capwords *c, const char *lang, int64_t media_end, int speakers, pk_cue **cue, char ***named) {
+    *named = speakers ? calloc(c->n ? c->n : 1, sizeof **named) : NULL;
+    if (speakers && !*named)
         die("out of memory");
     for (size_t i = 0; speakers && i < c->n; i++)
         if (!i || c->spk[i] != c->spk[i - 1]) {
             const size_t l = strlen(c->w[i].text) + 24;
-            if (!(named[i] = malloc(l)))
+            if (!((*named)[i] = malloc(l)))
                 die("out of memory");
-            snprintf(named[i], l, "Speaker %d: %s", (int)c->spk[i], c->w[i].text);
-            c->w[i].text = named[i];
+            snprintf((*named)[i], l, "Speaker %d: %s", (int)c->spk[i], c->w[i].text);
+            c->w[i].text = (*named)[i];
         }
-    pk_cue *cue = malloc((c->n ? c->n : 1) * sizeof *cue);
-    if (!cue)
+    if (!(*cue = malloc((c->n ? c->n : 1) * sizeof **cue)))
         die("out of memory");
-    long nc = pk_captions(c->w, c->n, speakers ? c->spk : NULL, lang, media_end, cue);
+    const long nc = pk_captions(c->w, c->n, speakers ? c->spk : NULL, lang, media_end, *cue);
     if (nc < 0)
         die("out of memory");
+    return nc;
+}
+
+static void cap_free(capwords *c, pk_cue *cue, char **named) {
+    for (size_t i = 0; named && i < c->n; i++)
+        free(named[i]);
+    free(named);
+    free(cue);
+    free(c->w);
+    free(c->spk);
+    free(c->text);
+    *c = (capwords){ 0 };
+}
+
+/* The subtitles, as SRT or WebVTT; in WebVTT each cue's voice is named as
+ * well, <v Speaker N>. lang NULL: the words' own, before any name. */
+static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end, int speakers) {
+    cap_texts(c);
+    if (!lang)
+        lang = pk_language(c->w, c->n);
+    pk_cue *cue;
+    char **named;
+    const long nc = cues_of(c, lang, media_end, speakers, &cue, &named);
     if (vtt)
         printf("WEBVTT\n\n");
     for (long k = 0; k < nc; k++) {
@@ -776,22 +837,63 @@ static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end,
         }
         printf("%s\n\n", cue[k].flags & PK_CUE_PAUSE ? "\xE2\x80\xA6" : "");
     }
-    for (size_t i = 0; speakers && i < c->n; i++)
-        free(named[i]);
-    free(named);
-    free(cue);
-    free(c->w);
-    free(c->spk);
-    free(c->text);
+    cap_free(c, cue, named);
 }
 
-/* --speakers: a turn, the words of one speaker in a row (NeMo's
- * "sentence") */
+/* The same cues as the document's "captions": their times, their speaker
+ * with speakers, and their lines, the SRT's */
+static void json_captions(sbuf *b, capwords *c, const char *lang, int64_t media_end, int speakers) {
+    pk_cue *cue;
+    char **named;
+    const long nc = cues_of(c, lang, media_end, speakers, &cue, &named);
+    sbuf line = { 0 };
+    for (long k = 0; k < nc; k++) {
+        sb_printf(b, "%s    {\"start\": ", k ? ",\n" : "");
+        sb_time(b, (double)cue[k].start / 1000);
+        sb_printf(b, ", \"end\": ");
+        sb_time(b, (double)cue[k].end / 1000);
+        if (speakers)
+            sb_printf(b, ", \"speaker\": %d", (int)c->spk[cue[k].first]);
+        sb_printf(b, ", \"lines\": [");
+        line.n = 0;
+        sb_put(&line, "", 0);
+        for (int32_t i = cue[k].first; i < cue[k].first + cue[k].n; i++) {
+            if (i > cue[k].first && i == cue[k].line2) {
+                sb_str(b, line.s);
+                sb_printf(b, ", ");
+                line.n = 0;
+                line.s[0] = 0;
+            } else if (i > cue[k].first)
+                sb_put(&line, " ", 1);
+            sb_put(&line, c->w[i].text, strlen(c->w[i].text));
+        }
+        if (cue[k].flags & PK_CUE_PAUSE)
+            sb_put(&line, "\xE2\x80\xA6", 3);
+        sb_str(b, line.s);
+        sb_printf(b, "]}");
+    }
+    free(line.s);
+    cap_free(c, cue, named);
+}
+
+/* Where a sentence token's chunk starts, for --json: its seconds, and its
+ * frames from the recording's start, rounded (pk_chunk_out.at_frame). A
+ * word's time is the first plus its own frames past the second, so that
+ * each chunk keeps its own times, as the apps' transcribe.rs has them. */
 typedef struct {
-    int32_t speaker;                 /* numbered from 1 */
-    double start, end;               /* seconds */
-    size_t first, n;                 /* its words, counted in the file */
-} turn;
+    double off;
+    int32_t base;
+} tok_at;
+
+/* A chunk, kept for --json's "chunks": its stretch in samples, its words
+ * counted in the file, the stretches of it heard again, and its tokens */
+typedef struct {
+    int64_t start, end;
+    size_t first, n;
+    int retried;
+    pk_tok *toks;
+    long ntok;
+} json_chunk;
 
 /* A file's chunks as each comes out of the transcriber (pk_asr_run_chunks'
  * fn): what printing one needs, and the seconds the printing took, which
@@ -809,19 +911,23 @@ typedef struct {
     pk_tok *tail;
     size_t ntail, tailcap;
     const char *lang;
-    /* --speakers: the diarizer's rows of the file, and its turns so far */
+    /* --speakers: the diarizer's rows of the file */
     const pk_model *dm;
     const float *dp;
     size_t drows;
     uint32_t frame;                  /* the recognizer's encoder frame, in samples */
     int32_t num[PK_MAX_SPK];         /* each diarizer column's speaker, 0 until it says a word */
     int heard;                       /* speakers numbered so far */
-    size_t nwords;                   /* the file's words so far */
-    turn *turns;
-    size_t nturns, turncap;
     int32_t *tailspk;                /* each tail token's speaker, its word's */
     int32_t said;                    /* the speaker of the last sentence printed, 0 before the first */
     int lines;                       /* sentences printed */
+    /* --json: the sentences so far, as the document has them; each tail
+     * token's chunk; the chunks; and the file's words so far */
+    sbuf segs;
+    size_t nsegs;
+    tok_at *tailat;
+    json_chunk *chunks;
+    size_t nchunks, chunkcap, nwords;
 } chunk_out;
 
 /* The language of the words so far (pk_language), their texts where the
@@ -837,42 +943,98 @@ static const char *words_language(const capwords *c) {
     return lang;
 }
 
+/* A word's time in seconds: its frame past its chunk's start (tok_at) */
+static double tok_time(const tok_at *at, int32_t frame, double fs) {
+    return at->off + (double)(frame - at->base) * fs;
+}
+
+/* Tail tokens [first, first + n), a sentence, as one of --json's
+ * "segments": its times, its speaker with --speakers (who), its text and
+ * its words, as format.rs writes a segment */
+static void json_segment(chunk_out *p, size_t first, size_t n, int32_t who) {
+    const pk_model *m = p->m;
+    const pk_tok *tk = p->tail + first;
+    const tok_at *at = p->tailat + first;
+    pk_word *wd = malloc((n ? n : 1) * sizeof *wd);
+    if (!wd)
+        die("out of memory");
+    const size_t nw = pk_words(m, tk, n, wd);
+    double start = 0, end = 0;
+    if (nw) {
+        start = tok_time(&at[wd[0].tok], wd[0].start, p->fs);
+        end = tok_time(&at[wd[nw - 1].tok + wd[nw - 1].ntok - 1], wd[nw - 1].end, p->fs);
+    }
+    while (pk_text(m, tk, n, p->text, p->cap) >= p->cap)
+        if (!(p->text = realloc(p->text, p->cap *= 2)))
+            die("out of memory");
+    sbuf *b = &p->segs;
+    sb_printf(b, "%s    {\"start\": ", p->nsegs++ ? ",\n" : "");
+    sb_time(b, start);
+    sb_printf(b, ", \"end\": ");
+    sb_time(b, end);
+    if (p->dm)
+        sb_printf(b, ", \"speaker\": %d", (int)who);
+    sb_printf(b, ", \"text\": ");
+    sb_str(b, p->text);
+    sb_printf(b, ", \"words\": [\n");
+    for (size_t k = 0; k < nw; k++) {
+        char word[1024];
+        pk_text(m, tk + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
+        sb_printf(b, "%s      {\"word\": ", k ? ",\n" : "");
+        sb_str(b, word);
+        sb_printf(b, ", \"start\": ");
+        sb_time(b, tok_time(&at[wd[k].tok], wd[k].start, p->fs));
+        sb_printf(b, ", \"end\": ");
+        sb_time(b, tok_time(&at[wd[k].tok + wd[k].ntok - 1], wd[k].end, p->fs));
+        sb_printf(b, "}");
+    }
+    sb_printf(b, "\n    ]}");
+    free(wd);
+}
+
 /* A file's sentences, a line each, as its chunks come: the tokens in none
  * yet, then the chunk's, their frames counted from the recording's start
  * as pk_sentences takes them. A sentence that runs on into the next chunk
  * waits for it, and the last chunk ends the last one. With --speakers (spk,
  * each of the chunk's words' speakers), a change of speaker ends a
  * sentence too, and each turn starts "Speaker N: " after a blank line; with
- * several files, the sentences on the file's line. */
+ * several files, the sentences on the file's line; with --json, each the
+ * document's segment. */
 static void print_sentences(chunk_out *p, const pk_chunk_out *ch, const pk_word *wd, size_t nw,
                             const int32_t *spk) {
     const pk_model *m = p->m;
+    const int json = p->o->json;
     const size_t nt = (size_t)ch->count;
     if (p->ntail + nt > p->tailcap) {
         while (p->ntail + nt > p->tailcap)
             p->tailcap = p->tailcap ? 2 * p->tailcap : 1024;
         if (!(p->tail = realloc(p->tail, p->tailcap * sizeof *p->tail))
-            || (spk && !(p->tailspk = realloc(p->tailspk, p->tailcap * sizeof *p->tailspk))))
+            || (spk && !(p->tailspk = realloc(p->tailspk, p->tailcap * sizeof *p->tailspk)))
+            || (json && !(p->tailat = realloc(p->tailat, p->tailcap * sizeof *p->tailat))))
             die("out of memory");
     }
     for (size_t w = 0; spk && w < nw; w++)    /* a word's tokens, its speaker */
         for (int32_t k = 0; k < wd[w].ntok; k++)
             p->tailspk[p->ntail + (size_t)wd[w].tok + (size_t)k] = spk[w];
     for (size_t k = 0; k < nt; k++) {
+        if (json)
+            p->tailat[p->ntail] = (tok_at){ (double)ch->at.start / p->rate, ch->at_frame };
         p->tail[p->ntail] = ch->toks[k];
         p->tail[p->ntail++].frame += ch->at_frame;
     }
     if (!p->lang && nt) {           /* the multilingual model's, until its words say */
-        pk_word *wd = malloc(nt * sizeof *wd);
-        if (!wd)
-            die("out of memory");
-        size_t nw = pk_words(m, ch->toks, nt, wd);
-        for (size_t k = 0; k < nw; k++) {
-            char word[1024];
-            pk_text(m, ch->toks + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
-            cap_add(&p->words, word, 0, 0, 0);
+        if (!json) {                /* --json's words are there already, with their times */
+            pk_word *cw = malloc(nt * sizeof *cw);
+            if (!cw)
+                die("out of memory");
+            const size_t cn = pk_words(m, ch->toks, nt, cw);
+            for (size_t k = 0; k < cn; k++) {
+                char word[1024];
+                pk_text(m, ch->toks + cw[k].tok, (size_t)cw[k].ntok, word, sizeof word);
+                cap_add(&p->words, word, 0, 0, 0);
+            }
+            free(cw);
         }
-        free(wd);
         p->lang = words_language(&p->words);
     }
     pk_sentence *s = malloc((p->ntail ? p->ntail : 1) * sizeof *s);
@@ -882,6 +1044,10 @@ static void print_sentences(chunk_out *p, const pk_chunk_out *ch, const pk_word 
     if (ns < 0)
         die("out of memory");
     for (long k = 0; k < ns; k++) {
+        if (json) {
+            json_segment(p, (size_t)s[k].first, (size_t)s[k].n, spk ? p->tailspk[s[k].first] : 0);
+            continue;
+        }
         size_t len;
         while ((len = pk_text(m, p->tail + s[k].first, (size_t)s[k].n, p->text, p->cap)) >= p->cap)
             if (!(p->text = realloc(p->text, p->cap *= 2)))
@@ -906,14 +1072,15 @@ static void print_sentences(chunk_out *p, const pk_chunk_out *ch, const pk_word 
         memmove(p->tail, p->tail + used, (p->ntail - used) * sizeof *p->tail);
         if (spk)
             memmove(p->tailspk, p->tailspk + used, (p->ntail - used) * sizeof *p->tailspk);
+        if (json)
+            memmove(p->tailat, p->tailat + used, (p->ntail - used) * sizeof *p->tailat);
         p->ntail -= used;
     }
     free(s);
 }
 
 /* A chunk's words, and with --speakers each one's speaker (pk_speakers):
- * the speakers numbered from 1 in the order they first say a word, and
- * the file's turns grown by them */
+ * the speakers numbered from 1 in the order they first say a word */
 static size_t chunk_words(chunk_out *p, const pk_chunk_out *ch, pk_word *wd, int32_t *spk) {
     const size_t nw = pk_words(p->m, ch->toks, (size_t)ch->count, wd);
     if (!p->dm || !nw)
@@ -926,25 +1093,28 @@ static size_t chunk_words(chunk_out *p, const pk_chunk_out *ch, pk_word *wd, int
                           ch->at.start + (int64_t)wd[k].end * p->frame };
     pk_speakers(p->dm, p->dp, p->drows, p->frame, at, nw, spk);
     free(at);
-    const double start = (double)ch->at.start / p->rate;
     for (size_t k = 0; k < nw; k++) {
         if (!p->num[spk[k]])
             p->num[spk[k]] = ++p->heard;
         spk[k] = p->num[spk[k]];
-        const double ws = start + wd[k].start * p->fs, we = start + wd[k].end * p->fs;
-        turn *t = p->nturns ? &p->turns[p->nturns - 1] : NULL;
-        if (t && t->speaker == spk[k]) {
-            t->end = we;
-            t->n++;
-        } else {
-            if (p->nturns == p->turncap
-                && !(p->turns = realloc(p->turns, (p->turncap = p->turncap ? 2 * p->turncap : 256) * sizeof *p->turns)))
-                die("out of memory");
-            p->turns[p->nturns++] = (turn){ spk[k], ws, we, p->nwords, 1 };
-        }
-        p->nwords++;
     }
     return nw;
+}
+
+/* A chunk for --json's "chunks", its tokens copied: the transcriber's are
+ * its own again once the chunk is printed */
+static void keep_chunk(chunk_out *p, const pk_chunk_out *ch, size_t nw) {
+    if (p->nchunks == p->chunkcap
+        && !(p->chunks = realloc(p->chunks, (p->chunkcap = p->chunkcap ? 2 * p->chunkcap : 64) * sizeof *p->chunks)))
+        die("out of memory");
+    json_chunk *c = &p->chunks[p->nchunks++];
+    *c = (json_chunk){ ch->at.start, ch->at.end, p->nwords, nw, ch->retried, NULL, ch->count };
+    if (ch->count) {
+        if (!(c->toks = malloc((size_t)ch->count * sizeof *c->toks)))
+            die("out of memory");
+        memcpy(c->toks, ch->toks, (size_t)ch->count * sizeof *c->toks);
+    }
+    p->nwords += nw;
 }
 
 /* One chunk's tokens, printed as -o asks (pk_asr_transcribe's fn) */
@@ -960,7 +1130,7 @@ static int print_chunk(void *arg, const pk_chunk_out *ch) {
     while ((len = pk_text(m, t, (size_t)nt, p->text, p->cap)) >= p->cap)
         if (!(p->text = realloc(p->text, p->cap *= 2)))
             die("out of memory");
-    double start = (double)ch->at.start / p->rate, end = (double)ch->at.end / p->rate;
+    const double start = (double)ch->at.start / p->rate;
     pk_word *wd = NULL;
     int32_t *spk = NULL;
     size_t nw = 0;
@@ -971,42 +1141,18 @@ static int print_chunk(void *arg, const pk_chunk_out *ch) {
             die("out of memory");
         nw = chunk_words(p, ch, wd, spk);
     }
-    if (o->json) {
-        printf("%s\n {\"start\": %.3f, \"end\": %.3f, ", i ? "," : "", start, end);
-        if (ch->retried)    /* stretches heard again (pk_asr_transcribe) */
-            printf("\"retried\": %d, ", ch->retried);
-        printf("\"text\": ");
-        json_str(p->text);
-        printf(", \"words\": [");
-        for (size_t k = 0; k < nw; k++) {
-            char word[1024];
-            pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
-            printf("%s{\"word\": ", k ? ", " : "");
-            json_str(word);
-            cap_add(&p->words, word, 0, 0, 0);
-            printf(", \"start\": %.2f, \"end\": %.2f", start + wd[k].start * fs, start + wd[k].end * fs);
-            if (p->dm)
-                printf(", \"speaker\": %d", (int)spk[k]);
-            putchar('}');
-        }
-        printf("], \"tokens\": [");
-        for (long k = 0; k < nt; k++) {
-            size_t pl;
-            const char *piece = pk_piece(m, t[k].id, &pl);
-            char buf[256];
-            snprintf(buf, sizeof buf, "%.*s", (int)(pl < 255 ? pl : 255), piece);
-            printf("%s{\"id\": %d, \"piece\": ", k ? ", " : "", t[k].id);
-            json_str(buf);
-            printf(", \"start\": %.2f, \"end\": %.2f}", start + t[k].frame * fs,
-                   start + (t[k].frame + t[k].dur) * fs);
-        }
-        printf("]}");
-    } else if (o->subs) {
+    if (o->json || o->subs) {
+        /* the words, with their times and speakers, for the captions at the
+         * file's end, and --json's language */
         for (size_t k = 0; k < nw; k++) {
             char word[1024];
             pk_text(m, t + wd[k].tok, (size_t)wd[k].ntok, word, sizeof word);
             cap_add(&p->words, word, llround((start + wd[k].start * fs) * 1000), llround((start + wd[k].end * fs) * 1000),
                     p->dm ? spk[k] : 0);
+        }
+        if (o->json) {
+            keep_chunk(p, ch, nw);
+            print_sentences(p, ch, wd, nw, p->dm ? spk : NULL);
         }
     } else if (p->dm) {
         print_sentences(p, ch, wd, nw, spk);
@@ -1055,13 +1201,114 @@ static double diarize(pk_diar *dz, const pk_model *dm, const float *x, size_t n,
     return pk_os_now() - t0;
 }
 
+/* A path's file name, as pktito-cli (Rust's file_name) names a file */
+static const char *base_name(const char *path) {
+    const char *b = path;
+    for (const char *s = path; *s; s++)
+#ifdef _WIN32
+        if (*s == '/' || *s == '\\')
+#else
+        if (*s == '/')
+#endif
+            b = s + 1;
+    return b;
+}
+
+/* A file's transcript as one document, pktito/1, which pktito-cli and the
+ * apps write too (their format.rs), byte for byte but for what pktito-c
+ * adds: "fast" with --fast, each chunk's tokens, and "run" with -v. In it:
+ * the file's name and length; the model; the words' language, null when
+ * they say too little; with --speakers the diarizer and the speakers
+ * heard, numbered from 1 in the order they first speak; the sentences, a
+ * speaker's each; the subtitles' cues, each with its lines as the SRT has
+ * them; and the chunks the recording was cut into at its pauses, each
+ * with its words, counted from the file's first. The words go. */
+static void json_doc(const opts *o, chunk_out *p, const pk_asr *a, const char *path, double duration,
+                     int64_t media_end, double asr_s, double diar_s, int many) {
+    sbuf b = { 0 };
+    capwords *c = &p->words;
+    cap_texts(c);
+    const char *lang = file_language(p->m, c);
+    sb_printf(&b, "{\n  \"format\": \"pktito/1\",\n  \"file\": ");
+    sb_str(&b, base_name(path));
+    sb_printf(&b, ",\n  \"duration\": ");
+    sb_time(&b, duration);
+    sb_printf(&b, ",\n  \"model\": ");
+    sb_str(&b, pk_model_name(p->m));
+    if (o->fast)
+        sb_printf(&b, ",\n  \"fast\": true");
+    sb_printf(&b, ",\n  \"language\": ");
+    if (lang)
+        sb_str(&b, lang);
+    else
+        sb_printf(&b, "null");
+    if (p->dm && p->heard) {
+        sb_printf(&b, ",\n  \"diarizer\": ");
+        sb_str(&b, pk_model_name(p->dm));
+        sb_printf(&b, ",\n  \"speakers\": [\n");
+        for (int k = 1; k <= p->heard; k++)
+            sb_printf(&b, "%s    {\"id\": %d, \"name\": \"Speaker %d\"}", k > 1 ? ",\n" : "", k, k);
+        sb_printf(&b, "\n  ]");
+    }
+    sb_printf(&b, ",\n  \"segments\": [\n");
+    if (p->segs.n)
+        sb_put(&b, p->segs.s, p->segs.n);
+    sb_printf(&b, "\n  ],\n  \"captions\": [\n");
+    json_captions(&b, c, lang, media_end, p->dm != NULL);
+    sb_printf(&b, "\n  ]");
+    if (p->nchunks)
+        sb_printf(&b, ",\n  \"chunks\": [\n");
+    for (size_t k = 0; k < p->nchunks; k++) {
+        const json_chunk *ck = &p->chunks[k];
+        const double start = (double)ck->start / p->rate, end = (double)ck->end / p->rate;
+        sb_printf(&b, "%s    {\"start\": ", k ? ",\n" : "");
+        sb_time(&b, start);
+        sb_printf(&b, ", \"end\": ");
+        sb_time(&b, end);
+        sb_printf(&b, ", \"gap\": ");      /* the silence to the next */
+        if (k + 1 < p->nchunks)
+            sb_time(&b, (double)p->chunks[k + 1].start / p->rate - end);
+        else
+            sb_printf(&b, "null");
+        sb_printf(&b, ", \"first_word\": %zu, \"words\": %zu", ck->first, ck->n);
+        if (ck->retried)                 /* stretches heard again (pk_asr_transcribe) */
+            sb_printf(&b, ", \"retried\": %d", ck->retried);
+        sb_printf(&b, ", \"tokens\": [");
+        for (long t = 0; t < ck->ntok; t++) {
+            const pk_tok *tk = &ck->toks[t];
+            size_t pl;
+            const char *piece = pk_piece(p->m, tk->id, &pl);
+            char buf[256];
+            snprintf(buf, sizeof buf, "%.*s", (int)(pl < 255 ? pl : 255), piece);
+            sb_printf(&b, "%s{\"id\": %d, \"piece\": ", t ? ", " : "", tk->id);
+            sb_str(&b, buf);
+            sb_printf(&b, ", \"start\": ");
+            sb_time(&b, start + tk->frame * p->fs);
+            sb_printf(&b, ", \"end\": ");
+            sb_time(&b, start + (tk->frame + tk->dur) * p->fs);
+            sb_printf(&b, "}");
+        }
+        sb_printf(&b, "]}");
+    }
+    if (p->nchunks)
+        sb_printf(&b, "\n  ]");
+    if (o->verbose) {
+        sb_printf(&b, ",\n  \"run\": ");
+        json_run(&b, a, !many, duration, asr_s, diar_s);
+    }
+    sb_printf(&b, "\n}");
+    fwrite(b.s, 1, b.n, stdout);
+    free(b.s);
+}
+
 /* One file through the transcriber: its chunks, printed as -o asks, by
  * default a sentence a line. With several files a line each, the file's
  * name, a tab and its chunks' text. With --speakers (dm), the diarizer
- * hears the file first, and each word goes to a speaker. */
+ * hears the file first, and each word goes to a speaker. --json writes the
+ * file's document once the file is done. */
 static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr *a,
                             const pk_model *dm, int many, double *audio_s, double *asr_total,
-                            double *diar_total, const char **lang, int *heard) {
+                            double *diar_total) {
     size_t n;
     const int rate = pk_model_rate(m);
     float *x = read_audio(path, rate, &n, o);
@@ -1086,11 +1333,6 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
     }
     if (many && !o->json)
         printf("%s\t", path);
-    if (o->json && many) {
-        printf("{\"file\": ");
-        json_str(path);
-        printf(", \"chunks\": [");
-    }
     pk_transcribe_opts to;
     pk_transcribe_defaults(&to);
     to.max_chunk_s = o->max_chunk;
@@ -1101,37 +1343,31 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
         run_failed(m);
     const double asr_s = pk_os_now() - t0 - out.printing;
     *asr_total += asr_s;
-    *heard = out.heard;
+    /* the recording's end in milliseconds, which no cue may pass: rounded,
+     * as format.rs rounds it */
+    const double duration = (double)n / rate;
+    const int64_t media_end = llround(duration * 1000);
     if (o->json)
-        *lang = file_language(m, &out.words);
-    if (o->json && dm) {             /* the turns, then the chunks' and their closing ] */
-        printf("\n],\n \"turns\": [");
-        for (size_t k = 0; k < out.nturns; k++) {
-            const turn *tn = &out.turns[k];
-            printf("%s\n {\"speaker\": %d, \"start\": %.2f, \"end\": %.2f, \"word\": %zu, \"words\": %zu}",
-                   k ? "," : "", (int)tn->speaker, tn->start, tn->end, tn->first, tn->n);
-        }
-    }
-    if (o->json && many) {
-        const spk_meta sm = { dm, out.heard, diar_s };
-        printf("\n], \"meta\": ");
-        json_meta(o, m, a, 0, (double)n / rate, asr_s, 1, *lang, &sm);
-        putchar('}');
-    } else if (many)
+        json_doc(o, &out, a, path, duration, media_end, asr_s, dm ? diar_s : -1, many);
+    else if (many)
         putchar('\n');
     if (o->subs) {
         /* the English model's are English; the multilingual model's say */
-        cap_print(&out.words, o->subs == SUBS_VTT, out.lang, (int64_t)n * 1000 / rate, dm != NULL);
+        cap_print(&out.words, o->subs == SUBS_VTT, out.lang, media_end, dm != NULL);
     }
-    *audio_s += (double)n / rate;
+    *audio_s += duration;
     if (!o->json && !o->subs) {     /* the words a sentence's language was read from */
         free(out.words.w);
         free(out.words.spk);
         free(out.words.text);
     }
+    for (size_t k = 0; k < out.nchunks; k++)
+        free(out.chunks[k].toks);
+    free(out.chunks);
+    free(out.segs.s);
+    free(out.tailat);
     free(out.tail);
     free(out.text);
-    free(out.turns);
     free(out.tailspk);
     free(rb.p);
     free(x);
@@ -1141,21 +1377,25 @@ static void transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr
 static int transcribe(const opts *o, pk_model *m, const pk_model *dm) {
     pk_asr *a = asr_new(o, m, 1);
     double audio_s = 0, asr_s = 0, diar_s = 0;
-    int many = o->nin > 1, heard = 0;
-    if (o->json)
-        printf(many ? "{\"files\": [" : "{\"chunks\": [");
-    const char *lang = NULL;
+    const int many = o->nin > 1;
+    if (o->json && many)            /* several files: their documents in a list */
+        printf("{\"files\": [\n");
     for (int i = 0; i < o->nin; i++) {
-        if (o->json && many)
-            printf(i ? ",\n" : "\n");
-        transcribe_file(o, o->ins[i], m, a, dm, many, &audio_s, &asr_s, &diar_s, &lang, &heard);
+        if (o->json && many && i)
+            printf(",\n");
+        transcribe_file(o, o->ins[i], m, a, dm, many, &audio_s, &asr_s, &diar_s);
     }
-    if (o->json) {
-        const spk_meta sm = { dm, many ? -1 : heard, diar_s };
-        printf("\n],\n \"meta\": ");
-        json_meta(o, m, a, 1, audio_s, asr_s, !many, lang, &sm);
+    if (o->json && many) {
+        printf("\n]");
+        if (o->verbose) {           /* the whole run's */
+            sbuf b = { 0 };
+            json_run(&b, a, 1, audio_s, asr_s, dm ? diar_s : -1);
+            printf(",\n\"run\": %s", b.s);
+            free(b.s);
+        }
         printf("}\n");
-    }
+    } else if (o->json)
+        putchar('\n');
     char on[sizeof npu_file + 64] = "", who[96] = "";
     if (npu_name)
         snprintf(on, sizeof on, ", the encoder on %s (%s)", npu_name, npu_file);

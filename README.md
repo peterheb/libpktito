@@ -107,7 +107,7 @@ Zero 2 W) cannot hold an int8 0.6B model; README, "Why int8", has what
 
 ```sh
 ./pktito-c talk.wav                        # the transcript, a sentence a line
-./pktito-c --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
+./pktito-c --json talk.wav                 # the transcript as JSON (below, "JSON")
 ./pktito-c --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito-c a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
 ./pktito-c -m models/nemotron-3-diarization.pkf talk.wav   # who said what (below, "Who said what")
@@ -835,8 +835,8 @@ it, and answers when one leads by half again. Its table, each language's
 which the table never saw, English is called English by mistake in none
 of the texts of 20 words or more, and English texts are found 99.6% of the
 time at 20 words, all of them from 50; on v3's own transcripts of FLEURS
-and LibriSpeech, all of them from 20 (`tests/langcheck --eval`). `--json`'s
-`meta` says the language too.
+and LibriSpeech, all of them from 20 (`tests/langcheck --eval`). `--json`
+names the language too (below, "JSON").
 
 The track is the library's `pk_captions`, which the desktop app's subtitles
 come from too. It takes the words' language: pktito-c gives it "en" for
@@ -846,11 +846,6 @@ v2's words and `pk_language`'s answer for v3's.
 including the nine words that greedy packing cuts 8 + 1 and this cuts 4 + 5,
 and to an exhaustive search over every partition of 3000 random
 transcripts. 20000 words take 17 ms on an M4 Pro.
-
-`--json`'s `meta` is the model and the audio's length, which are the same
-on every machine and run, so that transcripts compare byte for byte; with
-`-v` it adds what the `-v` line says: the VAD's and transcription's
-seconds, the speed, pktito's version, the backend and the threads.
 
 ## Sentences
 
@@ -949,10 +944,9 @@ With `--srt` or `--vtt`, a change of speaker ends a cue too, and each
 turn's first cue starts with its name, which counts toward the line's 42
 characters; WebVTT names every cue's voice as well, `<v Speaker 1>`.
 
-With `--json`, each word gains a `speaker`; after the chunks, `turns`
-lists each run of one speaker's words (its `speaker`, `start` and `end`,
-and as `word` and `words` the index of its first word in the file and how
-many); and `meta` gains the `diarizer` and how many `speakers` said a word.
+With `--json`, the document names the `diarizer` and lists the
+`speakers`, and each sentence and each caption carries its speaker's id
+(below, "JSON"): a turn is a run of sentences with one speaker.
 `pktito-c speakers` prints the diarizer's answer alone, with no
 transcript: each speaker's stretches of speech, a line each, the start and
 end in seconds and the speaker. `pktito-c probs` with the diarizer's `-m`
@@ -1017,6 +1011,70 @@ again: with `--speakers` the hour took 89 minutes, its transcript the Pi
 `--stream` doesn't take `--speakers` yet. `pktito-c models --all` lists
 the diarizer's file, a preview, which runs where `-m` names it, and the line
 that fetches it.
+
+## JSON
+
+`--json` writes a file's transcript as one document, `pktito/1`, which
+pktito-cli's `-f json` and the desktop and Android apps' JSON write too.
+Here is tests/data/conv2.wav's, with v2 and the diarizer, cut short:
+
+```json
+{
+  "format": "pktito/1",
+  "file": "conv2.wav",
+  "duration": 60,
+  "model": "parakeet-tdt-0.6b-v2",
+  "language": "en",
+  "diarizer": "Nemotron-3-Diarization",
+  "speakers": [
+    {"id": 1, "name": "Speaker 1"},
+    {"id": 2, "name": "Speaker 2"}
+  ],
+  "segments": [
+    …
+    {"start": 21.793, "end": 24.513, "speaker": 1, "text": "Stuff it into you, his belly counselled him.", "words": [
+      {"word": "Stuff", "start": 21.793, "end": 22.193},
+      {"word": "it", "start": 22.193, "end": 22.353},
+      …
+    ]},
+    …
+  ],
+  "captions": [
+    …
+    {"start": 21.793, "end": 25.013, "speaker": 1, "lines": ["Speaker 1: Stuff it into you,", "his belly counselled him."]},
+    …
+  ],
+  "chunks": [
+    {"start": 0.273, "end": 24.832, "gap": 0, "first_word": 0, "words": 54, "tokens": [{"id": 391, "piece": "▁He", "start": 0.513, "end": 0.673}, …]},
+    …
+  ]
+}
+```
+
+Times are seconds, to the millisecond. `segments` are the sentences
+(above, "Sentences"), each with its words; with `--speakers` each is one
+speaker's, and `speaker` is an id in `speakers`, numbered from 1 in the
+order they first say a word. `captions` are `--srt`'s cues, line for line,
+each with its speaker. `language` is v2's "en", or what `pk_language` says
+of all of v3's words (above, "Captions"), null when they say too little.
+`chunks` are the stretches `pk_asr_transcribe` heard (above, "Transcribing
+a recording"): where each starts and ends, the silence to the next, its
+words as the index of its first in the file and how many, `retried` where
+some of it was heard again, and its tokens, each the model's id, its piece
+and its frames as times.
+
+pktito-cli's `-f json` of the same recording is the same bytes without the
+tokens: so it is for test.wav with v2 and v3, conv2.wav with speakers, an
+Italian FLEURS recording with v3, and two podcast episodes of 10 and 43
+minutes, one voice and four. `--fast` adds `"fast": true` after the model.
+With `-v`, `run` adds what the `-v` line on stderr says: the seconds the
+transcription took with its VAD (and the diarizer's), the speed, pktito's
+version, the backend, the compiler and the threads. Without it the
+document is the same on every machine and every run, so that check-c
+compares test.wav's byte for byte. Several files give
+`{"files": [...]}`, a document each, and with `-v` the whole run's `run`
+after the list. `--stream --json` is not this document but a line a pause,
+as it comes: `{"start", "end", "text"}`.
 
 ## How it works
 

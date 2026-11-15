@@ -71,14 +71,15 @@ $e, $n, $ya = [char]0xE9, [char]0xF1, [char]0x44F
 $d = "tests\pathcheck-t${e}st-$n-$ya"
 New-Item -ItemType Directory -Force $d | Out-Null
 Copy-Item $tiny "$d\tiny-$e.pkf"
-Copy-Item tests\pkfcheck.wav "$d\$n.wav"
-cmd /c "pktito-c.exe -m `"$d\tiny-$e.pkf`" --json `"$d\$n.wav`" > tests\pathcheck.json"
+# the WAV keeps its own name, which --json writes, in a folder named past ASCII
+Copy-Item tests\pkfcheck.wav "$d\pkfcheck.wav"
+cmd /c "pktito-c.exe -m `"$d\tiny-$e.pkf`" --json `"$d\pkfcheck.wav`" > tests\pathcheck.json"
 $ok = (-not $LASTEXITCODE) -and (same tests\pathcheck.json tests\pkfcheck.json)
 # and the model through the environment, which getenv gives in the ANSI
 # code page, as main's argv
 $was = $env:PKTITO_MODEL
 $env:PKTITO_MODEL = "$d\tiny-$e.pkf"
-cmd /c "pktito-c.exe --json `"$d\$n.wav`" > tests\pathcheck.json"
+cmd /c "pktito-c.exe --json `"$d\pkfcheck.wav`" > tests\pathcheck.json"
 $ok = $ok -and (-not $LASTEXITCODE) -and (same tests\pathcheck.json tests\pkfcheck.json)
 $env:PKTITO_MODEL = $was
 Remove-Item -Recurse -Force $d, tests\pathcheck.json

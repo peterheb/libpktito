@@ -42,9 +42,10 @@ run ./tests/sentcheck "$MODEL" tests/data/test.wav
   && ./pktito-c -m $TINY_DIAR probs tests/pkfcheck.wav > /dev/null \
   && echo "pktito-c --speakers: the tiny models through the CLI, five ways" \
   || { echo "pktito-c: FAIL on the tiny models with --speakers"; exit 1; }
-d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/ñ.wav" \
-  && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json \
-  && PKTITO_MODEL="$d/tiny-é.pkf" ./pktito-c --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
+# the WAV keeps its own name, which --json writes, in a folder named past ASCII
+d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/pkfcheck.wav" \
+  && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/pkfcheck.wav" | cmp -s - tests/pkfcheck.json \
+  && PKTITO_MODEL="$d/tiny-é.pkf" ./pktito-c --json "$d/pkfcheck.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
 [ $r = 0 ] && echo "pktito-c: a model and a WAV named past ASCII, from its command line and \$PKTITO_MODEL" \
   || { echo "pktito-c: FAIL on a model and a WAV named past ASCII"; exit 1; }
 rm -f tests/pkfcheck.wav tests/pkfcheck.json

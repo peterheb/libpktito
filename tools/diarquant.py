@@ -24,7 +24,7 @@ float32 run it reports, over all the WAVs:
   DER      against the true speakers, where NAME.rttm is beside NAME.wav:
            no collar, overlapped speech scored (float32's own on its line),
            and the mean of each WAV's difference from float32's, with its t
-  words    where NAME.json beside the WAV holds pktito-c --json's words:
+  words    where NAME.json beside the WAV is pktito-c --json's (pktito/1):
            words whose speaker (NeMo's rule on 80 ms means, speakers.py) is
            not float32's, and words not the true speaker's (float32's on
            its line)
@@ -428,7 +428,10 @@ def load_words(path):
         return None
     with open(path, encoding="utf-8") as f:
         j = json.load(f)
-    return [(w["start"], w["end"], w["word"]) for c in j["chunks"] for w in c["words"]]
+    # pktito/1: the sentences' words, in order (README, "JSON")
+    return [
+        (w["start"], w["end"], w["word"]) for s in j["segments"] for w in s["words"]
+    ]
 
 
 def main():
