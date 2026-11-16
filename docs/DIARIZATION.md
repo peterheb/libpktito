@@ -61,8 +61,9 @@ relies on it.
   words no one was heard saying, every average under 0.01, which NeMo raises
   to 0.01 and so gives to whoever spoke first. pktito leaves the averages as
   they are (Peter, 2026-11-15; section 8): on four podcasts it changes 5 of
-  21,114 words, those 5, each to the right speaker, and no other. The
-  synthetic sets have not been measured again with it.
+  21,114 words, those 5, each to the right speaker, and no other; on the
+  synthetic sets, measured again in C, 33 of 27,454, and the words to the
+  wrong speaker go from 192 to 164 (section 8).
 - **The new C:** no new matrix kernel. GELU (erf in core/vmath.h, and an
   elementwise kernel beside SiLU's), the rotation of the attention's
   queries and keys (a table of sines and cosines and a loop in core/), the
@@ -1048,6 +1049,39 @@ pktito takes that part alone (speakers.py's "pktito"; core/speakers.c).
 - conv8b's 10 are seven words that Parakeet wrote twice over at one instant
   at a change of speaker ("of the power of the power of the power of the
   family") and three unheard ones: a recognizer's error, scored here.
+
+### Without the floor, on the synthetic conversations (2026-11-16)
+
+The nine conversations above again, in C: pktito-c --speakers --json with
+v2 and the int8 diarizer on a 9950X, diar 149c726's build (NeMo's rule)
+against the merge's (no floor). A word's true speaker is the reference
+turn it overlaps most, else the nearest, and each heard speaker is the
+true one most of its words are; the transcripts are today's
+(pk_asr_transcribe's, with its retry), so the words are more than the
+tables' above and the counts are not theirs.
+
+|        | words  | to the wrong speaker: NeMo's rule | no floor | words changed | turns: true, NeMo's rule, no floor |
+| ------ | ------ | --------------------------------- | -------- | ------------- | ---------------------------------- |
+| conv2  | 568    | 0                                 | 0        | 0             | 35, 35, 35                         |
+| conv3  | 1,240  | 6                                 | 2        | 4             | 49, 55, 49                         |
+| conv4  | 1,334  | 0                                 | 0        | 0             | 61, 61, 61                         |
+| conv2h | 9,018  | 42                                | 26       | 21            | 388, 404, 386                      |
+| conv3h | 8,395  | 22                                | 14       | 8             | 341, 346, 340                      |
+| conv5  | 1,669  | 117                               | 117      | 0             | 62, 66, 66                         |
+| conv6  | 1,351  | 0                                 | 0        | 0             | 63, 63, 63                         |
+| conv8  | 1,406  | 3                                 | 3        | 0             | 65, 64, 64                         |
+| conv8b | 2,473  | 2                                 | 2        | 0             | 116, 116, 116                      |
+| all    | 27,454 | 192                               | 164      | 33            | 1,180, 1,210, 1,180                |
+
+33 words change, every one from the first speaker to another. 16 are a
+turn's last word ("it.", "them.", "me.", "to."), each to its own
+speaker. The other 17 are two runs the recognizer wrote in a turn's last
+quarter second, a phrase repeated where the retry heard a dropped passage
+again (11 words in conv2h, 6 in conv3h); they go to the speaker of the
+turn they end, and 2 of the 11 are then nearer the next turn by this
+truth and count as wrong. No other word moves, conv5's 117 (its host heard
+as three speakers) among them. AMI's DER, and every DER here, is of the
+diarizer's frames, which the word rule does not touch.
 
 ### What the user sees
 
