@@ -112,9 +112,10 @@ cost. Then:
 
 ```sh
 ./pktito-c talk.wav                        # the transcript, a sentence a line
-./pktito-c --json talk.wav                 # chunks: start, end, text, every token and its time; and meta
+./pktito-c --json talk.wav                 # the transcript as JSON (below, "JSON")
 ./pktito-c --srt talk.wav > talk.srt       # subtitles (--vtt for WebVTT), cut where they read best
 ./pktito-c a.wav b.wav c.wav               # several: a line each, the name, a tab, the text
+./pktito-c -m models/nemotron-3-diarization.pkf talk.wav   # who said what (below, "Who said what")
 ffmpeg -i talk.mp4 -f wav - | ./pktito-c -  # any format ffmpeg reads, down a pipe
 arecord -f S16_LE -r 16000 -c 1 -t wav | ./pktito-c --stream -     # live, a line a pause
 ./pktito-c segments talk.wav               # Silero VAD's speech segments, as vadito prints them
@@ -852,8 +853,8 @@ it, and answers when one leads by half again. Its table, each language's
 which the table never saw, English is called English by mistake in none
 of the texts of 20 words or more, and English texts are found 99.6% of the
 time at 20 words, all of them from 50; on v3's own transcripts of FLEURS
-and LibriSpeech, all of them from 20 (`tests/langcheck --eval`). `--json`'s
-`meta` says the language too.
+and LibriSpeech, all of them from 20 (`tests/langcheck --eval`). `--json`
+names the language too (below, "JSON").
 
 The track is the library's `pk_captions`, which the desktop app's subtitles
 come from too. It takes the words' language: pktito-c gives it "en" for
@@ -863,11 +864,6 @@ v2's words and `pk_language`'s answer for v3's.
 including the nine words that greedy packing cuts 8 + 1 and this cuts 4 + 5,
 and to an exhaustive search over every partition of 3000 random
 transcripts. 20000 words take 17 ms on an M4 Pro.
-
-`--json`'s `meta` is the model and the audio's length, which are the same
-on every machine and run, so that transcripts compare byte for byte; with
-`-v` it adds what the `-v` line says: the VAD's and transcription's
-seconds, the speed, pktito's version, the backend and the threads.
 
 ## Sentences
 
@@ -947,6 +943,157 @@ words again with the next chunk's tokens, and passes `done` 1 with the last.
 come (core/cli.c), with `lang` NULL for v3 until `pk_language` names the
 words heard so far.
 
+## Who said what
+
+`--speakers` gives each word to the voice that said it, the speakers
+numbered from 1 in the order they first say a word. A change of speaker
+ends a sentence, and the transcript is a sentence a line, each turn after
+a blank line and named on its first:
+
+```
+Speaker 1: Good night, husband.
+
+Speaker 2: A heart trouble caused by falling in love with a grass widow.
+Heaven!
+A good place to be raised to.
+```
+
+With `--srt` or `--vtt`, a change of speaker ends a cue too, and each
+turn's first cue starts with its name, which counts toward the line's 42
+characters; WebVTT names every cue's voice as well, `<v Speaker 1>`.
+
+With `--json`, the document names the `diarizer` and lists the
+`speakers`, and each sentence and each caption carries its speaker's id
+(below, "JSON"): a turn is a run of sentences with one speaker.
+`pktito-c speakers` prints the diarizer's answer alone, with no
+transcript: each speaker's stretches of speech, a line each, the start and
+end in seconds and the speaker. `pktito-c probs` with the diarizer's `-m`
+prints the probabilities themselves, a line each 10 ms.
+
+The diarizer is NVIDIA's Nemotron 3 Diarization (99.2M parameters, up to
+eight speakers, OpenMDW-1.1), a Streaming Sortformer: 31 Transformer layers
+that hear a recording in chunks of 27.2 s, each with the 3.2 s after it,
+and a cache of what each voice sounded like, carried from one chunk to the
+next, so that a recording of any length takes the same memory. It gives
+each speaker a probability of speaking every 10 ms (core/diar.c). A word
+goes to the speaker most probable over its 80 ms frames and the frame
+before them, NeMo's rule (core/speakers.c; docs/DIARIZATION.md, "From
+frames to words"), so where two people talk at once each word still has
+one speaker. How many speakers there are is not an option: the model finds
+up to eight.
+
+Its file is made from NVIDIA's checkpoint as a recognizer's is. It is a
+preview model, which pktito-c runs only when `-m` names it; the recognizer
+is found as always, and a diarizer's `-m` asks for `--speakers` by itself:
+
+```sh
+.venv/bin/hf download nvidia/Nemotron-3-Diarization Nemotron-3-Diarization.nemo README.md \
+    --local-dir models/src/Nemotron-3-Diarization
+.venv/bin/python tools/pktito-tools convert \
+    models/src/Nemotron-3-Diarization/Nemotron-3-Diarization.nemo models/nemotron-3-diarization.pkf  # 100 MB
+./pktito-c -m models/nemotron-3-diarization.pkf talk.wav
+```
+
+Its numerics are Parakeet's: every matrix int8 with a scale a row, the
+activations entering them in blocks of 32, the rest float. On AMI's 16
+evaluation meetings, 9 hours, the C changes 0.086% of float32's labels (a
+speaker's speech or silence each 10 ms) and makes a DER of 9.23% against
+NTT's forced alignment, where float32 makes 9.19% and the model card gives
+9.25%. It gives 0.35% of the words another speaker than float32 does, and
+837 of the 74,737 to a speaker who did not say them, where float32 gives
+855 (docs/DIARIZATION.md, "Why int8"). Every backend writes ref's bits:
+avx2, avx2-vnni and avx512-vnni on a 9950X, neon, neon-dp and neon-dp-a76
+on a Pi 5.
+
+`pktito-c bench` with the diarizer's `-m` times it alone. On
+tests/data/conv2.wav, a minute of two speakers, it took 1.57 s on a Pi 5's
+four cores (38x real time; neon-dp-a76, gcc 14.2). On a 9950X's 16
+threads it took 0.093 to 0.099 s (about 620x; avx512-vnni, WSL2, gcc
+15.2). Both were measured on 2026-11-09. On the 9950X, `--speakers` added
+0.12 s to that minute's 0.33 s transcription, and 149 MB to the peak
+memory, the file's 100 MB included.
+
+Over an hour of two speakers (LibriSpeech readers, as in conv2.wav), a Pi
+5 took 6.4 minutes to transcribe the hour with v2 and label it: 387 s,
+9.3x real time, of which the diarizer was 109 s. It peaked at 971 MB,
+107 MB more than v2 alone, most of it the diarizer's file. Four
+episodes of a podcast, 9 to 40 minutes each, ran at 10.3 to 10.4x, and
+their transcripts with speakers were the 9950X's bytes. The diarizer's own
+memory does not grow with the recording, but `pktito-c` reads the whole
+file first and holds it as floats: 230 MB an hour. On a Pi 3B+ that is
+more than fits beside v2's file. It diarizes the hour alone in 18 minutes
+at 365 MB, but transcribing it reads v2's file from the card again and
+again: with `--speakers` the hour took 89 minutes, its transcript the Pi
+5's bytes (docs/DIARIZATION.md, "Memory").
+
+`--stream` doesn't take `--speakers` yet. `pktito-c models --all` lists
+the diarizer's file, a preview, which runs where `-m` names it, and the line
+that fetches it.
+
+## JSON
+
+`--json` writes a file's transcript as one document, `pktito/1`, which
+pktito-cli's `-f json` and the desktop and Android apps' JSON write too.
+Here is tests/data/conv2.wav's, with v2 and the diarizer, cut short:
+
+```json
+{
+  "format": "pktito/1",
+  "file": "conv2.wav",
+  "duration": 60,
+  "model": "parakeet-tdt-0.6b-v2",
+  "language": "en",
+  "diarizer": "Nemotron-3-Diarization",
+  "speakers": [
+    {"id": 1, "name": "Speaker 1"},
+    {"id": 2, "name": "Speaker 2"}
+  ],
+  "segments": [
+    …
+    {"start": 21.793, "end": 24.513, "speaker": 1, "text": "Stuff it into you, his belly counselled him.", "words": [
+      {"word": "Stuff", "start": 21.793, "end": 22.193},
+      {"word": "it", "start": 22.193, "end": 22.353},
+      …
+    ]},
+    …
+  ],
+  "captions": [
+    …
+    {"start": 21.793, "end": 25.013, "speaker": 1, "lines": ["Speaker 1: Stuff it into you,", "his belly counselled him."]},
+    …
+  ],
+  "chunks": [
+    {"start": 0.273, "end": 24.832, "gap": 0, "first_word": 0, "words": 54, "tokens": [{"id": 391, "piece": "▁He", "start": 0.513, "end": 0.673}, …]},
+    …
+  ]
+}
+```
+
+Times are seconds, to the millisecond. `segments` are the sentences
+(above, "Sentences"), each with its words; with `--speakers` each is one
+speaker's, and `speaker` is an id in `speakers`, numbered from 1 in the
+order they first say a word. `captions` are `--srt`'s cues, line for line,
+each with its speaker. `language` is v2's "en", or what `pk_language` says
+of all of v3's words (above, "Captions"), null when they say too little.
+`chunks` are the stretches `pk_asr_transcribe` heard (above, "Transcribing
+a recording"): where each starts and ends, the silence to the next, its
+words as the index of its first in the file and how many, `retried` where
+some of it was heard again, and its tokens, each the model's id, its piece
+and its frames as times.
+
+pktito-cli's `-f json` of the same recording is the same bytes without the
+tokens: so it is for test.wav with v2 and v3, conv2.wav with speakers, an
+Italian FLEURS recording with v3, and two podcast episodes of 10 and 43
+minutes, one voice and four. `--fast` adds `"fast": true` after the model.
+With `-v`, `run` adds what the `-v` line on stderr says: the seconds the
+transcription took with its VAD (and the diarizer's), the speed, pktito's
+version, the backend, the compiler and the threads. Without it the
+document is the same on every machine and every run, so that check-c
+compares test.wav's byte for byte. Several files give
+`{"files": [...]}`, a document each, and with `-v` the whole run's `run`
+after the list. `--stream --json` is not this document but a line a pause,
+as it comes: `{"start", "end", "text"}`.
+
 ## How it works
 
 Parakeet TDT is, for a recording of n samples at 16 kHz:
@@ -1022,17 +1169,29 @@ if (nc >= 0)
 /* show has each chunk as above, its decoder run beside the next one's encoder */
 
 pk_capword w[] = { { "Hello", 1000, 1300 }, { "world.", 1400, 1800 } };   /* ms */
-long nq = pk_captions(w, 2, "en", 0, cue);        /* "en": English's rules too; 0: the end unknown */
+long nq = pk_captions(w, 2, NULL, "en", 0, cue);   /* NULL: no speakers; "en": English's rules too; 0: the end unknown */
 /* cue[0]: words 0-1, one line, 1000-2000 ms */
 
 /* the chunks' tokens in one array, each frame plus its chunk's at_frame */
-long nsen = pk_sentences(m, toks, ntoks, "en", 1, sen);   /* "en": the language, or NULL; 1: the last */
+long nsen = pk_sentences(m, toks, ntoks, NULL, "en", 1, sen);   /* NULL: no speakers; "en": the language, or NULL; 1: the last */
 /* sen[0]: toks[sen[0].first] up to toks[sen[0].first + sen[0].n] */
+
+/* who speaks when: a diarizer's model, beside the recognizer's */
+pk_model *dm = pk_model_load("models/nemotron-3-diarization.pkf", err, sizeof err);
+pk_diar *d = pk_diar_new(dm, 0);
+int keep(void *arg, int64_t row, size_t n, const float *p) {   /* rows [row, row + n), in order */
+    /* p[i * 8 + s]: speaker s's probability in row row + i, a row each 10 ms */
+    return 0;
+}
+pk_diar_run(d, samples, n_samples, keep, arg);    /* or pk_diar_feed piece by piece, then pk_diar_finish */
+pk_speakers(dm, p, rows, 1280, spans, nw, spk);   /* spans: words' samples; 1280, the recognizer's frame */
+/* spk to pk_captions, and a word's to each of its tokens for pk_sentences: a change of speaker ends a cue and a sentence */
+size_t nst = pk_speaker_segments(dm, p, rows, st);   /* each speaker's stretches of speech */
 ```
 
 A model is read-only once loaded and may be shared by transcribers on any
-number of threads; a transcriber belongs to one thread at a time and runs
-its own pool. Every path it takes is UTF-8, on Windows too, whatever the
+number of threads; a transcriber, or a diarizer, belongs to one thread at
+a time and runs its own pool. Every path it takes is UTF-8, on Windows too, whatever the
 process's code page. `make libpktito.a` builds the library alone;
 core/pktito.h is all of its interface, core/wav.h and core/resample.h the
 WAV and AIFF library's, and `pk_version()` the version it was built as, for
@@ -1047,18 +1206,22 @@ macOS, .dll on Windows): examples of the wiring, not packages
 ## The model file
 
 A `.pkf` (core/pkf.h) is the recognizer, its vocabulary and Silero VAD in
-one file, mapped read-only and used in place, with a metadata table that
-says what it was made from: the HuggingFace repo, file, commit and sha256
-of the checkpoint, its licence and the attribution CC-BY-4.0 asks for, the
-VAD's source and licence, the converter's version and the recipe. `pktito
-info` prints it. The loader holds every extent, shape, type and value of the
-file to what the architecture and docs/MEMORY_SAFETY.md say before it forms
-a pointer, and tests/pkfcheck's 29,199 cases run malformed files at it.
+one file, or the diarizer alone, mapped read-only and used in place, with a
+metadata table that says what it was made from: the HuggingFace repo, file,
+commit and sha256 of the checkpoint, its licence and what that licence asks
+to travel with the weights (CC-BY-4.0's attribution; OpenMDW-1.1's copy of
+the agreement and the model's notices), the VAD's source and licence, the
+converter's version and the recipe. `pktito info` prints it. The loader
+holds every extent, shape, type and value of the file to what the
+architecture and docs/MEMORY_SAFETY.md say before it forms a pointer, and
+tests/pkfcheck's 29,200 cases run malformed files at it, 22,808 more for
+the diarizer's.
 
 `tools/pktito-tools convert` writes one; `info` lists one; `ref` runs the
-float64 reference on a WAV from either a `.nemo` or a `.pkf`; `tiny` writes
-a 1.2 MB model with random weights that has every tensor, param and piece
-type, for the checks.
+float64 reference on a WAV from either a `.nemo` or a `.pkf`, and `diar`
+the diarizer's on a `.nemo`; `tiny` writes a 1.2 MB model with random
+weights that has every tensor, param and piece type, for the checks, and
+`tiny --diarizer` a diarizer's.
 
 ## Checking
 
@@ -1077,25 +1240,28 @@ scripts/fmt.sh --check       # every language but C in its formatter's form, bef
 `check-c` is the math library's bounds, every kernel of every backend the
 CPU can run against `ref` bit for bit (tests/kcheck: 1,525 cases each), the
 model file's validator on its malformed corpus and the whole engine on the
-tiny model, the WAV and AIFF reader on its own, a WAV and a model under a name
-past ASCII (on Windows, the regression test for UTF-8 paths), and
-test.wav through `./pktito-c` and
-through examples/transcribe:
-vadito's VAD bits, and both models' transcripts byte for byte. `check` adds
-the detokenizer against sentencepiece, the state machines against Silero's
-Python, the resampler against torchaudio and the corpora's WER.
-tests/README.md has each check. A build copied to Windows without MSYS2,
-which has no make or sh, runs check-c's commands with `powershell -File
-tests\check-c.ps1`, given `-V2` and `-V3` for models kept outside models\.
+tiny models, a recognizer's and a diarizer's, the WAV and AIFF reader on
+its own, a WAV and a model under a name past ASCII (on Windows, the
+regression test for UTF-8 paths), test.wav through `./pktito-c` and through
+examples/transcribe: vadito's VAD bits, and both models' transcripts byte
+for byte; and conv2.wav, a minute of two speakers, through `--speakers`:
+the diarizer's stretches of speech and v2's words with their speakers, byte
+for byte. `check` adds the detokenizer against sentencepiece, the state
+machines against Silero's Python, the resampler against torchaudio and the
+corpora's WER. tests/README.md has each check. A build copied to Windows
+without MSYS2, which has no make or sh, runs check-c's commands with
+`powershell -File tests\check-c.ps1`, given `-V2`, `-V3` and `-Diar` for
+models kept outside models\.
 
 ## The tree
 
 ```
 core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              the text (tokens.c), the transcriber (asr.c), the VAD (vad.c,
-             segment.c), the WAV and AIFF library (wav.c, resample.c), the captions
-             and sentences (captions.c, sentences.c), the math (vmath.h), the
-             pool (pool.c), the CLI (cli.c)
+             segment.c), the diarizer (diar.c, speakers.c), the WAV and AIFF
+             library (wav.c, resample.c), the captions and sentences
+             (captions.c, sentences.c), the math (vmath.h), the pool and the
+             passes over it (pool.c, passes.c), the CLI (cli.c)
 backend/     the seam (kernels.h, and kernels.c, which picks the backend that
              runs) and ref/, neon/ (and neon-dp/, neon-dp-a76/, neon-i8mm/,
              neon-sve/), avx2/ (and avx2-vnni/, avx512-vnni/, amx-int8/); a
@@ -1112,13 +1278,16 @@ models.json  the model files models.pktito.net serves: each model's task,
              on (`./pktito-c models`)
 examples/    the library from the outside: from C, Python, Go, Rust and Node
 docs/        MEMORY_SAFETY.md: the rules the two parsers keep; caption-spec.md:
-             the method core/captions.c follows
+             the method core/captions.c follows; DIARIZATION.md: the study the
+             diarizer was built from
 ```
 
 ## License
 
-MIT for the code. The weights a `.pkf` holds are NVIDIA's, under CC-BY-4.0;
-whoever shares a `.pkf` owes NVIDIA that licence's attribution, which every
-file carries in its metadata. Silero VAD's weights, and the parts of the code
+MIT for the code. The weights a recognizer's `.pkf` holds are NVIDIA's,
+under CC-BY-4.0; whoever shares one owes NVIDIA that licence's attribution,
+which every such file carries in its metadata. The diarizer's are NVIDIA's,
+under OpenMDW-1.1; whoever shares its file shares a copy of the agreement
+and the model's notices with it, which the file carries too. Silero VAD's weights, and the parts of the code
 that port its model and state machines, are MIT, Copyright (c) 2020-present
-Silero Team. LICENSE has all three.
+Silero Team. LICENSE has all four.

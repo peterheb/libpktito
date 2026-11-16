@@ -59,6 +59,35 @@ typedef struct {               /* an LSTM layer: gates i f g o */
     const float *b;            /* [4P], the two biases summed */
 } pk_lstmw;
 
+/* ----------------------------------------------------- the diarizer --- */
+
+/* A layer of Nemotron 3 Diarization's encoder (core/diar.c): a pre-LN
+ * Transformer block, rotary attention and a GELU feed-forward */
+typedef struct {
+    const float *att_nw, *att_nb, *ff_nw, *ff_nb;
+    pk_q8 q, k, v, o, up, down;
+    const float *o_b, *up_b, *down_b;
+} pk_tlayer;
+
+/* The most speakers a diarizer's file may have: Nemotron 3's eight, and
+ * room for a model of twice as many */
+#define PK_MAX_SPK 16
+
+/* A Streaming Sortformer's network and speaker cache (core/pkf.h, its
+ * params and tensors) */
+typedef struct {
+    uint32_t stack, proj_dim, upsample, n_spk;
+    uint32_t chunk_len, chunk_left, chunk_right, fifo_len, cache_len, update_period, sil_frames;
+    float    rope_theta, score_threshold, boost_latest, strong_boost, weak_boost, min_pos_scores;
+    const float *rope_freq;    /* [d_model / n_heads / 2] */
+    pk_q8    stack_w;          /* [d_model][stack n_mels] */
+    const float *embed_nw, *embed_nb, *final_nw, *final_nb;
+    pk_tlayer *layers;
+    pk_q8    proj, up, head_hidden, head_out;
+    const float *proj_b, *up_b, *head_hidden_b, *head_out_b;
+    const float *sil;          /* [d_model]: the learned silence frame */
+} pk_diarw;
+
 /* ------------------------------------------------------------ a model --- */
 
 #define PK_MAX_DUR 16
@@ -68,6 +97,8 @@ struct pk_model {
     size_t size;
     void  *raw;                /* the copy pk_model_from_bytes made, or NULL: mapped */
     char   name[64];
+    int    diar;               /* a diarizer's ("sortformer"): the features, the encoder's
+                                  shapes and dw below; no decoder, vocabulary or VAD */
 
     /* the features */
     uint32_t sample_rate, n_fft, win_length, hop, n_mels;
@@ -111,6 +142,8 @@ struct pk_model {
     size_t      meta_size;
 
     pk_vadw vad;
+
+    pk_diarw dw;               /* a diarizer's network and cache (diar) */
 };
 
 /* Every byte-level rule core/pkf.h states, on a whole file in memory: 0, or

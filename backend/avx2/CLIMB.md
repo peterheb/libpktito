@@ -3199,6 +3199,182 @@ rounds on the 9950X, up / down / attention: gcc 15.2 532-536 / 496-500 /
 538-539 to 533-537 / 493-499 / 537-539. Level: the copy's cost in a
 call of 64 rows is not its instructions. Not changed.
 
+## 2026-11-09 - the diarizer's GELU in ymm and zmm (hypothesis)
+
+The diarizer (core/diar.c, on the local branch diar) runs torch's exact
+GELU over each feed-forward's hidden: 31 layers of 2048 values a frame.
+For tests/data/conv2.wav, a minute of two speakers, that is 91,295,744
+values: 1,438 frames in its steps, counted by a scratch build. Every
+backend's pk_k_gelu is ref's scalar loop, and pk_erff branches on each
+value: below 1, from 1 to 4, and beyond.
+
+GELU's share was timed on the 9950X (gcc 15.2, eddb23b) by `pktito-c
+bench` with the diarizer's model over conv2.wav, against the same build
+with the call to pk_k_gelu left out. The WSL side was idle (load under
+0.1 before the runs), outside a window asked of pinfer. Three rounds,
+alternated, best of 5:
+
+| kernels            | threads | with GELU     | without       | GELU's share |
+| ------------------ | ------- | ------------- | ------------- | ------------ |
+| avx512-vnni        | 1       | 0.999-1.009 s | 0.580-0.584 s | 42%          |
+| avx512-vnni        | 16      | 0.126-0.130 s | 0.088-0.094 s | 29%          |
+| avx2-vnni (forced) | 1       | 1.347-1.351 s | 0.938 s       | 30%          |
+| avx2-vnni (forced) | 16      | 0.153-0.159 s | 0.124-0.126 s | 20%          |
+
+At one thread that is 4.6 ns a value. The scalar loop's two Horner
+chains and its exp are serial, and its branches go each way at random
+over a layer's values. A first count of the values, an atomic add in
+the timed build, cost the 16-thread runs 0.016 s in contention; the
+table's builds have none.
+
+The hypothesis: pk*erff with all three of its outcomes computed in every
+lane, and masks choosing as its branches do. The polynomial below 1, the
+exp form from 1 to 4, and copysign(1, x) where neither holds (a NaN
+included, as the scalar's !(a < 4)). GELU around it keeps the scalar's
+order: x * 0.5, times 1 + erf(x \_ sqrt(1/2)). The code is ymm for avx2
+and avx2-vnni, and zmm with mask registers for the AVX-512 builds, as
+SiLU is, with the tail scalar. Each operation is the scalar's: FMA for
+pk_fmaf, v_exp and z_exp for pk_expf, copysign by the sign bit. So the
+bits are ref's: kcheck, and every float through each build's kernel
+against ref's.
+
+About 50 vector operations make 16 values in zmm and 8 in ymm, with no
+branch. Predicted on the 9950X: the kernel at 0.3 to 0.6 ns a value in
+zmm and 0.5 to 1.0 ns in ymm. The diarizer's time is predicted to fall
+as follows:
+
+| kernels     | threads | change      |
+| ----------- | ------- | ----------- |
+| avx512-vnni | 1       | -37 to -39% |
+| avx512-vnni | 16      | -25 to -27% |
+| avx2-vnni   | 1       | -24 to -27% |
+| avx2-vnni   | 16      | -15 to -18% |
+
+The recognizer's time does not move, since it never calls pk_k_gelu.
+
+Kept if all of these hold:
+
+- kcheck gives ref's bits for avx2, avx2-vnni and avx512-vnni.
+- Every float through each of the three gives ref's bits.
+- check-c's conv2 rows and speakers are the same bytes.
+- The diarizer's bench is faster by more than its spread at 1 and 16
+  threads under gcc 15.2 and clang 21.1 on the 9950X, in a quiet window,
+  and on the 12900HK (ymm, its own board) at its default threads and at 1.
+
+amx-int8 compiles the same zmm code, and no board here runs it.
+
+## 2026-11-09 - the diarizer's GELU in ymm and zmm (result: kept)
+
+The hypothesis above, as written.
+
+**Bits.** All of these give ref's bits:
+
+- kcheck for avx2, avx2-vnni and avx512-vnni, 1,740 cases each;
+- every float (2^32) through each of the three, tails of 0 to 6
+  included, by a scratch sweep (gelusweep, not in the tree);
+- check-c, with conv2's rows and speakers the same bytes.
+
+amx-int8 compiles the same zmm code, and no board here runs it.
+
+**Time.** `pktito-c bench` ran the diarizer's model over
+tests/data/conv2.wav. The base was 279b822 and the kernel was this
+change, both under gcc 15.2 and clang 21.1. Six rounds, the order turned
+each round, best of 5. Each build's change is against its own
+compiler's base a round, median (range).
+
+The 9950X ran in a window pinfer gave (03:15 to 03:20), avx2-vnni
+forced with PKTITO_KERNELS. The 12900HK ran builds made static on the
+9950X, its one-thread runs on P-core 0 (taskset), 14 threads by
+default.
+
+| board   | kernels     | threads | gcc 15.2                | clang 21.1              |
+| ------- | ----------- | ------- | ----------------------- | ----------------------- |
+| 9950X   | avx512-vnni | 1       | -38.1% (-38.8 to -38.0) | -65.5% (-65.7 to -65.4) |
+| 9950X   | avx512-vnni | 16      | -25.5% (-27.7 to -23.3) | -55.8% (-57.8 to -54.3) |
+| 9950X   | avx2-vnni   | 1       | -25.9% (-26.3 to -25.7) | -51.6% (-51.9 to -51.3) |
+| 9950X   | avx2-vnni   | 16      | -22.2% (-25.0 to -15.6) | -47.9% (-48.8 to -44.4) |
+| 12900HK | avx2-vnni   | 1       | -21.6% (-22.0 to -21.1) | -65.3% (-65.4 to -64.9) |
+| 12900HK | avx2-vnni   | 14      | -14.4% (-14.6 to -14.2) | -43.3% (-43.5 to -42.9) |
+| 12900HK | avx2        | 1       | -13.8% (-13.8 to -11.9) | -52.2% (-52.5 to -52.1) |
+| 12900HK | avx2        | 14      | -9.9% (-10.1 to -9.6)   | -33.5% (-33.6 to -33.5) |
+
+Under gcc on the 9950X, avx512-vnni at one thread went from 1.003 s to
+0.620 s, against 0.581 s with no GELU at all. So the kernel's 0.04 s is
+0.4 ns a value; the prediction was 0.3 to 0.6. avx2-vnni went from
+1.349 s to 0.998 s against 0.938 s, 0.66 ns a value; the prediction was
+0.5 to 1.0. Each change under gcc is in its predicted range, or past it:
+avx2-vnni at 16 threads (-22.2% against -15 to -18), whose rounds spread
+widest.
+
+**clang.** clang's base is far slower: 1.735-1.751 s at one thread with
+avx512-vnni, against gcc's 0.998-1.009. With the kernel the two are
+level, 0.600-0.602 s against 0.618-0.622. The reason:
+
+- clang 21 predefines no \_\_FP_FAST_FMAF on x86-64, with -mfma or
+  without. gcc 15 does, and on AArch64 both do.
+- So glibc's math.h leaves FP_FAST_FMAF undefined.
+- So core/vmath.h's pk_fmaf takes pk_fmaf_soft in every tuned x86
+  backend that clang builds.
+
+The base's GELU, ref's loop of pk_erff in those backends, did each of
+its FMAs in software. The bits are the same either way; only the time
+differs. Any scalar pk_fmaf left in the x86 backends under clang pays
+it too, in the vector kernels' tails, which are short.
+
+Kept: every criterion holds, under both compilers, on both boards.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (hypothesis)
+
+backend/neon/CLIMB.md's entry of the same day has the change and the
+reason: two passes between the attention's products take as long at
+four threads as at one on a Pi 5. A scratch copy of c1162b8 timed both
+on the 9950X (avx512-vnni, tests/data/conv2.wav, best of 5) in a window
+pinfer gave. K's repacking is its own stage there, so its time is the
+stage's less the cache's 0.9 to 1.1 ms:
+
+| pass                      | gcc 15.2, 1 thread | 16      | clang 21.1, 1 | 16      |
+| ------------------------- | ------------------ | ------- | ------------- | ------- |
+| the rotation (rope_item)  | 4.9 ms             | 2.2     | 3.6           | 2.3     |
+| K's repacking (kpan_item) | 5.1                | 4.9     | 5.0           | 4.7     |
+| the run                   | 0.616 s            | 0.095 s | 0.599 s       | 0.092 s |
+| the two passes' share     | 1.6%               | 7.5%    | 1.4%          | 7.6%    |
+
+K's repacking takes as long at 16 threads as at one. The recognizer's
+repacking was slower at 16 threads than at 8 (8.8 ms against 3.9) until
+its 2026-10-28 entry above moved it into the K product's items, where
+the products took on 39 to 55% of its time at 16 threads.
+
+Predicted, the same share here. The passes are core code, so with
+avx2-vnni they cost the same 7 ms, out of a run of 0.129 s:
+
+| board | kernels     | threads | gcc 15.2     | clang 21.1   |
+| ----- | ----------- | ------- | ------------ | ------------ |
+| 9950X | avx512-vnni | 1       | level to -1% | level to -1% |
+| 9950X | avx512-vnni | 16      | -3 to -5%    | -3 to -5%    |
+| 9950X | avx2-vnni   | 16      | -2 to -3.5%  | -2 to -3.5%  |
+
+Kept on the criteria in the NEON entry, and if the 9950X at 16 threads
+is faster than its base by more than the spread under both compilers.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (result: not kept)
+
+backend/neon/CLIMB.md's entry of the same day has the bits, the Pi's
+times, and the reason it is not kept. The 9950X ran six rounds in a
+window pinfer gave (04:57 to 05:01): base 30ae9b6 against the change,
+best of 5. Each build's change is against its own compiler's base a
+round, median (range).
+
+| kernels     | threads | gcc 15.2             | clang 21.1           |
+| ----------- | ------- | -------------------- | -------------------- |
+| avx512-vnni | 1       | +0.1% (-0.6 to +0.3) | +0.5% (+0.2 to +0.8) |
+| avx512-vnni | 16      | -1.6% (-7.1 to +6.7) | -2.1% (-7.2 to +2.2) |
+| avx2-vnni   | 1       | -0.1% (-0.1 to +0.0) | +0.2% (+0.1 to +0.4) |
+| avx2-vnni   | 16      | -2.3% (-6.7 to +1.6) | -2.7% (-8.5 to -0.8) |
+
+At 16 threads the medians are under the predicted -3 to -5%, and three
+of the four ranges cross zero. Under clang the one-thread runs are
+slower in every round. Not kept.
+
 ## 2026-11-10 - an output's add kept in its branch: clang 18 and the rounding modes (a fix)
 
 `make check-c` failed on main (519554b) under clang 18.1.3, Ubuntu

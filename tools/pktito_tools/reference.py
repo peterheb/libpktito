@@ -22,6 +22,16 @@ def mm(x, w, name):
     return x @ w[name].T
 
 
+def lin(x, w, name):
+    """mm and the matrix's bias, "<name>.b", where the model has one.
+    Parakeet's encoder matrices have none; the FastConformer inside
+    NVIDIA's Sortformer diarizer (sortformer.py) has one on every matrix
+    but the position projection."""
+    y = mm(x, w, name)
+    b = w.get(name + ".b")
+    return y if b is None else y + b
+
+
 def _silu(x):
     return x / (1.0 + np.exp(-x))
 
@@ -43,7 +53,10 @@ def features(audio, w, a):
     """Log-mel features, [T][n_mels], T = len(audio) // hop: preemphasis, a
     centred STFT with zero padding, the power spectrum through the mel
     filterbank, log(x + guard), and each mel band normalized over the
-    recording (mean, and the n - 1 standard deviation plus norm_eps)."""
+    recording (mean, and the n - 1 standard deviation plus norm_eps).
+    A model whose preprocessor normalizes nothing (a["normalize"] False:
+    the streaming diarizer, whose features cannot wait for the recording's
+    end) gets the log-mel as it is."""
     n_fft, win, hop = a["n_fft"], a["win_length"], a["hop_length"]
     x = np.asarray(audio, np.float64)
     T = len(x) // hop
@@ -57,6 +70,8 @@ def features(audio, w, a):
     spec = np.fft.rfft(y[idx] * window, axis=1)
     power = spec.real**2 + spec.imag**2
     mel = np.log(power @ w["mel.fb"].T + a["log_guard"])  # [T][n_mels]
+    if not a.get("normalize", True):
+        return mel
     mean = mel.mean(0)
     if T > 1:
         std = np.sqrt(((mel - mean) ** 2).sum(0) / (T - 1))
@@ -119,10 +134,12 @@ def attention(x, pe, w, q, a):
     T, D = x.shape
     H = a["n_heads"]
     dk = D // H
-    Q = mm(x, w, q + "att.q").reshape(T, H, dk)
-    K = mm(x, w, q + "att.k").reshape(T, H, dk)
-    V = mm(x, w, q + "att.v").reshape(T, H, dk)
-    P = mm(pe, w, q + "att.pos").reshape(2 * T - 1, H, dk)
+    Q = lin(x, w, q + "att.q").reshape(T, H, dk)
+    K = lin(x, w, q + "att.k").reshape(T, H, dk)
+    V = lin(x, w, q + "att.v").reshape(T, H, dk)
+    P = mm(pe, w, q + "att.pos").reshape(
+        2 * T - 1, H, dk
+    )  # never a bias (NeMo's linear_pos)
     qu = (Q + w[q + "att.bias_u"].reshape(H, dk)).transpose(1, 0, 2)
     qv = (Q + w[q + "att.bias_v"].reshape(H, dk)).transpose(1, 0, 2)
     ac = qu @ K.transpose(1, 2, 0)  # [H][T][T]
@@ -135,12 +152,12 @@ def attention(x, pe, w, q, a):
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
     o = (s @ V.transpose(1, 0, 2)).transpose(1, 0, 2).reshape(T, D)
-    return mm(o, w, q + "att.o")
+    return lin(o, w, q + "att.o")
 
 
 def conv_module(x, w, q, a):
     T, D = x.shape
-    h = mm(x, w, q + "conv.pw1")  # [T][2D]
+    h = lin(x, w, q + "conv.pw1")  # [T][2D]
     h = h[:, :D] * _sigmoid(h[:, D:])  # GLU
     K = a["conv_kernel"]
     hp = np.zeros((T + K - 1, D))
@@ -149,11 +166,11 @@ def conv_module(x, w, q, a):
     for k in range(K):
         g += w[q + "conv.dw"][:, k] * hp[k : k + T]
     g = _silu(g + w[q + "conv.dw_b"])  # BatchNorm folded in
-    return mm(g, w, q + "conv.pw2")
+    return lin(g, w, q + "conv.pw2")
 
 
 def ff(x, w, q):
-    return mm(_silu(mm(x, w, q + "up")), w, q + "down")  # 0.5 folded into down
+    return lin(_silu(lin(x, w, q + "up")), w, q + "down")  # 0.5 folded into down
 
 
 def layer(x, pe, w, i, a):
@@ -169,12 +186,20 @@ def layer(x, pe, w, i, a):
     return _ln(x, w[q + "out.norm.w"], w[q + "out.norm.b"], eps)
 
 
-def encode(feat, w, a, layers=None):
-    x = subsample(feat, w, a)
+def conformer(x, w, a, layers=None):
+    """The layers over subsampled frames [T][d_model]. A model with
+    xscaling (a["xscale"], sqrt(d_model): the diarizer's, not Parakeet's)
+    scales its input first, as NeMo's RelPositionalEncoding does."""
+    if a.get("xscale"):
+        x = x * a["xscale"]
     pe = pos_emb(x.shape[0], w, a)
     for i in range(a["n_layers"] if layers is None else layers):
         x = layer(x, pe, w, i, a)
     return x
+
+
+def encode(feat, w, a, layers=None):
+    return conformer(subsample(feat, w, a), w, a, layers)
 
 
 # -------------------------------------------------------------- decoder ---

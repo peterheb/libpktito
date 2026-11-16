@@ -8,6 +8,7 @@
 cd "$(dirname "$0")/.." || exit 1
 MODEL=${MODEL:-models/parakeet-tdt-0.6b-v2.pkf}
 TINY=tests/data/tiny.pkf
+TINY_DIAR=tests/data/tiny-diar.pkf
 
 run() {
     echo "$*"
@@ -17,6 +18,7 @@ run ./tests/mathcheck
 run ./tests/kcheck "$MODEL"
 run ./tests/q8check
 run ./tests/pkfcheck $TINY tests/pkfcheck.wav
+run ./tests/pkfcheck $TINY_DIAR
 run ./tests/wavcheck tests/wavcheck.tmp
 run ./tests/pathcheck $TINY
 run ./tests/capcheck
@@ -33,9 +35,17 @@ run ./tests/sentcheck "$MODEL" tests/data/test.wav
   && ./pktito-c -m $TINY --fast tests/pkfcheck.wav > /dev/null \
   && echo "pktito-c: the tiny model through the CLI, chunked, four ways" \
   || { echo "pktito-c: FAIL on the tiny model"; exit 1; }
-d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/ñ.wav" \
-  && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json \
-  && PKTITO_MODEL="$d/tiny-é.pkf" ./pktito-c --json "$d/ñ.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
+./pktito-c -m $TINY -m $TINY_DIAR --json tests/pkfcheck.wav > /dev/null \
+  && ./pktito-c -m $TINY -m $TINY_DIAR tests/pkfcheck.wav tests/pkfcheck.wav > /dev/null \
+  && ./pktito-c -m $TINY -m $TINY_DIAR --srt tests/pkfcheck.wav > /dev/null \
+  && ./pktito-c -m $TINY_DIAR speakers --json tests/pkfcheck.wav > /dev/null \
+  && ./pktito-c -m $TINY_DIAR probs tests/pkfcheck.wav > /dev/null \
+  && echo "pktito-c --speakers: the tiny models through the CLI, five ways" \
+  || { echo "pktito-c: FAIL on the tiny models with --speakers"; exit 1; }
+# the WAV keeps its own name, which --json writes, in a folder named past ASCII
+d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/pkfcheck.wav" \
+  && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/pkfcheck.wav" | cmp -s - tests/pkfcheck.json \
+  && PKTITO_MODEL="$d/tiny-é.pkf" ./pktito-c --json "$d/pkfcheck.wav" | cmp -s - tests/pkfcheck.json; r=$?; rm -rf "$d"
 [ $r = 0 ] && echo "pktito-c: a model and a WAV named past ASCII, from its command line and \$PKTITO_MODEL" \
   || { echo "pktito-c: FAIL on a model and a WAV named past ASCII"; exit 1; }
 rm -f tests/pkfcheck.wav tests/pkfcheck.json
@@ -52,6 +62,27 @@ for v in v2 v3; do f=models/parakeet-tdt-0.6b-$v.pkf
     && echo "test.wav: $v transcript in the fast mode is ref's" \
     || { echo "test.wav: FAIL - $v --fast transcript differs from tests/data/test.$v.fast.json"; exit 1; }
 done
+# a minute of two LibriSpeech readers in conversation: the diarizer's
+# stretches of speech, and v2's words with their speakers
+d=models/nemotron-3-diarization.pkf
+if [ ! -f $d ]; then echo "conv2.wav: no $d - skipped"
+else
+  ./pktito-c speakers -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.speakers.txt \
+    && echo "conv2.wav: the diarizer's stretches of speech are ref's" \
+    || { echo "conv2.wav: FAIL - the diarizer's stretches differ from tests/data/conv2.speakers.txt"; exit 1; }
+  f=models/parakeet-tdt-0.6b-v2.pkf
+  if [ ! -f $f ]; then echo "conv2.wav: no $f - skipped"
+  else
+    ./pktito-c --speakers --json -m $f -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.json \
+      && echo "conv2.wav: v2 transcript's words and speakers are ref's" \
+      || { echo "conv2.wav: FAIL - v2 --speakers transcript differs from tests/data/conv2.v2.json"; exit 1; }
+    for x in txt srt vtt; do o=; [ $x = txt ] || o=--$x
+      ./pktito-c $o -m $f -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.$x \
+        || { echo "conv2.wav: FAIL - v2 --speakers ${o:-text} differs from tests/data/conv2.v2.$x"; exit 1; }
+    done
+    echo "conv2.wav: v2 --speakers sentences, SRT and WebVTT are ref's"
+  fi
+fi
 # --stream resamples as it reads: at 8 kHz (a telephone's) and 48 kHz (most
 # microphones'), the lines of the same samples resampled first
 s=tests/streamcheck
@@ -64,11 +95,12 @@ for hz in 8000 48000; do
 done
 rm -f $s-in.wav $s-16k.wav $s-in.json
 # stdin from a pipe, its samples copied to a scratch file and read a stretch
-# at a time as a file's are: the file's lines, at 16 kHz and at 48 kHz
+# at a time as a file's are: the file's document, at 16 kHz and at 48 kHz
+# (the file as stdin too, which seeks, so that both are named "-")
 p=tests/pipecheck
 ./tests/streamcheck tests/data/test.wav 48000 $p-48k.wav $p-16k.wav; r=$?
 for w in tests/data/test.wav $p-48k.wav; do
-  [ $r = 0 ] && ./pktito-c --json -m "$MODEL" $w > $p-a.json \
+  [ $r = 0 ] && ./pktito-c --json -m "$MODEL" - < $w > $p-a.json \
     && cat $w | ./pktito-c --json -m "$MODEL" - > $p-b.json && cmp -s $p-a.json $p-b.json; r=$?
 done
 [ $r = 0 ] && cat tests/data/test.wav | ./pktito-c -v -m "$MODEL" - 2>&1 >/dev/null | grep -q 'by way of a scratch file'; r=$?

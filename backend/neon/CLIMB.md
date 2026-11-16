@@ -1288,3 +1288,276 @@ and 3.2 to 3.4% faster. The hypothesis asked too for the block of 32's
 loop in the same bytes, and it is the same instructions in other general
 registers: the default's time is level on the A72, and on the A53 its
 product is 0.26% slower under gcc and level under clang.
+
+## 2026-11-09 - the diarizer's GELU four lanes at a time (hypothesis)
+
+backend/avx2/CLIMB.md's entry of the same day has the diarizer's GELU.
+It is torch's exact one, over 91,295,744 values for tests/data/conv2.wav,
+and every backend's pk_k_gelu is ref's scalar loop. Its share on pi5a
+(Cortex-A76, neon-dp-a76, the board's gcc 14.2, eddb23b) was timed the
+same way: `pktito-c bench` with the diarizer's model over conv2.wav,
+against the same build with the call left out. Three rounds, alternated,
+best of 5; 57 °C after, never throttled (0x0):
+
+| threads | with GELU     | without       | GELU's share |
+| ------- | ------------- | ------------- | ------------ |
+| 4       | 1.800-1.802 s | 1.517-1.520 s | 16%          |
+| 1       | 6.644-6.668 s | 5.313-5.340 s | 20%          |
+
+At one thread that is 14.6 ns a value.
+
+The hypothesis: the x86 entry's, in NEON. Each of four lanes computes
+all three of pk_erff's outcomes, and VBSL chooses between them on the
+scalar's compares, which are false for a NaN. Each operation is the
+scalar's: FMLA for pk_fmaf, v_exp for pk_expf, and the sign by VBSL. One
+source serves every NEON build: neon, neon-dp, neon-dp-a76, neon-i8mm
+and neon-sve. So the bits are ref's: kcheck on pi5a and on a GB10 (whose
+cores run all five), and every float through each.
+
+Predicted on pi5a, from about 50 instructions for four values on the
+A76's two vector pipes:
+
+- the kernel at 2.5 to 4 ns a value;
+- the diarizer 14 to 17% faster at one thread and 11 to 13% at four;
+- under gcc 14.2 (the board's) and clang 21.1 (cross-built here,
+  static, tuned for the A76).
+
+On the in-order A53 the scalar computes one outcome a value where the
+lanes compute all three, and its NEON runs a quad instruction in two
+halves. Predicted no slower there, measured on pinfer-pi3 if pinfer
+gives a window.
+
+Kept if all of these hold:
+
+- kcheck and the sweep give ref's bits.
+- check-c's conv2 rows and speakers are the same bytes on pi5a.
+- The diarizer's bench on pi5a is faster by more than its spread at 1
+  and 4 threads under both compilers.
+
+neon's ARMv8.0 build, the A53's, keeps the vector kernel only if the
+A53 is not slower.
+
+## 2026-11-09 - the diarizer's GELU four lanes at a time (result: not kept)
+
+The hypothesis above, as written: one vector of four values a step.
+
+**Bits.** kcheck (1,740 cases) and every float through the kernel, tails
+included (gelusweep, a scratch sweep), all gave ref's bits:
+
+- on pi5a, for neon-dp-a76, neon-dp and neon, under gcc 14.2 and
+  clang 21.1;
+- on an Orange Pi Zero 3 (H618, four A53), for neon, under gcc 15.2
+  (cross-built).
+
+**Time.** `pktito-c bench` ran the diarizer's model over
+tests/data/conv2.wav, base 4891170 against the kernel. Rounds turned the
+order each time, best of 5. Each build's change is against its own
+compiler's base a round, median (range).
+
+- pi5a: six rounds. gcc 14.2 was the board's own; clang 21.1 was
+  cross-built static with -mtune=cortex-a76. 67.5 °C at the end, never
+  throttled.
+- The Orange Pi: four rounds at 4 threads only, since one thread there
+  takes 30 s a run. Both builds cross-built static with
+  -mtune=cortex-a53. 50 °C to 73.5 °C.
+
+| board           | threads | gcc                    | clang                |
+| --------------- | ------- | ---------------------- | -------------------- |
+| pi5a (A76)      | 1       | -10.6% (-10.7 to -9.5) | +0.5% (+0.4 to +0.6) |
+| pi5a (A76)      | 4       | -9.8% (-10.0 to -9.7)  | +0.1% (-0.4 to +0.3) |
+| Orange Pi (A53) | 4       | -7.4% (-7.4 to -7.3)   | -0.0% (-0.1 to +0.1) |
+
+Under gcc the kernel is faster but short of the prediction (-14 to -17%
+and -11 to -13% on pi5a). Under clang it is level, and slower at one
+thread on pi5a in every round.
+
+clang's base is not scalar. clang 21 vectorizes ref's loop itself, and
+if-converts pk_erff's branches into selects, which computes the same
+three outcomes in every lane as this kernel. Its base is 6.0 s at one
+thread on pi5a, against gcc's 6.65 s.
+
+Both vector loops are latency's, not throughput's:
+
+- A vector's chain (the polynomial in t, exp's, the selects) is about
+  100 cycles of dependent instructions; FMLA takes 4 cycles on the A76.
+- A step is about 75 instructions under clang. Under gcc it is 101, with
+  each constant rematerialized by ADRP and LDR every step.
+- The A76's 128-entry window holds under two steps.
+
+A scratch harness (gelumb, not in the tree) timed v_gelu on k vectors a
+step, on one core, over a layer-step's 1.4 million values drawn from
+N(0, 1.5^2). Best of 7, each output ref's bits. gcc 15.2 and clang 21.1,
+cross-built, each tuned for its core; ns a value:
+
+| a step     | A76, gcc | A76, clang | A53, gcc | A53, clang |
+| ---------- | -------- | ---------- | -------- | ---------- |
+| ref's loop | 15.09    | 6.66       | 88.65    | 37.58      |
+| 1 vector   | 6.54     | 6.37       | 40.02    | 37.13      |
+| 2          | 5.40     | 5.06       | 25.67    | 21.58      |
+| 3          | 4.63     | 4.32       | 25.31    | 19.74      |
+| 4          | 4.00     | 4.45       | 25.46    | 19.76      |
+| 5          | 3.90     | 4.47       | 27.86    | 19.40      |
+| 6          | 4.44     | 4.45       | 27.24    | 19.64      |
+| 8          | 4.42     | 5.29       | 31.56    | 20.56      |
+
+Not kept: under clang it is no faster anywhere, and slower at one thread
+on pi5a.
+
+## 2026-11-09 - the diarizer's GELU four vectors a step (hypothesis)
+
+The entry above's kernel, with four vectors a step: four independent
+chains for the core to interleave. Then one vector a step, then the
+scalar tail. GELU's rows come in slices of 64 or 256 (core/passes.c), so
+the four-vector loop takes them whole. The operations are the same lane
+for lane, so ref's bits.
+
+Predicted, from the harness above and the shares in the entries above:
+
+| board           | threads | gcc 14.2 / 15.2 (A53) | clang 21.1  |
+| --------------- | ------- | --------------------- | ----------- |
+| pi5a (A76)      | 1       | -13 to -15%           | -2.5 to -4% |
+| pi5a (A76)      | 4       | -10 to -12%           | -1.5 to -3% |
+| Orange Pi (A53) | 4       | -8.5 to -10%          | -2 to -3%   |
+
+Each change is against the scalar base under the same compiler, and
+clang's base is its own vectorization of ref's loop.
+
+Kept if all of these hold:
+
+- kcheck and every float give ref's bits on pi5a under both compilers,
+  and on the A53.
+- check-c passes on pi5a, its conv2 rows and speakers the same bytes.
+- The bench is faster than its base by more than the spread under both
+  compilers: on pi5a at 1 and 4 threads, and on the A53 at 4.
+
+## 2026-11-09 - the diarizer's GELU four vectors a step (result: kept)
+
+The hypothesis above, as written.
+
+**Bits.** kcheck and every float through the kernel (gelusweep), tails
+included, give ref's bits on each of these:
+
+- pi5a: neon-dp-a76, neon-dp and neon, under gcc 14.2 and clang 21.1;
+- the A53: neon, under gcc 15.2 and clang 21.1;
+- a GB10 (spark-9eba): all five NEON builds, under gcc 15.2 and clang
+  21.1, cross-built static, 1,726 cases each with no model given.
+
+check-c passes on pi5a (gcc 14.2), with conv2's rows and speakers the
+same bytes.
+
+**Time.** Measured as in the entry above: base 4891170 against the
+kernel, the same builds of the base. pi5a ran six rounds (65.3 °C at
+the end, never throttled); the A53 ran four at 4 threads (50 °C to
+73.4 °C).
+
+| board           | threads | gcc                     | clang                |
+| --------------- | ------- | ----------------------- | -------------------- |
+| pi5a (A76)      | 1       | -14.0% (-14.5 to -13.7) | -3.3% (-3.3 to -3.1) |
+| pi5a (A76)      | 4       | -12.7% (-13.0 to -12.5) | -2.6% (-2.9 to -2.2) |
+| Orange Pi (A53) | 4       | -9.2% (-9.3 to -9.1)    | -2.5% (-2.6 to -2.3) |
+
+Each is in its predicted range, or past it for gcc at four threads on
+pi5a (-12.7% against -10 to -12%). gcc on pi5a went from 6.669 s to
+5.73 s at one thread, against 5.31-5.34 s with no GELU at all. So the
+kernel's 0.4 s is 4.5 ns a value, where gcc's scalar loop was 14.6.
+clang's own vectorization of ref's loop was 6.004-6.014 s; the kernel
+takes 5.811-5.824 s.
+
+Kept: every criterion holds, under both compilers, on both cores.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (hypothesis)
+
+`make PROFILE=1` now covers the diarizer (c1162b8). On pi5a (gcc 14.2,
+neon-dp-a76, tests/data/conv2.wav, best of 5) two passes between the
+attention's products take the same time at four threads as at one. A
+scratch copy of c1162b8 timed K's repacking (kpan_item) as its own
+stage:
+
+| pass                      | 1 thread | 4 threads |
+| ------------------------- | -------- | --------- |
+| the rotation (rope_item)  | 45.7 ms  | 44.9 ms   |
+| K's repacking (kpan_item) | 28.6     | 29.5      |
+| the run                   | 5.739 s  | 1.573 s   |
+| the two passes' share     | 1.3%     | 4.7%      |
+
+At 684 frames, q and k are 1.4 MB each. Together they are more than the
+Pi 5's 2 MB L3, so a pass of its own over them goes to memory, and more
+threads don't make that faster. The A53 (Orange Pi, gcc 15.2) spent
+346 ms of 59.5 s on the rotation at one thread and 140 ms of 15.25 s at
+four. The 9950X (avx512-vnni) is in backend/avx2/CLIMB.md's entry of the
+same day.
+
+The change: each item of the q and k products turns its own tile by
+the rotary angles while the tile is in its core's cache. For k, the item
+then copies its tile into pk_k_gemm_f32's panels (pk_panels_tile), as
+the recognizer's K product already does (core/passes.c). rope_item,
+kpan_item and their two pool jobs a layer go. A tile must hold whole
+heads, since the rotation pairs dimensions i and i + dk/2.
+pk_gemm_on's rows come in slices of 64 or 256, so the validator gains a
+shape check: a head must divide 64. Nemotron 3's heads are 64 wide.
+pkfcheck gains a corrupt case for it.
+
+No bits change. The rotation is the same operations on each value, and
+the panels are a copy.
+
+Predicted: the passes' work is done from L2 instead of from memory, and
+at four threads it is split four ways.
+
+| board           | threads | gcc 14.2 / 15.2 (A53) | clang 21.1     |
+| --------------- | ------- | --------------------- | -------------- |
+| pi5a (A76)      | 1       | -0.3 to -1.0%         | -0.3 to -1.0%  |
+| pi5a (A76)      | 4       | -3 to -4.5%           | -3 to -4.5%    |
+| Orange Pi (A53) | 4       | level to -1.5%        | level to -1.5% |
+
+Kept if all of these hold:
+
+- check-c passes on the 9950X and pi5a, with conv2's rows and speakers
+  the same bytes.
+- pkfcheck passes with the new case, and check-sanitize passes, since
+  core/model.c changes.
+- pi5a at four threads is faster than its base by more than the spread,
+  under both compilers.
+- No board and thread count is slower than its base by more than the
+  spread.
+
+## 2026-11-09 - the diarizer's rotation and K's panels made in the q and k products' tiles (result: not kept)
+
+The hypothesis above, as written.
+
+**Bits.** No row changed. `pktito-c probs` over conv2.wav gives the
+base's rows (sha256 dbb36070...) on each of these:
+
+- pi5a: neon, neon-dp and neon-dp-a76, under both compilers;
+- the A53, under both compilers;
+- the 9950X: avx512-vnni and avx2-vnni, under both compilers.
+
+check-c passes on the 9950X. pkfcheck passes with the new case (22,809),
+and check-sanitize passes. ThreadSanitizer finds no race at 6 or 16
+threads.
+
+**Time.** Base 30ae9b6 against the change. pi5a ran six rounds (gcc
+14.2 native, clang 21.1 cross and static); the A53 ran four at four
+threads. The order was turned each round, best of 5. Each build's
+change is against its own compiler's base a round, median (range).
+
+| board           | threads | gcc                  | clang                |
+| --------------- | ------- | -------------------- | -------------------- |
+| pi5a (A76)      | 1       | +0.1% (-0.4 to +0.4) | +0.9% (+0.2 to +1.0) |
+| pi5a (A76)      | 4       | -0.6% (-1.1 to -0.1) | -0.8% (-1.0 to -0.1) |
+| Orange Pi (A53) | 4       | -0.0% (-0.1 to -0.0) | +0.1% (+0.0 to +0.2) |
+
+The prediction was -3 to -4.5% on pi5a at four threads. Of the two
+passes' 74 ms there, about 10 ms went. Under clang the one-thread run
+is slower in every round.
+
+Likely, though not measured: at four threads pk_gemm_on cuts q's and
+k's 512 rows into eight slices of 64, and each slice keeps all 684
+frames. So an item's tile is 175 KB, and its product streams 350 KB of
+activations past it. By the time the item turns the tile, most of it
+has left the A76's 512 KB L2, and the reads still come from memory. At
+one thread a tile is 256 rows, 700 KB.
+
+Not kept: pi5a's gain at four threads is less than its base's spread
+(1.558 to 1.575 s), and clang's one-thread run is slower by more than
+its spread. rope_item and kpan_item stay. The validator stays as it
+was, so a head need not divide 64.

@@ -153,6 +153,17 @@ static const ed_edition model1[] = {
     },
 };
 
+static const ed_edition model2[] = {
+    {
+        .id = "cpu",
+        .about = "any CPU",
+        .kind = ED_CPU,
+        .status = ED_STABLE,
+        .needs = "0.9.8",
+        .model = { "nemotron-3-diarization.pkf", 100498048u, "95e979be9e0de01c7307ad2ea5f3cc296e86537d4cc935f7c1ab36bddb308715" },
+    },
+};
+
 const ed_model ed_catalog[] = {
     {
         .name = "parakeet-tdt-0.6b-v2",
@@ -172,5 +183,14 @@ const ed_model ed_catalog[] = {
         .editions = model1,
         .n_editions = 7,
     },
+    {
+        .name = "nemotron-3-diarization",
+        .about = "who speaks when, up to 8 speakers",
+        .task = ED_DIARIZE,
+        .status = ED_PREVIEW,
+        .needs = "0.9.8",
+        .editions = model2,
+        .n_editions = 1,
+    },
 };
-const int ed_n_models = 2;
+const int ed_n_models = 3;

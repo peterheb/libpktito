@@ -150,6 +150,10 @@ static void k_silu(float *x, size_t n) {
     for (size_t i = 0; i < n; i++) x[i] = x[i] * pk_sigmoidf(x[i]);
 }
 
+static void k_gelu(float *x, size_t n) {
+    for (size_t i = 0; i < n; i++) x[i] = x[i] * 0.5f * (1.0f + pk_erff(x[i] * PK_SQRT1_2F));
+}
+
 static void k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
     for (uint32_t t = 0; t < T; t++)
         for (uint32_t i = 0; i < n; i++)
@@ -288,6 +292,7 @@ const pk_kernels pk_kernels_ref = {
     .layernorm = k_layernorm,
     .softmax = k_softmax,
     .silu = k_silu,
+    .gelu = k_gelu,
     .glu = k_glu,
     .dwconv = k_dwconv,
     .conv3x3s2 = k_conv3x3s2,

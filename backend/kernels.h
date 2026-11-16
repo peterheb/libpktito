@@ -132,6 +132,11 @@ void pk_k_softmax(float *x, uint32_t n, float scale);
 /* x[i] = x[i] * pk_sigmoidf(x[i]): SiLU, in place over n. */
 void pk_k_silu(float *x, size_t n);
 
+/* x[i] = x[i] * 0.5f * (1.0f + pk_erff(x[i] * PK_SQRT1_2F)), in that order:
+ * GELU, torch's exact one as it writes it, in place over n. The diarizer's
+ * feed-forward (core/diar.c). */
+void pk_k_gelu(float *x, size_t n);
+
 /* GLU over T rows: out[t*os + i] = a[i] * pk_sigmoidf(a[i + n]) for i < n,
  * with a = x + t * xs: the first half of each row gated by its second. */
 void pk_k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n);
@@ -258,6 +263,7 @@ typedef struct {
                       const float *w, const float *b, float eps);
     void (*softmax)(float *x, uint32_t n, float scale);
     void (*silu)(float *x, size_t n);
+    void (*gelu)(float *x, size_t n);
     void (*glu)(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n);
     void (*dwconv)(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t C,
                    const float *w, const float *b, uint32_t K);

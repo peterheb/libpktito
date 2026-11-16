@@ -136,7 +136,7 @@ ifeq ($(PROFILE),1)
 endif
 
 INC := -Icore -Ibackend -Inpu
-LIB_SRC := core/model.c core/os.c core/pool.c core/mel.c core/encoder.c core/decoder.c \
+LIB_SRC := core/model.c core/os.c core/pool.c core/passes.c core/mel.c core/encoder.c core/diar.c core/speakers.c core/decoder.c \
            core/tokens.c core/asr.c core/transcribe.c core/vad.c core/segment.c core/wav.c core/resample.c core/captions.c core/sentences.c \
            core/language.c
 BACK_OBJ := $(foreach b,$(BACKENDS) ref,backend/$(b)/kernels.o) backend/kernels.o
@@ -262,6 +262,7 @@ models/%.pkf:
 
 MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
+TINY_DIAR := tests/data/tiny-diar.pkf
 TESTS := tests/kcheck tests/q8check tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck \
          tests/chunkcheck tests/pathcheck tests/transcheck tests/sentcheck tests/streamcheck \
          tests/editioncheck
@@ -319,21 +320,26 @@ benches: $(BENCHES)
 # check-c needs a compiler and nothing else but MODEL, so it runs on any
 # board: the math library; every kernel against ref; the model file's
 # validator on its malformed corpus and the whole engine on the tiny model
-# (tests/data/tiny.pkf, `pktito-tools tiny` writes it); the WAV reader on its
-# own; a WAV and a model under a name past ASCII, through the library and
-# through the CLI's arguments (a path is UTF-8 everywhere); the CLI on the tiny
-# model's 35 s recording, which it cuts into chunks; and Silero's test.wav
-# through ./pktito-c. Its VAD probabilities must be
-# tests/data/test.probs.txt exactly - vadito's bits, which vadito holds to
-# onnxruntime - and its transcripts, every token and its time, the bytes in
-# test.v2.json and test.v3.json, which ref wrote, and in the fast mode's
-# test.v2.fast.json and test.v3.fast.json: every backend on every machine
-# computes the same ones (backend/kernels.h), and this is where a board
-# that does not would say so. --stream, which resamples as it reads, must
-# print for test.wav at 8 and 48 kHz what it prints for the same samples
-# resampled first (tests/streamcheck writes the pairs), and test.wav down a
-# pipe, at 16 and 48 kHz, by way of a scratch file, what the file does. A model file that is
-# not there is skipped, with a line. The commands are tests/check-c.sh, so
+# (tests/data/tiny.pkf, `pktito-tools tiny` writes it) and on the tiny
+# diarizer (tests/data/tiny-diar.pkf, `pktito-tools tiny --diarizer`); the
+# WAV reader on its own; a WAV and a model under a name past ASCII, through
+# the library and through the CLI's arguments (a path is UTF-8 everywhere);
+# the CLI on the tiny models' 35 s recording, which it cuts into chunks,
+# with --speakers too; and Silero's test.wav through ./pktito-c. Its VAD
+# probabilities must be tests/data/test.probs.txt exactly - vadito's bits,
+# which vadito holds to onnxruntime - and its transcripts, every token and
+# its time, the bytes in test.v2.json and test.v3.json, which ref wrote, and
+# in the fast mode's test.v2.fast.json and test.v3.fast.json: every backend
+# on every machine computes the same ones (backend/kernels.h), and this is
+# where a board that does not would say so. conv2.wav, a minute of two
+# speakers, the same with the diarizer: its stretches of speech the bytes
+# in conv2.speakers.txt, and v2's --speakers transcript those in
+# conv2.v2.json. --stream, which resamples as it reads, must print for
+# test.wav at 8 and 48 kHz what it prints for the same samples resampled
+# first (tests/streamcheck writes the pairs), and test.wav down a pipe, at
+# 16 and 48 kHz, by way of a scratch file, what the file does. A model file
+# that is not there is skipped, with a line. The commands are
+# tests/check-c.sh, so
 # that a board without make, Android over adb, runs the same ones, and
 # tests/check-c.ps1 runs them on Windows without MSYS2.
 check-c: pktito-c $(TESTS) examples/transcribe
@@ -394,6 +400,7 @@ check-sanitize: $(if $(filter 1,$(ANE)),tests/ane-san.o)
 	$(CC) $(SAN) -std=c11 -ffp-contract=off -Wall -Wextra $(PLATFLAGS) $(INC) -o tests/wavcheck-san \
 	  tests/wavcheck.c core/wav.c core/os.c $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 ./tests/pkfcheck-san $(TINY)
+	ASAN_OPTIONS=detect_leaks=0 ./tests/pkfcheck-san $(TINY_DIAR)
 	ASAN_OPTIONS=detect_leaks=0 ./tests/wavcheck-san tests/wavcheck.tmp
 
 # The thread pool and every pass split over it, under ThreadSanitizer: a
@@ -480,6 +487,7 @@ $(FUZZ_DIR)/seeds: tests/fuzz/seeds.c | $(FUZZ_DIR)
 fuzz-corpus: $(FUZZ_DIR)/seeds
 	mkdir -p $(foreach f,$(FUZZ_NAMES),$(FUZZ_CORPUS)/$(f))
 	cp $(TINY) $(FUZZ_CORPUS)/pkf_bytes/tiny.pkf
+	cp $(TINY_DIAR) $(FUZZ_CORPUS)/pkf_bytes/tiny-diar.pkf
 	$(FUZZ_DIR)/seeds $(FUZZ_CORPUS)
 
 fuzz: $(FUZZ_BINS) fuzz-corpus

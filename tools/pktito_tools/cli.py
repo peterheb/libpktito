@@ -1,4 +1,4 @@
-"""pktito-tools convert | tiny | info | ref | slim"""
+"""pktito-tools convert | tiny | info | ref | diar"""
 
 import argparse
 import sys
@@ -51,34 +51,52 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pktito-tools")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("convert", help="convert a .nemo and silero_vad.onnx to a .pkf")
-    c.add_argument("nemo")
-    c.add_argument("vad")
-    c.add_argument("dst")
-    t = sub.add_parser("tiny", help="write a tiny random-weight .pkf for the C checks")
-    t.add_argument("dst")
-    i = sub.add_parser("info", help="show a .pkf's metadata, params and tensors")
-    i.add_argument("file")
-    r = sub.add_parser("ref", help="transcribe 16 kHz WAVs with the float64 reference")
-    r.add_argument("model", help=".nemo or .pkf")
-    r.add_argument("wav", nargs="+")
-    s = sub.add_parser(
-        "slim",
-        help="a .pkf without its encoder, for an accelerator's: the ane fork's "
-        "Core ML model, or the NPU's graph compiled ahead of time (npu/qnn.h)",
+    c = sub.add_parser(
+        "convert",
+        help="model.nemo silero_vad.onnx -> .pkf (a recognizer), or "
+        "Nemotron-3-Diarization.nemo -> .pkf (the diarizer)",
     )
-    s.add_argument("file")
-    s.add_argument("dst")
+    c.add_argument("files", nargs="+", metavar="FILE")
+    t = sub.add_parser("tiny", help="a tiny .pkf with random weights, for the C checks")
+    t.add_argument(
+        "--diarizer", action="store_true", help="a diarizer's, not a recognizer's"
+    )
+    t.add_argument("dst")
+    i = sub.add_parser("info", help="a .pkf's metadata, params and tensors")
+    i.add_argument("file")
+    r = sub.add_parser("ref", help="transcribe a 16 kHz WAV with the float64 reference")
+    r.add_argument(
+        "model", help="a .nemo (the checkpoint itself) or a .pkf (its rounded weights)"
+    )
+    r.add_argument("wav", nargs="+")
+    d = sub.add_parser(
+        "diar",
+        help="who speaks when in a 16 kHz WAV, as RTTM, with the float64 "
+        "Streaming Sortformer reference (docs/DIARIZATION.md)",
+    )
+    d.add_argument(
+        "model",
+        help="Nemotron-3-Diarization.nemo or diar_streaming_sortformer_4spk-v2.nemo",
+    )
+    d.add_argument("wav", nargs="+")
     a = ap.parse_args(argv)
 
     if a.cmd == "convert":
-        from . import convert
+        from . import convert, diarconvert
 
-        convert.convert(a.nemo, a.vad, a.dst)
+        if len(a.files) == 2:
+            diarconvert.convert_file(a.files[0], a.files[1])
+        elif len(a.files) == 3:
+            convert.convert(*a.files)
+        else:
+            sys.exit(
+                "pktito-tools convert: model.nemo silero_vad.onnx out.pkf, or "
+                "Nemotron-3-Diarization.nemo out.pkf"
+            )
     elif a.cmd == "tiny":
         from . import tiny
 
-        size = tiny.write(a.dst)
+        size = (tiny.write_diarizer if a.diarizer else tiny.write)(a.dst)
         print("%s: %d bytes" % (a.dst, size))
     elif a.cmd == "info":
         from . import pkf
@@ -127,9 +145,26 @@ def main(argv=None):
             for p in punct:
                 text = text.replace(" " + p, p)
             print(text)
-    elif a.cmd == "slim":
-        from . import pkf
+    elif a.cmd == "diar":
+        import os
+        from . import nemo, nemotron3, sortformer
 
-        size = pkf.slim(a.file, a.dst)
-        print("%s: %d bytes" % (a.dst, size))
+        nm = nemo.Nemo(a.model)
+        # Nemotron 3's encoder is NeMo's TransformerEncoder, v2's a ConformerEncoder
+        rotary = (
+            nm.config["encoder"]
+            .get("_target_", "")
+            .endswith("modules.TransformerEncoder")
+        )
+        net = nemotron3 if rotary else sortformer
+        arch = net.arch(nm.config, net.OFFLINE)
+        w = net.tensors(nm.state, arch)
+        for path in a.wav:
+            p, _ = net.diarize(read_wav(path), w, arch)
+            name = os.path.splitext(os.path.basename(path))[0]
+            for start, end, s in sortformer.segments(p, arch["frame"]):
+                print(
+                    "SPEAKER %s 1 %.2f %.2f <NA> <NA> speaker_%d <NA> <NA>"
+                    % (name, start, end - start, s)
+                )
     return 0

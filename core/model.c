@@ -146,8 +146,9 @@ int pk_pkf_validate(const unsigned char *p, size_t n, char *err, size_t errlen) 
     if (h.file_bytes != n)
         return fail(err, errlen, "the header says %llu bytes and there are %zu",
                     (unsigned long long)h.file_bytes, n);
-    if (!name_ok(h.arch, sizeof h.arch) || strcmp(h.arch, "parakeet-tdt"))
-        return fail(err, errlen, "the architecture is not parakeet-tdt");
+    if (!name_ok(h.arch, sizeof h.arch) || (strcmp(h.arch, "parakeet-tdt") && strcmp(h.arch, "sortformer")))
+        return fail(err, errlen, "the architecture is neither parakeet-tdt nor sortformer");
+    const int diar = !strcmp(h.arch, "sortformer");
     if (!name_ok(h.name, sizeof h.name))
         return fail(err, errlen, "the model's name is empty or not terminated");
     for (size_t i = 0; i < sizeof h.reserved; i++)
@@ -195,8 +196,9 @@ int pk_pkf_validate(const unsigned char *p, size_t n, char *err, size_t errlen) 
         }
     }
 
-    if (validate_vocab(p + h.vocab_off, h.vocab_size, err, errlen))
-        return -1;
+    /* a recognizer's vocabulary; a diarizer has none */
+    if (diar ? h.vocab_size != 0 : validate_vocab(p + h.vocab_off, h.vocab_size, err, errlen))
+        return diar ? fail(err, errlen, "a diarizer's file with a vocabulary") : -1;
 
     /* key\0value\0 ...: whole strings, in pairs, no empty key */
     size_t strings = 0;
@@ -425,6 +427,42 @@ static int bind_vad(pk_file *f, pk_vadw *v) {
     return 0;
 }
 
+/* The features' tables, each architecture's: the filterbank, the window
+ * centred in n_fft as torch.stft pads a shorter one, and the FFT's
+ * twiddles; then the filterbank's nonzero run in each band, which is all
+ * the features read */
+static int bind_mel(pk_file *f, pk_model *m) {
+    const uint32_t N = m->n_fft, bins = N / 2 + 1;
+    const float *wfile, *fc, *fs;
+    if (f32t(f, "mel.fb", m->n_mels, bins, &m->mel_fb)
+        || f32t(f, "mel.window", m->win_length, 1, &wfile)
+        || f32t(f, "mel.fft.cos", N / 2, 1, &fc) || f32t(f, "mel.fft.sin", N / 2, 1, &fs)
+        || check_twiddles(f, "the features", fc, fs, N))
+        return -1;
+    m->window = calloc(N, sizeof *m->window);
+    m->rev = calloc(N / 2, sizeof *m->rev);
+    m->mel_lo = calloc(m->n_mels, sizeof *m->mel_lo);
+    m->mel_n = calloc(m->n_mels, sizeof *m->mel_n);
+    if (!m->window || !m->rev || !m->mel_lo || !m->mel_n)
+        return fail(f->err, f->errlen, "out of memory");
+    memcpy(m->window + (N - m->win_length) / 2, wfile, m->win_length * sizeof(float));
+    bitrev(m->rev, N / 2);
+    m->fft.n = N;
+    m->fft.window = m->window;
+    m->fft.fcos = fc;
+    m->fft.fsin = fs;
+    m->fft.rev = m->rev;
+    for (uint32_t b = 0; b < m->n_mels; b++) {
+        const float *row = m->mel_fb + (size_t)b * bins;
+        uint32_t lo = 0, hi = bins;
+        while (lo < bins && row[lo] == 0) lo++;
+        while (hi > lo && row[hi - 1] == 0) hi--;
+        m->mel_lo[b] = lo;
+        m->mel_n[b] = hi - lo;
+    }
+    return 0;
+}
+
 static int bind_params(pk_file *f, pk_model *m) {
     char key[16];
     if (u32p(f, "sample_rate", 16000, 16000, &m->sample_rate)
@@ -488,7 +526,10 @@ static int bind_layer(pk_file *f, pk_model *m, uint32_t i, pk_layer *L) {
 #undef NM
 }
 
-static int bind(pk_file *f, pk_model *m) {
+static int all_used(pk_file *f);
+
+/* A recognizer's file, "parakeet-tdt" */
+static int bind_tdt(pk_file *f, pk_model *m) {
     if (bind_params(f, m))
         return -1;
 #if defined(PK_ANE) || defined(PK_QNN)
@@ -515,13 +556,7 @@ static int bind(pk_file *f, pk_model *m) {
                     "a slim model file, whose encoder is an NPU's: it loads in a build with ANE=1 or QNN=1");
 #endif
     const uint32_t C = m->sub_channels, D = m->d_model, P = m->pred_hidden, J = m->joint_hidden;
-    const uint32_t N = m->n_fft, bins = N / 2 + 1;
-    const float *wfile, *fc, *fs;
-    if (f32t(f, "mel.fb", m->n_mels, bins, &m->mel_fb)
-        || f32t(f, "mel.window", m->win_length, 1, &wfile)
-        || f32t(f, "mel.fft.cos", N / 2, 1, &fc) || f32t(f, "mel.fft.sin", N / 2, 1, &fs)
-        || check_twiddles(f, "the features", fc, fs, N)
-        || f32t(f, "pos.freq", D / 2, 1, &m->pos_freq)
+    if (bind_mel(f, m) || f32t(f, "pos.freq", D / 2, 1, &m->pos_freq)
         || check_pos_freq(f, m->pos_freq, D / 2))
         return -1;
     if (!m->encoder_coreml
@@ -534,31 +569,10 @@ static int bind(pk_file *f, pk_model *m) {
             || f32t(f, "sub.out.b", D, 1, &m->out_b)))
         return -1;
 
-    /* the window centred in n_fft, as torch.stft pads a shorter one; the
-     * filterbank's nonzero run in each band, which is all the features read */
-    m->window = calloc(N, sizeof *m->window);
-    m->rev = calloc(N / 2, sizeof *m->rev);
-    m->mel_lo = calloc(m->n_mels, sizeof *m->mel_lo);
-    m->mel_n = calloc(m->n_mels, sizeof *m->mel_n);
     m->layers = m->encoder_coreml ? NULL : calloc(m->n_layers, sizeof *m->layers);
     m->lstm = calloc(m->pred_layers, sizeof *m->lstm);
-    if (!m->window || !m->rev || !m->mel_lo || !m->mel_n || (!m->layers && !m->encoder_coreml) || !m->lstm)
+    if ((!m->layers && !m->encoder_coreml) || !m->lstm)
         return fail(f->err, f->errlen, "out of memory");
-    memcpy(m->window + (N - m->win_length) / 2, wfile, m->win_length * sizeof(float));
-    bitrev(m->rev, N / 2);
-    m->fft.n = N;
-    m->fft.window = m->window;
-    m->fft.fcos = fc;
-    m->fft.fsin = fs;
-    m->fft.rev = m->rev;
-    for (uint32_t b = 0; b < m->n_mels; b++) {
-        const float *row = m->mel_fb + (size_t)b * bins;
-        uint32_t lo = 0, hi = bins;
-        while (lo < bins && row[lo] == 0) lo++;
-        while (hi > lo && row[hi - 1] == 0) hi--;
-        m->mel_lo[b] = lo;
-        m->mel_n[b] = hi - lo;
-    }
 
     for (uint32_t i = 0; i < m->n_layers && !m->encoder_coreml; i++)
         if (bind_layer(f, m, i, &m->layers[i]))
@@ -601,9 +615,13 @@ static int bind(pk_file *f, pk_model *m) {
     m->meta_size = (size_t)f->h.meta_size;
     memcpy(m->name, f->h.name, sizeof m->name);
 
-    /* Anything the binder did not ask for is refused, not ignored: a param
-     * or a tensor this build does not know is a file made for something it
-     * does not implement, and would otherwise run as a different model. */
+    return all_used(f);
+}
+
+/* Anything the binder did not ask for is refused, not ignored: a param
+ * or a tensor this build does not know is a file made for something it
+ * does not implement, and would otherwise run as a different model. */
+static int all_used(pk_file *f) {
     for (uint32_t i = 0; i < f->h.n_params; i++)
         if (!f->pused[i]) {
             pk_param q;
@@ -617,6 +635,119 @@ static int bind(pk_file *f, pk_model *m) {
             return fail(f->err, f->errlen, "tensor %s is not part of the model", t.name);
         }
     return 0;
+}
+
+/* The rotary positions' frequencies are the file's so that the engine
+ * takes no power (tools/pktito_tools/diarconvert.py), and each must be the
+ * float that theta^(-2i/dk) rounds to, within 2 ulp for the power's
+ * rounding: anything else is a corrupt file, or one made for other
+ * positions. They are in (0, 1], which keeps a step's angles, position
+ * times frequency, under its 7168 frames (the params' ranges), inside the
+ * [-8192, 8192] pk_sincosf is checked exact over (core/vmath.h). */
+static int check_rope(pk_file *f, const float *x, uint32_t n, float theta) {
+    for (uint32_t i = 0; i < n; i++) {
+        const float want = (float)pow((double)theta, -(double)i / n);
+        const float ulp = nextafterf(want, 2.0f) - want;
+        if (!(x[i] > 0 && x[i] <= 1) || fabsf(x[i] - want) > 2 * ulp)
+            return fail(f->err, f->errlen, "rope.freq: element %u is not theta^(-%u/%u)", (unsigned)i,
+                        (unsigned)i, (unsigned)n);
+    }
+    return 0;
+}
+
+static int bind_tlayer(pk_file *f, pk_model *m, uint32_t i, pk_tlayer *L) {
+    const uint32_t D = m->d_model, F = m->ff_dim;
+    char n[PK_NAME];
+#define NM(s) (snprintf(n, sizeof n, "l%u." s, (unsigned)i), n)
+    return f32t(f, NM("att.norm.w"), D, 1, &L->att_nw) || f32t(f, NM("att.norm.b"), D, 1, &L->att_nb)
+        || q8t(f, NM("att.q"), D, D, &L->q) || q8t(f, NM("att.k"), D, D, &L->k)
+        || q8t(f, NM("att.v"), D, D, &L->v) || q8t(f, NM("att.o"), D, D, &L->o)
+        || f32t(f, NM("att.o.b"), D, 1, &L->o_b)
+        || f32t(f, NM("ff.norm.w"), D, 1, &L->ff_nw) || f32t(f, NM("ff.norm.b"), D, 1, &L->ff_nb)
+        || q8t(f, NM("ff.up"), F, D, &L->up) || f32t(f, NM("ff.up.b"), F, 1, &L->up_b)
+        || q8t(f, NM("ff.down"), D, F, &L->down) || f32t(f, NM("ff.down.b"), D, 1, &L->down_b);
+#undef NM
+}
+
+/* A diarizer's file, "sortformer": Nemotron 3 Diarization's network and
+ * its speaker cache's numbers (core/pkf.h; core/diar.c runs them). The
+ * cache's sizes bound a step's frames, cache + FIFO + a chunk and its
+ * context, which bound the diarizer's working memory: at most 8192
+ * frames here, 684 in Nemotron 3's 30.4 s configuration. */
+static int bind_sortformer(pk_file *f, pk_model *m) {
+    pk_diarw *w = &m->dw;
+    m->diar = 1;
+    if (u32p(f, "sample_rate", 16000, 16000, &m->sample_rate)
+        || u32p(f, "n_fft", 64, 4096, &m->n_fft)
+        || u32p(f, "win_length", 1, m->n_fft, &m->win_length)
+        || u32p(f, "hop_length", 1, 4096, &m->hop)
+        || u32p(f, "n_mels", 8, 1024, &m->n_mels)
+        || f32p(f, "preemph", 0, 1, &m->preemph)
+        || f32p(f, "log_guard", PK_EPS_MIN, 1, &m->log_guard)
+        || u32p(f, "n_layers", 1, 256, &m->n_layers)
+        || u32p(f, "d_model", 32, 16384, &m->d_model)
+        || u32p(f, "n_heads", 1, 256, &m->n_heads)
+        || u32p(f, "ff_dim", 32, 65536, &m->ff_dim)
+        || f32p(f, "ln_eps", PK_EPS_MIN, 1, &m->ln_eps)
+        || f32p(f, "rope_theta", 2, 1e9f, &w->rope_theta)
+        || u32p(f, "stack", 1, 64, &w->stack)
+        || u32p(f, "proj_dim", 32, 16384, &w->proj_dim)
+        || u32p(f, "upsample", 1, 64, &w->upsample)
+        || u32p(f, "n_spk", 1, PK_MAX_SPK, &w->n_spk)
+        || u32p(f, "chunk_len", 1, 2048, &w->chunk_len)
+        || u32p(f, "chunk_left", 0, 512, &w->chunk_left)
+        || u32p(f, "chunk_right", 0, 512, &w->chunk_right)
+        || u32p(f, "fifo_len", 0, 2048, &w->fifo_len)
+        || u32p(f, "cache_len", 1, 2048, &w->cache_len)
+        || u32p(f, "update_period", 1, 4096, &w->update_period)
+        || u32p(f, "sil_frames", 0, 64, &w->sil_frames)
+        || f32p(f, "score_threshold", 1e-6f, 1, &w->score_threshold)
+        || f32p(f, "boost_latest", 0, 100, &w->boost_latest)
+        || f32p(f, "strong_boost", 0, 100, &w->strong_boost)
+        || f32p(f, "weak_boost", 0, 100, &w->weak_boost)
+        || f32p(f, "min_pos_scores", 0, 1, &w->min_pos_scores))
+        return -1;
+    const uint32_t D = m->d_model, F = m->ff_dim, H = m->n_heads, P = w->proj_dim;
+    const uint32_t dk = D % H ? 0 : D / H, S16 = (w->n_spk + 15) & ~15u;
+    /* the shapes the kernels take, as a recognizer's: 16-row panels,
+     * 32-input blocks, heads that are whole panels, and pairs of a head's
+     * dimensions for the rotation; and a cache that holds each speaker's
+     * silence frames and a frame of its own */
+    if ((m->n_fft & (m->n_fft - 1)) || D % 32 || F % 32 || P % 32 || !dk || dk % 16
+        || (w->stack * m->n_mels) % 32)
+        return fail(f->err, f->errlen, "the model's shapes are not ones pktito's kernels take");
+    /* a row of probabilities is a whole number of samples */
+    if ((m->hop * w->stack) % w->upsample)
+        return fail(f->err, f->errlen, "an upsampling of %u that does not divide %u samples",
+                    (unsigned)w->upsample, (unsigned)(m->hop * w->stack));
+    if (w->cache_len < w->n_spk * (w->sil_frames + 1))
+        return fail(f->err, f->errlen, "a speaker cache of %u frames for %u speakers and %u silence frames each",
+                    (unsigned)w->cache_len, (unsigned)w->n_spk, (unsigned)w->sil_frames);
+    if (bind_mel(f, m) || f32t(f, "rope.freq", dk / 2, 1, &w->rope_freq)
+        || check_rope(f, w->rope_freq, dk / 2, w->rope_theta)
+        || q8t(f, "stack", D, w->stack * m->n_mels, &w->stack_w)
+        || f32t(f, "embed_norm.w", D, 1, &w->embed_nw) || f32t(f, "embed_norm.b", D, 1, &w->embed_nb))
+        return -1;
+    if (!(w->layers = calloc(m->n_layers, sizeof *w->layers)))
+        return fail(f->err, f->errlen, "out of memory");
+    for (uint32_t i = 0; i < m->n_layers; i++)
+        if (bind_tlayer(f, m, i, &w->layers[i]))
+            return -1;
+    if (f32t(f, "final_norm.w", D, 1, &w->final_nw) || f32t(f, "final_norm.b", D, 1, &w->final_nb)
+        || q8t(f, "proj", P, D, &w->proj) || f32t(f, "proj.b", P, 1, &w->proj_b)
+        || q8t(f, "up", w->upsample * P, 3 * P, &w->up) || f32t(f, "up.b", w->upsample * P, 1, &w->up_b)
+        || q8t(f, "head.hidden", P, P, &w->head_hidden) || f32t(f, "head.hidden.b", P, 1, &w->head_hidden_b)
+        || q8t(f, "head.out", S16, P, &w->head_out) || f32t(f, "head.out.b", S16, 1, &w->head_out_b)
+        || f32t(f, "sil", D, 1, &w->sil))
+        return -1;
+    memcpy(m->name, f->h.name, sizeof m->name);
+    m->meta = (const char *)f->buf + f->h.meta_off;
+    m->meta_size = (size_t)f->h.meta_size;
+    return all_used(f);
+}
+
+static int bind(pk_file *f, pk_model *m) {
+    return strcmp(f->h.arch, "sortformer") ? bind_tdt(f, m) : bind_sortformer(f, m);
 }
 
 /* ---------------------------------------------------------------- load --- */
@@ -743,6 +874,7 @@ void pk_model_free(pk_model *m) {
     free(m->mel_n);
     free(m->layers);
     free(m->lstm);
+    free(m->dw.layers);
     if (m->raw)
         free(m->raw);
     else
@@ -771,7 +903,11 @@ void pk_model_describe(const pk_model *m, pk_model_info *out) {
         out->durations[i] = m->dur[i];
 }
 int pk_model_rate(const pk_model *m) { return (int)m->sample_rate; }
-double pk_model_frame_seconds(const pk_model *m) { return 8.0 * m->hop / m->sample_rate; }
+double pk_model_frame_seconds(const pk_model *m) {
+    if (m->diar)                   /* a row of a diarizer's probabilities */
+        return (double)m->dw.stack / m->dw.upsample * m->hop / m->sample_rate;
+    return 8.0 * m->hop / m->sample_rate;
+}
 
 int pk_model_meta_at(const pk_model *m, int i, const char **key, const char **value) {
     size_t at = 0;

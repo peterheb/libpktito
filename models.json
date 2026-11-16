@@ -404,6 +404,32 @@
           }
         }
       ]
+    },
+    {
+      "name": "nemotron-3-diarization",
+      "task": "diarize",
+      "status": "preview",
+      "needs": "0.9.8",
+      "about": "who speaks when, up to 8 speakers",
+      "license": "OpenMDW-1.1",
+      "source": "https://huggingface.co/nvidia/Nemotron-3-Diarization",
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "nemotron-3-diarization.pkf",
+            "bytes": 100498048,
+            "sha256": "95e979be9e0de01c7307ad2ea5f3cc296e86537d4cc935f7c1ab36bddb308715",
+            "made": {
+              "by": "pktito-tools convert, as pktito c0acaf3 writes it"
+            }
+          }
+        }
+      ]
     }
   ]
 }

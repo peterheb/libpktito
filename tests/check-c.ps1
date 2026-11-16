@@ -4,24 +4,27 @@
 # programs built (make check-c's prerequisites: pktito-c, the Makefile's
 # TESTS and examples/transcribe, whose transcript is the last check),
 #
-#   powershell -File tests\check-c.ps1 [-V2 v2.pkf] [-V3 v3.pkf] [-Model m.pkf]
+#   powershell -File tests\check-c.ps1 [-V2 v2.pkf] [-V3 v3.pkf] [-Diar d.pkf] [-Model m.pkf]
 #
 # with -ExecutionPolicy RemoteSigned before -File where the policy is
 # Restricted (Windows 10's and 11's default), which runs no script. -V2 and
-# -V3 are the models test.wav's transcripts are held with, models\'s by
-# default, each skipped with a line when it is not there; -Model is the one
-# kcheck and the other test.wav checks use, -V2 by default. A relative path
-# is the tree's, as check-c.sh takes MODEL. The first failure ends the run.
+# -V3 are the models test.wav's transcripts are held with, and -Diar the
+# diarizer conv2.wav's speakers are, models\'s by default, each skipped
+# with a line when it is not there; -Model is the one kcheck and the other
+# test.wav checks use, -V2 by default. A relative path is the tree's, as
+# check-c.sh takes MODEL. The first failure ends the run.
 #
 # A program's output goes to a file through cmd's > and is compared by its
 # hash: PowerShell's own > and | decode it in the console's code page and
 # write it out again, and that file is not the program's bytes.
 param([string]$V2 = 'models\parakeet-tdt-0.6b-v2.pkf',
       [string]$V3 = 'models\parakeet-tdt-0.6b-v3.pkf',
+      [string]$Diar = 'models\nemotron-3-diarization.pkf',
       [string]$Model = $V2)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot)
 $tiny = 'tests\data\tiny.pkf'
+$tinydiar = 'tests\data\tiny-diar.pkf'
 
 function run([string]$cmd) {
     $cmd
@@ -34,6 +37,7 @@ run 'tests\mathcheck.exe'
 run "tests\kcheck.exe `"$Model`""
 run 'tests\q8check.exe'
 run "tests\pkfcheck.exe $tiny tests\pkfcheck.wav"
+run "tests\pkfcheck.exe $tinydiar"
 run 'tests\wavcheck.exe tests\wavcheck.tmp'
 run "tests\pathcheck.exe $tiny"
 run 'tests\capcheck.exe'
@@ -51,6 +55,14 @@ foreach ($a in '--srt tests\pkfcheck.wav', 'tests\pkfcheck.wav tests\pkfcheck.wa
 }
 if ($r) { 'pktito-c: FAIL on the tiny model'; exit 1 }
 'pktito-c: the tiny model through the CLI, chunked, four ways'
+$r = 0
+foreach ($a in "-m $tiny -m $tinydiar --json tests\pkfcheck.wav", "-m $tiny -m $tinydiar tests\pkfcheck.wav tests\pkfcheck.wav",
+               "-m $tiny -m $tinydiar --srt tests\pkfcheck.wav", "-m $tinydiar speakers --json tests\pkfcheck.wav",
+               "-m $tinydiar probs tests\pkfcheck.wav") {
+    if (-not $r) { cmd /c "pktito-c.exe $a > NUL"; $r = $LASTEXITCODE }
+}
+if ($r) { 'pktito-c: FAIL on the tiny models with --speakers'; exit 1 }
+'pktito-c --speakers: the tiny models through the CLI, five ways'
 
 # check-c.sh's names past ASCII, made from their code points so that this
 # file means the same in every code page: Windows PowerShell 5.1 reads a
@@ -59,14 +71,15 @@ $e, $n, $ya = [char]0xE9, [char]0xF1, [char]0x44F
 $d = "tests\pathcheck-t${e}st-$n-$ya"
 New-Item -ItemType Directory -Force $d | Out-Null
 Copy-Item $tiny "$d\tiny-$e.pkf"
-Copy-Item tests\pkfcheck.wav "$d\$n.wav"
-cmd /c "pktito-c.exe -m `"$d\tiny-$e.pkf`" --json `"$d\$n.wav`" > tests\pathcheck.json"
+# the WAV keeps its own name, which --json writes, in a folder named past ASCII
+Copy-Item tests\pkfcheck.wav "$d\pkfcheck.wav"
+cmd /c "pktito-c.exe -m `"$d\tiny-$e.pkf`" --json `"$d\pkfcheck.wav`" > tests\pathcheck.json"
 $ok = (-not $LASTEXITCODE) -and (same tests\pathcheck.json tests\pkfcheck.json)
 # and the model through the environment, which getenv gives in the ANSI
 # code page, as main's argv
 $was = $env:PKTITO_MODEL
 $env:PKTITO_MODEL = "$d\tiny-$e.pkf"
-cmd /c "pktito-c.exe --json `"$d\$n.wav`" > tests\pathcheck.json"
+cmd /c "pktito-c.exe --json `"$d\pkfcheck.wav`" > tests\pathcheck.json"
 $ok = $ok -and (-not $LASTEXITCODE) -and (same tests\pathcheck.json tests\pkfcheck.json)
 $env:PKTITO_MODEL = $was
 Remove-Item -Recurse -Force $d, tests\pathcheck.json
@@ -96,6 +109,36 @@ foreach ($v in @(@('v2', $V2), @('v3', $V3))) {
     Remove-Item tests\t.json
 }
 
+# check-c.sh's minute of two LibriSpeech readers in conversation: the
+# diarizer's stretches of speech, and v2's words with their speakers
+if (-not $Diar -or -not (Test-Path $Diar)) { "conv2.wav: no $Diar - skipped" }
+else {
+    cmd /c "pktito-c.exe speakers -m `"$Diar`" tests\data\conv2.wav > tests\t.txt"
+    if (-not (same tests\t.txt tests\data\conv2.speakers.txt)) {
+        "conv2.wav: FAIL - the diarizer's stretches differ from tests\data\conv2.speakers.txt"; exit 1
+    }
+    "conv2.wav: the diarizer's stretches of speech are ref's"
+    Remove-Item tests\t.txt
+    if (-not $V2 -or -not (Test-Path $V2)) { "conv2.wav: no $V2 - skipped" }
+    else {
+        cmd /c "pktito-c.exe --speakers --json -m `"$V2`" -m `"$Diar`" tests\data\conv2.wav > tests\t.json"
+        if (-not (same tests\t.json tests\data\conv2.v2.json)) {
+            "conv2.wav: FAIL - v2 --speakers transcript differs from tests\data\conv2.v2.json"; exit 1
+        }
+        "conv2.wav: v2 transcript's words and speakers are ref's"
+        Remove-Item tests\t.json
+        foreach ($x in 'txt', 'srt', 'vtt') {
+            $o = if ($x -eq 'txt') { '' } else { "--$x" }
+            cmd /c "pktito-c.exe $o -m `"$V2`" -m `"$Diar`" tests\data\conv2.wav > tests\t.$x"
+            if (-not (same tests\t.$x tests\data\conv2.v2.$x)) {
+                "conv2.wav: FAIL - v2 --speakers $x differs from tests\data\conv2.v2.$x"; exit 1
+            }
+            Remove-Item tests\t.$x
+        }
+        "conv2.wav: v2 --speakers sentences, SRT and WebVTT are ref's"
+    }
+}
+
 # check-c.sh's --stream at 8 and 48 kHz, against the same samples resampled first
 $s = 'tests\streamcheck'
 foreach ($hz in 8000, 48000) {
@@ -109,12 +152,13 @@ foreach ($hz in 8000, 48000) {
 }
 Remove-Item "$s-in.wav", "$s-16k.wav", "$s-in.json", "$s-16k.json"
 
-# check-c.sh's pipe, through cmd's, which passes the bytes as they are
+# check-c.sh's pipe, through cmd's, which passes the bytes as they are; the
+# file as stdin too, which seeks, so that both documents are named "-"
 $p = 'tests\pipecheck'
 cmd /c "tests\streamcheck.exe tests\data\test.wav 48000 $p-48k.wav $p-16k.wav"
 $ok = -not $LASTEXITCODE
 foreach ($w in 'tests\data\test.wav', "$p-48k.wav") {
-    if ($ok) { cmd /c "pktito-c.exe --json -m `"$Model`" $w > $p-a.json"; $ok = -not $LASTEXITCODE }
+    if ($ok) { cmd /c "pktito-c.exe --json -m `"$Model`" - < $w > $p-a.json"; $ok = -not $LASTEXITCODE }
     if ($ok) { cmd /c "type $w | pktito-c.exe --json -m `"$Model`" - > $p-b.json"; $ok = -not $LASTEXITCODE }
     $ok = $ok -and (same "$p-a.json" "$p-b.json")
 }

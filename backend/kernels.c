@@ -359,6 +359,8 @@ void pk_k_softmax(float *x, uint32_t n, float scale) { k()->softmax(x, n, scale)
 
 void pk_k_silu(float *x, size_t n) { k()->silu(x, n); }
 
+void pk_k_gelu(float *x, size_t n) { k()->gelu(x, n); }
+
 void pk_k_glu(float *out, size_t os, const float *x, size_t xs, uint32_t T, uint32_t n) {
     k()->glu(out, os, x, xs, T, n);
 }

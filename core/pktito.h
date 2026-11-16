@@ -34,6 +34,9 @@
  *   captions     pk_captions      words with times to a subtitle track's cues
  *   language     pk_language      which of the 25 languages words are in
  *   sentences    pk_sentences     tokens to the sentences a transcript reads in
+ *   speakers     pk_diar_run      who speaks when: each speaker's
+ *                                 probability every 10 ms, from a
+ *                                 diarizer's model
  *
  * A model is read-only once loaded and may be shared by any number of
  * transcribers on any number of threads; a transcriber belongs to one
@@ -106,9 +109,14 @@ typedef struct {
 void pk_model_describe(const pk_model *m, pk_model_info *out);
 
 /* Samples a second the model hears (16000), and seconds an encoder frame
- * lasts (0.08: a token's frame times this is when it was heard). */
+ * lasts (0.08: a token's frame times this is when it was heard), or for a
+ * diarizer a row of its probabilities (0.01). */
 int    pk_model_rate(const pk_model *m);
 double pk_model_frame_seconds(const pk_model *m);
+
+/* The speakers a diarizer's model tells apart (8 for Nemotron 3
+ * Diarization), or 0 for a recognizer's. */
+int pk_model_speakers(const pk_model *m);
 
 /* ------------------------------------------------------------ recording --- */
 
@@ -142,10 +150,11 @@ pk_audio pk_audio_floats(const float *x, size_t n);
 
 typedef struct pk_asr pk_asr;
 
-/* A transcriber on `threads` threads (0: one a core). NULL if memory or a
- * thread cannot be had. With 0, on a chip whose cores are of two kinds, the
- * second recording of 8 s or more times the encoder on every core and on
- * the fast kind alone, and the transcriber keeps the faster;
+/* A transcriber on `threads` threads (0: one a core). NULL if m is a
+ * diarizer's (pk_model_speakers), or memory or a thread cannot be had.
+ * With 0, on a chip whose cores are of two kinds, the second recording of
+ * 8 s or more times the encoder on every core and on the fast kind alone,
+ * and the transcriber keeps the faster;
  * pk_asr_threads says how many it runs on. On 8 threads or more it may run
  * a recording's chunks several at once (pk_asr_run_chunks), and makes the
  * threads and the memory for that the first time a recording takes them. */
@@ -545,14 +554,19 @@ enum {
  * two to a cue, each cue on from its first word until a little after its
  * last, and the words cut into cues where their pauses, punctuation and
  * timing read best - the cheapest of every possible cut by
- * core/captions.c's costs, not the first that fits. lang is the words'
- * language as pk_language names it: "en" adds the English rules (no cue or
- * line ends on "the" or "to"; an abbreviation's period ends no sentence),
- * and another, or NULL, leaves punctuation and pauses. media_end is when
- * the recording ends (ms), or 0 if unknown. out has room for n. Returns the
- * count of cues, or -1 if memory runs out (90 bytes a word, given back
- * before it returns). */
-long pk_captions(const pk_capword *w, size_t n, const char *lang, int64_t media_end, pk_cue *out);
+ * core/captions.c's costs, not the first that fits. speaker, if not NULL,
+ * is each word's (pk_speakers'), and a change of speaker ends a cue
+ * wherever the words' times let one end (they always do for pktito's own
+ * words, which never overlap); a speaker's name, to be counted in the
+ * line, goes in the text of the first word of their turn. lang is the
+ * words' language as pk_language names it: "en" adds the English rules (no
+ * cue or line ends on "the" or "to"; an abbreviation's period ends no
+ * sentence), and another, or NULL, leaves punctuation and pauses.
+ * media_end is when the recording ends (ms), or 0 if unknown. out has room
+ * for n. Returns the count of cues, or -1 if memory runs out (91 bytes a
+ * word, given back before it returns). */
+long pk_captions(const pk_capword *w, size_t n, const int32_t *speaker, const char *lang, int64_t media_end,
+                 pk_cue *out);
 
 /* The language of n words, one of the 25 the multilingual model writes (bg
  * cs da de el en es et fi fr hr hu it lt lv mt nl pl pt ro ru sk sl sv uk),
@@ -580,9 +594,11 @@ enum {
  * and its times say no sentence ended there; and one that runs past 30 s is
  * broken after a comma, semicolon, colon or dash that leaves a first part of
  * 10 to 20 s, else at the longest pause there (core/sentences.c; README,
- * "Sentences", has the measurements). lang is the words' language as
- * pk_language names it, for the rules of one language's ("en", "de"), or
- * NULL.
+ * "Sentences", has the measurements). speaker, if not NULL, is each
+ * token's speaker, a word's its first token's (pk_speakers' for the
+ * word), and a change of speaker ends a sentence too. lang is the words'
+ * language as pk_language names it, for the rules of one language's ("en",
+ * "de"), or NULL.
  *
  * done is 1 when the tokens run to the recording's end, so that the words
  * after the last sentence's end make one too, and 0 when more may come:
@@ -594,7 +610,72 @@ enum {
  * Returns the count; out has room for n. -1 if memory runs out (five times
  * the first power of two past the longest word's text, 320 bytes at least,
  * given back before it returns). */
-long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const char *lang, int done,
-                  pk_sentence *out);
+long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const int32_t *speaker, const char *lang,
+                  int done, pk_sentence *out);
+
+/* ------------------------------------------------------------- speakers --- */
+
+/* Who speaks when, from a diarizer's model (NVIDIA's Nemotron 3
+ * Diarization, a Streaming Sortformer; core/diar.c): each speaker's
+ * probability of speaking, a row every pk_model_frame_seconds, so R =
+ * pk_model_frame_seconds times pk_model_rate samples a row (10 ms and 160
+ * for Nemotron 3 Diarization), row r the R from r R on. The speakers are
+ * numbered in the order they first speak, 0 first. A recording is heard in
+ * the model's chunks (27.2 s), each with the 3.2 s after it, and a speaker
+ * cache carries what was heard before, so a recording of any length takes
+ * the same memory. */
+typedef struct pk_diar pk_diar;
+
+/* A diarizer on `threads` threads (0: one a core), which pk_diar_threads
+ * says. NULL if m is a recognizer's, or memory or a thread cannot be had. */
+pk_diar *pk_diar_new(const pk_model *m, int threads);
+void     pk_diar_free(pk_diar *d);
+int      pk_diar_threads(const pk_diar *d);
+
+/* Rows [row, row + n) of a recording's probabilities, p[n][S], S =
+ * pk_model_speakers: p[i S + s] is speaker s's in row row + i. The rows
+ * come in order, each once. Nonzero stops the run. */
+typedef int (*pk_diar_fn)(void *arg, int64_t row, size_t n, const float *p);
+
+/* A recording heard in pieces, 16 kHz mono floats: pk_diar_feed takes the
+ * next n samples and hands fn every chunk they complete, pk_diar_finish
+ * says the recording has ended and hands fn the rest: every row that starts
+ * within the recording's whole 10 ms feature frames, n / 160 rows for n
+ * samples when a row is a frame, as in Nemotron 3 Diarization. The pieces'
+ * sizes change nothing. A sample that is not finite is heard as 0. Each
+ * returns 0, 1 if fn stopped it; pk_diar_finish, and pk_diar_reset, ready
+ * the diarizer for the next recording. */
+int  pk_diar_feed(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
+int  pk_diar_finish(pk_diar *d, pk_diar_fn fn, void *arg);
+void pk_diar_reset(pk_diar *d);
+
+/* The same for a whole recording at once. */
+int pk_diar_run(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
+
+/* Which speaker said each of n words: out[i] for the word heard over
+ * samples w[i] of a recording (start 0 or more) whose rows from the
+ * diarizer's model d are p[rows][S], S = pk_model_speakers(d): its column,
+ * 0 the first speaker to speak. frame is the recognizer's encoder frame in
+ * samples (pk_model_frame_seconds times pk_model_rate, 1280 for
+ * Parakeet's). NeMo's rule: the rows averaged over frames of that size,
+ * then each speaker's averaged over the word's frames and the frame before
+ * them; the largest wins, the first of equals (core/speakers.c;
+ * docs/DIARIZATION.md, "From frames to words"). Unlike NeMo, no average is
+ * raised to 0.01 first, so a word no one was heard saying still goes to the
+ * speaker likeliest over it, not to speaker 0. */
+void pk_speakers(const pk_model *d, const float *p, size_t rows, uint32_t frame, const pk_seg *w, size_t n,
+                 int32_t *out);
+
+/* A stretch of one speaker's speech, in samples; end is exclusive. */
+typedef struct {
+    int64_t start, end;
+    int32_t speaker;
+} pk_spk_seg;
+
+/* Each speaker's stretches of speech in the rows p[rows][S] of d: runs of
+ * rows where its probability is over one half, NeMo's default (no padding,
+ * no shortest stretch), ordered by start, then speaker. out has room for S
+ * (rows + 1) / 2; returns how many. */
+size_t pk_speaker_segments(const pk_model *d, const float *p, size_t rows, pk_spk_seg *out);
 
 #endif /* PKTITO_H */

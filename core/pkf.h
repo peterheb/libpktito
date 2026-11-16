@@ -1,6 +1,7 @@
 /* pktito's model file (.pkf): a Parakeet TDT model, its vocabulary, and the
  * Silero VAD that cuts long recordings into its input, in one file, with a
- * table saying where every number in it came from. Plain C11;
+ * table saying where every number in it came from; or a diarizer's, the
+ * "sortformer" architecture at the end. Plain C11;
  * tools/pktito_tools/pkf.py mirrors these structs and writes the file.
  *
  *   [pk_header]                      256 bytes
@@ -15,9 +16,10 @@
  * it lies. Every offset is from the start of the file. Integers and floats
  * are little-endian; the engine refuses to build for a big-endian target.
  *
- * The header names the architecture ("parakeet-tdt") and every shape the
- * engine needs is a param, so the engine binds tensors to shapes it derived
- * itself and never takes one from a descriptor on trust (core/model.c).
+ * The header names the architecture ("parakeet-tdt", or "sortformer") and
+ * every shape the engine needs is a param, so the engine binds tensors to
+ * shapes it derived itself and never takes one from a descriptor on trust
+ * (core/model.c).
  *
  * ---------------------------------------------------------------- types --
  *
@@ -93,6 +95,45 @@
  *                                   (core/vad.c lists them)
  *
  * and each q8 tensor's .scale beside it.
+ *
+ * ----------------------------------------------------------- sortformer --
+ *
+ * A diarizer: NVIDIA's Nemotron 3 Diarization, a Streaming Sortformer
+ * (core/diar.c; tools/pktito_tools/diarconvert.py writes it). The same
+ * header, types and tables, with no vocabulary (vocab_size 0) and no VAD.
+ * Its params:
+ *
+ *   sample_rate n_fft win_length hop_length n_mels         the features
+ *   preemph log_guard                                       (f32)
+ *   n_layers d_model n_heads ff_dim                         the encoder
+ *   ln_eps rope_theta                                       (f32)
+ *   stack proj_dim upsample n_spk                           its input and output
+ *   chunk_len chunk_left chunk_right fifo_len cache_len     the streaming, in
+ *   update_period sil_frames                                stacked frames
+ *   score_threshold boost_latest strong_boost weak_boost    the speaker cache's
+ *   min_pos_scores                                          cut (f32)
+ *
+ * and its tensors, with D, F, M, N as above, dk = D / n_heads, A = stack,
+ * U = upsample, R = proj_dim, S16 = n_spk rounded up to 16:
+ *
+ *   mel.fb, mel.window, mel.fft.cos, mel.fft.sin    as above
+ *   rope.freq [dk/2] f32            the rotary positions' frequencies, each
+ *                                   the float rope_theta^(-2i/dk) rounds to
+ *   stack [D][A*M] q8               A feature frames side by side to an input
+ *   embed_norm.w, .b [D]            before the first layer
+ *   l<i>.att.norm.w, .b [D]         and ff.norm: a pre-LN Transformer block's
+ *   l<i>.att.q, .k, .v, .o [D][D] q8, l<i>.att.o.b [D]
+ *   l<i>.ff.up [F][D] q8, .b [F], l<i>.ff.down [D][F] q8, .b [D]
+ *   final_norm.w, .b [D]            after the last
+ *   proj [R][D] q8, .b [R]
+ *   up [U*R][3*R] q8, .b [U*R]      the upsampling convolution over a frame
+ *                                   and the ones either side of it, the
+ *                                   three frames' inputs side by side
+ *                                   (frame-major); output row j*R + c is
+ *                                   channel c of the j-th finer frame
+ *   head.hidden [R][R] q8, .b [R]
+ *   head.out [S16][R] q8, .b [S16]  a row a speaker, the rows past n_spk zero
+ *   sil [D] f32                     the learned silence frame of the cache
  */
 #ifndef PK_PKF_H
 #define PK_PKF_H
@@ -114,7 +155,7 @@ enum { PK_PIECE_NORMAL = 1, PK_PIECE_UNKNOWN = 2, PK_PIECE_CONTROL = 3,
 
 typedef struct {
     uint32_t magic, version;
-    char     arch[32];            /* NUL-terminated: "parakeet-tdt" */
+    char     arch[32];            /* NUL-terminated: "parakeet-tdt" or "sortformer" */
     char     name[64];            /* NUL-terminated: "parakeet-tdt-0.6b-v2" */
     uint32_t n_params, n_tensors;
     uint64_t params_off, tensors_off;

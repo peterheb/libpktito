@@ -42,21 +42,13 @@ size_t pk_mel_thread_scratch(const pk_model *m) {
 
 typedef struct { pk_asr *a; const float *y; size_t T; } mel_job;
 
-/* frames [i * PK_MEL_BLOCK, ...): their power spectra, through the
- * filterbank and the log */
-static void frames_item(void *arg, int i, int th) {
-    mel_job *j = arg;
-    const pk_model *m = j->a->m;
+void pk_mel_block(const pk_model *m, const float *const *win, size_t nt, float *out, float *scratch) {
     const size_t bins = m->n_fft / 2 + 1, M = m->n_mels;
-    const size_t t0 = (size_t)i * PK_MEL_BLOCK, nt = j->T - t0 < PK_MEL_BLOCK ? j->T - t0 : PK_MEL_BLOCK;
-    float *spec = j->a->tws[th].mel, *fft = spec + ((PK_MEL_BLOCK * bins + 15) & ~(size_t)15);
-    const float **win = j->a->win + t0;
-    for (size_t t = 0; t < nt; t++)
-        win[t] = j->y + (t0 + t) * m->hop;
+    float *spec = scratch, *fft = spec + ((PK_MEL_BLOCK * bins + 15) & ~(size_t)15);
     pk_k_stft(spec, bins, win, (uint32_t)nt, &m->fft, fft);
     for (size_t t = 0; t < nt; t++) {
         const float *p = spec + t * bins;
-        float *o = j->a->feat + (t0 + t) * M;
+        float *o = out + t * M;
         for (size_t b = 0; b < M; b++) {
             const float *fb = m->mel_fb + b * bins + m->mel_lo[b];
             const float *pb = p + m->mel_lo[b];
@@ -66,6 +58,18 @@ static void frames_item(void *arg, int i, int th) {
             o[b] = pk_logf(acc + m->log_guard);
         }
     }
+}
+
+/* frames [i * PK_MEL_BLOCK, ...): their power spectra, through the
+ * filterbank and the log */
+static void frames_item(void *arg, int i, int th) {
+    mel_job *j = arg;
+    const pk_model *m = j->a->m;
+    const size_t t0 = (size_t)i * PK_MEL_BLOCK, nt = j->T - t0 < PK_MEL_BLOCK ? j->T - t0 : PK_MEL_BLOCK;
+    const float **win = j->a->win + t0;
+    for (size_t t = 0; t < nt; t++)
+        win[t] = j->y + (t0 + t) * m->hop;
+    pk_mel_block(m, win, nt, j->a->feat + t0 * m->n_mels, j->a->tws[th].mel);
 }
 
 /* bands [i * 8, ...): each normalized over the recording */

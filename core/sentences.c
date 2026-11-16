@@ -332,8 +332,8 @@ static int part_end(sent *s, size_t a0, size_t b, int32_t start, size_t *at) {
     return 0;
 }
 
-long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const char *lang, int done,
-                  pk_sentence *out) {
+long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const int32_t *speaker, const char *lang,
+                  int done, pk_sentence *out) {
     sent s = { .m = m, .t = t, .n = n, .english = lang && !strcmp(lang, "en"),
                .ordinals = lang && !strcmp(lang, "de"), .cap = 64 };
     long k = 0;
@@ -360,7 +360,7 @@ long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const char *lang
         }
         if (describe(&s, w.b, &x))
             goto oom;
-        if (ends(&s, &w, &x)) {
+        if (ends(&s, &w, &x) || (speaker && speaker[x.a] != speaker[w.a])) {
             out[k++] = (pk_sentence){ (int32_t)s0, (int32_t)(w.b - s0), 0 };
             s0 = w.b;
             start = x.start;
