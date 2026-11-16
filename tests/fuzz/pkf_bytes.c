@@ -36,6 +36,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     FZ_ASSERT(pk_model_name(m) && pk_model_name(m)[0]);
     FZ_ASSERT(pk_model_rate(m) == 16000);
     FZ_ASSERT(pk_model_frame_seconds(m) > 0);
+    const int speakers = (int)m->dw.n_spk;
+    if (speakers) {                        /* a diarizer: no vocabulary to ask about */
+        FZ_ASSERT(speakers > 0 && speakers <= PK_MAX_SPK);
+        (void)pk_model_meta(m, "family");
+        pk_model_free(m);
+        return 0;
+    }
     FZ_ASSERT(info.vocab > 0 && info.n_durations > 0 && info.n_durations <= 16);
 
     uint64_t h = fz_hash(data, size);
