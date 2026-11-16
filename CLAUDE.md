@@ -21,7 +21,10 @@ allows.
    `pk_asr_transcribe`, adds processing on top - its retry of speech the
    model dropped - that leaves NeMo's transcript on purpose, measured and
    documented (README, "Transcribing a recording"), and off with
-   `--no-retry`; it never changes what the low level computes.
+   `--no-retry`; it never changes what the low level computes. Who said a
+   word (`pk_speakers`) is NeMo's rule but for its 0.01 floor, which sent a
+   word no one was heard saying to whoever spoke first: measured and
+   documented too (docs/DIARIZATION.md, "From frames to words").
 
    **The CPU path is the reference.** Every default build has a CPU path
    that gives `ref`'s exact bits on every machine. Because its output is
