@@ -25,7 +25,7 @@ set -u
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 FUZZ_HOME=${FUZZ_HOME:-$HOME/pktito-fuzz}
 CYCLE=${CYCLE:-3600}
-WORKERS=${WORKERS:-"model_semantic:5 audio_pipeline:4 state:2 pkf_bytes:1 wav_bytes:1 resample:1"}
+WORKERS=${WORKERS:-"model_semantic:4 audio_pipeline:4 diar:2 state:2 pkf_bytes:1 wav_bytes:1 resample:1"}
 UPDATE=${UPDATE:-0}
 FLOOD=${FLOOD:-1000}
 RSS=${RSS:-1536}

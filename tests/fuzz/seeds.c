@@ -58,6 +58,12 @@ int main(int argc, char **argv) {
     save(argv[1], "state/segments", segment, sizeof segment);
     save(argv[1], "state/chunks", chunks, sizeof chunks);
     save(argv[1], "state/captions", captions, sizeof captions);
+    /* diar: a second of silence through the engine, and two rows of a
+     * speaker each with a word over them */
+    static unsigned char heard[21 + 4 * 16000] = { 1, 7, 0, 0, 0, 160, 1, 0, 3, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5 };
+    static const unsigned char said[] = { 0, 2, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 255, 0, 0, 255 };
+    save(argv[1], "diar/engine", heard, sizeof heard);
+    save(argv[1], "diar/speakers", said, sizeof said);
 
     static const uint32_t edge_bits[] = {
         0x00000000, 0x80000000, 0x3f800000, 0xbf800000, 0x00000001,

@@ -452,7 +452,7 @@ FUZZ_SAN     := -O1 -g -fsanitize=fuzzer,address,undefined -fno-sanitize-recover
                 -fno-omit-frame-pointer
 FUZZ_CFLAGS  := $(FUZZ_SAN) -std=c11 -ffp-contract=off -fno-math-errno -Wall -Wextra -Wpedantic \
                 $(PLATFLAGS) $(INC) -Itests/fuzz
-FUZZ_NAMES   := pkf_bytes wav_bytes resample state audio_pipeline model_semantic
+FUZZ_NAMES   := pkf_bytes wav_bytes resample state audio_pipeline model_semantic diar
 FUZZ_BINS    := $(addprefix $(FUZZ_DIR)/,$(FUZZ_NAMES))
 FUZZ_KERNELS := backend/ref/kernels.c backend/kernels.c
 FUZZ_REF     := $(FUZZ_KERNELS) core/os.c
@@ -466,6 +466,7 @@ FUZZ_MAX_resample  := 8192
 FUZZ_MAX_state     := 65536
 FUZZ_MAX_audio_pipeline := 131073
 FUZZ_MAX_model_semantic := 8192
+FUZZ_MAX_diar      := 96021
 # target, its corpus and its input limit: what every run of one starts with,
 # with any ASAN_OPTIONS the caller set taking precedence
 FUZZ_ONE = ASAN_OPTIONS=detect_leaks=1$${ASAN_OPTIONS:+:$$ASAN_OPTIONS} $(FUZZ_DIR)/$(1) $(FUZZ_CORPUS)/$(1) -max_len=$(FUZZ_MAX_$(1))
@@ -483,7 +484,7 @@ $(FUZZ_DIR)/wav_bytes: tests/fuzz/wav_bytes.c $(FUZZ_HDRS) core/wav.c core/os.c 
 $(FUZZ_DIR)/resample: tests/fuzz/resample.c $(FUZZ_HDRS) core/resample.c core/resample.h $(FUZZ_REF) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tests/fuzz/resample.c core/resample.c $(FUZZ_REF) $(LDLIBS)
 
-$(addprefix $(FUZZ_DIR)/,state audio_pipeline model_semantic): $(FUZZ_DIR)/%: tests/fuzz/%.c $(FUZZ_HDRS) \
+$(addprefix $(FUZZ_DIR)/,state audio_pipeline model_semantic diar): $(FUZZ_DIR)/%: tests/fuzz/%.c $(FUZZ_HDRS) \
                 $(LIB_SRC) $(FUZZ_KERNELS) | $(FUZZ_DIR)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ $< $(LIB_SRC) $(FUZZ_KERNELS) $(LDLIBS)
 

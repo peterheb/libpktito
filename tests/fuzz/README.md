@@ -75,6 +75,14 @@ is reproduced with `build/fuzz/<target> findings/<id>/input`.
   independence, ordered and bounded output, speech coverage, and caption cue
   coverage. Invalid pointers, undersized caller buffers and unsorted speech
   are outside the public contracts and are not generated.
+- `diar` loads the synthetic tiny diarizer once (`PK_FUZZ_DIAR`, by default
+  tests/data/tiny-diar.pkf). Its engine case takes exact float bit patterns
+  as a recording: heard whole and in fuzz-selected pieces it must give the
+  same rows, bit for bit, every probability in [0, 1]; stopped by its
+  function at a fuzz-picked row, it must hear the recording again as if it
+  had not. Its speakers case sends rows of probabilities and words of any
+  place and length through `pk_speakers` and `pk_speaker_segments`, the
+  second in exactly the room pktito.h asks for.
 - `audio_pipeline` loads the synthetic tiny model once and interprets every
   remaining four bytes as an exact float bit pattern. It checks ASR token,
   text and word contracts; VAD batch and frame-at-a-time identity; segment and
