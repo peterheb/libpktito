@@ -1618,9 +1618,8 @@ static void diar_engine_cases(const pk_model *m, int deep) {
 /* pk_speakers and pk_speaker_segments on rows made to give known answers:
  * NeMo's word rule (the frame before a word's counts, the first of equals
  * wins) without its floor (an average under 0.01 counts as itself), words
- * past the rows or
- * of no samples, no rows at all, and the most stretches rows can hold, in
- * exactly the room pktito.h asks for */
+ * past the rows or of no samples, no rows at all, and the most stretches
+ * rows can hold, in exactly the room pktito.h asks for */
 static void speakers_cases(const pk_model *m) {
     const size_t S = (size_t)pk_model_speakers(m);
     const int64_t F = 1280, row = llround(pk_model_frame_seconds(m) * pk_model_rate(m)), rpf = F / row;

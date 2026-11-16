@@ -74,7 +74,7 @@
       {"word": "in", "start": 27.841, "end": 28.001},
       {"word": "the", "start": 28.001, "end": 28.241},
       {"word": "world,", "start": 28.241, "end": 28.561},
-      {"word": "if", "start": 28.561, "end": 28.801},
+      {"word": "if", "start": 28.561, "end": 28.64},
       {"word": "at", "start": 28.96, "end": 29.04},
       {"word": "all.", "start": 29.04, "end": 29.36}
     ]},
@@ -137,7 +137,7 @@
       {"word": "I", "start": 55.04, "end": 55.36},
       {"word": "I", "start": 55.52, "end": 55.76},
       {"word": "um", "start": 55.92, "end": 56.08},
-      {"word": "when", "start": 56.56, "end": 56.88},
+      {"word": "when", "start": 56.56, "end": 56.608},
       {"word": "I", "start": 57.088, "end": 57.408},
       {"word": "think", "start": 57.408, "end": 57.728},
       {"word": "about", "start": 57.728, "end": 58.048},

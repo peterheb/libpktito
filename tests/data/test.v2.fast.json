@@ -73,7 +73,7 @@
       {"word": "implemented", "start": 27.201, "end": 27.841},
       {"word": "in", "start": 27.841, "end": 28.081},
       {"word": "the", "start": 28.081, "end": 28.241},
-      {"word": "world,", "start": 28.241, "end": 28.641},
+      {"word": "world,", "start": 28.241, "end": 28.64},
       {"word": "if", "start": 28.64, "end": 28.88},
       {"word": "at", "start": 28.96, "end": 29.04},
       {"word": "all.", "start": 29.04, "end": 29.36}
@@ -130,7 +130,7 @@
     ]},
     {"start": 54.72, "end": 59.488, "text": "So when I think about normative questions,", "words": [
       {"word": "So", "start": 54.72, "end": 54.88},
-      {"word": "when", "start": 56.56, "end": 56.88},
+      {"word": "when", "start": 56.56, "end": 56.608},
       {"word": "I", "start": 57.168, "end": 57.488},
       {"word": "think", "start": 57.488, "end": 57.808},
       {"word": "about", "start": 57.808, "end": 58.128},

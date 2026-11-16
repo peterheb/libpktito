@@ -643,8 +643,10 @@ typedef int (*pk_diar_fn)(void *arg, int64_t row, size_t n, const float *p);
  * within the recording's whole 10 ms feature frames, n / 160 rows for n
  * samples when a row is a frame, as in Nemotron 3 Diarization. The pieces'
  * sizes change nothing. A sample that is not finite is heard as 0. Each
- * returns 0, 1 if fn stopped it; pk_diar_finish, and pk_diar_reset, ready
- * the diarizer for the next recording. */
+ * returns 0, 1 if fn stopped it, or -1 if the diarizer could not take the
+ * samples (its buffer full, which its own sizes do not let happen);
+ * pk_diar_finish, and pk_diar_reset, ready the diarizer for the next
+ * recording. */
 int  pk_diar_feed(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
 int  pk_diar_finish(pk_diar *d, pk_diar_fn fn, void *arg);
 void pk_diar_reset(pk_diar *d);

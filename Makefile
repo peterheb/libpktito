@@ -405,8 +405,8 @@ check-sanitize: $(if $(filter 1,$(ANE)),tests/ane-san.o)
 
 # The thread pool and every pass split over it, under ThreadSanitizer: a
 # transcription and a stream on six threads, and a transcription in chunks
-# of 4 s on eight, two lanes of them at once (core/asr.c, run_lanes), which
-# must report nothing.
+# of 4 s on eight, two lanes of them at once (core/asr.c, run_lanes), and
+# the diarizer's passes on six (core/diar.c), which must report nothing.
 TSAN := -O1 -g -fsanitize=thread -std=c11 -ffp-contract=off $(PLATFLAGS) $(INC)
 check-tsan:
 	$(foreach b,$(BACKENDS) ref,$(CC) $(TSAN) $(ISA_$(b)) -c backend/$(b)/kernels.c -o tests/tsan-$(b).o &&) true
@@ -418,7 +418,13 @@ check-tsan:
 	@# and on the default threads, which on a chip of two kinds of core switch
 	@# between every core and the fast kind as the first recording is timed
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -m $(MODEL) tests/data/test.wav > /dev/null
-	@echo "check-tsan: no race on six threads, on two lanes of four, nor on the default"
+	@# the diarizer's passes, on the tiny models: with a transcript, down a
+	@# pipe beside two lanes, and alone
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 -m $(TINY) -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
+	cat tests/data/conv2.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 --json \
+	  -m $(TINY) -m $(TINY_DIAR) - > /dev/null
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan speakers -t 6 -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
+	@echo "check-tsan: no race on six threads, on two lanes of four, on the default, nor in the diarizer"
 
 check-math: tests/mathcheck
 	./tests/mathcheck --all

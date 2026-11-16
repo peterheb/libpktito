@@ -967,7 +967,9 @@ With `--json`, the document names the `diarizer` and lists the
 (below, "JSON"): a turn is a run of sentences with one speaker.
 `pktito-c speakers` prints the diarizer's answer alone, with no
 transcript: each speaker's stretches of speech, a line each, the start and
-end in seconds and the speaker. `pktito-c probs` with the diarizer's `-m`
+end in seconds and the speaker; with `--json`, a `pktito/1` document
+without the transcript's parts, the stretches under `speech` (below,
+"JSON"). `pktito-c probs` with the diarizer's `-m`
 prints the probabilities themselves, a line each 10 ms.
 
 The diarizer is NVIDIA's Nemotron 3 Diarization (99.2M parameters, up to
@@ -1072,9 +1074,19 @@ Here is tests/data/conv2.wav's, with v2 and the diarizer, cut short:
 Times are seconds, to the millisecond. `segments` are the sentences
 (above, "Sentences"), each with its words; with `--speakers` each is one
 speaker's, and `speaker` is an id in `speakers`, numbered from 1 in the
-order they first say a word. `captions` are `--srt`'s cues, line for line,
-each with its speaker. `language` is v2's "en", or what `pk_language` says
-of all of v3's words (above, "Captions"), null when they say too little.
+order they first say a word. Where a diarizer ran, `diarizer` names it and
+`speakers` is there, `[]` when no one said a word. A sentence's `text` is
+the model's own, with NeMo's spacing round punctuation, and is not always
+its `words` joined by spaces. A word starts where the model wrote it and
+ends at its last token's end, but never past the end of the chunk it was
+heard in, nor past the next word's start: a token's length is the model's
+guess, and a chunk's last word often ran past the chunk with it. The tokens
+under `chunks` keep their own times. `captions` are `--srt`'s cues, line
+for line, each with its speaker. `language` is v2's "en", or what
+`pk_language` says of all of v3's words (above, "Captions"), null when they
+say too little; v3's sentences are split as its words come, by the
+language the first of them name, which in a recording that changes
+language early is not always the one the document names.
 `chunks` are the stretches `pk_asr_transcribe` heard (above, "Transcribing
 a recording"): where each starts and ends, the silence to the next, its
 words as the index of its first in the file and how many, `retried` where
@@ -1093,6 +1105,11 @@ compares test.wav's byte for byte. Several files give
 `{"files": [...]}`, a document each, and with `-v` the whole run's `run`
 after the list. `--stream --json` is not this document but a line a pause,
 as it comes: `{"start", "end", "text"}`.
+
+A file's name is written as UTF-8, with U+FFFD for the bytes of one that
+is not. A recording with no samples is refused, with a line on stderr and
+an exit status of 1, in every format, as pktito-cli and the apps refuse
+one; the files beside it are still transcribed.
 
 ## How it works
 

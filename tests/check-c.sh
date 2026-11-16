@@ -42,6 +42,22 @@ run ./tests/sentcheck "$MODEL" tests/data/test.wav
   && ./pktito-c -m $TINY_DIAR probs tests/pkfcheck.wav > /dev/null \
   && echo "pktito-c --speakers: the tiny models through the CLI, five ways" \
   || { echo "pktito-c: FAIL on the tiny models with --speakers"; exit 1; }
+# a recording with no samples is refused, and the files beside it are heard;
+# a name that is not UTF-8, where the file system takes one, is written with
+# U+FFFD in its place, so that --json is JSON
+e=tests/empty.wav
+printf 'RIFF\044\000\000\000WAVEfmt \020\000\000\000\001\000\001\000\200\076\000\000\000\175\000\000\002\000\020\000data\000\000\000\000' > $e
+./pktito-c --json -m $TINY $e > tests/empty.out 2> /dev/null; r=$?
+[ $r = 1 ] && [ ! -s tests/empty.out ] && ./pktito-c -m $TINY $e tests/pkfcheck.wav > tests/empty.out 2> /dev/null; r=$?
+[ $r = 1 ] && [ -s tests/empty.out ]; r=$?
+b=$(printf 'tests/bad\377name.wav')
+case $(uname -s) in MINGW*|MSYS*|UCRT*|CLANG*|CYGWIN*) w=1;; *) w=0;; esac  # their cp renames it to one that is
+if [ $r = 0 ] && [ $w = 0 ] && cp tests/pkfcheck.wav "$b" 2> /dev/null; then
+  ./pktito-c --json -m $TINY "$b" | grep -q "$(printf '"file": "bad\357\277\275name.wav"')"; r=$?
+fi
+rm -f $e tests/empty.out "$b"
+[ $r = 0 ] && echo "pktito-c: a recording with no samples refused, a name that is not UTF-8 written as JSON" \
+  || { echo "pktito-c: FAIL on a recording with no samples, or a name that is not UTF-8"; exit 1; }
 # the WAV keeps its own name, which --json writes, in a folder named past ASCII
 d="tests/pathcheck-tést-ñ-я"; mkdir -p "$d" && cp $TINY "$d/tiny-é.pkf" && cp tests/pkfcheck.wav "$d/pkfcheck.wav" \
   && ./pktito-c -m "$d/tiny-é.pkf" --json "$d/pkfcheck.wav" | cmp -s - tests/pkfcheck.json \
@@ -80,6 +96,17 @@ else
       ./pktito-c $o -m $f -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.$x \
         || { echo "conv2.wav: FAIL - v2 --speakers ${o:-text} differs from tests/data/conv2.v2.$x"; exit 1; }
     done
+    # the diarizer hears a recording a stretch at a time, as the transcriber
+    # reads it: down a pipe, at 16 kHz and at 48 kHz, the file's document
+    q=tests/spkpipe
+    ./tests/streamcheck tests/data/conv2.wav 48000 $q-48k.wav $q-16k.wav; r=$?
+    for w in tests/data/conv2.wav $q-48k.wav; do
+      [ $r = 0 ] && ./pktito-c --speakers --json -m $f -m $d - < $w > $q-a.json \
+        && cat $w | ./pktito-c --speakers --json -m $f -m $d - > $q-b.json && cmp -s $q-a.json $q-b.json; r=$?
+    done
+    rm -f $q-48k.wav $q-16k.wav $q-a.json $q-b.json
+    [ $r = 0 ] && echo "conv2.wav: --speakers down a pipe at 16 and 48 kHz, as the file reads" \
+      || { echo "conv2.wav: FAIL - --speakers down a pipe is not the file's document"; exit 1; }
     echo "conv2.wav: v2 --speakers sentences, SRT and WebVTT are ref's"
   fi
 fi

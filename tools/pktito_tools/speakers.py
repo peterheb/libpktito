@@ -12,7 +12,7 @@ average under 0.01, goes to speaker 0: whoever spoke first.
 
 rule "pktito" is the one core/speakers.c computes: NeMo's without the
 floor, so that the faint averages of a word no one was heard saying still
-order the speakers (Peter, 2026-11-15; on four podcasts it changes 5 of
+order the speakers (docs/DIARIZATION.md, section 8: on four podcasts it changes 5 of
 21,114 words, the five unheard ones, each to the right speaker).
 
 rule "near" is the alternative DIARIZATION.md measures against it: a word

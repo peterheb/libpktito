@@ -14,7 +14,7 @@
  * (21,114 words) that made 5 one-word turns of the first speaker inside
  * others' sentences. Without the floor the faint averages still order the
  * speakers, and those 5 words go to the speaker around them, each the right
- * one, and no other word changes (Peter, 2026-11-15; DIARIZATION.md). The
+ * one, and no other word changes (docs/DIARIZATION.md, section 8). The
  * merge in NVIDIA's NeMo-Speech.cpp has no floor either.
  *
  * Here a word's frames come from its samples, counted from the recording's

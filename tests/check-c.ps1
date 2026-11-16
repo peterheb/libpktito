@@ -64,6 +64,21 @@ foreach ($a in "-m $tiny -m $tinydiar --json tests\pkfcheck.wav", "-m $tiny -m $
 if ($r) { 'pktito-c: FAIL on the tiny models with --speakers'; exit 1 }
 'pktito-c --speakers: the tiny models through the CLI, five ways'
 
+# check-c.sh's recording with no samples: refused, and the file beside it
+# heard (a name that is not UTF-8 is not a name Windows has)
+$e = 'tests\empty.wav'
+[IO.File]::WriteAllBytes("$PWD\$e", [byte[]](0x52,0x49,0x46,0x46,36,0,0,0,0x57,0x41,0x56,0x45,0x66,0x6D,0x74,0x20,16,0,0,0,1,0,1,0,
+    0x80,0x3E,0,0,0,0x7D,0,0,2,0,16,0,0x64,0x61,0x74,0x61,0,0,0,0))
+cmd /c "pktito-c.exe --json -m $tiny $e > tests\empty.out 2> NUL"
+$ok = $LASTEXITCODE -eq 1 -and (Get-Item tests\empty.out).Length -eq 0
+if ($ok) {
+    cmd /c "pktito-c.exe -m $tiny $e tests\pkfcheck.wav > tests\empty.out 2> NUL"
+    $ok = $LASTEXITCODE -eq 1 -and (Get-Item tests\empty.out).Length -gt 0
+}
+Remove-Item $e, tests\empty.out -ErrorAction SilentlyContinue
+if (-not $ok) { 'pktito-c: FAIL on a recording with no samples'; exit 1 }
+'pktito-c: a recording with no samples refused'
+
 # check-c.sh's names past ASCII, made from their code points so that this
 # file means the same in every code page: Windows PowerShell 5.1 reads a
 # script without a byte order mark in the system's.
@@ -136,6 +151,18 @@ else {
             Remove-Item tests\t.$x
         }
         "conv2.wav: v2 --speakers sentences, SRT and WebVTT are ref's"
+        # check-c.sh's --speakers down a pipe: the file's document
+        $q = 'tests\spkpipe'
+        cmd /c "tests\streamcheck.exe tests\data\conv2.wav 48000 $q-48k.wav $q-16k.wav"
+        $ok = -not $LASTEXITCODE
+        foreach ($w in 'tests\data\conv2.wav', "$q-48k.wav") {
+            if ($ok) { cmd /c "pktito-c.exe --speakers --json -m `"$V2`" -m `"$Diar`" - < $w > $q-a.json"; $ok = -not $LASTEXITCODE }
+            if ($ok) { cmd /c "type $w | pktito-c.exe --speakers --json -m `"$V2`" -m `"$Diar`" - > $q-b.json"; $ok = -not $LASTEXITCODE }
+            $ok = $ok -and (same "$q-a.json" "$q-b.json")
+        }
+        Remove-Item "$q-48k.wav", "$q-16k.wav", "$q-a.json", "$q-b.json" -ErrorAction SilentlyContinue
+        if (-not $ok) { "conv2.wav: FAIL - --speakers down a pipe is not the file's document"; exit 1 }
+        'conv2.wav: --speakers down a pipe at 16 and 48 kHz, as the file reads'
     }
 }
 
