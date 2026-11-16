@@ -32,6 +32,7 @@ RSS=${RSS:-1536}
 NOTIFY=${NOTIFY:-}
 
 export PK_FUZZ_MODEL="$REPO/tests/data/tiny.pkf"
+export PK_FUZZ_DIAR="$REPO/tests/data/tiny-diar.pkf"
 export ASAN_OPTIONS="detect_leaks=1${ASAN_OPTIONS:+:$ASAN_OPTIONS}"
 export UBSAN_OPTIONS="print_stacktrace=1${UBSAN_OPTIONS:+:$UBSAN_OPTIONS}"
 
