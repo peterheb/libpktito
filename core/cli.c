@@ -1444,12 +1444,23 @@ static void json_doc(const opts *o, chunk_out *p, const pk_asr *a, const char *p
         if (p->heard)
             sb_printf(&b, "\n  ]");
     }
-    sb_printf(&b, ",\n  \"segments\": [\n");
-    if (p->segs.n)
+    /* a list of nothing is [] */
+    sbuf caps = { 0 };
+    json_captions(&caps, c, lang, media_end, p->dm != NULL);
+    sb_printf(&b, ",\n  \"segments\": [");
+    if (p->segs.n) {
+        sb_put(&b, "\n", 1);
         sb_put(&b, p->segs.s, p->segs.n);
-    sb_printf(&b, "\n  ],\n  \"captions\": [\n");
-    json_captions(&b, c, lang, media_end, p->dm != NULL);
-    sb_printf(&b, "\n  ]");
+        sb_put(&b, "\n  ", 3);
+    }
+    sb_printf(&b, "],\n  \"captions\": [");
+    if (caps.n) {
+        sb_put(&b, "\n", 1);
+        sb_put(&b, caps.s, caps.n);
+        sb_put(&b, "\n  ", 3);
+    }
+    sb_printf(&b, "]");
+    free(caps.s);
     if (p->nchunks)
         sb_printf(&b, ",\n  \"chunks\": [\n");
     for (size_t k = 0; k < p->nchunks; k++) {
@@ -2021,10 +2032,13 @@ static int speakers(const opts *o, const pk_model *dm) {
             sb_printf(&b, "%s    {\"id\": %d, \"name\": \"Speaker %d\"}", k > 1 ? ",\n" : "", k, k);
         if (heard)
             sb_printf(&b, "\n  ]");
-        sb_printf(&b, ",\n  \"speech\": [\n");
-        if (sp.n)
+        sb_printf(&b, ",\n  \"speech\": [");
+        if (sp.n) {
+            sb_put(&b, "\n", 1);
             sb_put(&b, sp.s, sp.n);
-        sb_printf(&b, "\n  ]");
+            sb_put(&b, "\n  ", 3);
+        }
+        sb_printf(&b, "]");
         if (o->verbose) {
             sb_printf(&b, ",\n  \"run\": {\"diarization\": %.3f, \"audio\": %.3f, \"speed\": %.1f, \"version\": ",
                       secs, (double)n / rate, secs > 0 ? (double)n / rate / secs : 0.0);
