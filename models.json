@@ -408,7 +408,7 @@
     {
       "name": "nemotron-3-diarization",
       "task": "diarize",
-      "status": "preview",
+      "status": "stable",
       "needs": "0.9.8",
       "about": "who speaks when, up to 8 speakers",
       "license": "OpenMDW-1.1",

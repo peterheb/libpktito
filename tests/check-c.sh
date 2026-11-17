@@ -96,6 +96,10 @@ else
       ./pktito-c $o -m $f -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.$x \
         || { echo "conv2.wav: FAIL - v2 --speakers ${o:-text} differs from tests/data/conv2.v2.$x"; exit 1; }
     done
+    # --speakers alone finds the diarizer in models/, and without it no one is named
+    ./pktito-c --speakers -m $f tests/data/conv2.wav | cmp -s - tests/data/conv2.v2.txt \
+      && ! ./pktito-c -m $f tests/data/conv2.wav | grep -q '^Speaker ' \
+      || { echo "conv2.wav: FAIL - --speakers did not find models/'s diarizer, or it ran unasked"; exit 1; }
     # the diarizer hears a recording a stretch at a time, as the transcriber
     # reads it: down a pipe, at 16 kHz and at 48 kHz, the file's document
     q=tests/spkpipe

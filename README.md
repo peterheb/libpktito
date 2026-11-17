@@ -984,9 +984,10 @@ frames to words"), so where two people talk at once each word still has
 one speaker. How many speakers there are is not an option: the model finds
 up to eight.
 
-Its file is made from NVIDIA's checkpoint as a recognizer's is. It is a
-preview model, which pktito-c runs only when `-m` names it; the recognizer
-is found as always, and a diarizer's `-m` asks for `--speakers` by itself:
+Its file is made from NVIDIA's checkpoint as a recognizer's is. With it in
+`models/`, `--speakers` finds it as the recognizer is found, and a
+recording is diarized only where `--speakers` asks; a diarizer's `-m`
+names another, and asks for `--speakers` by itself:
 
 ```sh
 .venv/bin/hf download nvidia/Nemotron-3-Diarization Nemotron-3-Diarization.nemo README.md \

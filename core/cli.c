@@ -22,8 +22,8 @@
  * diarizer (core/diar.c) hears the whole file first, and each word goes to
  * a speaker by NeMo's rule (pk_speakers), the speakers numbered from 1 in
  * the order they first say a word; a change of speaker ends a sentence and
- * a subtitle's cue (pk_sentences, pk_captions). The diarizer is a preview
- * model, which pktito-c runs only when it is named (models.json's design).
+ * a subtitle's cue (pk_sentences, pk_captions). --speakers without a
+ * diarizer's -m takes models/'s, as a recognizer is found (find_diarizer).
  */
 #include "pktito.h"
 #include "asr.h"
@@ -150,8 +150,8 @@ static const char *usage =
     "      --no-retry      don't retranscribe speech that gave no words\n"
     "      --no-context    don't extend a cut made mid-sentence\n"
     "                      (with --no-retry: each chunk exactly as NeMo has it)\n"
-    "      --speakers      who said what, each turn named, with a diarizer's model\n"
-    "                      named by -m (nemotron-3-diarization.pkf), as -m alone asks\n"
+    "      --speakers      who said what, each turn named, with the diarizer's model\n"
+    "                      in models/ (nemotron-3-diarization.pkf) or named by -m\n"
     "      --json          the transcript as JSON (pktito/1): sentences, words,\n"
     "                      captions, and chunks with their tokens\n"
     "      --srt, --vtt    subtitles\n"
@@ -445,12 +445,34 @@ static pk_model *load_model(const char *flag, const char *argv0) {
     return m;
 }
 
-/* -m names no diarizer: the diarizer is a preview model, which runs only
- * when it is named (models.json's design: none is chosen by itself until
- * one is stable) */
-static void no_diarizer(const char *what) {
-    die("%s needs a diarizer's model named by -m, such as nemotron-3-diarization.pkf (README, \"Who said "
-        "what\", says how to make it)", what);
+/* The diarizer where --speakers or pktito-c speakers has no -m for one: in
+ * ./models, else models/ beside pktito-c, the .pkf of each of models.json's
+ * diarizers that pktito-c takes unasked (stable, and no newer than it), as
+ * find_model finds a recognizer; one, or -m says which. A recording is
+ * diarized only where --speakers, or a diarizer's -m, asks. */
+static pk_model *find_diarizer(const char *what, const char *argv0) {
+    char dir[4096], p[4608], found[4608] = "", why[64];
+    for (int d = 0; d < 2 && !found[0]; d++) {
+        models_dir(d, argv0, dir, sizeof dir);
+        for (int i = 0; i < ed_n_models; i++) {
+            const ed_model *m = &ed_catalog[i];
+            if (m->task != ED_DIARIZE || named_only(m, why, sizeof why))
+                continue;
+            snprintf(p, sizeof p, "%s%s.pkf", dir, m->name);
+            if (file_size(p) < 0)
+                continue;
+            if (found[0])
+                die("two diarizers' models, %s and %s: say which with -m", found, p);
+            snprintf(found, sizeof found, "%s", p);
+        }
+    }
+    if (!found[0])
+        die("%s needs a diarizer's model: -m FILE.pkf, or one in models/, such as nemotron-3-diarization.pkf "
+            "(pktito-c models says where to get it; README, \"Who said what\", makes it)", what);
+    pk_model *m = open_model(found);
+    if (!pk_model_speakers(m))
+        die("%s is not a diarizer's model", found);
+    return m;
 }
 
 /* A slim model's encoder, beside it: its edition's for this machine, as
@@ -2314,7 +2336,7 @@ int main(int argc, char **argv) {
     int rc;
     if (!strcmp(o.cmd, "speakers")) {
         if (!dm)
-            no_diarizer("pktito-c speakers");
+            dm = find_diarizer("pktito-c speakers", argv[0]);
         rc = speakers(&o, dm);
     } else if (!strcmp(o.cmd, "info")) {
         if (!m && !dm)
@@ -2337,7 +2359,7 @@ int main(int argc, char **argv) {
             die("a diarizer's model is for a transcript with --speakers, pktito-c speakers or probs; not %s",
                 o.cmd);
         if (o.speakers && !dm)
-            no_diarizer("--speakers");
+            dm = find_diarizer("--speakers", argv[0]);
         if (!m)
             m = load_model(NULL, argv[0]);
         rc = !strcmp(o.cmd, "bench") ? bench(&o, m)

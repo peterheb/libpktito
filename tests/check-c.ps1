@@ -151,6 +151,17 @@ else {
             Remove-Item tests\t.$x
         }
         "conv2.wav: v2 --speakers sentences, SRT and WebVTT are ref's"
+        # --speakers alone finds the diarizer where it is models\'s, and without it no one is named
+        if ($Diar -eq 'models\nemotron-3-diarization.pkf') {
+            cmd /c "pktito-c.exe --speakers -m `"$V2`" tests\data\conv2.wav > tests\t.txt"
+            $found = same tests\t.txt tests\data\conv2.v2.txt
+            cmd /c "pktito-c.exe -m `"$V2`" tests\data\conv2.wav > tests\t.txt"
+            $unasked = [bool](Select-String -Path tests\t.txt -Pattern '^Speaker ' -Quiet)
+            Remove-Item tests\t.txt
+            if (-not $found -or $unasked) {
+                "conv2.wav: FAIL - --speakers did not find models\'s diarizer, or it ran unasked"; exit 1
+            }
+        }
         # check-c.sh's --speakers down a pipe: the file's document
         $q = 'tests\spkpipe'
         cmd /c "tests\streamcheck.exe tests\data\conv2.wav 48000 $q-48k.wav $q-16k.wav"
