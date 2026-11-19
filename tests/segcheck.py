@@ -13,6 +13,10 @@ either side of each threshold - 0.5 - 0.15 is 0.35000000000000003 in
 Python, and a port that compared in float would decide 0.35f the other
 way. Segments must be equal to the sample, events to the frame and sample.
 
+Silero's source must be newer than its v6.2.3 tag, whose VADIterator has no
+neg_threshold yet and fails here with a TypeError (master at 066409f has
+it, 2026-11-19).
+
     python3 tests/segcheck.py [tests/segcheck] [N]
 """
 
