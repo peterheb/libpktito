@@ -754,8 +754,11 @@ file is. `pktito-c` transcribes a pipe this way, and prints at the end.
 With `--speakers` it still copies the pipe first, since it runs the
 diarizer before the recognizer. A recording that ends before its first
 chunk is cut, one of a chunk or two, is read whole from there, exactly as
-before. With the Neural Engine a recording
-still being read has its chunks sent one at a time, not two.
+before. With the Neural Engine a recording still being read keeps two
+calls in flight, as a file's chunks do, and a chunk's words come once the
+recording has been heard two chunks past it: the same podcast on an M4 Pro,
+5.59 s from a file, 5.18 s down a pipe, and 5.85 s down a pipe with one call
+at a time (three runs each, the machine in use, 2026-11-19).
 
 ### How it got here
 
