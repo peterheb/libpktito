@@ -1,4 +1,4 @@
-/* growcheck [--all] MODEL WAV...: pk_asr_transcribe of a recording still
+/* growcheck [--all] [--npu ENCODER] MODEL WAV...: pk_asr_transcribe of a recording still
  * being read (pk_audio's n < 0 and wait) against the same recording read
  * whole. Each chunk's final tokens are the whole recording's, bit for bit,
  * its place and at_frame too, however much of the recording is there at
@@ -10,7 +10,9 @@
  * total are 0 until then. A run stopped by fn stops, a wait that fails
  * fails the call, and a recording of no samples is no chunks. --all is
  * every one of four thread counts, three chunk lengths and four modes on
- * the first recording, and the defaults on the rest: for a corpus. */
+ * the first recording, and the defaults on the rest: for a corpus. --npu
+ * runs the encoder on an NPU (pk_asr_use_encoder), in a build that has
+ * one: the Neural Engine's calls in flight, of a recording as it comes. */
 #include "pktito.h"
 #include "wav.h"
 
@@ -133,8 +135,10 @@ static int64_t grow_wait(void *arg, int64_t want) {
 int main(int argc, char **argv) {
     const int all = argc > 1 && !strcmp(argv[1], "--all");
     argv += all, argc -= all;
+    const char *npu = argc > 2 && !strcmp(argv[1], "--npu") ? argv[2] : NULL;
+    argv += npu ? 2 : 0, argc -= npu ? 2 : 0;
     if (argc < 3) {
-        fprintf(stderr, "usage: growcheck [--all] MODEL WAV...\n");
+        fprintf(stderr, "usage: growcheck [--all] [--npu ENCODER] MODEL WAV...\n");
         return 2;
     }
     char err[256];
@@ -162,6 +166,10 @@ int main(int argc, char **argv) {
             pk_asr *a = pk_asr_new(m, threads[ti]);
             if (!a)
                 return 2;
+            if (npu && pk_asr_use_encoder(a, npu, err, sizeof err)) {
+                fprintf(stderr, "growcheck: %s: %s\n", npu, err);
+                return 2;
+            }
             for (int li = 0; li < (full ? 3 : all ? 1 : 2); li++)
                 for (int mode = 0; mode < (full ? 4 : 1); mode++) {
                     if (!all && ti != li)       /* every core at 30.72 s, one thread at 12 */
