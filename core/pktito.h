@@ -353,8 +353,9 @@ int pk_asr_run_chunks(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, p
  * known a chunk's n and total are 0. A recording that has ended by the
  * time its first chunk is cut, one of a chunk or two, is a recording read
  * whole from then on, and no chunk of it is provisional.
- * With the Neural Engine, such a recording's chunks go to it one at a
- * time. */
+ * With the Neural Engine, which has two chunks' calls at once, fn has a
+ * chunk once the recording has been heard two chunks past it, or has
+ * ended. */
 typedef struct {
     double max_chunk_s;         /* 30.72: the most the encoder hears at once (README, "Long recordings") */
     int    retry;               /* 1: speech the model wrote nothing for heard again */

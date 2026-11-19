@@ -587,8 +587,8 @@ static void search_aside(void *arg) {
  * that: all but 0.2 to 0.4% of it on a Pi 5's four cores, 0.6 to 0.7% on
  * a Pi 4's and 0.8% on a Pi 3's (backend/avx2/CLIMB.md, 2026-10-28). */
 #ifdef PK_ANE
-static int ane_chunks(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, size_t most,
-                      int depth, pk_each_fn each, void *arg);
+static int ane_chunks(pk_asr *a, const pk_audio *x, const chunk_list *l, size_t most, int depth,
+                      pk_each_fn each, void *arg);
 
 /* The Neural Engine's calls a run keeps in flight: two. AliceBench v2,
  * one process, best of three (2 of 2 on the M4 Pro), x real time:
@@ -661,13 +661,13 @@ int pk_run_chunks_with(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n,
         return -1;
     if (n == 0)
         return 0;
+    const chunk_list l = { c, n, NULL };
 #ifdef PK_ANE
     if (a->ane && n > 1 && ane_depth() > 1)
-        return ane_chunks(a, x, c, n, most, ane_depth(), each, arg);
+        return ane_chunks(a, x, &l, most, ane_depth(), each, arg);
 #endif
     /* one lane with the Neural Engine or the NPU: a lane's transcriber has
      * the CPU's encoder, so a chunk's bits would be the lane's it fell to */
-    const chunk_list l = { c, n, NULL };
     return run_chunks(a, x, &l, most, longest, a->ane || a->qnn ? 1 : lanes_for(a, c, n), each, arg);
 }
 
@@ -675,14 +675,18 @@ int pk_run_chunks_with(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n,
  * (lanes_for): a source is asked for its first chunk before this, so more
  * of the recording is to come than a chunk, and the count that ends a long
  * recording soonest is the most (lane_time's gain rises with it). With the
- * Neural Engine one lane and one call at a time: ane_chunks sends a chunk
- * off ahead of the one it takes, which a source cannot give yet. */
+ * Neural Engine its calls in flight, as a list's chunks have (ane_chunks);
+ * with the NPU one lane and one call at a time. */
 int pk_run_source_with(pk_asr *a, const pk_audio *x, const pk_chunk_src *src, size_t longest,
                        pk_each_fn each, void *arg) {
     const size_t most = pk_mel_frames(a->m, longest);
     if (most > UINT32_MAX / 4 || reserve(a, most) || reserve_pcm(a, longest))
         return -1;
     const chunk_list l = { NULL, 0, src };
+#ifdef PK_ANE
+    if (a->ane && ane_depth() > 1)
+        return ane_chunks(a, x, &l, most, ane_depth(), each, arg);
+#endif
     return run_chunks(a, x, &l, most, longest, a->ane || a->qnn ? 1 : a->lanes, each, arg);
 }
 
@@ -734,16 +738,36 @@ static long ane_take(pk_asr *a, const pk_audio *x, const pk_seg *c, ane_call *k,
     return k->Te;
 }
 
-/* pk_run_chunks_with with depth of the Neural Engine's calls in flight: a
+/* The chunk after the `sent` already sent, asked of the list and its call
+ * sent off in the slot the chunk depth before it has left: 1, 0 where the
+ * list has no more, or -1 where its source fails */
+static int ane_next(pk_asr *a, const pk_audio *x, const chunk_list *l, pk_seg *c, ane_call *call,
+                    int depth, size_t *sent) {
+    const size_t k = *sent % (size_t)depth;
+    const int has = chunk_get(l, *sent, a->pool, &c[k]);
+    if (has == 1) {
+        ane_send(a, x, &c[k], &call[k]);
+        ++*sent;
+    }
+    return has;
+}
+
+/* A run's chunks with depth of the Neural Engine's calls in flight: a
  * chip of two Neural Engines (the M5 Ultra's H11ANE and H11ANE1) runs two
  * chunks' at once, where one call at a time left the second idle; AliceBench
  * v2 on it as separate processes, 1 380x, 2 756x, 3 842x, 4 868x
  * (libpktito, 2026-11-02). Each chunk's features are made here and its
  * call sent off; the joint and the search take the chunks in order, as the
  * one-at-a-time path does, the search beside the next chunk's joint, so the
- * tokens are that path's. */
-static int ane_chunks(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, size_t most,
-                      int depth, pk_each_fn each, void *arg) {
+ * tokens are that path's.
+ *
+ * Of a source, chunk i + depth is asked for while chunk i is searched, and
+ * the source may wait for it: a recording still being read has chunk i's
+ * tokens once it has been heard depth chunks past it, where the
+ * one-at-a-time path needs one. The source hears the recording on this
+ * thread while the calls before are out. */
+static int ane_chunks(pk_asr *a, const pk_audio *x, const chunk_list *l, size_t most, int depth,
+                      pk_each_fn each, void *arg) {
     const pk_model *m = a->m;
     /* each slot's buffers, for the longest chunk yet: kept on pk_asr */
     if (a->ane_cap < most) {
@@ -766,33 +790,34 @@ static int ane_chunks(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, s
             return -1;
     }
     ane_call call[4];
+    pk_seg c[4];                     /* slot k's chunk, from its send to its take */
     for (int k = 0; k < depth; k++)
         call[k] = (ane_call){ a, k, 0, 0, 0, dispatch_semaphore_create(0) };
     pk_os_throttle was = pk_os_unthrottle();
-    size_t sent = 0;
-    for (; sent < n && sent < (size_t)depth; sent++)
-        ane_send(a, x, &c[sent], &call[sent % depth]);
-    long Te = ane_take(a, x, &c[0], &call[0], a->fproj[0]);
-    int rc = Te < 0 ? -1 : 0;
-    size_t i = 0;
-    for (; i < n && rc == 0; i++) {
+    /* chunks [i, sent) are out; while the list has more, depth of them */
+    size_t sent = 0, i = 0;
+    int more = 1;
+    while (more == 1 && sent < (size_t)depth)
+        more = ane_next(a, x, l, c, call, depth, &sent);
+    long Te = sent ? ane_take(a, x, &c[0], &call[0], a->fproj[0]) : 0;
+    int rc = more < 0 || Te < 0 ? -1 : 0;
+    for (; i < sent && rc == 0; i++) {
         const float *f = a->fproj[i % 2];
+        const size_t k = (i + 1) % (size_t)depth;
         long nt;
-        if (i + 1 < n) {
+        if (i + 1 < sent) {
             search_job s = { a, (uint32_t)Te, f, 0 };
             pk_pool_aside(a->pool, search_aside, &s);
             /* chunk i's slot is free: chunk i + depth's call goes out */
-            if (sent < n) {
-                ane_send(a, x, &c[sent], &call[sent % depth]);
-                sent++;
-            }
-            Te = ane_take(a, x, &c[i + 1], &call[(i + 1) % depth], a->fproj[(i + 1) % 2]);
+            if (more == 1)
+                more = ane_next(a, x, l, c, call, depth, &sent);
+            Te = ane_take(a, x, &c[k], &call[k], a->fproj[(i + 1) % 2]);
             PROF(PK_P_DEC, pk_pool_join(a->pool));
             nt = s.n;
         } else {
             PROF(PK_P_DEC, nt = pk_decode(a, (uint32_t)Te, f, 1));
         }
-        if (nt < 0)
+        if (nt < 0 || more < 0)
             rc = -1;
         else
             rc = each(arg, i, a->toks, nt, a->fproj[i % 2]);
@@ -801,7 +826,7 @@ static int ane_chunks(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, s
     }
     /* the calls still out, which hold their slots' buffers, waited for */
     for (size_t j = i + 1; j < sent; j++)
-        dispatch_semaphore_wait(call[j % depth].done, DISPATCH_TIME_FOREVER);
+        dispatch_semaphore_wait(call[j % (size_t)depth].done, DISPATCH_TIME_FOREVER);
     for (int k = 0; k < depth; k++)
         dispatch_release(call[k].done);
     pk_os_rethrottle(was);
