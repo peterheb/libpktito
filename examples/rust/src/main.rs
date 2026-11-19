@@ -81,6 +81,8 @@ struct PkAudio {
     n: i64,
     read: Option<unsafe extern "C" fn(*mut c_void, i64, *mut f32, usize) -> c_int>,
     arg: *mut c_void,
+    // for a recording still being read; none for one in memory
+    wait: Option<unsafe extern "C" fn(*mut c_void, i64) -> i64>,
 }
 
 extern "C" {

@@ -55,6 +55,11 @@ static int on_out(void *arg, const pk_chunk_out *c) {
     return s->stop_after && s->n == s->stop_after;
 }
 
+static uint32_t cut_rnd(uint64_t *rs) {
+    *rs ^= *rs << 13, *rs ^= *rs >> 7, *rs ^= *rs << 17;
+    return (uint32_t)(*rs >> 20);
+}
+
 /* A run of pk_steps, as a caller with workers of its own runs it: every job
  * there is handed out at once, and the last handed out heard first, on h[0]
  * and h[1] by turns, each chunk taken into s as soon as it is done. With
@@ -178,7 +183,7 @@ static int probe_read(void *arg, int64_t at, float *out, size_t count) {
 static pk_audio probed(probe *p, const float *x, size_t n, long fail_at) {
     p->x = x, p->n = (int64_t)n, p->fail_at = fail_at;
     atomic_init(&p->busy, 0), atomic_init(&p->bad, 0), atomic_init(&p->reads, 0);
-    return (pk_audio){ (int64_t)n, probe_read, p };
+    return (pk_audio){ (int64_t)n, probe_read, p, NULL };
 }
 
 int main(int argc, char **argv) {
@@ -202,12 +207,12 @@ int main(int argc, char **argv) {
             x[i] = 1, y[i] = (float)(i % 7);
         const pk_seg sp[] = { { 100, 300 }, { 500, 900 } };
         int64_t h, h2;
-        power(x, 0, sp, 2, 100, 1000, &h);
+        power(x, 0, sp, 2, 100, 1000, INT64_MAX, &h);
         CHECK(h == 600, "power: all the speech");
-        CHECK(power(x, 0, sp, 2, 250, 600, &h) == 150 && h == 150, "power: part of two segments");
-        power(x, 0, sp, 2, 300, 500, &h);
+        CHECK(power(x, 0, sp, 2, 250, 600, INT64_MAX, &h) == 150 && h == 150, "power: part of two segments");
+        power(x, 0, sp, 2, 300, 500, INT64_MAX, &h);
         CHECK(h == 0, "power: between them, none");
-        CHECK(power(y + 250, 250, sp, 2, 250, 600, &h) == power(y, 0, sp, 2, 250, 600, &h2) && h == h2,
+        CHECK(power(y + 250, 250, sp, 2, 250, 600, INT64_MAX, &h) == power(y, 0, sp, 2, 250, 600, INT64_MAX, &h2) && h == h2,
               "power: the stretch read alone, the same");
     }
     /* lower and utf8: the seam's letters, of the alphabets the models write */
@@ -667,12 +672,18 @@ int main(int argc, char **argv) {
                 sr.floor = 0.04 * RETRY_LEVEL;
                 sr.t[0] = (pk_tok){ the, 0, 100 };
                 sr.t[1] = (pk_tok){ no, 200, 50 };
-                const long ns = stretches(&sr, &ch, sr.t, 2, 0);
+                const long ns = stretches(&sr, &ch, sr.t, 2, 0, 0, INT64_MAX);
                 if (q == 0)
                     CHECK(ns == 1 && sr.st[0][0] == 100 && sr.st[0][1] == 200,
                           "retry: speech near its chunk's, under the recording's, heard again");
                 else
                     CHECK(ns == 0, "retry: speech under its chunk's too, not");
+                /* before the recording's end, its level not known: either may be */
+                CHECK(stretches(&sr, &ch, sr.t, 2, 0, 1, INT64_MAX) == 1, "retry: a stretch there may be, at any level");
+                /* and with no segment final yet, the silence past the words as well */
+                sr.ns = 0;
+                CHECK(stretches(&sr, &ch, sr.t, 2, 0, 1, ch.start) == 2, "retry: and where the speech is not known yet");
+                sr.ns = 1;
             }
             free(xs);
             free(sr.buf);
@@ -681,6 +692,82 @@ int main(int argc, char **argv) {
         }
         free(sr.t);
         free(sr.w);
+    }
+
+    /* the cuts as the recording comes: its probabilities in runs of any
+     * length give pk_segments' segments and pk_chunks_past's chunks of the
+     * whole recording, each chunk cut with only what has been heard */
+    {
+        enum { FR = 3000 };
+        static float pr[FR], au[FR * PK_VAD_SAMPLES];
+        static pk_seg sp[2 * FR + 1], cs[2 * FR + 1], want[4 * FR + 4], wwin[4 * FR + 4];
+        const int rate = pk_model_rate(m);
+        uint64_t rs = 0x9E3779B97F4A7C15ull;
+#define RND() cut_rnd(&rs)
+        int ok_sp = 1, ok_c = 1, ok_early = 1;
+        size_t early = 0, cases = 0, cut = 0;
+        for (int it = 0; it < 4000; it++) {
+            const size_t nf = 1 + RND() % (it % 8 ? 400 : FR);
+            const int64_t N = (int64_t)(nf - 1) * PK_VAD_SAMPLES + 1 + RND() % PK_VAD_SAMPLES;
+            /* speech and silence in runs, some long, and the samples loud
+             * in part, so that a gap's pieces are kept and left out */
+            for (size_t i = 0, on = 0; i < nf; on = !on)
+                for (size_t most = RND() % 4 ? 12 : 300, k = 1 + RND() % most; k && i < nf; k--, i++) {
+                    const uint32_t odd = RND() % 16;
+                    pr[i] = odd ? (on ? 0.9f : 0.05f) : (float)(RND() % 1000) / 1000;
+                }
+            const size_t quiet0 = RND() % (size_t)N;
+            const size_t quiet1 = quiet0 + RND() % (size_t)N;
+            for (int64_t j = 0; j < N; j++)
+                au[j] = (size_t)j >= quiet0 && (size_t)j < quiet1 ? 0 : (j & 1 ? 0.3f : -0.3f);
+            const pk_audio AU = pk_audio_floats(au, (size_t)N);
+            const double secs[] = { 30.72, 12, 5, 2 };
+            pk_transcribe_opts co;
+            pk_transcribe_defaults(&co);
+            co.max_chunk_s = secs[RND() % 4];
+            co.context = RND() % 4 != 0;
+            run *c = run_new(a, &AU, &co);
+            if (!c)
+                break;
+            /* the whole recording's, as pk_steps_new had them before */
+            pk_seg_params p;
+            pk_seg_defaults(&p);
+            p.max_speech_s = co.max_chunk_s - (double)c->ctx / rate - 2 * p.speech_pad_ms / 1000 - 0.1;
+            const size_t nsp = pk_segments(pr, nf, rate, N, &p, sp, 2 * FR + 1);
+            p.min_silence_ms = CUT_SILENCE_MS;
+            const size_t ncs = pk_segments(pr, nf, rate, N, &p, cs, 2 * FR + 1);
+            const long nw = pk_chunks_past(&AU, cs, ncs, c->max_len, c->ctx, (int64_t)(CONTEXT_PAUSE_S * rate), want, wwin);
+            /* and as they come */
+            int bad = 0;
+            for (size_t f = 0; f < nf && !bad;) {
+                const size_t most = RND() % 3 ? 4 : 200;
+                size_t k = 1 + RND() % most;
+                k = k < nf - f ? k : nf - f;
+                const int end = f + k == nf;
+                c->heard = end ? N : (int64_t)(f + k) * PK_VAD_SAMPLES;
+                c->ended = end;
+                c->length = end ? N : 0;
+                bad = cut_frames(c, pr + f, k, end) || cut_chunks(c);
+                f += k;
+                if (!end) {
+                    early += c->nc;
+                    /* a chunk cut before the end is heard in samples there already */
+                    for (size_t q = 0; q < c->nc; q++)
+                        ok_early &= c->win[q].end <= c->heard;
+                }
+            }
+            ok_sp &= !bad && c->ns == nsp && !memcmp(c->sp, sp, nsp * sizeof *sp) && c->ncs == ncs
+                     && !memcmp(c->cs, cs, ncs * sizeof *cs);
+            ok_c &= !bad && c->cut_over && (long)c->nc == nw && !memcmp(c->c, want, (size_t)nw * sizeof *want)
+                    && !memcmp(c->win, wwin, (size_t)nw * sizeof *wwin);
+            cut += c->nc;
+            cases++;
+            pk_steps_free(c);
+        }
+#undef RND
+        CHECK(cases == 4000 && ok_sp, "the cuts: the segments as they come are pk_segments'");
+        CHECK(ok_c, "the cuts: the chunks as they come are pk_chunks_past's");
+        CHECK(ok_early && early > 1000 && cut > 4000, "the cuts: chunks are cut before the end, from what has been heard");
     }
 
     /* and the transcriber is whole after a stop */
@@ -693,7 +780,8 @@ int main(int argc, char **argv) {
 
     if (!fails)
         printf("transcheck: %zu chunks the low-level path's, a stop, two lanes one's, reads a stretch at a time "
-               "memory's, the steps pk_asr_transcribe's, a pool's VAD one thread's, the retry's and the seam's parts: ok\n",
+               "memory's, the steps pk_asr_transcribe's, a pool's VAD one thread's, the retry's and the seam's parts, "
+               "the cuts as they come the whole recording's: ok\n",
                lo.n);
     forget(&hi), forget(&lo);
     pk_asr_free(a);

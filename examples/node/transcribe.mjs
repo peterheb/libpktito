@@ -52,7 +52,13 @@ koffi.struct("pk_seg_params", {
 koffi.struct("pk_tok", { id: "int32_t", frame: "int32_t", dur: "int32_t" });
 // A recording as the library reads it, a stretch at a time through read;
 // pk_audio_floats makes one over samples in memory, which must outlive it.
-koffi.struct("pk_audio", { n: "int64_t", read: "void *", arg: "void *" });
+// (wait is for a recording still being read; none for one in memory).
+koffi.struct("pk_audio", {
+  n: "int64_t",
+  read: "void *",
+  arg: "void *",
+  wait: "void *",
+});
 
 // A pk_seg is two int64_t, start and end, so an array of them is passed as
 // int64_t * over a BigInt64Array: the same bytes, read in place. Samples and

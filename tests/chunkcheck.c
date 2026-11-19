@@ -110,7 +110,7 @@ static pk_seg *chunks(const float *x, const pk_seg *s, size_t n, int64_t total, 
     size_t room = 2 * n + 2 + (size_t)(total / max_len);
     pk_seg *c = malloc(room * sizeof *c);
     reader r = { x, total, 0, 0, 0 };
-    const pk_audio X = { total, reader_read, &r };
+    const pk_audio X = { total, reader_read, &r, NULL };
     const long lc = pk_chunks(&X, s, n, max_len, c);
     *nc = lc > 0 ? (size_t)lc : 0;
     cases++;
@@ -170,7 +170,7 @@ static void past_case(const float *x, const pk_seg *s, size_t n, int64_t total, 
     size_t room = 2 * n + 2 + (size_t)(total / max_len);
     pk_seg *c = malloc(room * sizeof *c), *w = malloc(room * sizeof *w);
     reader r = { x, total, 0, 0, 0 };
-    const pk_audio X = { total, reader_read, &r };
+    const pk_audio X = { total, reader_read, &r, NULL };
     long lc = pk_chunks_past(&X, s, n, max_len, 0, pause, c, w);
     size_t nc = lc > 0 ? (size_t)lc : 0;
     cases++;
@@ -369,7 +369,7 @@ static void failing_reads(void) {
     for (int64_t i = 0; i < total; i++)
         x[i] = 0.1f;
     reader r = { x, total, 0, 0, 0 };
-    const pk_audio X = { total, reader_read, &r };
+    const pk_audio X = { total, reader_read, &r, NULL };
     const long n = pk_chunks(&X, NULL, 0, M, c), all = r.reads;
     cases++;
     if (n != 4 || all < 4 || r.bad)

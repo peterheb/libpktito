@@ -19,6 +19,7 @@
 /tests/langcheck
 /tests/chunkcheck
 /tests/transcheck
+/tests/growcheck
 /tests/sentcheck
 /tests/editioncheck
 /tests/fftcheck

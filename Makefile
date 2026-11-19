@@ -264,7 +264,7 @@ MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
 TINY_DIAR := tests/data/tiny-diar.pkf
 TESTS := tests/kcheck tests/q8check tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck \
-         tests/chunkcheck tests/pathcheck tests/transcheck tests/sentcheck tests/streamcheck \
+         tests/chunkcheck tests/pathcheck tests/transcheck tests/growcheck tests/sentcheck tests/streamcheck \
          tests/editioncheck
 BENCHES := tests/q8bench tests/gemmbench tests/spinbench
 
@@ -281,6 +281,8 @@ tests/pkfcheck: tests/pkfcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/pkfcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/chunkcheck: tests/chunkcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/chunkcheck.c $(LIB_OBJ) $(LDLIBS)
+tests/growcheck: tests/growcheck.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/growcheck.c $(LIB_OBJ) $(LDLIBS)
 # transcheck includes core/transcribe.c itself, for its static parts
 tests/transcheck: tests/transcheck.c core/transcribe.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/transcheck.c $(filter-out core/transcribe.o,$(LIB_OBJ)) $(LDLIBS)
@@ -418,13 +420,18 @@ check-tsan:
 	@# and on the default threads, which on a chip of two kinds of core switch
 	@# between every core and the fast kind as the first recording is timed
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -m $(MODEL) tests/data/test.wav > /dev/null
+	@# a pipe transcribed as it is read, its chunks cut by the lanes that
+	@# take them while the calling thread has their tokens: on two lanes,
+	@# and a chunk at a time
+	cat tests/data/test.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 -m $(MODEL) - > /dev/null
+	cat tests/data/test.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 --max-chunk 12 -m $(MODEL) - > /dev/null
 	@# the diarizer's passes, on the tiny models: with a transcript, down a
 	@# pipe beside two lanes, and alone
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 -m $(TINY) -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
 	cat tests/data/conv2.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 --json \
 	  -m $(TINY) -m $(TINY_DIAR) - > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan speakers -t 6 -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
-	@echo "check-tsan: no race on six threads, on two lanes of four, on the default, nor in the diarizer"
+	@echo "check-tsan: no race on six threads, on two lanes of four, on the default, down a pipe as it is read, nor in the diarizer"
 
 check-math: tests/mathcheck
 	./tests/mathcheck --all

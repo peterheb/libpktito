@@ -129,6 +129,19 @@ typedef int (*pk_each_fn)(void *arg, size_t i, const pk_tok *toks, long count, f
 int pk_run_chunks_with(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n,
                        pk_each_fn each, void *arg);
 
+/* pk_run_chunks_with for chunks cut from the recording as it comes
+ * (core/transcribe.c, the cuts): get has chunk i in *c and returns 1, 0
+ * where the recording has no more, or -1. It is asked for each chunk once,
+ * in order, by whichever lane takes it, and may wait for the recording; it
+ * hears what it needs of it on pool, the asking lane's. longest is the
+ * most samples a chunk has. */
+typedef struct {
+    int (*get)(void *arg, size_t i, pk_pool *pool, pk_seg *c);
+    void *arg;
+} pk_chunk_src;
+int pk_run_source_with(pk_asr *a, const pk_audio *x, const pk_chunk_src *src, size_t longest,
+                       pk_each_fn each, void *arg);
+
 /* samples [at, at + n) of x into out: 0, or -1 where they are not in x or
  * its read fails */
 int pk_audio_read(const pk_audio *x, int64_t at, float *out, size_t n);
@@ -164,6 +177,15 @@ void pk_vad_probs_on(pk_vad *v, pk_pool *pool, const float *x, size_t n, float *
  * given a multiple of it runs whole runs, as one call over the recording
  * would. */
 size_t pk_vad_run_frames(const pk_pool *pool);
+
+/* pk_chunks' two parts, for a recording cut as it comes (core/transcribe.c,
+ * the cuts): the speech chunk that opens with segment i, and a gap's
+ * pieces (core/asr.c has each). */
+int pk_chunk_at(const pk_seg *s, size_t n, int64_t peek, int ended, int64_t total, size_t i,
+                int64_t max_len, int64_t ctx, int64_t pause, pk_seg *c, pk_seg *w, size_t *last);
+int64_t pk_gap_pieces(int64_t a, int64_t b, int64_t max_len);
+int pk_gap_chunks(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out,
+                  pk_seg *win, size_t *k);
 
 /* pk_chunks, with what each chunk is heard in (core/transcribe.c): win[k]
  * is out[k] and, where out[k]'s cut falls in a silence shorter than pause,

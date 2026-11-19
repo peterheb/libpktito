@@ -103,8 +103,9 @@ MB more for each chunk beyond the first: AliceBench's longest chapter,
 831 MB four at once, and an hour at the same, since pktito-c reads a file a
 stretch at a time. On a Pi 3B+, v2 so transcribes an hour in 61 minutes
 without paging; holding the recording whole, it paged 12,200 times a minute
-and had not finished after 100. A pipe is read the same way, once its
-samples are copied to a scratch file on disk ($TMPDIR, else /var/tmp). The
+and had not finished after 100. A pipe is transcribed as it arrives, its
+samples kept in a scratch file on disk ($TMPDIR, else /var/tmp) and read
+from there the same way. The
 VAD's encoder keeps 0.85 MB a thread besides, 3.4 MB on a Pi's four
 (below, "Transcribing a recording"). A 512 MB board (a Pi Zero 2 W)
 cannot hold an int8 0.6B model; README, "Why int8", has what 4-bit would
@@ -444,7 +445,10 @@ does for a long recording done for you. The recording is a `pk_audio`, its
 length and a function that reads a stretch of it: samples in memory
 (`pk_audio_floats`), or a file read as the library asks, so that an hour
 need not be in memory at once. `pktito-c` transcribes with it, and reads a
-file so. It does, in order:
+file so. A recording need not be all there when the call starts: one still
+being decoded has no length yet and a `wait` in its `pk_audio`, and is
+transcribed as it comes ("While the file is still being read", below). It
+does, in order:
 
 1. **Finds the speech.** Silero's VAD gives a probability of speech every
    32 ms, and `pk_segments` turns them into segments as Silero's
@@ -696,6 +700,63 @@ The rules and their numbers were found in pktito-app, which shipped them
 first (2026-10-26), and are core/transcribe.c's now, with the same
 measurements in its comments.
 
+### While the file is still being read
+
+A recording does not have to be whole before its transcription starts. A
+compressed file's decoder can take longer than the transcription itself (a
+phone's read 39 minutes in 26.5 s and transcribed them in 10, in the
+Android app's log), and
+the two have no need to take turns. A `pk_audio` with no length yet
+(`n < 0`) has a `wait`, which the library calls to say how far it needs the
+recording to be readable, and which returns when it is or the recording
+has ended. Everything else is `pk_asr_transcribe` as above, and the
+transcript is the one the recording read whole gives, token for token.
+
+What made that possible is that almost nothing in the steps above needs
+the whole recording:
+
+- **The VAD** is causal: a frame's probability comes from the frames
+  before it.
+- **The segments** are Silero's state machine, a frame at a time, and a
+  segment is final once the next one has started, which its padding waits
+  for.
+- **A chunk** is sure once the first segment that does not fit in it is
+  known: it is cut about one more stretch of speech after its end has been
+  heard. A stretch of music, which is cut into equal pieces, waits for the
+  speech after it.
+- **The retry** is the exception. What it hears again is measured against
+  the whole recording's speech (the 4 dB gate) and paid for from the whole
+  recording's budget, in the chunks' order. So the retries wait for the
+  end, and a chunk that may have one is marked `provisional` when it first
+  comes and comes once more after the last chunk. On AliceBench that is 8
+  of 391 chunks with v2 and 10 with v3; in recordings with other voices in
+  the background, where Silero hears more speech than the model writes, 67
+  and 179 of 228.
+
+tests/growcheck holds it to the whole recording's tokens, with the
+recording there a wait at a time, all at once, or in any amounts between:
+AliceBench's twelve chapters, long40, long300, and long40's first 24
+recordings with three other speakers mixed in at 10 dB SNR, where the gate
+decides the most, with both models (2026-11-19, 90 recordings a model;
+breaking the retry's level or its place on purpose fails on the mixed set
+and not on AliceBench). On a 9950X's 16 threads, a 39.5 minute podcast
+(v2):
+
+| The recording comes                        | read whole first | as it comes |
+| ------------------------------------------ | ---------------- | ----------- |
+| from a file                                | 6.6 s            | 6.6 s       |
+| down a pipe from `cat`                     | 6.7 s            | 6.4 s       |
+| from ffmpeg decoding its MP3 (2.5 s alone) | 9.1 s            | 7.3 s       |
+| at 88 times real time (27.0 s alone)       | 33.6 s           | 27.3 s      |
+
+The last row is a phone's decoder: the transcript is done 0.3 s after the
+file is. `pktito-c` transcribes a pipe this way, and prints at the end.
+With `--speakers` it still copies the pipe first, since it runs the
+diarizer before the recognizer. A recording that ends before its first
+chunk is cut, one of a chunk or two, is read whole from there, exactly as
+before. With the Neural Engine a recording
+still being read has its chunks sent one at a time, not two.
+
 ### How it got here
 
 - **2026-10-20**: recordings longer than a chunk cut at Silero's silences,
@@ -745,6 +806,11 @@ measurements in its comments.
   read a stretch at a time, as a file's are, not held whole: an hour down a
   pipe peaked at 832 MB on a 9950X's 16 threads rather than 1,057, a chunk
   at a time 692 rather than 918, a file's figures and the same bits.
+- **2026-11-19**: a recording transcribed while it is still being read
+  (`pk_audio`'s `wait`), after the Android app's decoder took longer than
+  its transcription: 39.5 minutes behind a decoder at 88 times real time
+  done in 27.3 s rather than 33.6, the same tokens ("While the file is
+  still being read").
 
 ## Long recordings
 

@@ -82,6 +82,8 @@ class pk_audio(Structure):
         ("n", c_int64),
         ("read", CFUNCTYPE(c_int, c_void_p, c_int64, POINTER(c_float), c_size_t)),
         ("arg", c_void_p),
+        # for a recording still being read; none for one in memory
+        ("wait", CFUNCTYPE(c_int64, c_void_p, c_int64)),
     ]
 
 

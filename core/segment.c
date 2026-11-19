@@ -22,7 +22,7 @@
  * emptiness and asked for its first entry with the largest duration, so it
  * is that entry and a count.
  */
-#include "pktito.h"
+#include "segment.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -51,12 +51,125 @@ static int64_t py_floordiv(int64_t a, int64_t b) {
     return (a % b != 0 && a < 0) ? q - 1 : q;
 }
 
-static void put(pk_seg *out, size_t cap, size_t *n, int64_t start, int64_t end) {
-    if (*n < cap) {
-        out[*n].start = start;
-        out[*n].end = end;
+void pk_segs_init(pk_segs *s, int rate, const pk_seg_params *p) {
+    pk_seg_params def;
+    if (!p) {
+        pk_seg_defaults(&def);
+        p = &def;
     }
+    *s = (pk_segs){ 0 };
+    s->window = rate == 16000 ? 512 : 256;
+    s->min_speech = rate * p->min_speech_ms / 1000;
+    s->speech_pad = rate * p->speech_pad_ms / 1000;
+    s->max_speech = rate * p->max_speech_s - s->window - 2 * s->speech_pad;
+    s->min_silence = rate * p->min_silence_ms / 1000;
+    s->min_silence_at_max = rate * p->min_silence_at_max_speech_ms / 1000;
+    s->threshold = p->threshold;
+    s->neg = neg_threshold(p);
+    s->use_max = p->use_max_poss_sil_at_max_speech;
+}
+
+static void put(pk_seg *out, int *n, int64_t start, int64_t end) {
+    out[*n].start = start;
+    out[*n].end = end;
     (*n)++;
+}
+
+/* The body of utils_vad.py's loop over the probabilities, its `continue`s
+ * returns here */
+int pk_segs_step(pk_segs *s, float p, pk_seg out[2]) {
+    const double prob = p;
+    const int64_t cur_sample = s->window * s->frames++;
+    int count = 0;
+
+    if (prob >= s->threshold && s->temp_end) {
+        int64_t sil_dur = cur_sample - s->temp_end;
+        if (sil_dur > s->min_silence_at_max) {
+            if (s->n_possible == 0 || sil_dur > s->best_dur) {
+                s->best_end = s->temp_end;
+                s->best_dur = sil_dur;
+            }
+            s->n_possible++;
+        }
+        s->temp_end = 0;
+        if (s->next_start < s->prev_end)
+            s->next_start = cur_sample;
+    }
+
+    if (prob >= s->threshold && !s->triggered) {
+        s->triggered = 1;
+        s->cur = 1;
+        s->cur_start = cur_sample;
+        return count;
+    }
+
+    if (s->triggered && cur_sample - s->cur_start > s->max_speech) {
+        if (s->use_max && s->n_possible) {
+            s->prev_end = s->best_end;
+            put(out, &count, s->cur_start, s->prev_end);
+            s->cur = 0;
+            s->next_start = s->prev_end + s->best_dur;
+            /* sic: prev_end + cur_sample, as utils_vad.py has it */
+            if (s->next_start < s->prev_end + cur_sample) {
+                s->cur = 1;
+                s->cur_start = s->next_start;
+            } else {
+                s->triggered = 0;
+            }
+            s->prev_end = s->next_start = s->temp_end = 0;
+            s->n_possible = 0;
+        } else if (s->prev_end) {
+            put(out, &count, s->cur_start, s->prev_end);
+            s->cur = 0;
+            if (s->next_start < s->prev_end) {
+                s->triggered = 0;
+            } else {
+                s->cur = 1;
+                s->cur_start = s->next_start;
+            }
+            s->prev_end = s->next_start = s->temp_end = 0;
+            s->n_possible = 0;
+        } else {
+            put(out, &count, s->cur_start, cur_sample);
+            s->cur = 0;
+            s->prev_end = s->next_start = s->temp_end = 0;
+            s->triggered = 0;
+            s->n_possible = 0;
+            return count;
+        }
+    }
+
+    if (prob < s->neg && s->triggered) {
+        if (!s->temp_end)
+            s->temp_end = cur_sample;
+        int64_t sil_dur_now = cur_sample - s->temp_end;
+        if (!s->use_max && sil_dur_now > s->min_silence_at_max)
+            s->prev_end = s->temp_end;
+        if (sil_dur_now < s->min_silence)
+            return count;
+        if (s->temp_end - s->cur_start > s->min_speech)
+            put(out, &count, s->cur_start, s->temp_end);
+        s->cur = 0;
+        s->prev_end = s->next_start = s->temp_end = 0;
+        s->triggered = 0;
+        s->n_possible = 0;
+    }
+    return count;
+}
+
+int pk_segs_end(pk_segs *s, int64_t audio_len, pk_seg *out) {
+    if (!(s->cur && audio_len - s->cur_start > s->min_speech))
+        return 0;
+    out->start = s->cur_start;
+    out->end = audio_len;
+    return 1;
+}
+
+/* A segment to come starts where the open one did, or at a frame not yet
+ * taken: every start the loop writes is the frame's own sample or, after a
+ * cut at max_speech, a sample past the segment it has just ended. */
+int64_t pk_segs_floor(const pk_segs *s) {
+    return s->cur ? s->cur_start : s->window * s->frames;
 }
 
 size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
@@ -66,105 +179,19 @@ size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
         pk_seg_defaults(&def);
         p = &def;
     }
-    const int64_t window = rate == 16000 ? 512 : 256;
-    const int64_t audio_len = n_samples > 0 ? n_samples : (int64_t)n * window;
-    const double min_speech = rate * p->min_speech_ms / 1000;
-    const double speech_pad = rate * p->speech_pad_ms / 1000;
-    const double max_speech = rate * p->max_speech_s - window - 2 * speech_pad;
-    const double min_silence = rate * p->min_silence_ms / 1000;
-    const double min_silence_at_max = rate * p->min_silence_at_max_speech_ms / 1000;
-    const double threshold = p->threshold, neg = neg_threshold(p);
-    const int use_max = p->use_max_poss_sil_at_max_speech;
-
-    int triggered = 0;
-    int cur = 0;                                  /* current_speech is non-empty */
-    int64_t cur_start = 0;
-    int64_t temp_end = 0, prev_end = 0, next_start = 0;
-    size_t n_possible = 0;                        /* len(possible_ends) */
-    int64_t best_end = 0, best_dur = 0;           /* max(possible_ends, key=dur) */
+    pk_segs st;
+    pk_segs_init(&st, rate, p);
+    const int64_t audio_len = n_samples > 0 ? n_samples : (int64_t)n * st.window;
+    const double speech_pad = st.speech_pad;
     size_t count = 0;
+    pk_seg got[2];
 
-    for (size_t i = 0; i < n; i++) {
-        const double prob = probs[i];
-        const int64_t cur_sample = window * (int64_t)i;
-
-        if (prob >= threshold && temp_end) {
-            int64_t sil_dur = cur_sample - temp_end;
-            if (sil_dur > min_silence_at_max) {
-                if (n_possible == 0 || sil_dur > best_dur) {
-                    best_end = temp_end;
-                    best_dur = sil_dur;
-                }
-                n_possible++;
-            }
-            temp_end = 0;
-            if (next_start < prev_end)
-                next_start = cur_sample;
-        }
-
-        if (prob >= threshold && !triggered) {
-            triggered = 1;
-            cur = 1;
-            cur_start = cur_sample;
-            continue;
-        }
-
-        if (triggered && cur_sample - cur_start > max_speech) {
-            if (use_max && n_possible) {
-                prev_end = best_end;
-                put(out, cap, &count, cur_start, prev_end);
-                cur = 0;
-                next_start = prev_end + best_dur;
-                /* sic: prev_end + cur_sample, as utils_vad.py has it */
-                if (next_start < prev_end + cur_sample) {
-                    cur = 1;
-                    cur_start = next_start;
-                } else {
-                    triggered = 0;
-                }
-                prev_end = next_start = temp_end = 0;
-                n_possible = 0;
-            } else if (prev_end) {
-                put(out, cap, &count, cur_start, prev_end);
-                cur = 0;
-                if (next_start < prev_end) {
-                    triggered = 0;
-                } else {
-                    cur = 1;
-                    cur_start = next_start;
-                }
-                prev_end = next_start = temp_end = 0;
-                n_possible = 0;
-            } else {
-                put(out, cap, &count, cur_start, cur_sample);
-                cur = 0;
-                prev_end = next_start = temp_end = 0;
-                triggered = 0;
-                n_possible = 0;
-                continue;
-            }
-        }
-
-        if (prob < neg && triggered) {
-            if (!temp_end)
-                temp_end = cur_sample;
-            int64_t sil_dur_now = cur_sample - temp_end;
-            if (!use_max && sil_dur_now > min_silence_at_max)
-                prev_end = temp_end;
-            if (sil_dur_now < min_silence)
-                continue;
-            if (temp_end - cur_start > min_speech)
-                put(out, cap, &count, cur_start, temp_end);
-            cur = 0;
-            prev_end = next_start = temp_end = 0;
-            triggered = 0;
-            n_possible = 0;
-            continue;
-        }
+    for (size_t i = 0; i <= n; i++) {
+        const int k = i < n ? pk_segs_step(&st, probs[i], got) : pk_segs_end(&st, audio_len, got);
+        for (int q = 0; q < k; q++, count++)
+            if (count < cap)
+                out[count] = got[q];
     }
-
-    if (cur && audio_len - cur_start > min_speech)
-        put(out, cap, &count, cur_start, audio_len);
 
     /* The padding pass reads each segment's neighbour, so it needs them all */
     if (count > cap)
@@ -193,6 +220,55 @@ size_t pk_segments(const float *probs, size_t n, int rate, int64_t n_samples,
         }
     }
     return count;
+}
+
+/* ---------------------------------------------------- padding, as they come --- */
+
+void pk_pads_init(pk_pads *d, int rate, const pk_seg_params *p) {
+    pk_seg_params def;
+    if (!p) {
+        pk_seg_defaults(&def);
+        p = &def;
+    }
+    *d = (pk_pads){ .speech_pad = rate * p->speech_pad_ms / 1000 };
+}
+
+/* The pass above for segment i and i + 1, i the held one. Its end is not
+ * held to the recording's length here, which is not known yet: where the
+ * silence is two pads or more, the end with its pad stays a pad short of
+ * the next segment's start, a sample of the recording. */
+int pk_pads_put(pk_pads *d, pk_seg raw, pk_seg *out) {
+    if (!d->any) {
+        const double v = raw.start - d->speech_pad;
+        raw.start = v > 0 ? (int64_t)v : 0;
+        d->any = d->has = 1;
+        d->held = raw;
+        return 0;
+    }
+    pk_seg *s = &d->held;
+    const int64_t silence = raw.start - s->end;
+    if (silence < 2 * d->speech_pad) {
+        s->end += py_floordiv(silence, 2);
+        const int64_t v = raw.start - py_floordiv(silence, 2);
+        raw.start = v > 0 ? v : 0;
+    } else {
+        s->end = (int64_t)(s->end + d->speech_pad);
+        const double v = raw.start - d->speech_pad;
+        raw.start = v > 0 ? (int64_t)v : 0;
+    }
+    *out = *s;
+    d->held = raw;
+    return 1;
+}
+
+int pk_pads_end(pk_pads *d, int64_t audio_len, pk_seg *out) {
+    if (!d->has)
+        return 0;
+    const double e = d->held.end + d->speech_pad;
+    d->held.end = audio_len < e ? audio_len : (int64_t)e;
+    *out = d->held;
+    d->has = 0;
+    return 1;
 }
 
 /* ------------------------------------------------------------ iterator --- */

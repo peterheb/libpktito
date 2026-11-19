@@ -2,6 +2,7 @@
  * neural network.  Inputs are arbitrary, but generated segments and buffer
  * capacities obey the contracts in pktito.h. */
 #include "pktito.h"
+#include "segment.h"
 
 #include "fuzz.h"
 
@@ -40,6 +41,31 @@ static void segments_case(fz_input *f) {
     size_t count = pk_segments(probs, n, rate, samples, &p, all, room);
     FZ_ASSERT(count <= room);
     FZ_ASSERT(pk_segments(probs, n, rate, samples, &p, NULL, 0) == count);
+
+    /* The same probabilities a frame at a time, each segment padded as the
+     * next one comes (core/segment.h, a recording still being read): the
+     * same segments. */
+    {
+        pk_segs st;
+        pk_pads pd;
+        pk_segs_init(&st, rate, &p);
+        pk_pads_init(&pd, rate, &p);
+        pk_seg got[2], fin;
+        size_t k = 0;
+        for (size_t i = 0; i <= n; i++) {
+            const int made = i < n ? pk_segs_step(&st, probs[i], got) : pk_segs_end(&st, samples, got);
+            for (int q = 0; q < made; q++)
+                if (pk_pads_put(&pd, got[q], &fin)) {
+                    FZ_ASSERT(k < count && !memcmp(&fin, &all[k], sizeof fin));
+                    k++;
+                }
+        }
+        if (pk_pads_end(&pd, samples, &fin)) {
+            FZ_ASSERT(k < count && !memcmp(&fin, &all[k], sizeof fin));
+            k++;
+        }
+        FZ_ASSERT(k == count);
+    }
 
     /* Half the time a cap at or next to count, where the unfinished
      * output starts; otherwise any cap the buffer holds. */

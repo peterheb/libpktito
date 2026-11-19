@@ -595,6 +595,11 @@ typedef struct {
     FILE *scratch;              /* stdin's samples, or a pipe's */
     float *all;                 /* the same, whole, without a scratch file */
     int failed;                 /* a read failed */
+    /* a pipe transcribed as it comes (growing_wait): its samples at the
+     * model's rate so far, `count` of them in scratch, under lock */
+    pk_lock *lock;
+    int64_t count;
+    int ended;
 } file_audio;
 
 static int file_read(void *arg, int64_t at, float *out, size_t count) {
@@ -622,7 +627,47 @@ static int file_read(void *arg, int64_t at, float *out, size_t count) {
     return -1;
 }
 
-static pk_audio open_audio(const char *path, int rate, const opts *o, file_audio *f) {
+/* A pipe's samples as they come, for pk_asr_transcribe's recording still
+ * being read: wait reads the pipe, through the resampler at another rate,
+ * until `want` samples at the model's rate are in the scratch file or the
+ * pipe has ended, and read gives back what is there. The lanes' threads
+ * call wait while another reads, so both take the lock. */
+static int64_t growing_wait(void *arg, int64_t want) {
+    file_audio *f = arg;
+    pk_lock_take(f->lock);
+    while (f->count < want && !f->ended && !f->failed) {
+        const size_t r = pk_wav_read(f->w, f->in, READ_FRAMES);
+        const float *made = f->in;
+        size_t n = r;
+        if (f->rs) {
+            n = r ? pk_resample(f->rs, f->in, r, f->out) : pk_resample_flush(f->rs, f->out);
+            made = f->out;
+        }
+        if (n && (pk_os_seek(f->scratch, f->count * (int64_t)sizeof *made)
+                  || fwrite(made, sizeof *made, n, f->scratch) != n))
+            f->failed = 1;
+        f->count += (int64_t)n;
+        f->ended = !r;
+    }
+    const int64_t got = f->failed ? -1 : f->count;
+    pk_lock_give(f->lock);
+    return got;
+}
+
+static int growing_read(void *arg, int64_t at, float *out, size_t count) {
+    file_audio *f = arg;
+    pk_lock_take(f->lock);
+    const int ok = at >= 0 && at + (int64_t)count <= f->count && !pk_os_seek(f->scratch, at * (int64_t)sizeof *out)
+                   && fread(out, sizeof *out, count, f->scratch) == count;
+    if (!ok)
+        f->failed = 1;
+    pk_lock_give(f->lock);
+    return ok ? 0 : -1;
+}
+
+/* With `growing`, stdin or a pipe is not read here: its recording has no
+ * length yet (n < 0) and is read as pk_asr_transcribe waits for it. */
+static pk_audio open_audio(const char *path, int rate, const opts *o, file_audio *f, int growing) {
     char err[256];
     pk_wav_info info;
     memset(f, 0, sizeof *f);
@@ -631,7 +676,23 @@ static pk_audio open_audio(const char *path, int rate, const opts *o, file_audio
         cannot_open(path, err);
     uint64_t frames;
     int seekable = !pk_wav_seekable(w, &frames);
-    if (!seekable && (f->scratch = pk_os_temp())) {
+    if (!seekable && growing && (f->scratch = pk_os_temp())) {
+        f->w = w;
+        if (info.rate != (uint32_t)rate && !(f->rs = pk_resampler_new(info.rate, (uint32_t)rate)))
+            die("%s: cannot resample from %u Hz", path, (unsigned)info.rate);
+        const size_t room = f->rs ? pk_resample_room(f->rs, READ_FRAMES) : 0, flush = f->rs ? pk_resample_room(f->rs, 0) : 0;
+        const size_t most = room > flush ? room : flush;
+        f->in = malloc(READ_FRAMES * sizeof *f->in);
+        f->out = f->rs && most < SIZE_MAX / sizeof *f->out ? malloc(most * sizeof *f->out) : NULL;
+        if (!f->in || (f->rs && !f->out) || !(f->lock = pk_lock_new()))
+            die("out of memory");
+        if (o->verbose)
+            fprintf(stderr, "pktito-c: %s: %u Hz, %u channel%s, transcribed as it is read%s\n", path,
+                    (unsigned)info.rate, (unsigned)info.channels, info.channels == 1 ? "" : "s",
+                    f->rs ? ", resampled to 16 kHz" : "");
+        return (pk_audio){ -1, growing_read, f, growing_wait };
+    }
+    if (!seekable && (f->scratch || (f->scratch = pk_os_temp()))) {
         if (pk_wav_spool(w, f->scratch, &frames))
             die("%s: its samples could not be copied to a scratch file: %s (TMPDIR names its folder)", path,
                 strerror(errno));
@@ -649,7 +710,7 @@ static pk_audio open_audio(const char *path, int rate, const opts *o, file_audio
         if (pk_wav_status(w, err, sizeof err))  /* cut short, as a read to its end would find it */
             fprintf(stderr, "pktito-c: %s: %s\n", path, err);
         f->w = w;
-        x = (pk_audio){ (int64_t)frames, file_read, f };
+        x = (pk_audio){ (int64_t)frames, file_read, f, NULL };
         if (info.rate != (uint32_t)rate) {
             if (!(f->rs = pk_resampler_new(info.rate, (uint32_t)rate)))
                 die("%s: cannot resample from %u Hz", path, (unsigned)info.rate);
@@ -678,6 +739,7 @@ static void close_audio(file_audio *f) {
     free(f->in);
     free(f->out);
     free(f->all);
+    pk_lock_free(f->lock);
 }
 
 /* A recording's -1 where its read failed: the file, not the memory */
@@ -1348,6 +1410,53 @@ static int print_chunk(void *arg, const pk_chunk_out *ch) {
     return 0;
 }
 
+/* The chunks of a recording transcribed while it was still being read
+ * (pk_audio's wait): a chunk may come twice, the second time, at the
+ * recording's end, with the words its retries gave, so each is kept as it
+ * last came and all are printed in order once the recording is done. */
+typedef struct {
+    pk_chunk_out *c;            /* its tokens a copy */
+    size_t n, cap;
+} late_chunks;
+
+static int keep_late(void *arg, const pk_chunk_out *ch) {
+    late_chunks *l = arg;
+    if (ch->i >= l->cap) {
+        size_t cap = l->cap ? l->cap : 64;
+        while (cap <= ch->i)
+            cap *= 2;
+        if (!(l->c = realloc(l->c, cap * sizeof *l->c)))
+            die("out of memory");
+        memset(l->c + l->cap, 0, (cap - l->cap) * sizeof *l->c);
+        l->cap = cap;
+    }
+    pk_tok *t = malloc(((size_t)ch->count + 1) * sizeof *t);
+    if (!t)
+        die("out of memory");
+    memcpy(t, ch->toks, (size_t)ch->count * sizeof *t);
+    free((void *)(uintptr_t)l->c[ch->i].toks);
+    l->c[ch->i] = *ch;
+    l->c[ch->i].toks = t;
+    l->n = ch->i + 1 > l->n ? ch->i + 1 : l->n;
+    return 0;
+}
+
+static void print_late(late_chunks *l, void *out) {
+    int64_t done = 0, total = 0;
+    for (size_t i = 0; i < l->n; i++)
+        total += l->c[i].at.end - l->c[i].at.start;
+    for (size_t i = 0; i < l->n; i++) {
+        pk_chunk_out *c = &l->c[i];
+        c->n = l->n;
+        c->done = done += c->at.end - c->at.start;
+        c->total = total;
+        c->provisional = 0;
+        print_chunk(out, c);
+        free((void *)(uintptr_t)c->toks);
+    }
+    free(l->c);
+}
+
 /* A diarizer's rows, kept as pk_diar_run hands them over */
 typedef struct {
     float *p;
@@ -1541,16 +1650,16 @@ static int transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr 
                            double *diar_total, int *written) {
     const int rate = pk_model_rate(m);
     file_audio f;
-    const pk_audio x = open_audio(path, rate, o, &f);
-    const size_t n = (size_t)x.n;
-    if (!n) {
+    /* a pipe is transcribed as it comes; with a diarizer, which hears the
+     * recording first, it is copied to a scratch file whole as before */
+    const pk_audio x = open_audio(path, rate, o, &f, !dm);
+    const int growing = x.n < 0;
+    size_t n = growing ? 0 : (size_t)x.n;
+    if (!n && !growing) {
         fprintf(stderr, "pktito-c: %s: no audio in it\n", path);
         close_audio(&f);
         return 0;
     }
-    if (o->json && many && *written)
-        printf(",\n");
-    ++*written;
     const char *langs = pk_model_meta(m, "languages");
     chunk_out out = { .o = o, .m = m, .many = many, .rate = rate, .fs = pk_model_frame_seconds(m),
                       .text = malloc(1 << 16), .cap = 1 << 16, .lang = langs && !strcmp(langs, "en") ? "en" : NULL };
@@ -1570,18 +1679,45 @@ static int transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr 
         out.drows = rb.n;
         out.frame = (uint32_t)llround(out.fs * rate);
     }
-    if (many && !o->json)
-        printf("%s\t", path);
     pk_transcribe_opts to;
     pk_transcribe_defaults(&to);
     to.max_chunk_s = o->max_chunk;
     to.retry = !o->no_retry;
     to.context = !o->no_context;
+    late_chunks lc = { 0 };
+    /* what goes before a file's transcript: at once, or for a pipe, whose
+     * chunks are printed at its end, once it is known to hold audio */
+#define OPEN_FILE() do { \
+        if (o->json && many && *written) \
+            printf(",\n"); \
+        ++*written; \
+        if (many && !o->json) \
+            printf("%s\t", path); \
+    } while (0)
+    if (!growing)
+        OPEN_FILE();
     const double t0 = pk_os_now();
-    if (pk_asr_transcribe(a, &x, &to, print_chunk, &out) < 0) {
+    if (pk_asr_transcribe(a, &x, &to, growing ? keep_late : print_chunk, growing ? (void *)&lc : (void *)&out) < 0) {
         read_failed(&f, path);
         run_failed(m);
     }
+    if (growing) {
+        char err[256];
+        if (pk_wav_status(f.w, err, sizeof err))
+            fprintf(stderr, "pktito-c: %s: %s\n", path, err);
+        n = (size_t)f.count;
+    }
+    if (!n) {
+        fprintf(stderr, "pktito-c: %s: no audio in it\n", path);
+        free(out.text);
+        close_audio(&f);
+        return 0;
+    }
+    if (growing) {
+        OPEN_FILE();
+        print_late(&lc, &out);
+    }
+#undef OPEN_FILE
     const double asr_s = pk_os_now() - t0 - out.printing;
     *asr_total += asr_s;
     /* the recording's end in milliseconds, which no cue may pass: rounded,
@@ -1869,7 +2005,7 @@ static void print_profile(const prof_row *r, int n) {
  * engine's alone */
 static float *whole_audio(const char *path, int rate, const opts *o, size_t *n) {
     file_audio f;
-    const pk_audio file = open_audio(path, rate, o, &f);
+    const pk_audio file = open_audio(path, rate, o, &f, 0);
     *n = (size_t)file.n;
     float *all = malloc((*n ? *n : 1) * sizeof *all);
     if (!all)
@@ -1990,7 +2126,7 @@ static int print_rows(void *arg, int64_t row, size_t n, const float *p) {
 static int diar_probs(const opts *o, const pk_model *dm) {
     const int rate = pk_model_rate(dm);
     file_audio f;
-    const pk_audio x = open_audio(o->in, rate, o, &f);
+    const pk_audio x = open_audio(o->in, rate, o, &f, 0);
     pk_diar *dz = pk_diar_new(dm, o->threads);
     if (!dz)
         die("out of memory");
@@ -2011,7 +2147,7 @@ static int diar_probs(const opts *o, const pk_model *dm) {
 static int speakers(const opts *o, const pk_model *dm) {
     const int rate = pk_model_rate(dm);
     file_audio f;
-    const pk_audio x = open_audio(o->in, rate, o, &f);
+    const pk_audio x = open_audio(o->in, rate, o, &f, 0);
     const size_t n = (size_t)x.n;
     if (!n)
         die("%s: no audio in it", o->in);
@@ -2093,7 +2229,7 @@ static int speakers(const opts *o, const pk_model *dm) {
 static int vad(const opts *o, pk_model *m) {
     const int rate = pk_model_rate(m);
     file_audio f;
-    const pk_audio x = open_audio(o->in, rate, o, &f);
+    const pk_audio x = open_audio(o->in, rate, o, &f, 0);
     const size_t n = (size_t)x.n;
     pk_asr *a = asr_new(o, m, 0);
     const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES, cap = 2 * frames + 1;

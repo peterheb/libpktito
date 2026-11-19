@@ -388,17 +388,41 @@ static int lanes_for(const pk_asr *a, const pk_seg *c, size_t n) {
     return best;
 }
 
+/* A run's chunks: a list, or a source that has each as the recording it
+ * is cut from comes (asr.h, pk_chunk_src) */
+typedef struct {
+    const pk_seg *c;
+    size_t n;
+    const pk_chunk_src *src;
+} chunk_list;
+
+/* Chunk i into *c: 1, 0 where the run has fewer, or -1 where the source
+ * fails. A source may wait for its recording, and hears it on pool. */
+static int chunk_get(const chunk_list *l, size_t i, pk_pool *pool, pk_seg *c) {
+    if (l->src)
+        return l->src->get(l->src->arg, i, pool, c);
+    if (i >= l->n)
+        return 0;
+    *c = l->c[i];
+    return 1;
+}
+
+typedef struct {
+    pk_tok *t;
+    long n;
+    int done;
+} lane_out;
+
 typedef struct {
     pk_asr *a;                       /* lane 0, the caller's */
     const pk_audio *x;               /* read in turns: pk_run_chunks_with */
-    const pk_seg *c;
-    size_t n;
+    const chunk_list *l;
     _Atomic size_t next;             /* the next chunk a lane takes */
-    _Atomic int stop;                /* each stopped the run, or a lane ran out of memory */
+    _Atomic int stop;                /* each stopped the run, or a lane failed */
     _Atomic int failed;              /* the latter */
-    _Atomic int *done;               /* chunk i's tokens are toks[i], count[i] of them */
-    pk_tok **toks;
-    long *count;
+    pk_lock *lock;                   /* out and len, which the lanes write and give reads */
+    lane_out *out;                   /* chunk i's tokens, once done */
+    size_t len, cap;
     size_t given;                    /* chunks each has had: the calling thread's */
     int rc;                          /* each's last word: the calling thread's */
     pk_each_fn each;
@@ -409,15 +433,45 @@ typedef struct {
  * thread between lane 0's chunks, where lane 0's second joint buffer is
  * free for a retry */
 static void give(lanes_run *r) {
-    while (r->rc == 0 && r->given < r->n
-           && atomic_load_explicit(&r->done[r->given], memory_order_acquire)) {
-        const size_t i = r->given++;
-        r->rc = r->each(r->arg, i, r->toks[i], r->count[i], r->a->fproj[1]);
-        free(r->toks[i]);
-        r->toks[i] = NULL;
+    while (r->rc == 0) {
+        pk_lock_take(r->lock);
+        const int ready = r->given < r->len && r->out[r->given].done;
+        const lane_out o = ready ? r->out[r->given] : (lane_out){ 0 };
+        if (ready)
+            r->out[r->given].t = NULL;
+        pk_lock_give(r->lock);
+        if (!ready)
+            break;
+        r->rc = r->each(r->arg, r->given++, o.t, o.n, r->a->fproj[1]);
+        free(o.t);
     }
     if (r->rc)
         atomic_store_explicit(&r->stop, 1, memory_order_relaxed);
+}
+
+/* Chunk i's tokens kept for give: 0, or -1 if memory runs out */
+static int keep(lanes_run *r, size_t i, pk_tok *t, long n) {
+    int rc = 0;
+    pk_lock_take(r->lock);
+    if (i >= r->cap) {
+        size_t cap = r->cap ? r->cap : 16;
+        while (cap <= i)
+            cap *= 2;
+        lane_out *o = realloc(r->out, cap * sizeof *o);
+        if (o) {
+            memset(o + r->cap, 0, (cap - r->cap) * sizeof *o);
+            r->out = o;
+            r->cap = cap;
+        } else {
+            rc = -1;
+        }
+    }
+    if (rc == 0) {
+        r->out[i] = (lane_out){ t, n, 1 };
+        r->len = i + 1 > r->len ? i + 1 : r->len;
+    }
+    pk_lock_give(r->lock);
+    return rc;
 }
 
 /* Lane `thread`'s part of a run: the next chunk while there is one, its
@@ -429,22 +483,21 @@ static void lane_job(void *arg, int item, int thread) {
     pk_asr *l = thread ? r->a->lane[thread] : r->a;
     while (!atomic_load_explicit(&r->stop, memory_order_relaxed)) {
         const size_t i = atomic_fetch_add_explicit(&r->next, 1, memory_order_relaxed);
-        if (i >= r->n)
+        pk_seg c;
+        const int has = chunk_get(r->l, i, l->pool, &c);
+        if (has == 0)
             break;
-        const long Te = encode_at(l, r->x, &r->c[i], l->fproj[0]);
+        const long Te = has < 0 ? -1 : encode_at(l, r->x, &c, l->fproj[0]);
         const long nt = Te < 0 ? -1 : pk_decode(l, (uint32_t)Te, l->fproj[0], 1);
         pk_tok *t = nt > 0 ? malloc((size_t)nt * sizeof *t) : NULL;
-        if (nt < 0 || (nt > 0 && !t)) {
+        if (nt > 0 && t)
+            memcpy(t, l->toks, (size_t)nt * sizeof *t);
+        if (nt < 0 || (nt > 0 && !t) || keep(r, i, t, nt)) {
             free(t);
             atomic_store_explicit(&r->failed, 1, memory_order_relaxed);
             atomic_store_explicit(&r->stop, 1, memory_order_relaxed);
             break;
         }
-        if (nt)
-            memcpy(t, l->toks, (size_t)nt * sizeof *t);
-        r->toks[i] = t;
-        r->count[i] = nt;
-        atomic_store_explicit(&r->done[i], 1, memory_order_release);
         if (thread == 0)
             give(r);
     }
@@ -471,32 +524,25 @@ static int lanes_ready(pk_asr *a, int k, size_t most, size_t longest) {
     return k;
 }
 
-/* pk_run_chunks_with's chunks on k lanes at once, lane j on its share of
- * the transcriber's threads. The encoder's race between every core and
- * the fast kind waits for a run of one lane, whose timing the other lanes
+/* A run's chunks on k lanes at once, lane j on its share of the
+ * transcriber's threads. The encoder's race between every core and the
+ * fast kind waits for a run of one lane, whose timing the other lanes
  * would muddle. */
-static int run_lanes(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, int k,
-                     pk_each_fn each, void *arg) {
-    lanes_run r = { .a = a, .x = x, .c = c, .n = n, .each = each, .arg = arg };
-    r.done = malloc(n * sizeof *r.done);
-    r.toks = calloc(n, sizeof *r.toks);
-    r.count = calloc(n, sizeof *r.count);
-    if (!r.done || !r.toks || !r.count) {
-        free(r.done), free(r.toks), free(r.count);
+static int run_lanes(pk_asr *a, const pk_audio *x, const chunk_list *l, int k, pk_each_fn each,
+                     void *arg) {
+    lanes_run r = { .a = a, .x = x, .l = l, .each = each, .arg = arg };
+    if (!(r.lock = pk_lock_new()))
         return -1;
-    }
-    for (size_t i = 0; i < n; i++)
-        atomic_init(&r.done[i], 0);
     atomic_init(&r.next, 0);
     atomic_init(&r.stop, 0);
     atomic_init(&r.failed, 0);
 
     const int wide = a->wide, tune = a->tune;
     for (int j = 0; j < k; j++) {
-        pk_asr *l = j ? a->lane[j] : a;
-        l->wide = share(a->nth, j, k);
-        l->qb64 = a->qb64;                     /* the caller's mode, in every lane */
-        pk_pool_set_active(l->pool, l->wide);
+        pk_asr *q = j ? a->lane[j] : a;
+        q->wide = share(a->nth, j, k);
+        q->qb64 = a->qb64;                     /* the caller's mode, in every lane */
+        pk_pool_set_active(q->pool, q->wide);
     }
     a->tune = 0;
     pk_os_throttle was = pk_os_unthrottle();  /* this thread runs lane 0 */
@@ -508,9 +554,10 @@ static int run_lanes(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, in
     give(&r);                                  /* what the other lanes did last */
     pk_os_rethrottle(was);
     const int rc = r.rc ? r.rc : atomic_load_explicit(&r.failed, memory_order_relaxed) ? -1 : 0;
-    for (size_t i = 0; i < n; i++)
-        free(r.toks[i]);
-    free(r.done), free(r.toks), free(r.count);
+    for (size_t i = 0; i < r.len; i++)
+        free(r.out[i].t);
+    free(r.out);
+    pk_lock_free(r.lock);
     return rc;
 }
 
@@ -559,6 +606,49 @@ static int ane_depth(void) {
 }
 #endif
 
+/* A run's chunks one at a time, each one's search beside the next one's
+ * encoder (above). Of a source, the next chunk is asked for before this
+ * one's search starts, and the source may wait for it. */
+static int run_one(pk_asr *a, const pk_audio *x, const chunk_list *l, pk_each_fn each, void *arg) {
+    pk_seg c, next;
+    int has = chunk_get(l, 0, a->pool, &c);
+    if (has <= 0)
+        return has;
+    pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
+    long Te = encode_at(a, x, &c, a->fproj[0]);
+    int rc = Te < 0 ? -1 : 0;
+    for (size_t i = 0; has == 1 && rc == 0; i++) {
+        const float *f = a->fproj[i % 2];
+        long nt;
+        has = chunk_get(l, i + 1, a->pool, &next);
+        if (has < 0) {
+            rc = -1;
+        } else if (has) {
+            search_job s = { a, (uint32_t)Te, f, 0 };
+            pk_pool_aside(a->pool, search_aside, &s);
+            Te = encode_at(a, x, &next, a->fproj[(i + 1) % 2]);
+            PROF(PK_P_DEC, pk_pool_join(a->pool));
+            nt = s.n;
+        } else {
+            PROF(PK_P_DEC, nt = pk_decode(a, (uint32_t)Te, f, 1));
+        }
+        if (rc == 0)
+            rc = nt < 0 ? -1 : each(arg, i, a->toks, nt, a->fproj[i % 2]);
+        if (rc == 0 && Te < 0)          /* the next chunk's encoder could not run */
+            rc = -1;
+    }
+    pk_os_rethrottle(was);
+    return rc;
+}
+
+/* On k lanes where there are that many to be had, else one at a time */
+static int run_chunks(pk_asr *a, const pk_audio *x, const chunk_list *l, size_t most,
+                      size_t longest, int k, pk_each_fn each, void *arg) {
+    if (k > 1 && (k = lanes_ready(a, k, most, longest)) > 1)
+        return run_lanes(a, x, l, k, each, arg);
+    return run_one(a, x, l, each, arg);
+}
+
 int pk_run_chunks_with(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n,
                        pk_each_fn each, void *arg) {
     size_t most = 0, longest = 0;   /* feature frames, and samples */
@@ -577,33 +667,23 @@ int pk_run_chunks_with(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n,
 #endif
     /* one lane with the Neural Engine or the NPU: a lane's transcriber has
      * the CPU's encoder, so a chunk's bits would be the lane's it fell to */
-    int k = a->ane || a->qnn ? 1 : lanes_for(a, c, n);
-    if (k > 1 && (k = lanes_ready(a, k, most, longest)) > 1)
-        return run_lanes(a, x, c, n, k, each, arg);
-    pk_os_throttle was = pk_os_unthrottle();  /* this thread runs a share of every job */
-    long Te = encode_at(a, x, &c[0], a->fproj[0]);
-    int rc = Te < 0 ? -1 : 0;
-    for (size_t i = 0; i < n && rc == 0; i++) {
-        const float *f = a->fproj[i % 2];
-        long nt;
-        if (i + 1 < n) {
-            search_job s = { a, (uint32_t)Te, f, 0 };
-            pk_pool_aside(a->pool, search_aside, &s);
-            Te = encode_at(a, x, &c[i + 1], a->fproj[(i + 1) % 2]);
-            PROF(PK_P_DEC, pk_pool_join(a->pool));
-            nt = s.n;
-        } else {
-            PROF(PK_P_DEC, nt = pk_decode(a, (uint32_t)Te, f, 1));
-        }
-        if (nt < 0)
-            rc = -1;
-        else
-            rc = each(arg, i, a->toks, nt, a->fproj[i % 2]);
-        if (rc == 0 && Te < 0)          /* the next chunk's encoder could not run */
-            rc = -1;
-    }
-    pk_os_rethrottle(was);
-    return rc;
+    const chunk_list l = { c, n, NULL };
+    return run_chunks(a, x, &l, most, longest, a->ane || a->qnn ? 1 : lanes_for(a, c, n), each, arg);
+}
+
+/* Every lane the transcriber has, where the chunks are not there to count
+ * (lanes_for): a source is asked for its first chunk before this, so more
+ * of the recording is to come than a chunk, and the count that ends a long
+ * recording soonest is the most (lane_time's gain rises with it). With the
+ * Neural Engine one lane and one call at a time: ane_chunks sends a chunk
+ * off ahead of the one it takes, which a source cannot give yet. */
+int pk_run_source_with(pk_asr *a, const pk_audio *x, const pk_chunk_src *src, size_t longest,
+                       pk_each_fn each, void *arg) {
+    const size_t most = pk_mel_frames(a->m, longest);
+    if (most > UINT32_MAX / 4 || reserve(a, most) || reserve_pcm(a, longest))
+        return -1;
+    const chunk_list l = { NULL, 0, src };
+    return run_chunks(a, x, &l, most, longest, a->ane || a->qnn ? 1 : a->lanes, each, arg);
 }
 
 #ifdef PK_ANE
@@ -745,7 +825,7 @@ static int plain(void *arg, size_t i, const pk_tok *t, long nt, float *spare) {
     plain_each *p = arg;
     p->done += p->c[i].end - p->c[i].start;
     const pk_chunk_out out = { i, p->n, p->c[i], t, nt, 0, p->done, p->total,
-                               pk_frame_of(p->m, p->c[i].start) };
+                               pk_frame_of(p->m, p->c[i].start), 0 };
     return p->fn(p->arg, &out) ? 1 : 0;
 }
 
@@ -799,7 +879,7 @@ static int floats_read(void *arg, int64_t at, float *out, size_t count) {
 }
 
 pk_audio pk_audio_floats(const float *x, size_t n) {
-    return (pk_audio){ (int64_t)n, floats_read, (void *)x };
+    return (pk_audio){ (int64_t)n, floats_read, (void *)x, NULL };
 }
 
 int pk_audio_read(const pk_audio *x, int64_t at, float *out, size_t n) {
@@ -820,7 +900,7 @@ int pk_audio_turns(pk_turns *t, const pk_audio *x, pk_audio *out) {
     t->x = *x;
     if (!(t->lock = pk_lock_new()))
         return -1;
-    *out = (pk_audio){ x->n, turns_read, t };
+    *out = (pk_audio){ x->n, turns_read, t, NULL };
     return 0;
 }
 
@@ -868,21 +948,29 @@ static int silent(const pk_audio *x, int64_t at, int64_t n, float *buf) {
     return 1;
 }
 
-/* The gap [a, b) as chunks from out[*k] on: the fewest pieces of at most
- * max_len, all of a length, but those shorter than PK_GAP_MIN or silent.
- * Silero cannot say where a gap's words are, so its cuts fall where they
- * fall. 0, or -1 if a read fails. */
-static int put_gap(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out,
-                   pk_seg *win, size_t *k, float *buf) {
-    if (b <= a)
-        return 0;
-    int64_t m = (b - a + max_len - 1) / max_len;
-    for (int64_t i = 0; i < m; i++) {
+/* The pieces of the gap [a, b): the fewest of at most max_len, all of a
+ * length. */
+int64_t pk_gap_pieces(int64_t a, int64_t b, int64_t max_len) {
+    return b > a ? (b - a + max_len - 1) / max_len : 0;
+}
+
+/* The gap [a, b) as chunks from out[*k] on: its pieces but those shorter
+ * than PK_GAP_MIN or silent. Silero cannot say where a gap's words are, so
+ * its cuts fall where they fall. 0, or -1 if a read fails or memory runs
+ * out. */
+int pk_gap_chunks(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out,
+                  pk_seg *win, size_t *k) {
+    const int64_t m = pk_gap_pieces(a, b, max_len);
+    float *buf = m ? malloc(PK_GAP_READ * sizeof *buf) : NULL;
+    if (m && !buf)
+        return -1;
+    int rc = 0;
+    for (int64_t i = 0; i < m && rc == 0; i++) {
         int64_t pa = a + (b - a) * i / m, pb = a + (b - a) * (i + 1) / m;
         const int quiet = pb - pa >= PK_GAP_MIN ? silent(x, pa, pb - pa, buf) : 1;
         if (quiet < 0)
-            return -1;
-        if (!quiet) {
+            rc = -1;
+        else if (!quiet) {
             out[*k].start = pa;
             out[*k].end = pb;
             if (win)
@@ -890,7 +978,62 @@ static int put_gap(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, pk_
             (*k)++;
         }
     }
-    return 0;
+    free(buf);
+    return rc;
+}
+
+/* The speech chunk that opens with segment i of s[0, n), sorted: from half
+ * way into the silence before it to the last segment that fits, with what
+ * it hears past that one's cut, ctx where the silence after it is under
+ * pause. `total` is the recording's length where it has ended; where it has
+ * not, the samples of it there are so far, and `peek` the start of segment
+ * n where that much of it is known, or -1. Returns 1 with the chunk in *c,
+ * what it is heard in in *w and its last segment in *last; or 0, of a
+ * recording that has not ended, where the chunk depends on what is still to
+ * come: a segment not yet whole that may fit, or the recording's end. */
+int pk_chunk_at(const pk_seg *s, size_t n, int64_t peek, int ended, int64_t total, size_t i,
+                int64_t max_len, int64_t ctx, int64_t pause, pk_seg *c, pk_seg *w, size_t *last_out) {
+    const size_t starts = n + (peek >= 0);      /* segments whose start is known */
+    /* the chunk opens half way into the silence before segment i */
+    int64_t gap0 = i ? s[i].start - s[i - 1].end : s[i].start;
+    int64_t lead = s[i].start - (gap0 / 2 < PK_CHUNK_PAD ? gap0 / 2 : PK_CHUNK_PAD);
+    /* and ends with the last segment that fits, with what it hears
+     * past that one's cut: ctx where the silence after it is short */
+    size_t last = i, j = i;
+    int64_t trail = 0, past = 0;
+    for (; j < n; j++) {
+        if (j + 1 >= starts && !ended)
+            return 0;
+        int64_t gap = j + 1 < starts ? (j + 1 < n ? s[j + 1].start : peek) - s[j].end : total - s[j].end;
+        int64_t t = s[j].end + (gap / 2 < PK_CHUNK_PAD ? gap / 2 : PK_CHUNK_PAD);
+        if (j > i && t - lead > max_len)
+            break;
+        int64_t pj = 0;
+        if (j + 1 < starts && gap < pause) {
+            if (!ended && total - t < ctx)
+                return 0;
+            pj = total - t < ctx ? total - t : ctx;
+        }
+        if (j == i || t - lead + pj <= max_len) {
+            last = j;
+            trail = t;
+            past = pj;
+        }
+    }
+    if (j == n && !ended)                       /* the next segment may fit too */
+        return 0;
+    if (trail - lead > max_len) {               /* one segment, too long with its silence */
+        lead = s[i].end - max_len > lead ? s[i].end - max_len : lead;
+        trail = lead + max_len < trail ? lead + max_len : trail;
+    }
+    if (trail - lead + past > max_len)          /* no room for it */
+        past = 0;
+    c->start = lead;
+    c->end = trail;
+    *w = *c;
+    w->end += past;
+    *last_out = last;
+    return 1;
 }
 
 long pk_chunks(const pk_audio *x, const pk_seg *s, size_t n, int64_t max_len, pk_seg *out) {
@@ -907,52 +1050,20 @@ long pk_chunks_past(const pk_audio *x, const pk_seg *s, size_t n, int64_t max_le
             win[0] = out[0];
         return 1;
     }
-    float *buf = malloc(PK_GAP_READ * sizeof *buf);
-    if (!buf)
-        return -1;
     size_t k = 0;
     int64_t done = 0;                           /* the end of the last speech chunk */
     for (size_t i = 0; i < n;) {
-        /* the chunk opens half way into the silence before segment i */
-        int64_t gap0 = i ? s[i].start - s[i - 1].end : s[i].start;
-        int64_t lead = s[i].start - (gap0 / 2 < PK_CHUNK_PAD ? gap0 / 2 : PK_CHUNK_PAD);
-        /* and ends with the last segment that fits, with what it hears
-         * past that one's cut: ctx where the silence after it is short */
-        size_t last = i;
-        int64_t trail = 0, past = 0;
-        for (size_t j = i; j < n; j++) {
-            int64_t gap = j + 1 < n ? s[j + 1].start - s[j].end : total - s[j].end;
-            int64_t t = s[j].end + (gap / 2 < PK_CHUNK_PAD ? gap / 2 : PK_CHUNK_PAD);
-            if (j > i && t - lead > max_len)
-                break;
-            int64_t pj = j + 1 < n && gap < pause ? (total - t < ctx ? total - t : ctx) : 0;
-            if (j == i || t - lead + pj <= max_len) {
-                last = j;
-                trail = t;
-                past = pj;
-            }
-        }
-        if (trail - lead > max_len) {           /* one segment, too long with its silence */
-            lead = s[i].end - max_len > lead ? s[i].end - max_len : lead;
-            trail = lead + max_len < trail ? lead + max_len : trail;
-        }
-        if (trail - lead + past > max_len)      /* no room for it */
-            past = 0;
-        if (put_gap(x, done, lead, max_len, out, win, &k, buf)) {
-            free(buf);
+        pk_seg c, w;
+        size_t last;
+        pk_chunk_at(s, n, -1, 1, total, i, max_len, ctx, pause, &c, &w, &last);
+        if (pk_gap_chunks(x, done, c.start, max_len, out, win, &k))
             return -1;
-        }
-        out[k].start = lead;
-        out[k].end = trail;
-        if (win) {
-            win[k] = out[k];
-            win[k].end += past;
-        }
+        out[k] = c;
+        if (win)
+            win[k] = w;
         k++;
-        done = trail;
+        done = c.end;
         i = last + 1;
     }
-    const int rc = put_gap(x, done, total, max_len, out, win, &k, buf);
-    free(buf);
-    return rc ? -1 : (long)k;
+    return pk_gap_chunks(x, done, total, max_len, out, win, &k) ? -1 : (long)k;
 }

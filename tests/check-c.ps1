@@ -46,6 +46,7 @@ run 'tests\editioncheck.exe tests\editions.tsv'
 run 'tests\editioncheck.exe tests\editions-rules.tsv'
 run 'tests\chunkcheck.exe'
 run "tests\transcheck.exe `"$Model`" tests\data\test.wav"
+run "tests\growcheck.exe `"$Model`" tests\data\test.wav"
 run "tests\sentcheck.exe `"$Model`" tests\data\test.wav"
 
 cmd /c "pktito-c.exe -m $tiny --json tests\pkfcheck.wav > tests\pkfcheck.json"
@@ -202,11 +203,11 @@ foreach ($w in 'tests\data\test.wav', "$p-48k.wav") {
 }
 if ($ok) {
     $v = cmd /c "type tests\data\test.wav | pktito-c.exe -v -m `"$Model`" - 2>&1 > NUL"
-    $ok = ($v -join ' ') -match 'by way of a scratch file'
+    $ok = ($v -join ' ') -match 'transcribed as it is read'
 }
 Remove-Item "$p-48k.wav", "$p-16k.wav", "$p-a.json", "$p-b.json" -ErrorAction SilentlyContinue
-if (-not $ok) { "pktito-c -: FAIL - a pipe's lines are not the file's, or it took no scratch file"; exit 1 }
-"pktito-c -: a pipe at 16 and 48 kHz, by way of a scratch file, as the file reads"
+if (-not $ok) { "pktito-c -: FAIL - a pipe's lines are not the file's, or it was not transcribed as it was read"; exit 1 }
+"pktito-c -: a pipe at 16 and 48 kHz, transcribed as it is read, as the file reads"
 
 # Line by line, as PowerShell gives a program's output, without the line
 # ends (examples/transcribe writes the C runtime's CR LF) and less the two

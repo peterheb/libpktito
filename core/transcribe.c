@@ -24,6 +24,15 @@
  * it, on purpose. README, "Transcribing a recording", has why each step is
  * as it is and what it was measured on.
  *
+ * Steps 1 and 2 run a stretch of the recording at a time (the cuts, below):
+ * the VAD a run of frames, Silero's state machine a frame (core/segment.h),
+ * and a chunk cut once the segments past it say where it ends
+ * (pk_chunk_at). A recording of known length is cut whole before step 3. One
+ * still being read (pk_audio's wait) is cut as the lanes of step 3 ask for
+ * chunks, and its step 4 waits for its end (late): the floor and the budget
+ * are the whole recording's, and nothing else is, so its tokens are those
+ * of the recording read whole (tests/growcheck holds it to that).
+ *
  * pk_steps is the same steps one at a time, for a caller who hears steps 3
  * and 4 itself: pk_steps_new is 1 and 2, and the rest is jobs, a chunk or a
  * retry's stretch to hear, whose tokens come back in any order and go
@@ -32,6 +41,8 @@
  * retries on the calling thread.
  */
 #include "asr.h"
+#include "os.h"
+#include "segment.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -171,9 +182,11 @@ void pk_transcribe_defaults(pk_transcribe_opts *o) {
 /* The energy over the speech in [from, to) of the samples in buf, which
  * start at the recording's sample `base` and hold [from, to), and how many
  * samples of speech that is. A sample that is not finite is read as 0, as
- * pk_asr_run reads it. */
+ * pk_asr_run reads it. From `open` on, the segments are not all known yet
+ * (a recording still being read), and every sample counts as speech, its
+ * energy left out: the most that *heard can come to. */
 static double power(const float *buf, int64_t base, const pk_seg *sp, size_t ns, int64_t from,
-                    int64_t to, int64_t *heard) {
+                    int64_t to, int64_t open, int64_t *heard) {
     double e = 0;
     int64_t h = 0;
     for (size_t k = 0; k < ns; k++) {
@@ -185,6 +198,8 @@ static double power(const float *buf, int64_t base, const pk_seg *sp, size_t ns,
         }
         h += s1 > s0 ? s1 - s0 : 0;
     }
+    if (open < to)
+        h += to - (open > from ? open : from);
     *heard = h;
     return e;
 }
@@ -214,12 +229,35 @@ static size_t quietest(const float *x, size_t n, int rate) {
 /* One run's state, for each chunk as it comes: pk_steps */
 typedef struct pk_steps {
     const pk_model *m;
+    pk_asr *a;                  /* whose VAD hears the recording */
     pk_audio x;                 /* the recording, the caller's copied */
     float *buf;                 /* a chunk's samples, or a stretch's: bufcap of them */
     size_t bufcap;
-    pk_seg *c, *win, *sp;       /* the chunks, what each is heard in, the speech */
-    size_t nc, ns;
     int retry;
+
+    /* The cuts: the recording heard a run of the VAD's frames at a time,
+     * its speech segments as each is whole and its chunks as each is sure
+     * (cut_to). Of a recording still being read, the lanes' threads ask for
+     * chunks while the calling thread takes their tokens, so all of this is
+     * read and written under lock. */
+    pk_lock *lock;
+    int64_t (*wait)(void *arg, int64_t want);   /* x's, where its length was not known */
+    void *wait_arg;
+    int64_t max_len, ctx;
+    int64_t heard;              /* samples the VAD has had */
+    int64_t length;             /* the recording's, once ended */
+    int ended, cut_over, cut_failed;
+    pk_segs seg_sp, seg_cut;    /* Silero's segments, and those the chunks are cut between */
+    pk_pads pad_sp, pad_cut;
+    pk_seg *sp, *cs;            /* each one's segments so far, final */
+    size_t ns, spcap, ncs, cscap;
+    size_t ci;                  /* the cut segment the next speech chunk opens with */
+    int64_t cut_done;           /* the end of the last speech chunk */
+    pk_seg *c, *win;            /* the chunks, and what each is heard in */
+    size_t nc, ccap;
+    float *vx, *vp;             /* a run of frames' samples, and their probabilities */
+    size_t vxcap, vpcap;
+
     int64_t budget, done, total;
     double floor;               /* mean power a stretch's speech must reach */
     /* the jobs: the chunks handed out, and chunk i's tokens as put, ct[i]
@@ -227,10 +265,20 @@ typedef struct pk_steps {
     size_t given;
     pk_tok **ct;
     long *cn;
+    /* Of a recording still being read, whose retries wait for its end
+     * (late): the tokens of each chunk that may have one, as the seam left
+     * them, kn[i] of them (-1: none kept), and the frames of its head */
+    pk_tok **kt;
+    long *kn;
+    int64_t *khead;
+    size_t jcap;                /* chunks ct, cn, kt, kn and khead have room for */
+    int late;                   /* the retries wait */
+    int maybe;                  /* the chunk the seam is at may have one */
     /* the chunk the seam is at, those before it taken: waiting for its
      * tokens, its stretches heard again (st[0, nst), the k-th next, out or
      * not, `retried` of them heard), or done and waiting to be taken */
     size_t at;
+    pk_seg cc, cw;              /* it, and what it was heard in */
     enum { AWAIT, RETRYING, DONE } state;
     int failed;                     /* a call returned -1: the run is over */
     long nst, k;
@@ -269,6 +317,68 @@ static int grow(void **p, size_t *cap, size_t need, size_t size) {
     return 0;
 }
 
+/* Room in r->buf for n samples: 0, or -1 if memory runs out. Nothing in it
+ * outlives a read, so it is made again, not copied. */
+static int room(run *r, size_t n) {
+    if (n <= r->bufcap)
+        return 0;
+    free(r->buf);
+    r->bufcap = 0;
+    if (!(r->buf = malloc(n * sizeof *r->buf)))
+        return -1;
+    r->bufcap = n;
+    return 0;
+}
+
+/* Room for chunk i's tokens as they are put and kept: 0, or -1 */
+static int jobs(run *r, size_t i) {
+    if (i < r->jcap)
+        return 0;
+    size_t cap = r->jcap ? r->jcap : 16;
+    while (cap <= i)
+        cap *= 2;
+    pk_tok **ct = realloc(r->ct, cap * sizeof *ct);
+    if (ct)
+        r->ct = ct;
+    pk_tok **kt = realloc(r->kt, cap * sizeof *kt);
+    if (kt)
+        r->kt = kt;
+    long *cn = realloc(r->cn, cap * sizeof *cn);
+    if (cn)
+        r->cn = cn;
+    long *kn = realloc(r->kn, cap * sizeof *kn);
+    if (kn)
+        r->kn = kn;
+    int64_t *kh = realloc(r->khead, cap * sizeof *kh);
+    if (kh)
+        r->khead = kh;
+    if (!ct || !kt || !cn || !kn || !kh)
+        return -1;
+    for (size_t q = r->jcap; q < cap; q++) {
+        r->ct[q] = r->kt[q] = NULL;
+        r->cn[q] = r->kn[q] = -1;
+        r->khead[q] = 0;
+    }
+    r->jcap = cap;
+    return 0;
+}
+
+/* The chunks cut so far, and chunk i with what it is heard in: under the
+ * lock, since a lane may be cutting the next */
+static size_t chunks(run *r) {
+    pk_lock_take(r->lock);
+    const size_t n = r->nc;
+    pk_lock_give(r->lock);
+    return n;
+}
+
+static void chunk(run *r, size_t i, pk_seg *c, pk_seg *win) {
+    pk_lock_take(r->lock);
+    *c = r->c[i];
+    *win = r->win[i];
+    pk_lock_give(r->lock);
+}
+
 /* Whether a word's text ends a sentence */
 static int ends_sentence(run *r, const pk_tok *t, const pk_word *w) {
     const pk_model *m = r->m;
@@ -285,20 +395,26 @@ static int ends_sentence(run *r, const pk_tok *t, const pk_word *w) {
 /* Chunk i's stretches to hear again, into r->st, none in its first head
  * frames, which the last chunk's words cover: their count, or -1 if memory
  * runs out. Each is charged to the budget as it is heard, if it gives
- * nothing. */
-static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_t head) {
+ * nothing. With `most`, of a recording still being read, the stretches
+ * there may be once it has ended: its speech is not louder than nothing
+ * yet, the floor not being known, and the segments from `open` on taken
+ * for all speech (power). Every stretch the recording's end leaves is one
+ * of those, since the floor and the segments' ends only take away. */
+static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_t head, int most,
+                      int64_t open) {
+    const double all = most ? 0 : r->floor;
     const pk_model *m = r->m;
     const int rate = pk_model_rate(m);
     const int64_t spf = llround(pk_model_frame_seconds(m) * rate);
     const int64_t frames = (ch->end - ch->start + spf - 1) / spf;
     const int64_t inside = (int64_t)(RETRY_SPEECH_S * rate), at_break = (int64_t)(RETRY_BREAK_S * rate);
     const int64_t len = ch->end - ch->start;
-    if ((size_t)len > r->bufcap || pk_audio_read(&r->x, ch->start, r->buf, (size_t)len))
+    if (room(r, (size_t)len) || pk_audio_read(&r->x, ch->start, r->buf, (size_t)len))
         return -1;
     if (nt == 0) {
         int64_t heard;
-        const double e = power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, &heard);
-        if (heard < at_break || e < r->floor * (double)heard)
+        const double e = power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, open, &heard);
+        if (heard < at_break || e < all * (double)heard)
             return 0;
         const int64_t mid = (int64_t)quietest(r->buf, (size_t)len, rate) / spf;
         r->st[0][0] = (int32_t)(head < mid ? head : mid), r->st[0][1] = (int32_t)mid;
@@ -307,9 +423,8 @@ static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_
     }
     size_t nw = pk_words(m, t, (size_t)nt, r->w);
     int64_t near;           /* the chunk's speech, for a passage read softly */
-    const double ce = power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, &near);
-    const double floor = near && ce / (double)near * RETRY_NEAR < r->floor ? ce / (double)near * RETRY_NEAR
-                                                                           : r->floor;
+    const double ce = power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, open, &near);
+    const double floor = near && ce / (double)near * RETRY_NEAR < all ? ce / (double)near * RETRY_NEAR : all;
     long k = 0;
     int64_t at = head;
     int after_break = 1;        /* a chunk's start follows a break */
@@ -320,7 +435,7 @@ static long stretches(run *r, const pk_seg *ch, const pk_tok *t, long nt, int64_
             const int64_t s1 = ch->start + f1 * spf < ch->end ? ch->start + f1 * spf : ch->end;
             const int64_t enough = after_break || f1 == frames ? at_break : inside;
             int64_t heard;
-            const double e = power(r->buf, ch->start, r->sp, r->ns, s0, s1, &heard);
+            const double e = power(r->buf, ch->start, r->sp, r->ns, s0, s1, open, &heard);
             if (heard >= enough && e >= floor * (double)heard) {
                 r->st[k][0] = (int32_t)f0, r->st[k][1] = (int32_t)f1;
                 k++;
@@ -472,7 +587,8 @@ static size_t repeat(run *r, const pk_seg *ch, size_t n) {
  * cut, through the seam with the chunk before, and its stretches to hear
  * again into r->st. 0, or -1 if memory runs out. */
 static int take_chunk(run *r, const pk_tok *toks, long nt) {
-    const pk_seg *ch = &r->c[r->at];
+    chunk(r, r->at, &r->cc, &r->cw);
+    const pk_seg *ch = &r->cc;
     const pk_model *m = r->m;
     const int64_t spf = llround(pk_model_frame_seconds(m) * pk_model_rate(m));
     size_t stcap = r->stcap;
@@ -483,7 +599,7 @@ static int take_chunk(run *r, const pk_tok *toks, long nt) {
     r->stcap = stcap;
     /* of what the chunk was heard in, the words that start before its cut,
      * and the first SEAM_KEEP after it for the next chunk's seam */
-    const pk_seg *wn = &r->win[r->at];
+    const pk_seg *wn = &r->cw;
     pk_tok next[SEAM_TOKS];
     int64_t next_at[SEAM_TOKS];
     int next_word[SEAM_KEEP + 1] = { 0 }, nnext = 0;
@@ -535,7 +651,28 @@ static int take_chunk(run *r, const pk_tok *toks, long nt) {
     r->ntail = ntail;
     memcpy(r->tail, tail, (size_t)ntail * sizeof *tail);
     r->tail_end = tail_end;
-    const long nst = r->retry ? stretches(r, ch, r->t, (long)n, head) : 0;
+    long nst = 0;
+    r->maybe = 0;
+    if (r->retry && !r->late) {
+        nst = stretches(r, ch, r->t, (long)n, head, 0, INT64_MAX);
+    } else if (r->retry) {
+        /* its retries wait for the recording's end: whether it may have
+         * one, and if so its tokens as they are here, for late */
+        pk_lock_take(r->lock);
+        const double pad = r->pad_sp.speech_pad;
+        const int64_t from = r->pad_sp.has ? r->pad_sp.held.start : pk_segs_floor(&r->seg_sp) - (int64_t)pad;
+        const long may = stretches(r, ch, r->t, (long)n, head, 1, r->ended ? INT64_MAX : from);
+        pk_lock_give(r->lock);
+        if (may < 0 || (may && n && !(r->kt[r->at] = malloc(n * sizeof *r->t))))
+            return -1;
+        if (may) {
+            if (n)
+                memcpy(r->kt[r->at], r->t, n * sizeof *r->t);
+            r->kn[r->at] = (long)n;
+            r->khead[r->at] = head;
+            r->maybe = 1;
+        }
+    }
     if (nst < 0)
         return -1;
     r->n = n;
@@ -549,7 +686,7 @@ static int take_chunk(run *r, const pk_tok *toks, long nt) {
  * whose length the budget still has: 1 with its samples in *at, or 0 when
  * none is left */
 static int stretch(run *r, pk_seg *at) {
-    const pk_seg *ch = &r->c[r->at];
+    const pk_seg *ch = &r->cc;
     const int64_t spf = llround(pk_model_frame_seconds(r->m) * pk_model_rate(r->m));
     for (; r->k < r->nst; r->k++) {
         const int64_t s0 = ch->start + r->st[r->k][0] * spf;
@@ -572,8 +709,24 @@ static void finish(run *r) {
             r->t[q] = r->t[q - 1];
         r->t[q] = v;
     }
-    r->done += r->c[r->at].end - r->c[r->at].start;
     r->state = DONE;
+}
+
+/* A stretch heard again, at: its count tokens into the chunk's, their
+ * frames from the chunk's start, and the stretch charged to the budget if
+ * it gave none. 0, or -1 if memory runs out. */
+static int heard_again(run *r, const pk_seg *at, const pk_tok *toks, long count) {
+    if (grow((void **)&r->t, &r->tcap, r->n + (size_t)count, sizeof *r->t))
+        return -1;
+    if (count == 0)
+        r->budget -= at->end - at->start;
+    for (long q = 0; q < count; q++) {
+        r->t[r->n] = toks[q];
+        r->t[r->n++].frame += r->st[r->k][0];
+    }
+    r->retried++;
+    r->k++;
+    return 0;
 }
 
 /* -1, and the run over: a failed take_chunk may have freed a chunk's
@@ -588,9 +741,9 @@ static int fail(run *r) {
  * is taken, its tokens being r->t. 0, or -1 if memory runs out. */
 static int advance(run *r) {
     pk_seg at;
-    while (r->at < r->nc && r->state != DONE && !r->out) {
+    while (r->state != DONE && !r->out && r->at < chunks(r)) {
         if (r->state == AWAIT) {
-            if (r->cn[r->at] < 0)
+            if (r->at >= r->jcap || r->cn[r->at] < 0)
                 return 0;
             const int rc = take_chunk(r, r->ct[r->at], r->cn[r->at]);
             free(r->ct[r->at]);
@@ -602,6 +755,7 @@ static int advance(run *r) {
         if (stretch(r, &at))
             return 0;           /* the k-th, to hand out */
         finish(r);
+        r->done += r->cc.end - r->cc.start;
     }
     return 0;
 }
@@ -661,7 +815,201 @@ long pk_asr_speech(pk_asr *a, const pk_audio *x, const pk_seg_params *p, pk_seg 
     return rc;
 }
 
-pk_steps *pk_steps_new(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o) {
+/* ------------------------------------------------------------------ the cuts --- */
+
+static int seg_push(pk_seg **s, size_t *n, size_t *cap, pk_seg v) {
+    if (grow((void **)s, cap, *n + 1, sizeof **s))
+        return -1;
+    (*s)[(*n)++] = v;
+    return 0;
+}
+
+/* k frames' probabilities through both segmenters, and with `end` the
+ * recording's end after them: each segment onto its list once the one
+ * after it has come, which its padding waits for (core/segment.h). These
+ * are pk_segments' segments of the whole recording's probabilities, cut
+ * into calls anyhow. 0, or -1 if memory runs out. */
+static int cut_frames(run *r, const float *probs, size_t k, int end) {
+    pk_seg got[2], fin;
+    for (size_t f = 0; f < k + (end ? 1 : 0); f++) {
+        int n = f < k ? pk_segs_step(&r->seg_sp, probs[f], got) : pk_segs_end(&r->seg_sp, r->length, got);
+        for (int q = 0; q < n; q++)
+            if (pk_pads_put(&r->pad_sp, got[q], &fin) && seg_push(&r->sp, &r->ns, &r->spcap, fin))
+                return -1;
+        n = f < k ? pk_segs_step(&r->seg_cut, probs[f], got) : pk_segs_end(&r->seg_cut, r->length, got);
+        for (int q = 0; q < n; q++)
+            if (pk_pads_put(&r->pad_cut, got[q], &fin) && seg_push(&r->cs, &r->ncs, &r->cscap, fin))
+                return -1;
+    }
+    if (end && pk_pads_end(&r->pad_sp, r->length, &fin) && seg_push(&r->sp, &r->ns, &r->spcap, fin))
+        return -1;
+    if (end && pk_pads_end(&r->pad_cut, r->length, &fin) && seg_push(&r->cs, &r->ncs, &r->cscap, fin))
+        return -1;
+    return 0;
+}
+
+/* Room for `more` chunks after those cut: 0, or -1 */
+static int chunk_room(run *r, size_t more) {
+    if (r->nc + more <= r->ccap)
+        return 0;
+    size_t cap = r->ccap ? r->ccap : 16;
+    while (cap < r->nc + more)
+        cap *= 2;
+    pk_seg *c = realloc(r->c, cap * sizeof *c);
+    if (c)
+        r->c = c;
+    pk_seg *w = realloc(r->win, cap * sizeof *w);
+    if (w)
+        r->win = w;
+    if (!c || !w)
+        return -1;
+    r->ccap = cap;
+    return 0;
+}
+
+/* The chunks that are sure from the segments so far, onto the list: these
+ * are pk_chunks_past's of the whole recording, a chunk at a time
+ * (pk_chunk_at says when one is sure, core/asr.c). A recording that ended
+ * within max_len, no chunk cut, is one chunk; none was cut before its end,
+ * since a chunk is sure only once speech past max_len from its start has
+ * been heard. 0, or -1 if a read fails or memory runs out. */
+static int cut_chunks(run *r) {
+    if (r->ended && r->nc == 0 && r->ci == 0 && r->length <= r->max_len && r->ncs) {
+        if (chunk_room(r, 1))
+            return -1;
+        r->c[0] = r->win[0] = (pk_seg){ 0, r->length };
+        r->nc = 1;
+        r->cut_over = 1;
+        return 0;
+    }
+    const int64_t pause = (int64_t)(CONTEXT_PAUSE_S * pk_model_rate(r->m));
+    while (r->ci < r->ncs) {
+        pk_seg c, w;
+        size_t last;
+        if (!pk_chunk_at(r->cs, r->ncs, r->pad_cut.has ? r->pad_cut.held.start : -1, r->ended,
+                         r->ended ? r->length : r->heard, r->ci, r->max_len, r->ctx, pause, &c, &w, &last))
+            return 0;
+        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, c.start, r->max_len) + 1)
+            || pk_gap_chunks(&r->x, r->cut_done, c.start, r->max_len, r->c, r->win, &r->nc))
+            return -1;
+        r->c[r->nc] = c;
+        r->win[r->nc++] = w;
+        r->cut_done = c.end;
+        r->ci = last + 1;
+    }
+    if (r->ended) {
+        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, r->length, r->max_len))
+            || pk_gap_chunks(&r->x, r->cut_done, r->length, r->max_len, r->c, r->win, &r->nc))
+            return -1;
+        r->cut_over = 1;
+    }
+    return 0;
+}
+
+/* The next run of the VAD's frames heard, on pool, and what it makes sure
+ * cut: pk_asr_vad's runs, the same bits however the frames fall into
+ * calls. Where the length was not known (wait), a run is no longer than a
+ * chunk, so that a chunk is cut soon after it is there, and the lock is
+ * let go while the recording is waited for: another lane may hear this
+ * run meanwhile. Called with the lock taken; 0, or -1 if a read or the
+ * wait fails or memory runs out. */
+static int hear(run *r, pk_pool *pool) {
+    size_t frames = pk_vad_run_frames(pool);
+    if (r->wait && frames > (size_t)(r->max_len / PK_VAD_SAMPLES))
+        frames = (size_t)(r->max_len / PK_VAD_SAMPLES);
+    const int64_t from = r->heard, want = from + (int64_t)frames * PK_VAD_SAMPLES;
+    int64_t got = r->x.n;
+    if (r->wait) {
+        pk_lock_give(r->lock);
+        got = r->wait(r->wait_arg, want);
+        pk_lock_take(r->lock);
+        if (r->heard != from || r->ended)
+            return 0;
+        if (got < from)
+            return -1;
+    }
+    const int end = got < want;
+    const int64_t upto = end ? got : want;
+    const size_t whole = (size_t)((upto - from) / PK_VAD_SAMPLES);
+    const size_t rest = (size_t)(upto - from) - whole * PK_VAD_SAMPLES;
+    if (grow((void **)&r->vx, &r->vxcap, (whole + 1) * PK_VAD_SAMPLES, sizeof *r->vx)
+        || grow((void **)&r->vp, &r->vpcap, whole + 1, sizeof *r->vp))
+        return -1;
+    size_t k = whole;
+    if (whole) {
+        if (pk_audio_read(&r->x, from, r->vx, whole * PK_VAD_SAMPLES))
+            return -1;
+        pk_vad_probs_on(r->a->vad, pool, r->vx, whole, r->vp);
+    }
+    if (rest) {                 /* the last frame, padded with silence */
+        float last[PK_VAD_SAMPLES] = { 0 };
+        if (pk_audio_read(&r->x, from + (int64_t)(whole * PK_VAD_SAMPLES), last, rest))
+            return -1;
+        r->vp[k++] = pk_vad_prob(r->a->vad, last);
+    }
+    r->heard = upto;
+    if (end) {
+        r->ended = 1;
+        r->length = got;
+    }
+    if (cut_frames(r, r->vp, k, end) || cut_chunks(r))
+        return -1;
+    if (r->cut_over) {          /* the VAD's run of samples, 8 MB on 16 threads, not kept for the chunks */
+        free(r->vx);
+        free(r->vp);
+        r->vx = r->vp = NULL;
+        r->vxcap = r->vpcap = 0;
+    }
+    return 0;
+}
+
+/* Chunk i cut, the recording heard until it is: 1, 0 where the recording
+ * has fewer chunks, or -1 where hearing it failed, for this call and every
+ * one after it. On the calling thread or a lane's, whose pool it is given. */
+static int cut_to(run *r, size_t i, pk_pool *pool) {
+    int rc = -1;
+    pk_lock_take(r->lock);
+    while (!r->cut_failed) {
+        if (i < r->nc) {
+            rc = 1;
+            break;
+        }
+        if (r->cut_over) {
+            rc = 0;
+            break;
+        }
+        if (hear(r, pool))
+            r->cut_failed = 1;
+    }
+    pk_lock_give(r->lock);
+    return rc;
+}
+
+/* The floor and the budget, of all the recording's chunks: once they are
+ * cut. 0, or -1 if a read fails or memory runs out. */
+static int levels(run *r) {
+    double e = 0;
+    int64_t heard = 0;
+    r->total = 0;
+    for (size_t i = 0; i < r->nc; i++) {
+        int64_t h;
+        const pk_seg *ch = &r->c[i];
+        const size_t len = (size_t)(ch->end - ch->start);
+        if (room(r, len) || pk_audio_read(&r->x, ch->start, r->buf, len))
+            return -1;
+        e += power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, INT64_MAX, &h);
+        heard += h;
+        r->total += ch->end - ch->start;
+    }
+    r->floor = heard ? e / (double)heard * RETRY_LEVEL : 0;
+    r->budget = (int64_t)((double)r->total * RETRY_SHARE);
+    if (r->budget < r->max_len)
+        r->budget = r->max_len;
+    return 0;
+}
+
+/* A run over x, nothing of it heard yet */
+static run *run_new(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o) {
     pk_transcribe_opts def;
     if (!o) {
         pk_transcribe_defaults(&def);
@@ -670,94 +1018,68 @@ pk_steps *pk_steps_new(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o
     const pk_model *m = a->m;
     const int rate = pk_model_rate(m);
     const int64_t max_len = (int64_t)(o->max_chunk_s * rate);
-    if (max_len < rate || x->n < 0)
+    if (max_len < rate)
         return NULL;
-    const size_t n = (size_t)x->n;
-    const size_t frames = (n + PK_VAD_SAMPLES - 1) / PK_VAD_SAMPLES;
+    if (!a->vad && !(a->vad = pk_vad_new(m)))
+        return NULL;
+    pk_vad_reset(a->vad);
     run *r = calloc(1, sizeof *r);
-    float *probs = malloc((frames + 1) * sizeof *probs);
-    pk_seg *cut = malloc((2 * frames + 1) * sizeof *cut);
-    if (!r || !probs || !cut || !(r->sp = malloc((2 * frames + 1) * sizeof *r->sp))
-        || !(r->text = malloc(r->textcap = 256)))
-        goto fail;
-    r->x = *x;
-    if (pk_asr_vad(a, &r->x, probs) < 0)
-        goto fail;
+    if (!r || !(r->lock = pk_lock_new()) || !(r->text = malloc(r->textcap = 256))) {
+        pk_steps_free(r);
+        return NULL;
+    }
     r->m = m;
+    r->a = a;
+    r->x = *x;
     r->retry = o->retry;
+    r->max_len = max_len;
 
-    /* 1. the speech: segments no longer than a chunk less the padding
-     * Silero puts round them and the context past its cut */
+    /* the speech: segments no longer than a chunk less the padding Silero
+     * puts round them and the context past its cut; Silero's own for the
+     * retry, and the same at shorter pauses for the cuts */
     pk_seg_params p;
     pk_seg_defaults(&p);
-    int64_t ctx = o->context ? (int64_t)(CONTEXT_S * rate) : 0;
-    if (max_len < CONTEXT_ROOM * ctx)
-        ctx = 0;
-    p.max_speech_s = o->max_chunk_s - (double)ctx / rate - 2 * p.speech_pad_ms / 1000 - 0.1;
-    r->ns = pk_segments(probs, frames, rate, (int64_t)n, &p, r->sp, 2 * frames + 1);
+    r->ctx = o->context ? (int64_t)(CONTEXT_S * rate) : 0;
+    if (max_len < CONTEXT_ROOM * r->ctx)
+        r->ctx = 0;
+    p.max_speech_s = o->max_chunk_s - (double)r->ctx / rate - 2 * p.speech_pad_ms / 1000 - 0.1;
+    pk_segs_init(&r->seg_sp, rate, &p);
+    pk_pads_init(&r->pad_sp, rate, &p);
     p.min_silence_ms = CUT_SILENCE_MS;
-    const size_t nk = pk_segments(probs, frames, rate, (int64_t)n, &p, cut, 2 * frames + 1);
-
-    /* 2. the chunks, and what each is heard in */
-    const size_t cap = 2 * nk + 2 + n / (size_t)max_len;
-    if (!(r->c = malloc(cap * sizeof *r->c)) || !(r->win = malloc(cap * sizeof *r->win)))
-        goto fail;
-    const long nc = pk_chunks_past(&r->x, cut, nk, max_len, ctx, (int64_t)(CONTEXT_PAUSE_S * rate),
-                                   r->c, r->win);
-    if (nc < 0)
-        goto fail;
-    r->nc = (size_t)nc;
-    if (!(r->ct = calloc(r->nc + 1, sizeof *r->ct)) || !(r->cn = malloc((r->nc + 1) * sizeof *r->cn)))
-        goto fail;
-    /* room for the longest chunk: a chunk, or a stretch of one, at a time */
-    for (size_t i = 0; i < r->nc; i++)
-        if ((size_t)(r->c[i].end - r->c[i].start) > r->bufcap)
-            r->bufcap = (size_t)(r->c[i].end - r->c[i].start);
-    if (!(r->buf = malloc((r->bufcap ? r->bufcap : 1) * sizeof *r->buf)))
-        goto fail;
-    double e = 0;
-    int64_t heard = 0;
-    for (size_t i = 0; i < r->nc; i++) {
-        int64_t h;
-        const pk_seg *ch = &r->c[i];
-        if (pk_audio_read(&r->x, ch->start, r->buf, (size_t)(ch->end - ch->start)))
-            goto fail;
-        e += power(r->buf, ch->start, r->sp, r->ns, ch->start, ch->end, &h);
-        heard += h;
-        r->total += ch->end - ch->start;
-        r->cn[i] = -1;
-    }
-    r->floor = heard ? e / (double)heard * RETRY_LEVEL : 0;
-    r->budget = (int64_t)((double)r->total * RETRY_SHARE);
-    if (r->budget < max_len)
-        r->budget = max_len;
-    free(probs);
-    free(cut);
+    pk_segs_init(&r->seg_cut, rate, &p);
+    pk_pads_init(&r->pad_cut, rate, &p);
     return r;
-fail:
-    free(probs);
-    free(cut);
-    pk_steps_free(r);
-    return NULL;
+}
+
+pk_steps *pk_steps_new(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o) {
+    if (x->n < 0)
+        return NULL;
+    run *r = run_new(a, x, o);
+    if (r && (cut_to(r, SIZE_MAX, a->pool) < 0 || levels(r))) {
+        pk_steps_free(r);
+        return NULL;
+    }
+    return r;
 }
 
 size_t pk_steps_chunks(const pk_steps *r) { return r->nc; }
 
 /* Every chunk handed out at once, without its job: pk_asr_transcribe hears
- * them all itself, through pk_run_chunks_with, and puts each as it would
- * one pk_steps_job had handed out */
-static void hand_out_all(run *r) { r->given = r->nc; }
+ * them all itself, and puts each as it would one pk_steps_job had handed
+ * out */
+static void hand_out_all(run *r) { r->given = SIZE_MAX; }
 
 int pk_steps_job(pk_steps *r, pk_job *j) {
     if (r->failed || advance(r))
         return -1;
-    if (r->at < r->nc && r->state == RETRYING && !r->out && stretch(r, &j->at)) {
+    const size_t nc = chunks(r);
+    if (r->at < nc && r->state == RETRYING && !r->out && stretch(r, &j->at)) {
         j->chunk = r->at;
         j->retry = 1;
         r->out = 1;
         return 1;
     }
-    if (r->given < r->nc) {
+    if (r->given < nc) {
         j->chunk = r->given;
         j->retry = 0;
         j->at = r->win[r->given++];
@@ -772,21 +1094,16 @@ int pk_steps_put(pk_steps *r, const pk_job *j, const pk_tok *toks, long count) {
     if (j->retry) {
         pk_seg at;
         if (!r->out || j->chunk != r->at || !stretch(r, &at) || j->at.start != at.start
-            || j->at.end != at.end || grow((void **)&r->t, &r->tcap, r->n + (size_t)count, sizeof *r->t))
+            || j->at.end != at.end || heard_again(r, &at, toks, count))
             return fail(r);
-        if (count == 0)
-            r->budget -= at.end - at.start;
-        for (long q = 0; q < count; q++) {
-            r->t[r->n] = toks[q];
-            r->t[r->n++].frame += r->st[r->k][0];
-        }
-        r->retried++;
-        r->k++;
         r->out = 0;
     } else {
         const size_t i = j->chunk;
-        if (i >= r->given || i < r->at || r->cn[i] >= 0     /* not out, or put before */
-            || j->at.start != r->win[i].start || j->at.end != r->win[i].end)
+        pk_seg c, win;
+        if (i >= r->given || i < r->at || i >= chunks(r) || jobs(r, i) || r->cn[i] >= 0)
+            return fail(r);         /* not out, or put before */
+        chunk(r, i, &c, &win);
+        if (j->at.start != win.start || j->at.end != win.end)
             return fail(r);
         r->cn[i] = count;
         if (i == r->at) {           /* the chunk due: taken from toks, not kept */
@@ -802,13 +1119,20 @@ int pk_steps_put(pk_steps *r, const pk_job *j, const pk_tok *toks, long count) {
     return advance(r);
 }
 
+/* The chunk the seam is at, done, as fn has it. Of a recording still being
+ * read (late), how many chunks there are and how long they are is not
+ * known yet. */
+static pk_chunk_out chunk_out(run *r) {
+    return (pk_chunk_out){ r->at, r->late ? 0 : r->nc, r->cc, r->t, (long)r->n, r->retried, r->done,
+                           r->late ? 0 : r->total, pk_frame_of(r->m, r->cc.start), r->maybe };
+}
+
 int pk_steps_take(pk_steps *r, pk_chunk_out *out) {
     if (r->failed || advance(r))
         return -1;
-    if (r->at >= r->nc || r->state != DONE)
+    if (r->state != DONE)
         return 0;
-    *out = (pk_chunk_out){ r->at, r->nc, r->c[r->at], r->t, (long)r->n, r->retried, r->done, r->total,
-                           pk_frame_of(r->m, r->c[r->at].start) };
+    *out = chunk_out(r);
     r->at++;
     r->state = AWAIT;
     return 1;
@@ -817,18 +1141,27 @@ int pk_steps_take(pk_steps *r, pk_chunk_out *out) {
 void pk_steps_free(pk_steps *r) {
     if (!r)
         return;
-    for (size_t i = 0; r->ct && i < r->nc; i++)
+    for (size_t i = 0; i < r->jcap; i++) {
         free(r->ct[i]);
+        free(r->kt[i]);
+    }
     free(r->ct);
     free(r->cn);
+    free(r->kt);
+    free(r->kn);
+    free(r->khead);
     free(r->c);
     free(r->win);
     free(r->sp);
+    free(r->cs);
+    free(r->vx);
+    free(r->vp);
     free(r->t);
     free(r->w);
     free(r->st);
     free(r->text);
     free(r->buf);
+    pk_lock_free(r->lock);
     free(r);
 }
 
@@ -846,15 +1179,16 @@ typedef struct {
 
 static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) {
     own *w = arg;
-    const pk_job chunk = { i, 0, w->r->win[i] };
-    pk_job j;
+    pk_job chunk_job = { i, 0, { 0, 0 } }, j;
+    pk_seg c;
     pk_chunk_out out;
     int rc;
-    if (pk_steps_put(w->r, &chunk, toks, nt))
+    chunk(w->r, i, &c, &chunk_job.at);
+    if (pk_steps_put(w->r, &chunk_job, toks, nt))
         return -1;
     while ((rc = pk_steps_job(w->r, &j)) == 1) {    /* chunk i's retries: every chunk is out */
         const size_t len = (size_t)(j.at.end - j.at.start);
-        if (len > w->r->bufcap || pk_audio_read(&w->r->x, j.at.start, w->r->buf, len))
+        if (room(w->r, len) || pk_audio_read(&w->r->x, j.at.start, w->r->buf, len))
             return -1;
         const long more = pk_retry_run(w->a, w->r->buf, len, spare);
         if (more < 0 || pk_steps_put(w->r, &j, w->a->toks, more))
@@ -865,24 +1199,112 @@ static int each(void *arg, size_t i, const pk_tok *toks, long nt, float *spare) 
     return w->fn(w->arg, &out) ? 1 : 0;
 }
 
+/* A recording still being read: its chunks as the lanes ask for them */
+static int next_chunk(void *arg, size_t i, pk_pool *pool, pk_seg *c) {
+    run *r = arg;
+    const int rc = cut_to(r, i, pool);
+    if (rc == 1) {
+        pk_seg whole;
+        chunk(r, i, &whole, c);
+    }
+    return rc;
+}
+
+/* The retries of a recording that was still being read while its chunks
+ * were heard, now that it has ended and its floor and budget are known:
+ * each chunk that might have had one (take_chunk) in order, its tokens as
+ * the seam left them, its stretches heard again as each() hears them, and
+ * the chunk to fn once more, whether or not they gave words. The budget is
+ * spent in the chunks' order, as it is when the retries are not put off,
+ * and a chunk left out here has no stretch to hear: these are the tokens
+ * of the recording read whole. 0, 1 when fn stops it, or -1. */
+static int late(own *w) {
+    run *r = w->r;
+    if (levels(r))
+        return -1;
+    r->late = 0;
+    int rc = 0;
+    pk_os_throttle was = pk_os_unthrottle();
+    for (size_t i = 0; i < r->nc && i < r->jcap && rc == 0; i++) {
+        if (r->kn[i] < 0)
+            continue;
+        const size_t n = (size_t)r->kn[i];
+        size_t stcap = r->stcap;
+        if (grow((void **)&r->t, &r->tcap, n + 1, sizeof *r->t) || grow((void **)&r->w, &r->wcap, n + 1, sizeof *r->w)
+            || grow((void **)&r->st, &stcap, n + 2, sizeof *r->st)) {
+            rc = -1;
+            break;
+        }
+        r->stcap = stcap;
+        r->at = i;
+        r->cc = r->c[i];
+        r->cw = r->win[i];
+        if (n)
+            memcpy(r->t, r->kt[i], n * sizeof *r->t);
+        r->n = n;
+        r->k = 0;
+        r->retried = 0;
+        r->maybe = 0;
+        r->nst = stretches(r, &r->cc, r->t, (long)n, r->khead[i], 0, INT64_MAX);
+        if (r->nst < 0)
+            rc = -1;
+        pk_seg at;
+        while (rc == 0 && stretch(r, &at)) {
+            const size_t len = (size_t)(at.end - at.start);
+            long more = -1;
+            if (!room(r, len) && !pk_audio_read(&r->x, at.start, r->buf, len))
+                more = pk_retry_run(w->a, r->buf, len, w->a->fproj[0]);
+            if (more < 0 || heard_again(r, &at, w->a->toks, more))
+                rc = -1;
+        }
+        if (rc == 0) {
+            finish(r);
+            r->done = r->total;
+            const pk_chunk_out out = chunk_out(r);
+            rc = w->fn(w->arg, &out) ? 1 : 0;
+        }
+    }
+    pk_os_rethrottle(was);
+    return rc;
+}
+
 /* x read in turns (pk_audio_turns), since a run of lanes reads its
- * chunks on their threads while the retry reads here */
+ * chunks on their threads while the retry reads here. A recording whose
+ * length is not known is heard until its first chunk is cut; one that has
+ * ended by then, a short one, goes on as a recording of known length does, and one that has not has its chunks cut
+ * as the lanes ask for them and its retries at the end (late). */
 int pk_asr_transcribe(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o, pk_chunk_fn fn,
                       void *arg) {
-    if (x->n == 0)
-        return 0;
+    if (x->n == 0 || (x->n < 0 && !x->wait))
+        return x->n ? -1 : 0;
     pk_turns t;
     pk_audio y;
     if (pk_audio_turns(&t, x, &y))
         return -1;
-    run *r = pk_steps_new(a, &y, o);
+    run *r = run_new(a, &y, o);
     int rc = -1;
-    if (r) {
-        hand_out_all(r);
-        own w = { r, a, fn, arg };
-        rc = pk_run_chunks_with(a, &y, r->win, r->nc, each, &w);
-        pk_steps_free(r);
+    if (r && x->n < 0) {
+        /* any sample the cuts ask for has been waited for */
+        y.n = r->x.n = INT64_MAX;
+        r->wait = x->wait;
+        r->wait_arg = x->arg;
     }
+    const int first = r ? cut_to(r, x->n < 0 ? 0 : SIZE_MAX, a->pool) : -1;
+    own w = { r, a, fn, arg };
+    if (first >= 0 && r->cut_over) {
+        if (!levels(r)) {
+            hand_out_all(r);
+            rc = pk_run_chunks_with(a, &y, r->win, r->nc, each, &w);
+        }
+    } else if (first >= 0) {
+        const pk_chunk_src src = { next_chunk, r };
+        hand_out_all(r);
+        r->late = 1;
+        rc = pk_run_source_with(a, &y, &src, (size_t)r->max_len, each, &w);
+        if (rc == 0)
+            rc = late(&w);
+    }
+    pk_steps_free(r);
     pk_audio_turns_free(&t);
     return rc;
 }

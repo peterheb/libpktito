@@ -135,11 +135,22 @@ int pk_model_speakers(const pk_model *m);
  * that long, but for pk_steps, which reads until pk_steps_free. What a
  * call holds of the recording is a stretch at a time: a chunk for each
  * lane and one for the retry, 2 MB each at 30.72 s, and while the VAD runs
- * a run of its frames, 0.5 MB a thread. */
+ * a run of its frames, 0.5 MB a thread.
+ *
+ * A recording still being read - a file whose decoder has not finished -
+ * has n < 0 and a wait, which pk_asr_transcribe alone takes: wait(arg,
+ * want) returns once samples [0, want) can be read, with how many can be
+ * read now, that or more, or once the recording has ended, with its length,
+ * which is then less than want; a negative return fails the call. It may
+ * be called from several threads at once, and read is asked only for
+ * samples a wait has said are there, which it gives as it would of a
+ * recording that was whole: the same samples each time, however long ago
+ * they came. wait is NULL where n is the length. */
 typedef struct {
     int64_t n;
     int   (*read)(void *arg, int64_t at, float *out, size_t count);
     void   *arg;
+    int64_t (*wait)(void *arg, int64_t want);   /* a recording still being read: below */
 } pk_audio;
 
 /* x[0, n), in memory, as a recording: its read copies from x, which must
@@ -271,6 +282,8 @@ typedef struct {
     int64_t       done, total;  /* samples of chunks done, of all of them: progress */
     int32_t       at_frame;     /* at.start in encoder frames, rounded: a token's frame
                                    plus this counts from the recording's start */
+    int           provisional;  /* of a recording still being read (pk_asr_transcribe): 1
+                                   where this chunk comes again at the end */
 } pk_chunk_out;
 
 /* Has each chunk of a run in order, on the calling thread, its tokens
@@ -323,9 +336,25 @@ int pk_asr_run_chunks(pk_asr *a, const pk_audio *x, const pk_seg *c, size_t n, p
  * stopped it, and -1 if memory runs out, the encoder can't run (pk_asr_run)
  * or max_chunk_s is under a second. Besides the transcriber's working
  * memory, which is the longest chunk's for each chunk run at once, and its
- * VAD's, which it keeps (0.85 MB a thread), the call holds about 2% of the
- * recording's size as floats, its VAD's probabilities and speech segments,
- * and a stretch of the recording at a time (pk_audio). */
+ * VAD's, which it keeps (0.85 MB a thread), the call holds the recording's
+ * speech segments and chunks, 16 bytes each, and a stretch of the
+ * recording at a time (pk_audio).
+ *
+ * A recording still being read (pk_audio's wait) is heard as it comes:
+ * the VAD, the cuts and each chunk's transcription run while its decoder
+ * does, a chunk cut once the speech after it has been heard as far as the
+ * next pause, and the transcript is the one the recording read whole
+ * gives, token for token. Only the retry waits for the recording's end,
+ * since what it hears again is measured against the whole recording's
+ * speech: fn has each chunk once its own words are written, provisional
+ * set where a stretch of it may yet be heard again, and has those chunks
+ * once more, in order, after the last chunk, with their words as they
+ * stand; a chunk not provisional does not come again. Until the end is
+ * known a chunk's n and total are 0. A recording that has ended by the
+ * time its first chunk is cut, one of a chunk or two, is a recording read
+ * whole from then on, and no chunk of it is provisional.
+ * With the Neural Engine, such a recording's chunks go to it one at a
+ * time. */
 typedef struct {
     double max_chunk_s;         /* 30.72: the most the encoder hears at once (README, "Long recordings") */
     int    retry;               /* 1: speech the model wrote nothing for heard again */
@@ -373,7 +402,8 @@ int pk_asr_transcribe(pk_asr *a, const pk_audio *x, const pk_transcribe_opts *o,
  * until pk_steps_free, and a caller that reads jobs' samples on other
  * threads meanwhile needs a read that allows it. pk_steps_new takes o
  * NULL as pk_asr_transcribe does, and returns NULL if memory runs out, a
- * read fails, or max_chunk_s is under a second. */
+ * read fails, max_chunk_s is under a second, or x's length is not known
+ * (a recording still being read is pk_asr_transcribe's alone). */
 typedef struct pk_steps pk_steps;
 
 typedef struct {
