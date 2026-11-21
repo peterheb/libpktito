@@ -6,7 +6,9 @@
       "task": "transcribe",
       "status": "stable",
       "about": "a stable model whose S24 edition is preview, not yet run there",
+      "by": "no one",
       "license": "CC-BY-4.0",
+      "license_url": "https://example.invalid/license",
       "source": "https://example.invalid/rules-preview-npu",
       "editions": [
         {
@@ -82,7 +84,9 @@
       "task": "transcribe",
       "status": "stable",
       "about": "a stable model whose S24 edition needs a pktito no one has",
+      "by": "no one",
       "license": "CC-BY-4.0",
+      "license_url": "https://example.invalid/license",
       "source": "https://example.invalid/rules-too-new-npu",
       "editions": [
         {
@@ -158,7 +162,9 @@
       "task": "transcribe",
       "status": "preview",
       "about": "a preview model: its CPU edition is never chosen",
+      "by": "no one",
       "license": "CC-BY-4.0",
+      "license_url": "https://example.invalid/license",
       "source": "https://example.invalid/rules-preview-model",
       "editions": [
         {

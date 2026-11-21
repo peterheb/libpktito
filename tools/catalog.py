@@ -19,7 +19,13 @@ A model has:
 - what it needs: the lowest pktito that loads its files (absent: any);
 - an about line;
 - the languages a transcriber writes (absent: any);
-- its licence and its source page;
+- its credit, which the apps' About shows (pktito-app, About, Models): who
+  it is by, its licence and the licence's page, its source page, what
+  pktito changed of it (absent: nothing; int8: weights rounded to int8),
+  and a notice its licence asks to be kept, as MIT's copyright line
+  (absent: none);
+- the models its files include, each with a name, a task and a credit: the
+  voice detector in a transcriber's .pkf (absent: none);
 - its editions. An edition may carry a status and needs of its own: less
   stable than its model's, or needing more, never the reverse.
 
@@ -59,6 +65,7 @@ MODELS = TOP / "models"
 SYSTEMS = {"android", "windows", "linux", "macos", "ios"}
 TASKS = ("transcribe", "diarize")
 STATUSES = ("stable", "preview")
+CHANGES = ("int8",)
 PKF_MAGIC = b"PKF\x01"
 
 
@@ -91,6 +98,21 @@ def pkf_meta(path):
 def check(d, src, langs):
     def fail(why):
         sys.exit(f"{src}: {why}")
+
+    def credit(m, where):
+        """m's credit, a model's or an included model's: what About shows."""
+        if not m.get("by"):
+            fail(f"{where}: no by, who it is by")
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", m.get("license", "")):
+            fail(f"{where}: license {m.get('license')!r}, a licence's short name")
+        for key, what in (
+            ("license_url", "the licence's page"),
+            ("source", "the checkpoint's page"),
+        ):
+            if not m.get(key, "").startswith("https://"):
+                fail(f"{where}: {key} {m.get(key)!r}, {what}")
+        if m.get("changes", "int8") not in CHANGES:
+            fail(f"{where}: changes {m.get('changes')!r}, not one of {CHANGES}")
 
     def part(p, where, suffix):
         if set(p) - {"file", "bytes", "sha256", "made"} or not {
@@ -147,8 +169,11 @@ def check(d, src, langs):
             fail(f"{name}: a diarizer hears voices, not words: no languages")
         if not re.fullmatch(r"[A-Za-z0-9.-]+", m.get("license", "")):
             fail(f"{name}: license {m.get('license')!r}, a licence's short name")
-        if not m.get("source", "").startswith("https://"):
-            fail(f"{name}: source {m.get('source')!r}, the checkpoint's page")
+        credit(m, name)
+        for inc in m.get("includes", []):
+            if not inc.get("name") or not inc.get("task"):
+                fail(f"{name}: an included model has a name and a task")
+            credit(inc, f"{name}: {inc.get('name')}")
         ids = [e["id"] for e in m["editions"]]
         if len(set(ids)) != len(ids):
             fail(f"{name}: an edition id twice")

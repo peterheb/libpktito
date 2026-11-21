@@ -7,8 +7,22 @@
       "status": "stable",
       "about": "English",
       "languages": ["en"],
+      "by": "NVIDIA",
       "license": "CC-BY-4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
       "source": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
+      "changes": "int8",
+      "includes": [
+        {
+          "name": "Silero VAD",
+          "task": "vad",
+          "by": "Silero Team",
+          "license": "MIT",
+          "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+          "source": "https://github.com/snakers4/silero-vad",
+          "notice": "Copyright (c) 2020-present Silero Team"
+        }
+      ],
       "editions": [
         {
           "id": "cpu",
@@ -222,8 +236,22 @@
         "ru",
         "uk"
       ],
+      "by": "NVIDIA",
       "license": "CC-BY-4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
       "source": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+      "changes": "int8",
+      "includes": [
+        {
+          "name": "Silero VAD",
+          "task": "vad",
+          "by": "Silero Team",
+          "license": "MIT",
+          "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+          "source": "https://github.com/snakers4/silero-vad",
+          "notice": "Copyright (c) 2020-present Silero Team"
+        }
+      ],
       "editions": [
         {
           "id": "cpu",
@@ -411,8 +439,11 @@
       "status": "stable",
       "needs": "0.9.8",
       "about": "who speaks when, up to 8 speakers",
+      "by": "NVIDIA",
       "license": "OpenMDW-1.1",
+      "license_url": "https://openmdw.ai/license/1-1/",
       "source": "https://huggingface.co/nvidia/Nemotron-3-Diarization",
+      "changes": "int8",
       "editions": [
         {
           "id": "cpu",
