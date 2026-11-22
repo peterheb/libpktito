@@ -74,12 +74,12 @@ model, `pktito-c probs`; 100 episodes, 31 to 80 minutes each.
 
 **Cost**, as audio heard again over the recording's length:
 
-| part                                    | median | mean | max   |
-| --------------------------------------- | ------ | ---- | ----- |
-| rewind from the first short speaker     | 24.1%  | 25.1 | 50.4% |
-| rewind once seven numbers are in use    | 12.0%  | 14.2 | 38.2% |
-| the same, over all 100 episodes         | 0.0%   | 7.2  | 38.0% |
-| join check, over all 100                | 1.9%   | 1.9  | 3.5%  |
+| part                                 | median | mean | max   |
+| ------------------------------------ | ------ | ---- | ----- |
+| rewind from the first short speaker  | 24.1%  | 25.1 | 50.4% |
+| rewind once seven numbers are in use | 12.0%  | 14.2 | 38.2% |
+| the same, over all 100 episodes      | 0.0%   | 7.2  | 38.0% |
+| join check, over all 100             | 1.9%   | 1.9  | 3.5%  |
 
 The first two rows are the 43 episodes that end with eight numbers in use.
 
@@ -92,8 +92,8 @@ pairs of stretches, and the two embedding models on all 1,027. Counting the
 pairs where all three agree, over the 100 episodes with the rewind at seven
 numbers:
 
-|                                           | plain run | rewind run |
-| ----------------------------------------- | --------- | ---------- |
+|                                            | plain run | rewind run |
+| ------------------------------------------ | --------- | ---------- |
 | one voice on two numbers, in this run only | 16        | 14         |
 | one voice on two numbers, in both runs     | 32        | 32         |
 | two voices on one number                   | 14        | 0          |
@@ -109,11 +109,20 @@ model: of 36 pairs of long speakers that are one voice it joins 35, and of
 385 that are two it joins 2, at cosines of 0.28 and 0.30 where two voices
 are typically 0.10. On the plain run's output: 31 of 33, and 2 of 355.
 
+**Together.** With the join check's joins applied to the rewind run and the
+three listeners asked again, over the 100 episodes: the plain run is wrong
+on 53 pairs of stretches and the two parts together on 6, all six one voice
+on two numbers in both. Together they are better than the plain run in 35
+episodes, the same in 65 and worse in none. One of the three listeners is
+the join check's own test, a Nemotron 3 that has heard nothing, so this
+score leans its way; the two embedding models had to agree for a pair to
+count.
+
 **Against a person.** On 61 Prof G Markets episodes whose speakers a person
 labelled by ear, before the join check: one host is on two numbers in 2
 episodes of the plain run and none of the rewind run, the other in 7 and 8.
 
-Not measured: the rewind and the join check scored together; any recording
+Not measured: any recording
 that is not a two-host podcast; the cost in seconds on a small board.
 
 ## Into the engine
