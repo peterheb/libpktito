@@ -1622,6 +1622,48 @@ static void diar_engine_cases(const pk_model *m, int deep) {
         free(x), free(y), free(r1), free(ry), free(r), free(st);
     }
 
+    /* short speakers held (core/hold.c): the plain run's rows, the same
+     * bits, where no one was held or joined; what it says it held is inside
+     * the recording, to a speaker the model has or none, and a speaker is
+     * joined to itself or an earlier one; on one thread and three alike */
+    {
+        static const size_t lengths[] = { 0, 161, 6 * 16000 + 17, 200 * 16000 };
+        for (size_t i = 0; i < sizeof lengths / sizeof lengths[0]; i++) {
+            const size_t n = lengths[i], rows = (size_t)diar_nrows(m, n);
+            float *x = audio(n), *r1 = malloc((rows ? rows : 1) * S * sizeof *r1);
+            const pk_audio au = pk_audio_floats(x, n);
+            pk_held h1 = { 0 }, h3 = { 0 };
+            char what[96];
+            snprintf(what, sizeof what, "%zu samples, short speakers held", n);
+            g_cases++;
+            if (pk_diar_run_held(d1, m, &au, &h1) || pk_diar_run_held(d3, m, &au, &h3)) {
+                FAIL("%s: pk_diar_run_held failed", what);
+            } else if (h1.rows != rows || h3.rows != rows || h1.n_held != h3.n_held || h1.again != h3.again) {
+                FAIL("%s: %zu and %zu rows of %zu, %zu and %zu held", what, h1.rows, h3.rows, rows, h1.n_held,
+                     h3.n_held);
+            } else {
+                int plain = !h1.n_held;
+                for (size_t k = 0; k < h1.n_held; k++)
+                    if (h1.held[k].start < 0 || h1.held[k].end <= h1.held[k].start || h1.held[k].end > (int64_t)n
+                        || h1.held[k].speaker < -1 || h1.held[k].speaker >= (int32_t)S
+                        || h1.held[k].start != h3.held[k].start || h1.held[k].end != h3.held[k].end
+                        || h1.held[k].speaker != h3.held[k].speaker)
+                        FAIL("%s: held stretch %zu", what, k);
+                for (size_t k = 0; k < S; k++) {
+                    if (h1.joined[k] < 0 || h1.joined[k] > (int32_t)k || h1.joined[k] != h3.joined[k])
+                        FAIL("%s: speaker %zu joined to %d", what, k, h1.joined[k]);
+                    plain &= h1.joined[k] == (int32_t)k;
+                }
+                same_rows(h1.p, h3.p, rows * S, what);
+                if (plain && !diar_run(d1, m, x, n, 0, 1, r1, what))
+                    same_rows(r1, h1.p, rows * S, what);
+            }
+            pk_held_free(&h1);
+            pk_held_free(&h3);
+            free(x), free(r1);
+        }
+    }
+
     /* samples that are not finite are heard as 0 */
     const size_t n = 2 * 16000, rows = (size_t)diar_nrows(m, n) * S;
     float *x = audio(n), *z = malloc(n * sizeof *z), *r1 = malloc(rows * sizeof *r1), *r = malloc(rows * sizeof *r);

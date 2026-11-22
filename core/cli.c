@@ -152,6 +152,8 @@ static const char *usage =
     "                      (with --no-retry: each chunk exactly as NeMo has it)\n"
     "      --speakers      who said what, each turn named, with the diarizer's model\n"
     "                      in models/ (nemotron-3-diarization.pkf) or named by -m\n"
+    "      --no-hold       give every voice a speaker's number as it is heard, a\n"
+    "                      few seconds of an ad's too (the model as NeMo runs it)\n"
     "      --json          the transcript as JSON (pktito/1): sentences, words,\n"
     "                      captions, and chunks with their tokens\n"
     "      --srt, --vtt    subtitles\n"
@@ -165,7 +167,7 @@ typedef struct {
     const char *cmd, *in, *npu;
     const char *models[2];           /* -m's, a recognizer's and a diarizer's, in any order */
     const char **ins;                /* every input file; in is the first */
-    int nmodels, nin, threads, json, subs, verbose, stream, fast, no_retry, no_context, qnn, all;   /* subs: SUBS_SRT or SUBS_VTT */
+    int nmodels, nin, threads, json, subs, verbose, stream, fast, no_retry, no_context, no_hold, qnn, all;   /* subs: SUBS_SRT or SUBS_VTT */
     int speakers;
     double max_chunk, pause_ms;
 } opts;
@@ -234,6 +236,7 @@ static void parse(int argc, char **argv, opts *o) {
         else if (!strcmp(a, "--all")) o->all = 1;
         else if (!strcmp(a, "--qnn")) o->qnn = 1;
         else if (!strcmp(a, "--no-retry")) o->no_retry = 1;
+        else if (!strcmp(a, "--no-hold")) o->no_hold = 1;
         else if (!strcmp(a, "--no-context")) o->no_context = 1;
         else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) o->verbose = 1;
         else if (a[0] == '-' && a[1]) die("unknown option %s", a);
@@ -1512,11 +1515,26 @@ static double hear(pk_diar *dz, const pk_audio *x, const file_audio *f, const ch
     return pk_os_now() - t0;
 }
 
-/* The same, its rows kept */
+/* The same, its rows kept; with `hold`, the rows of pk_diar_run_held,
+ * which keeps voices heard for under a minute out of the speakers' numbers
+ * and reads the recording again where it goes back */
 static double diarize(pk_diar *dz, const pk_model *dm, const pk_audio *x, const file_audio *f, const char *path,
-                      rows_buf *rb) {
+                      rows_buf *rb, int hold) {
     *rb = (rows_buf){ NULL, 0, 0, (size_t)pk_model_speakers(dm) };
-    return hear(dz, x, f, path, keep_rows, rb);
+    if (!hold)
+        return hear(dz, x, f, path, keep_rows, rb);
+    const double t0 = pk_os_now();
+    pk_held h;
+    if (pk_diar_run_held(dz, dm, x, &h)) {
+        if (f)
+            read_failed(f, path);
+        die("%s: out of memory, or a read error in its samples", path);
+    }
+    rb->p = h.p;
+    rb->n = rb->cap = h.rows;
+    h.p = NULL;
+    pk_held_free(&h);
+    return pk_os_now() - t0;
 }
 
 /* A path's file name, as pktito-cli (Rust's file_name) names a file: what
@@ -1671,7 +1689,7 @@ static int transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr 
         pk_diar *dz = pk_diar_new(dm, o->threads);
         if (!dz)
             die("out of memory");
-        diar_s = diarize(dz, dm, &x, &f, path, &rb);
+        diar_s = diarize(dz, dm, &x, &f, path, &rb, !o->no_hold);
         pk_diar_free(dz);
         *diar_total += diar_s;
         out.dm = dm;
@@ -2082,7 +2100,7 @@ static int bench_diar(const opts *o, const pk_model *dm) {
     rows_buf rb = { 0 };
     for (int rep = 0; rep < 5; rep++) {
         free(rb.p);
-        const double dt = diarize(dz, dm, &x, NULL, o->in, &rb);
+        const double dt = diarize(dz, dm, &x, NULL, o->in, &rb, 0);
         best = dt < best ? dt : best;
     }
     const double audio = (double)n / rate;
@@ -2105,7 +2123,9 @@ static int bench_diar(const opts *o, const pk_model *dm) {
 }
 
 /* pktito-c probs on a diarizer's model: a line a row, its start in seconds
- * and each speaker's probability, as the VAD's are printed (vad, below) */
+ * and each speaker's probability, as the VAD's are printed (vad, below).
+ * The rows --speakers goes by: pk_diar_run_held's, or with --no-hold the
+ * model's own, as they come. */
 typedef struct {
     size_t S;
     int64_t row;                     /* samples a row */
@@ -2131,7 +2151,14 @@ static int diar_probs(const opts *o, const pk_model *dm) {
     if (!dz)
         die("out of memory");
     row_printer rp = { (size_t)pk_model_speakers(dm), llround(pk_model_frame_seconds(dm) * rate), rate };
-    hear(dz, &x, &f, o->in, print_rows, &rp);
+    if (o->no_hold)
+        hear(dz, &x, &f, o->in, print_rows, &rp);
+    else {
+        rows_buf rb;
+        diarize(dz, dm, &x, &f, o->in, &rb, 1);
+        print_rows(&rp, 0, rb.n, rb.p);
+        free(rb.p);
+    }
     close_audio(&f);
     pk_diar_free(dz);
     return 0;
@@ -2155,7 +2182,7 @@ static int speakers(const opts *o, const pk_model *dm) {
     if (!dz)
         die("out of memory");
     rows_buf rb;
-    const double secs = diarize(dz, dm, &x, &f, o->in, &rb);
+    const double secs = diarize(dz, dm, &x, &f, o->in, &rb, !o->no_hold);
     close_audio(&f);
     pk_spk_seg *seg = malloc((rb.S * (rb.n + 1) / 2 + 1) * sizeof *seg);
     if (!seg)

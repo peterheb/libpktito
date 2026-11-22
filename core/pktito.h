@@ -729,4 +729,42 @@ typedef struct {
  * (rows + 1) / 2; returns how many. */
 size_t pk_speaker_segments(const pk_model *d, const float *p, size_t rows, pk_spk_seg *out);
 
+/* A whole recording's rows with its short speakers held out of the
+ * diarizer's numbers (core/hold.c; docs/SHORT_SPEAKERS.md). Nemotron 3
+ * Diarization gives a number to every voice it hears and has eight; a
+ * voice with under a minute of speech that has gone quiet is cut from what
+ * the diarizer hears, once seven numbers are in use, and the diarizer goes
+ * back (pk_diar_load) and hears the rest without it. At the end the voices
+ * held are heard after the recording and take what numbers are left. Last,
+ * two numbers that are one voice are joined: the diarizer, the recording
+ * forgotten, hears clips of each speaker with a minute alone, and joins
+ * two it calls one speaker five times on different clips.
+ *
+ * p[rows][S] is then the recording's rows, a held voice's probability in
+ * the column it took. `held` lists the stretches that were cut, each with
+ * its column, or -1 for a voice that took none: p is 0 for it there, and
+ * its words are no numbered speaker's. joined[s] is the speaker that s was
+ * found to be, an earlier number, whose column has s's rows (s's are then
+ * 0), or s. `again` is the seconds the diarizer heard besides the
+ * recording's own.
+ *
+ * This is processing on top of the model: pk_diar_run's rows are NeMo's,
+ * and these leave them on purpose, as measured in docs/SHORT_SPEAKERS.md.
+ * A recording that never has seven numbers in use, and no two of them
+ * joined, gets pk_diar_run's rows.
+ * x is read again where the diarizer goes back, so its read must give any
+ * sample asked for. The memory is the rows twice over and a state for each
+ * 27.2 s (0.6 MB each). d is the diarizer of model m, and is left reset.
+ * Returns 0, or -1 for want of memory or a read that failed. */
+typedef struct {
+    float      *p;
+    size_t      rows;
+    pk_spk_seg *held;
+    size_t      n_held;
+    int32_t    *joined;         /* S of them */
+    double      again;
+} pk_held;
+int  pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *out);
+void pk_held_free(pk_held *h);
+
 #endif /* PKTITO_H */
