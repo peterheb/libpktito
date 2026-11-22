@@ -682,6 +682,24 @@ int  pk_diar_feed(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg
 int  pk_diar_finish(pk_diar *d, pk_diar_fn fn, void *arg);
 void pk_diar_reset(pk_diar *d);
 
+/* Going back. Between two calls of pk_diar_feed a diarizer's state is the
+ * chunks it has handed over and what it remembers of them; pk_diar_save
+ * writes that to `state`, room for pk_diar_state_size bytes (about 0.6 MB
+ * for Nemotron 3 Diarization once its cache is full), and returns the bytes
+ * written. pk_diar_load takes a diarizer of the same model back to it, and
+ * returns the sample the next pk_diar_feed must start from, which is before
+ * the saved state's last chunk ended (the next chunk's first frame reaches
+ * back 16 ms, and further in a model whose chunks have context before
+ * them). Fed the same samples from there, it hands over the same rows as
+ * the first time, from the row after the last it had handed over; fed
+ * others, it hears a recording that goes on differently. The samples a
+ * state had been fed past its last chunk are not in it. `state` is the
+ * caller's memory and holds no pointers: it may be copied, and loaded any
+ * number of times. */
+size_t  pk_diar_state_size(const pk_diar *d);
+size_t  pk_diar_save(const pk_diar *d, void *state);
+int64_t pk_diar_load(pk_diar *d, const void *state);
+
 /* The same for a whole recording at once. */
 int pk_diar_run(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg);
 

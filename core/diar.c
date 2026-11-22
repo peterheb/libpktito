@@ -756,6 +756,54 @@ void pk_diar_reset(pk_diar *d) {
     d->has_p = 0;
 }
 
+/* What a diarizer carries from one chunk to the next: where the next chunk
+ * starts, and the speaker cache and the FIFO as the chunks before left
+ * them. The samples are not in it: pk_diar_load says which one it reads
+ * from next. */
+typedef struct {
+    int64_t  stt;
+    uint32_t nc, nf;
+    int32_t  has_p;
+} diar_state;
+
+size_t pk_diar_state_size(const pk_diar *d) {
+    return sizeof(diar_state)
+         + ((size_t)d->cmax * (d->D + d->S) + ((size_t)d->w->fifo_len + d->w->chunk_len) * d->D) * sizeof(float);
+}
+
+size_t pk_diar_save(const pk_diar *d, void *state) {
+    const diar_state h = { d->stt, d->nc, d->nf, d->has_p };
+    const size_t nc = (size_t)d->nc * d->D * sizeof(float), nf = (size_t)d->nf * d->D * sizeof(float);
+    const size_t np = d->has_p ? (size_t)d->nc * d->S * sizeof(float) : 0;
+    char *o = state;
+    memcpy(o, &h, sizeof h);
+    memcpy(o + sizeof h, d->cache, nc);
+    memcpy(o + sizeof h + nc, d->fifo, nf);
+    memcpy(o + sizeof h + nc + nf, d->cache_p, np);
+    return sizeof h + nc + nf + np;
+}
+
+int64_t pk_diar_load(pk_diar *d, const void *state) {
+    diar_state h;
+    const char *o = state;
+    memcpy(&h, o, sizeof h);
+    const size_t nc = (size_t)h.nc * d->D * sizeof(float), nf = (size_t)h.nf * d->D * sizeof(float);
+    const size_t np = h.has_p ? (size_t)h.nc * d->S * sizeof(float) : 0;
+    memcpy(d->cache, o + sizeof h, nc);
+    memcpy(d->fifo, o + sizeof h + nc, nf);
+    memcpy(d->cache_p, o + sizeof h + nc + nf, np);
+    d->stt = h.stt;
+    d->nc = h.nc;
+    d->nf = h.nf;
+    d->has_p = h.has_p;
+    /* the samples the next chunk reads start one before its left context's
+     * first window, as drain keeps them */
+    const int64_t from = (h.stt - (int64_t)d->w->chunk_left * d->f) * d->m->hop - d->m->n_fft / 2 - 1;
+    d->got = d->buf_at = from > 0 ? from : 0;
+    d->buf_n = 0;
+    return d->got;
+}
+
 int pk_diar_feed(pk_diar *d, const float *x, size_t n, pk_diar_fn fn, void *arg) {
     pk_os_throttle was = pk_os_unthrottle();
     int rc = 0;

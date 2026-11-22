@@ -1564,6 +1564,64 @@ static void diar_engine_cases(const pk_model *m, int deep) {
         free(r);
     }
 
+    /* going back: a state saved between pieces, loaded into the other
+     * diarizer and fed the samples from where it says, hands over the rest
+     * of the rows, the same bits; and fed a recording that is the same to
+     * the end of the saved chunk's context and another after, that
+     * recording's */
+    {
+        const size_t n = 6 * 16000 + 17, rows = (size_t)diar_nrows(m, n), R = n / rows;
+        float *x = audio(n), *y = malloc(n * sizeof *y), *r1 = malloc(rows * S * sizeof *r1);
+        float *ry = malloc(rows * S * sizeof *ry), *r = malloc(rows * S * sizeof *r);
+        void *st = malloc(pk_diar_state_size(d1));
+        diar_run(d1, m, x, n, 0, 1, r1, "a recording to go back in");
+        int64_t seen = -1;
+        for (size_t at = 0; at < n; at += 1000) {
+            diar_sink k = { 0, S, rows, NULL, 1, 0, -1 };
+            pk_diar_reset(d1);
+            for (size_t i = 0; i <= at; i += 1000)
+                pk_diar_feed(d1, x + i, n - i < 1000 ? n - i : 1000, diar_rows, &k);
+            if (k.next == seen)          /* no chunk since the last state tried */
+                continue;
+            seen = k.next;
+            char what[96];
+            g_cases++;
+            if (pk_diar_save(d1, st) > pk_diar_state_size(d1))
+                FAIL("pk_diar_save: more than pk_diar_state_size");
+            for (int other = 0; other < 2; other++) {
+                /* the same to the end of the last chunk's context, then the recording backwards */
+                const size_t same = (size_t)k.next * R + ctx + m->n_fft;
+                const float *src = x, *want = r1;
+                if (other) {
+                    for (size_t i = 0; i < n; i++)
+                        y[i] = i < same ? x[i] : x[n - 1 - i];
+                    snprintf(what, sizeof what, "another recording after %lld rows", (long long)k.next);
+                    if (diar_run(d1, m, y, n, 0, 1, ry, what))
+                        continue;
+                    src = y, want = ry;
+                }
+                const int64_t from = pk_diar_load(d3, st);
+                diar_sink k3 = { k.next, S, rows, r, 1, 0, -1 };
+                snprintf(what, sizeof what, "a state after %lld rows, %s", (long long)k.next,
+                         other ? "another recording after it" : "the same recording");
+                g_cases++;
+                if (from < 0 || (size_t)from > n || (size_t)from > (size_t)k.next * R) {
+                    FAIL("%s: pk_diar_load says sample %lld", what, (long long)from);
+                    continue;
+                }
+                int rc = pk_diar_feed(d3, src + from, n - (size_t)from, diar_rows, &k3);
+                if (!rc)
+                    rc = pk_diar_finish(d3, diar_rows, &k3);
+                if (rc || k3.bad || k3.next != (int64_t)rows)
+                    FAIL("%s: returned %d, to row %lld of %zu", what, rc, (long long)k3.next, rows);
+                else
+                    same_rows(want + (size_t)k.next * S, r + (size_t)k.next * S, (rows - (size_t)k.next) * S, what);
+            }
+        }
+        pk_diar_reset(d1);
+        free(x), free(y), free(r1), free(ry), free(r), free(st);
+    }
+
     /* samples that are not finite are heard as 0 */
     const size_t n = 2 * 16000, rows = (size_t)diar_nrows(m, n) * S;
     float *x = audio(n), *z = malloc(n * sizeof *z), *r1 = malloc(rows * sizeof *r1), *r = malloc(rows * sizeof *r);
