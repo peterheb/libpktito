@@ -3630,3 +3630,13 @@ the cores' FMLA gives now, and taken from the int8 products.
 Open: the diarizer's products packed once (a pk_packed sized for its
 activations); a unit's limit on a cluster of six; a second compiler; and
 the units' idle time, a third of their ceiling still.
+
+## 2026-11-23 - the probe's reading for neon-sme, later the same day (a measurement)
+
+`pktito-c info` after the afternoon's rounds: "probe neon-sme 0.395 to
+0.397" from ba52667's binary, which read 0.355 at its build, and 0.400
+to 0.402 from 2dfc43f's, six runs each. The same binary moves by a
+tenth with the machine's state; 2dfc43f's call that packs its own
+columns is 1% behind ba52667's (k_act_pack reads a column of zeros by a
+mask where sme_pack had 4096 zeros to read). Either is far under the
+0.97 the probe asks. backend/kernels.c's comment says 0.36 to 0.40.

@@ -22,9 +22,9 @@
 
 const pk_kernels *const pk_kernels_built[] = {
 /* neon-sme first, where SME2's SMOPA takes less time than the next's
- * product: 0.36 of neon-dp's on an M4 Pro in the probe below, which macOS
- * runs on one thread, and 0.60 with its eight performance cores on their
- * two units at once (backend/neon-dp/CLIMB.md, 2026-11-23) */
+ * product: 0.36 to 0.40 of neon-dp's on an M4 Pro in the probe below,
+ * which macOS runs on one thread, and 0.60 with its eight performance
+ * cores on their two units at once (backend/neon-dp/CLIMB.md, 2026-11-23) */
 #ifdef PK_HAVE_neon_sme
     &pk_kernels_neon_sme,
 #endif
