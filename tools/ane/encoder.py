@@ -95,7 +95,7 @@ from coremltools.converters.mil import Builder as mb
 from coremltools.converters.mil.mil import get_new_symbol, types
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from pktito_tools import canon, nemo  # noqa: E402
+from pktito_tools import canon, hf  # noqa: E402
 from pktito_tools.convert import sha256_file  # noqa: E402
 
 
@@ -433,7 +433,13 @@ def build(w, a, lengths, dt, scale, cut, lo=0, hi=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("nemo")
+    ap.add_argument(
+        "nemo", help="a .nemo, or a transformers model.safetensors with --nemo-base"
+    )
+    ap.add_argument(
+        "--nemo-base",
+        help="a transformers checkpoint's base .nemo, as pktito-tools convert takes it",
+    )
     ap.add_argument("out")
     ap.add_argument(
         "--frames",
@@ -481,7 +487,7 @@ def main():
     )
     args = ap.parse_args()
 
-    nm = nemo.Nemo(args.nemo)
+    nm = hf.open_checkpoint(args.nemo, args.nemo_base)
     a = canon.arch(nm.config)
     w = dict(canon.tensors(nm.state, a))
     dt = np.float32 if args.f32 else np.float16
