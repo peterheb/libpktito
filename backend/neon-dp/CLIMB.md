@@ -3146,3 +3146,126 @@ once; at 21:58 they read 1.085 to 1.165, and test.wav held to them (`start
 neon-dp-a76 4.993 and 5.304: too noisy to rank. The board changed between
 the two readings, and the probe read it each time; where the tile is not
 3% the faster, a process runs neon-dp, as main does.
+
+## 2026-11-23 - SMOPA at the encoder's blocks of 32, with its loads, its packing and its drain, a cluster's threads sharing its unit (a measurement)
+
+The 2026-10-24 entry put SMOPA at blocks of 32 at 0.73 T a unit on
+registers, "about what eight cores of SDOT give the product now", and
+left it; the 2026-10-28 one gave it loads at a scale a row and found
+SDOT threads beside it adding nothing. Neither ran the engine's own
+arithmetic with loads, and neither asked what a unit gives when every
+thread of its cluster is on it. This does: a probe (smeq8.c, with the
+session's notes, not in the tree) that is pk_k_gemm_q8 as kernels.h
+defines it. A panel's groups are SMOPA's first operand as the file holds
+them; 16 columns' bytes are packed to its second with NEON (16 columns
+by 4 inputs a group, their 16 scales a block beside them; 8 us for 256
+columns of 1024, 28 to 32 GB/s); block b's 8 SMOPAs go to int tile b % 2
+while block b - 1's is drained into a float tile (MOVA vgx4, SCVTF, one
+FMLA vgx4 by the block's 16 scales, ZERO), so each output's chain is
+ref's fused multiply-adds in ref's order; the row scales, bias and add
+come out of the float tile a column at a time. 0 outputs of 480 shapes'
+differ from pk_kernels_ref.gemm_q8's (64 x 1024, 16 x 4096, 128 x 256,
+32 x 32 and 48 x 64; 1 to 64 columns; blocks of 32 and 64; bias and add
+both ways; a block of zeros and one outlier among the activations).
+
+4332856's build for SDOT (pk_kernels_neon_dp.gemm_q8), Apple clang 21,
+-O2 -mcpu=apple-m4 -ffp-contract=off for the probe, the M4 Pro mini, T
+256, blocks of 32, G multiply-adds a second. The machine is shared with
+another session's builds today: the one-thread rows were taken at a load
+average of 6 to 10 and falling with SDOT reading its usual 186 to 196,
+the rest as that session's check-c ended; to be taken again quiet.
+
+One thread:
+
+| the product                             | SMOPA, packed in the call | packed once | SDOT    |
+| --------------------------------------- | ------------------------- | ----------- | ------- |
+| feed-forward up, 4096 x 1024, one call  | 780                       | 762-775     | 190     |
+| feed-forward down, 1024 x 4096          | 801                       | 788-810     | 186     |
+| attention q, 1024 x 1024                | 785                       | 796         | 196     |
+| the same in slices of 64 rows           | 544 / 566 / 574           | 753-795     | 187-190 |
+| in slices of 256 rows                   | 727 / 734 / 735           | 758-795     | 187-190 |
+| at blocks of 64 (the fast mode), a call | 992 / 1007 / 960          |             | 202-210 |
+
+Packed once, an item of 64 rows by 16 columns runs as fast as a whole
+matrix (753 to 773 G against 762 to 775): entering streaming mode a call
+costs nothing that shows. Packed in the call, a slice of 64 rows packs
+its 256 columns for 64 rows' work, and gives up 30%.
+
+Threads, feed-forward up, items of 64 rows by 48 columns from one
+counter, packed once, each thread's CPU and rate read in the best of 15
+runs (pthread_cpu_number_np: 0 to 3 are the E cores, 4 to 7 and 8 to 11
+the two P clusters):
+
+| threads         | G a second | each thread's                                                            |
+| --------------- | ---------- | ------------------------------------------------------------------------ |
+| 8 SDOT          | 1298-1454  |                                                                          |
+| 1 SMOPA         | 784        |                                                                          |
+| 2 SMOPA         | 1335       | 673 and 664, a cluster each                                              |
+| 3 SMOPA         | 1768       | 700 alone in its cluster; 537 and 537 sharing the other's unit           |
+| 4 SMOPA         | 2136       | 541 and 541 in one cluster, 530 and 531 in the other                     |
+| 6 SMOPA         | 2266       | 528 and 527 in one cluster; 302 to 306 each for four in the other        |
+| 8 SMOPA         | 2571       | 394 each for three in one cluster, 304 to 307 for four; 187 on an E core |
+| 4 SMOPA, 4 SDOT | 1957       | SMOPA's four in one cluster at 305 to 308, SDOT's in the other at 184    |
+| 2 SMOPA, 6 SDOT | 1869-2108  | one SMOPA thread on an E core in the slower run                          |
+
+A unit is not one thread's: its cluster's threads share it, and it gives
+more the more of them feed it, 780 G to one, 1070 to two, 1180 to
+three, 1220 to four, where four cores of SDOT give 736 to 750. The
+2026-10-28 threads "3 to 12 times slower than the fastest" on registers
+are not seen with the loads and the drain: four threads on a unit run
+level, 302 to 306 each. Every P thread on SMOPA is 2.4 to 2.6 T against
+SDOT's 1.3 to 1.45 T, wherever the system puts the threads, which macOS
+gives a process no say in. The best here would be two threads a cluster
+on SMOPA and two on SDOT, 1070 + 2 x 184 = 1438 G a cluster, 18% over
+four on SMOPA; it needs each thread to know its cluster. The E cluster's
+unit gave its one thread 187 G, an E core's SDOT tile 29 to 44
+(tests/q8bench under `taskpolicy -b`, the machine busy).
+
+## 2026-11-23 - neon-sme: the int8 product on SMOPA, every thread's, at ref's bits (hypothesis)
+
+The engine's int8 products are about 470 G multiply-adds a run of
+test.wav (24 layers, each two feed-forwards of 4096 x 1024 and 1024 x
+4096, q k v and the positions, the attention's output, pw1 and pw2), 385
+ms of a 438 ms run at 12 threads (make PROFILE=1, 4332856): 1.23 T a
+second, 82% of the run. The entry above has the M4 Pro's two P clusters'
+units at 2.4 to 2.6 T on the same arithmetic with all eight P threads on
+them, 1.8 times eight cores of SDOT.
+
+So: a backend, neon-sme, that is neon-dp with pk_k_gemm_q8 on SMOPA as
+the probe has it, for a CPU with SME2 at a streaming vector of 512 bits
+(the weights' 64-byte group is then SMOPA's operand whole). It competes
+(kernels.h), so backend/kernels.c's probe, every one of the fastest
+cores at once on a slice of 64 rows, takes it only where it measures 3%
+the faster so, which is the case that decides it: a unit shared by its
+cluster. Expected there 300 against 184 G a thread, 0.6 of neon-dp's
+time.
+
+- The activations are packed in the call, 16 columns at a time into a
+  thread's buffer (16 x n bytes: 16 KB at 1024, 64 KB at 4096), as
+  amx-int8 copies a short group: the backend alone knows of it, and
+  core/ is untouched. One thread gives up 30% to it in slices of 64 rows
+  (544 to 574 G against 753 to 795); a thread sharing a unit with three
+  others packs on its own core while the unit serves them, so less is
+  expected to show at 8 threads. Packing once a product (a place in
+  pk_act, the quantizer's to fill) is the next step if it does.
+- The last columns of a call, fewer than 16: padded with zeros and
+  multiplied as 16, or left to SDOT's tiles, whichever the rates say (16
+  columns at a shared unit's 305 G cost what 9.7 do at SDOT's 184).
+  pk_gemm's calls are whole twelves of columns, 48 to 60 at 12 threads.
+  The decoder's products are one column a call and stay SDOT's.
+- Blocks of any length a multiple of 4 that divides n; n to 4096, the
+  model's widest (wider goes to SDOT, as amx-int8's short group does).
+- Darwin only for now: it is measured on the M4 Pro alone, and the
+  streaming vector length and the feature are asked of sysctl
+  (hw.optional.arm.FEAT_SME2, hw.optional.arm.sme_max_svl_b). Linux and
+  Windows get it when a board with SME2 is measured.
+
+Expected end to end: the int8 stages from 385 ms toward 200 at 12
+threads, test.wav 0.42 s toward 0.25 to 0.27; more at one thread (780 G
+against 188, a 3.1 s run toward 1.3). Kept if `pktito-c bench` moves by
+more than the 5% a run moves here, in rounds in rotated order against
+4332856, with tests/kcheck and check-c passing and the transcript's
+tokens the same. What may not carry over from the probe: the lanes (two
+of 6 threads, each lane's threads on both clusters' units), the E cores'
+threads on their own unit (187 G for one; four not measured), and
+whether the system keeps eight streaming threads spread four a cluster.
