@@ -494,7 +494,7 @@
             "bytes": 647552772,
             "sha256": "e7f9345c8bfc257deb8686e510f7ee262243b84ded91289e6b5aeb75b9da0fc2",
             "made": {
-              "by": "pktito-tools convert --nemo-base parakeet-tdt-0.6b-v3.nemo, as libpktito a5252d7 writes it, from moondream/parakeet-ultra 73175eb"
+              "by": "pktito-tools convert --nemo-base parakeet-tdt-0.6b-v3.nemo, from moondream/parakeet-ultra 73175eb; the file names its converter pktito-tools 0.9.8 4332856, the ultra branch's hf.py (8c37f0c) before its commit"
             }
           }
         },

@@ -64,7 +64,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pktito_tools import canon, nemo, reference, spm, wavio, wer  # noqa: E402
+from pktito_tools import canon, hf, reference, spm, wavio, wer  # noqa: E402
 
 
 def read_wav(path):
@@ -287,7 +287,12 @@ def path_logp(enc, w, a, trace):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("nemo")
+    ap.add_argument(
+        "nemo", help="a .nemo, or a transformers model.safetensors with --nemo-base"
+    )
+    ap.add_argument(
+        "--nemo-base", help="a transformers checkpoint's base .nemo (hf.py)"
+    )
     ap.add_argument("corpus", nargs="+")
     ap.add_argument("--configs", default="w8row+a8row,w8b32+a8b32,w4b32+a8b32")
     ap.add_argument(
@@ -296,7 +301,7 @@ def main():
     ap.add_argument("--json", help="write every transcript here")
     args = ap.parse_args()
 
-    nm = nemo.Nemo(args.nemo)
+    nm = hf.open_checkpoint(args.nemo, args.nemo_base)
     a = canon.arch(nm.config)
     w32 = {k: v.astype(np.float32) for k, v in canon.tensors(nm.state, a)}
     sp = spm.Model(nm.tokenizer_model())
