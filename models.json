@@ -434,6 +434,100 @@
       ]
     },
     {
+      "name": "parakeet-ultra",
+      "task": "transcribe",
+      "status": "preview",
+      "about": "25 European languages",
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "bg",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "et",
+        "fi",
+        "el",
+        "hu",
+        "it",
+        "lv",
+        "lt",
+        "mt",
+        "pl",
+        "pt",
+        "ro",
+        "sk",
+        "sl",
+        "sv",
+        "ru",
+        "uk"
+      ],
+      "by": "Moondream",
+      "license": "CC-BY-4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "source": "https://huggingface.co/moondream/parakeet-ultra",
+      "changes": "int8",
+      "notice": "Post-trained from NVIDIA's parakeet-tdt-0.6b-v3 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), CC-BY-4.0",
+      "includes": [
+        {
+          "name": "Silero VAD",
+          "task": "vad",
+          "by": "Silero Team",
+          "license": "MIT",
+          "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+          "source": "https://github.com/snakers4/silero-vad",
+          "notice": "Copyright (c) 2020-present Silero Team"
+        }
+      ],
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "parakeet-ultra.pkf",
+            "bytes": 647552772,
+            "sha256": "e7f9345c8bfc257deb8686e510f7ee262243b84ded91289e6b5aeb75b9da0fc2",
+            "made": {
+              "by": "pktito-tools convert --nemo-base parakeet-tdt-0.6b-v3.nemo, as libpktito a5252d7 writes it, from moondream/parakeet-ultra 73175eb"
+            }
+          }
+        },
+        {
+          "id": "coreml",
+          "about": "Apple's Neural Engine",
+          "runtime": {
+            "kind": "coreml",
+            "macos": [15, 0],
+            "ios": [18, 0]
+          },
+          "model": {
+            "file": "parakeet-ultra-slim.pkf",
+            "bytes": 35188100,
+            "sha256": "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-ultra-encoder.mlmodelc.aar",
+            "bytes": 545271166,
+            "sha256": "958e706e1eb700b44b25802f56565395a0567b7047b104df82d2813dcc100c63",
+            "made": {
+              "by": "tools/ane/encoder.py --nemo-base, then aa archive",
+              "with": "coremltools 9.0, Xcode 27.2",
+              "on": "2026-11-23"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "nemotron-3-diarization",
       "task": "diarize",
       "status": "stable",

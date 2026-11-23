@@ -159,6 +159,26 @@ static const ed_edition model2[] = {
         .about = "any CPU",
         .kind = ED_CPU,
         .status = ED_STABLE,
+        .model = { "parakeet-ultra.pkf", 647552772u, "e7f9345c8bfc257deb8686e510f7ee262243b84ded91289e6b5aeb75b9da0fc2" },
+    },
+    {
+        .id = "coreml",
+        .about = "Apple's Neural Engine",
+        .kind = ED_COREML,
+        .status = ED_STABLE,
+        .macos = { 15, 0 },
+        .ios = { 18, 0 },
+        .model = { "parakeet-ultra-slim.pkf", 35188100u, "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa" },
+        .encoder = { "parakeet-ultra-encoder.mlmodelc.aar", 545271166u, "958e706e1eb700b44b25802f56565395a0567b7047b104df82d2813dcc100c63" },
+    },
+};
+
+static const ed_edition model3[] = {
+    {
+        .id = "cpu",
+        .about = "any CPU",
+        .kind = ED_CPU,
+        .status = ED_STABLE,
         .needs = "0.9.8",
         .model = { "nemotron-3-diarization.pkf", 100498048u, "95e979be9e0de01c7307ad2ea5f3cc296e86537d4cc935f7c1ab36bddb308715" },
     },
@@ -184,13 +204,22 @@ const ed_model ed_catalog[] = {
         .n_editions = 7,
     },
     {
+        .name = "parakeet-ultra",
+        .about = "25 European languages",
+        .task = ED_TRANSCRIBE,
+        .status = ED_PREVIEW,
+        .needs = NULL,
+        .editions = model2,
+        .n_editions = 2,
+    },
+    {
         .name = "nemotron-3-diarization",
         .about = "who speaks when, up to 8 speakers",
         .task = ED_DIARIZE,
         .status = ED_STABLE,
         .needs = "0.9.8",
-        .editions = model2,
+        .editions = model3,
         .n_editions = 1,
     },
 };
-const int ed_n_models = 3;
+const int ed_n_models = 4;
