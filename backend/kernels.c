@@ -352,6 +352,18 @@ void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const
     k()->gemm_q8(out, os, w, ws, bias, rows, a, add);
 }
 
+int pk_k_packs(void) { return k()->act_pack != NULL; }
+
+void pk_k_act_pack(int8_t *xp, float *dp, const pk_act *a, uint32_t t0) {
+    k()->act_pack(xp, dp, a, t0);
+}
+
+void pk_k_gemm_q8_packed(float *out, size_t os, const int8_t *w, const float *ws,
+                         const float *bias, uint32_t rows, const pk_act *a, int add,
+                         const int8_t *xp, const float *dp) {
+    k()->gemm_q8_packed(out, os, w, ws, bias, rows, a, add, xp, dp);
+}
+
 void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,
                    const float *x, size_t xs, uint32_t T, const float *bias, size_t bs, int relu) {
     k()->gemm_f32(out, os, w, ld, rows, n, x, xs, T, bias, bs, relu);

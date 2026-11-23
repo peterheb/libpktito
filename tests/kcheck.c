@@ -202,7 +202,8 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
     kr->quantize(&a, x, n);
     size_t os = rows + 16 * (rnd() % 2);
     float *o1 = xmalloc((size_t)T * os * sizeof *o1), *o2 = xmalloc((size_t)T * os * sizeof *o2);
-    for (size_t i = 0; i < (size_t)T * os; i++) o1[i] = o2[i] = awkward(1.0f);
+    float *o0 = xmalloc((size_t)T * os * sizeof *o0);       /* what the outputs held before */
+    for (size_t i = 0; i < (size_t)T * os; i++) o0[i] = o1[i] = o2[i] = awkward(1.0f);
     /* a run of panels from the middle, as the pool splits rows */
     uint32_t r0 = 0;
     if (rows > 16 && rnd() % 2)
@@ -214,6 +215,38 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
     snprintf(msg, sizeof msg, "gemm_q8 %s rows %u+%u n %u T %u qb %u add %d bias %d", what, r0, nr,
              n, T, qb, add, bias);
     same(msg, o1, o2, (size_t)T * os, 4);
+    /* the same given its columns packed (kernels.h), by a backend that
+     * packs: every column, and as core/passes.c's items take them, columns
+     * [c0, c1) from a sixteen's first, the rest left as they were */
+    if (kt->act_pack && qb % 32 == 0) {
+        const uint32_t nb = n / qb, Tp = (T + 15) & ~15u;
+        int8_t *xp = xmalloc((size_t)Tp * n);
+        float *dp = xmalloc((size_t)Tp * nb * sizeof *dp);
+        for (uint32_t t0 = 0; t0 < T; t0 += 16)
+            kt->act_pack(xp + (size_t)t0 * n, dp + (size_t)t0 * nb, &a, t0);
+        memcpy(o1, o0, (size_t)T * os * sizeof *o1);
+        kt->gemm_q8_packed(o1 + r0, os, w + (size_t)r0 * n, ws + r0, bias ? b + r0 : NULL, nr, &a,
+                           add, xp, dp);
+        snprintf(msg, sizeof msg, "gemm_q8_packed %s rows %u+%u n %u T %u qb %u add %d bias %d",
+                 what, r0, nr, n, T, qb, add, bias);
+        same(msg, o1, o2, (size_t)T * os, 4);
+        if (T > 16) {
+            const uint32_t c0 = 16 * (1 + rnd() % ((T - 1) / 16)), c1 = c0 + 1 + rnd() % (T - c0);
+            const pk_act sub = { a.q + (size_t)c0 * n, a.d + (size_t)c0 * nb, n, qb, c1 - c0 };
+            float *o3 = xmalloc((size_t)T * os * sizeof *o3);
+            memcpy(o1, o0, (size_t)T * os * sizeof *o1);
+            memcpy(o3, o0, (size_t)T * os * sizeof *o3);
+            memcpy(o3 + (size_t)c0 * os, o2 + (size_t)c0 * os, (size_t)(c1 - c0) * os * sizeof *o3);
+            kt->gemm_q8_packed(o1 + (size_t)c0 * os + r0, os, w + (size_t)r0 * n, ws + r0,
+                               bias ? b + r0 : NULL, nr, &sub, add, xp + (size_t)c0 * n,
+                               dp + (size_t)c0 * nb);
+            snprintf(msg, sizeof msg, "gemm_q8_packed %s rows %u+%u n %u columns %u to %u of %u qb %u",
+                     what, r0, nr, n, c0, c1, T, qb);
+            same(msg, o1, o3, (size_t)T * os, 4);
+            xfree(o3);
+        }
+        xfree(xp); xfree(dp);
+    }
     /* ref against the definition: the integer sums exact (in int64), each
      * block's product and add one fused multiply-add, rounded once
      * (pk_fmaf: a libm's fmaf need not be) */
@@ -237,7 +270,7 @@ static void gemm_q8_case(const char *what, uint32_t rows, uint32_t n, uint32_t T
                     break;
                 }
             }
-    xfree(w); xfree(ws); xfree(b); xfree(x); xfree(a.q); xfree(a.d); xfree(o1); xfree(o2);
+    xfree(w); xfree(ws); xfree(b); xfree(x); xfree(a.q); xfree(a.d); xfree(o0); xfree(o1); xfree(o2);
 }
 
 /* ------------------------------------------------------ float products --- */

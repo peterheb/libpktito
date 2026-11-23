@@ -78,6 +78,23 @@ void pk_k_quantize(pk_act *a, const float *x, size_t xs);
 void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                   uint32_t rows, const pk_act *a, int add);
 
+/* A backend may read a product's activations faster in an order of its own
+ * than a column after another: neon-sme's SMOPA takes the same 4 inputs of
+ * 16 columns as one vector. pk_k_packs says whether the backend in use has
+ * such an order. Where it does, pk_k_act_pack writes a's columns [t0, t0 +
+ * 16), those past its last as zeros, in it: 16 * a->n bytes at xp, and each
+ * block's 16 scales, 16 * a->n / a->qb floats, at dp. And
+ * pk_k_gemm_q8_packed is pk_k_gemm_q8, the same bits, given a's columns
+ * that way as well: xp and dp hold them from a's first, a sixteen after
+ * another, so that the product need not pack them itself in every call
+ * (core/passes.c packs a product's once for all its items). a's blocks are
+ * whole 32s for both. */
+int pk_k_packs(void);
+void pk_k_act_pack(int8_t *xp, float *dp, const pk_act *a, uint32_t t0);
+void pk_k_gemm_q8_packed(float *out, size_t os, const int8_t *w, const float *ws,
+                         const float *bias, uint32_t rows, const pk_act *a, int add,
+                         const int8_t *xp, const float *dp);
+
 /* The most blocks of activations a product may have (a->n / a->qb): a
  * backend may keep a value a block on its stack. 512 blocks of 32 is an
  * input of 16384, which core/model.c holds every matrix to. */
@@ -259,6 +276,11 @@ typedef struct {
     void (*quantize)(pk_act *a, const float *x, size_t xs);
     void (*gemm_q8)(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                     uint32_t rows, const pk_act *a, int add);
+    /* the two below NULL in a backend with no packed order */
+    void (*act_pack)(int8_t *xp, float *dp, const pk_act *a, uint32_t t0);
+    void (*gemm_q8_packed)(float *out, size_t os, const int8_t *w, const float *ws,
+                           const float *bias, uint32_t rows, const pk_act *a, int add,
+                           const int8_t *xp, const float *dp);
     void (*gemm_f32)(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows,
                      uint32_t n, const float *x, size_t xs, uint32_t T,
                      const float *bias, size_t bs, int relu);

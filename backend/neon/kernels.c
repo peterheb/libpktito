@@ -1402,29 +1402,33 @@ static void q8_neon(float *out, size_t os, const int8_t *w, const float *ws, con
  * backend/kernels.c's probe on macOS is one thread's, which has a unit
  * to itself. */
 
-/* The most inputs SMOPA takes, the model's widest (the feed-forward's
- * down product and the subsampling's projection): a thread packs 16
- * columns of them at a time into 64 KB of its own. */
+/* The most inputs of a product that packs its own columns (k_gemm_q8), the
+ * model's widest (the feed-forward's down product and the subsampling's
+ * projection): 16 columns of them are 64 KB of the thread's own. */
 #define PK_SME_N 4096
 
-/* Columns [t0, t0 + 16) of a, those past its last as zeros, as SMOPA's
- * second operand: group g's 64 bytes are its 4 inputs of column t0, then
- * of t0 + 1, and so on; and beside them each block's 16 scales. Four
- * columns' 16 inputs are a 4 by 4 transpose of 32-bit words. NEON, on the
- * thread's own core, before it enters streaming mode. */
-static void sme_pack(int8_t *xp, float *dp, const pk_act *a, uint32_t t0) {
-    static const int8_t zeros[PK_SME_N] = { 0 };
+/* pk_k_act_pack (kernels.h): columns [t0, t0 + 16) of a, those past its
+ * last as zeros, as SMOPA's second operand: group g's 64 bytes are its 4
+ * inputs of column t0, then of t0 + 1, and so on; and beside them each
+ * block's 16 scales. Four columns' 16 inputs are a 4 by 4 transpose of
+ * 32-bit words. NEON, on the thread's own core, before it enters streaming
+ * mode: 28 to 32 GB/s (CLIMB.md, 2026-11-23). */
+static void k_act_pack(int8_t *xp, float *dp, const pk_act *a, uint32_t t0) {
+    static const int8_t zero[16] = { 0 };
     const uint32_t n = a->n, nb = n / a->qb;
     const int8_t *col[16];
-    for (uint32_t j = 0; j < 16; j++)
-        col[j] = t0 + j < a->T ? a->q + (size_t)(t0 + j) * n : zeros;
+    size_t at[16];                   /* all ones, or 0 for a column of zeros: its 16 bytes again */
+    for (uint32_t j = 0; j < 16; j++) {
+        col[j] = t0 + j < a->T ? a->q + (size_t)(t0 + j) * n : zero;
+        at[j] = t0 + j < a->T ? ~(size_t)0 : 0;
+    }
     for (uint32_t k = 0; k < n; k += 16) {
         int8_t *o = xp + (size_t)(k / 4) * 64;
         for (uint32_t j = 0; j < 16; j += 4) {
-            const int32x4_t r0 = vreinterpretq_s32_s8(vld1q_s8(col[j] + k));
-            const int32x4_t r1 = vreinterpretq_s32_s8(vld1q_s8(col[j + 1] + k));
-            const int32x4_t r2 = vreinterpretq_s32_s8(vld1q_s8(col[j + 2] + k));
-            const int32x4_t r3 = vreinterpretq_s32_s8(vld1q_s8(col[j + 3] + k));
+            const int32x4_t r0 = vreinterpretq_s32_s8(vld1q_s8(col[j] + (k & at[j])));
+            const int32x4_t r1 = vreinterpretq_s32_s8(vld1q_s8(col[j + 1] + (k & at[j + 1])));
+            const int32x4_t r2 = vreinterpretq_s32_s8(vld1q_s8(col[j + 2] + (k & at[j + 2])));
+            const int32x4_t r3 = vreinterpretq_s32_s8(vld1q_s8(col[j + 3] + (k & at[j + 3])));
             /* words 0 and 2 of each column, then 1 and 3, a pair of columns apart */
             const int64x2_t e01 = vreinterpretq_s64_s32(vtrn1q_s32(r0, r1));
             const int64x2_t o01 = vreinterpretq_s64_s32(vtrn2q_s32(r0, r1));
@@ -1511,32 +1515,52 @@ static void sme_cols(float *out, size_t os, const int8_t *w, const float *ws, co
  * (CLIMB.md, 2026-11-23). */
 #define PK_SME_SHORT 10
 
-/* SMOPA takes the columns in sixteens, as many column blocks at a time as
- * the thread's 64 KB holds (4 at 1024 inputs, pk_gemm's 48 to 60 columns
- * a call in one visit to streaming mode); a last group of PK_SME_SHORT or
- * more is padded with zeros to 16, whose scales of 0 keep their chains at
- * 0 and which are not written out. The rest are the NEON tiles': a short
- * last group, the decoder's one column a call, an input wider than
- * PK_SME_N, and blocks no multiple of 32 (none of the model's). */
+/* The columns of a call that SMOPA takes, in sixteens: a last group of
+ * PK_SME_SHORT or more is padded with zeros to 16, whose scales of 0 keep
+ * their chains at 0 and which are not written out. The rest are the NEON
+ * tiles': a short last group, and the decoder's one column a call. */
+static uint32_t sme_takes(uint32_t T) { return T % 16 >= PK_SME_SHORT ? T : T & ~15u; }
+
+/* a's columns from Ts on, by SDOT's tiles */
+static void sme_rest(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                     uint32_t rows, const pk_act *a, int add, uint32_t Ts) {
+    const uint32_t n = a->n, nb = n / a->qb;
+    const pk_act rest = { a->q + (size_t)Ts * n, a->d + (size_t)Ts * nb, n, a->qb, a->T - Ts };
+    if (Ts < a->T)
+        q8_neon(out + (size_t)Ts * os, os, w, ws, bias, rows, &rest, add);
+}
+
+/* pk_k_gemm_q8_packed: the columns as k_act_pack left them, a product's
+ * packed once for all its calls (core/passes.c) */
+static void k_gemm_q8_packed(float *out, size_t os, const int8_t *w, const float *ws,
+                             const float *bias, uint32_t rows, const pk_act *a, int add,
+                             const int8_t *xp, const float *dp) {
+    const uint32_t Ts = sme_takes(a->T);
+    if (Ts)
+        sme_cols(out, os, w, ws, bias, rows, a->n, a->qb, Ts, add, xp, dp);
+    sme_rest(out, os, w, ws, bias, rows, a, add, Ts);
+}
+
+/* pk_k_gemm_q8: a call that packs its own columns, as many sixteens at a
+ * time as the thread's 64 KB holds (4 at 1024 inputs): the diarizer's
+ * products, and any caller with no packed columns to give. One thread
+ * loses a third of SMOPA's rate to it in slices of 64 rows (511 to 578 G
+ * against 786 to 804, CLIMB.md, 2026-11-23). An input wider than PK_SME_N
+ * and blocks no multiple of 32 (none of the model's) are the NEON tiles'. */
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
-    const uint32_t n = a->n, nb = n / a->qb, T = a->T;
+    const uint32_t n = a->n, nb = n / a->qb;
     static _Thread_local _Alignas(64) int8_t xp[16 * PK_SME_N];
     static _Thread_local _Alignas(64) float dp[16 * (PK_SME_N / 32)];
-    uint32_t Ts = T % 16 >= PK_SME_SHORT ? T : T & ~15u;        /* the columns SMOPA takes */
-    if (n > PK_SME_N || a->qb % 32)
-        Ts = 0;
+    const uint32_t Ts = n > PK_SME_N || a->qb % 32 ? 0 : sme_takes(a->T);
     const uint32_t step = 16 * (PK_SME_N / (n < PK_SME_N ? n : PK_SME_N));
     for (uint32_t t = 0; t < Ts; t += step) {
         const uint32_t nc = Ts - t < step ? Ts - t : step;
         for (uint32_t c = 0; c < nc; c += 16)
-            sme_pack(xp + (size_t)c * n, dp + (size_t)c * nb, a, t + c);
+            k_act_pack(xp + (size_t)c * n, dp + (size_t)c * nb, a, t + c);
         sme_cols(out + (size_t)t * os, os, w, ws, bias, rows, n, a->qb, nc, add, xp, dp);
     }
-    if (Ts < T) {
-        const pk_act rest = { a->q + (size_t)Ts * n, a->d + (size_t)Ts * nb, n, a->qb, T - Ts };
-        q8_neon(out + (size_t)Ts * os, os, w, ws, bias, rows, &rest, add);
-    }
+    sme_rest(out, os, w, ws, bias, rows, a, add, Ts);
 }
 #else
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
@@ -2110,6 +2134,10 @@ const pk_kernels pk_kernels_neon = {
     .needs = needs,
     .quantize = k_quantize,
     .gemm_q8 = k_gemm_q8,
+#ifdef PK_NEON_SME
+    .act_pack = k_act_pack,
+    .gemm_q8_packed = k_gemm_q8_packed,
+#endif
     .gemm_f32 = k_gemm_f32,
     .layernorm = k_layernorm,
     .softmax = k_softmax,

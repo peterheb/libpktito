@@ -3470,3 +3470,163 @@ where four E cores of SDOT give 54 to 63 each: level. The weights being
 out of the caches costs SMOPA nothing that shows: 30 matrices of 4096 x
 1024 taken in turn ran 2321 G on eight threads against 2333 for one
 taken again and again (SDOT 1454 against 1463), in the shared hour.
+
+## 2026-11-23 - neon-sme: a unit for two or three of its cluster's threads and SDOT for the rest, small items, the columns packed once a product (hypothesis)
+
+The result above leaves the units short of threads for part of every
+job, and the probe's table says a unit does not want all four of its
+cluster's anyway: it gives 1070 to 1090 G to two threads, 1180 to three
+and 1220 to four, and a core off the unit has its own SDOT, 184 G. Two
+on SMOPA and two on SDOT are 1438 G a cluster, three and one 1364, where
+four on SMOPA are 1220: +18% and +12%, and whatever a thread on SDOT
+does it does without waiting at the unit.
+
+A thread cannot be given a cluster on macOS, but it can ask where it is
+(pthread_cpu_number_np; the clusters' sizes from sysctl's
+hw.perflevelN.cpusperl2). So: a count for each cluster of its threads in
+SMOPA, and a call takes SMOPA where its cluster's count is under K and
+SDOT's tiles where it is not. Both are ref's bits, so the transcript
+cannot depend on who took what. The probe with each thread choosing so
+an item (AUTO=K, the machine shared, to be taken again quiet): 12
+threads 2855 G at K = 2 and 2884 at K = 3 against 2566 with every
+thread on SMOPA.
+
+What it needs with it, each to be measured in a copy before the tree
+changes:
+
+1. Smaller items. A thread on SDOT takes an item about three times as
+   long as one with half a unit, and a job waits for its last item. In a
+   lane of 6 threads feed-forward up is 48 items of 256 rows by about
+   128 columns, 33.5 M multiply-adds: 182 us on SDOT in a job of about 300. Items of 64 rows by 48 columns are 17 us there.
+2. The columns packed once a product. At 64 rows an item packs its
+   columns for a quarter of the work 256 rows gave them: one thread
+   loses 30 to 36% to packing in the call there (511 to 578 G against
+   786 to 804), and with K threads at a unit nothing hides it. A
+   product's 16 columns packed by the first item that needs them, for
+   every item after (core/passes.c, a place for them beside the
+   activations), is 18 KB a frame a layer, 0.33 GB a run, where packing
+   in the call is 7 GB.
+
+Expected: the int8 stages from 1.45 to 1.94 T as jobs toward 2.4 T and
+over; test.wav at the default from 0.291 s toward 0.25. Kept, each
+part, if bench moves by more than neon-sme's own spread (0.289 to 0.293
+in 7 rounds), kcheck and check-c passing.
+
+## 2026-11-23 - neon-sme: the columns packed once a product kept, 0.292 -> 0.263 s; a unit's threads limited, and small items, rejected (result)
+
+Each part first in a copy of ba52667 with switches (PK_SME_K: a call
+takes SMOPA where fewer than K threads of its cluster are in it, by
+pthread_cpu_number_np and sysctl's hw.perflevelN.cpusperl2, else SDOT's
+tiles; the item's rows and columns; a product's sixteens of columns
+packed by the first item to need them), the machine quiet, v2, test.wav
+at the default, 5 rounds in rotated order, medians, 232 tokens in every
+run:
+
+|                                   | every thread on SMOPA | K = 3        | K = 2 |
+| --------------------------------- | --------------------- | ------------ | ----- |
+| ba52667                           | 0.289 to 0.292        | 0.293        | 0.307 |
+| items of 64 rows by 48 columns    |                       |              | 0.308 |
+| packed once                       | 0.270, 0.273          | 0.266, 0.271 | 0.277 |
+| packed once, items of 64 by 48    | 0.284                 | 0.276        | 0.285 |
+| packed once, slices of 128 rows   | 0.277                 | 0.280        |       |
+| packed once, slices of 256 rows   | 0.293                 | 0.297        |       |
+| packed once, chunks of 96 columns | 0.271                 | 0.273        |       |
+| packed once, -t 8                 | 0.321                 | 0.321        | 0.338 |
+| packed once, one chunk of 60 s    | 0.373                 | 0.372        | 0.378 |
+
+**A unit's threads limited: rejected.** The probe, quiet, each thread
+choosing so an item (items of 64 by 48 packed once, G a second, best of
+15):
+
+| threads | K = 1 | K = 2 | K = 3 | every thread |
+| ------- | ----- | ----- | ----- | ------------ |
+| 8       | 1977  | 2662  | 2674  | 2413         |
+| 12      | 2231  | 2968  | 2871  | 2605         |
+
++10 to 14% there, and in the engine K = 3 is inside the rounds' spread
+(0.264 to 0.277 against 0.269 to 0.274) and K = 2 costs 3 to 6%. The
+probe's threads are at the kernel every moment, and the limit moves the
+fourth to its own SDOT; the engine's are in their tiles' SiLU and
+quantize or waiting on a job's last item for a fifth to a third of a
+job, a unit there is short of threads more often than it has one too
+many, and a thread on SDOT holds its item three times as long with the
+job waiting on it. Not built into the tree. It may be what a larger
+cluster needs: sysctl has an M5 Ultra's 36 cores in clusters of six and
+a base M4's E cores in one of six, where six threads on a unit would
+share the 1.22 T that four do here and six cores of SDOT are about 1.1
+T. Neither is measured; macOS's probe is one thread's and would take
+neon-sme there on 0.36.
+
+**Small items: rejected.** 64 rows by 48 columns cost 4 to 5% with the
+columns packed once (0.284 against 0.270), and slices of 128 and 256
+rows for every product 2 and 8%. pk_gemm_on's shapes stay.
+
+**The columns packed once a product: kept.** kernels.h has a packed
+order as a thing a backend may have (pk_k_packs, pk_k_act_pack, and
+pk_k_gemm_q8_packed: pk_k_gemm_q8 given the columns that way as well);
+neon-sme's is SMOPA's operand. core/passes.c packs a product's sixteens
+of columns into a place of the transcriber's (pk_packed, carved with its
+other arrays: 1.6 MB and a fifth for 30 s), each by the first item that
+needs it, the items after reading it; a chunk of columns is then whole
+sixteens. The V product's panels read them too: a panel was a call of 16
+rows that packed every column for itself. The diarizer's products pack
+in the call as before (pk_gemm_on's NULL).
+
+tests/kcheck: neon-sme's cases are 2003 to 2033 with
+pk_k_gemm_q8_packed's, every column and a run of columns from a
+sixteen's first, all ref's bits; q8check's 385 at guard pages; `make
+check-c` passes. A build with -fsanitize=address,undefined and one with
+-fsanitize=thread (PKTITO_KERNELS=neon-sme there: under it the probe
+takes neon-dp-a76) ran kcheck and test.wav at the default and as one
+chunk at 8 threads with nothing reported and the transcript's bytes the
+same.
+
+`pktito-c bench`, rounds in rotated order, medians, the machine quiet:
+
+|                                                       | 4332856 | ba52667 | packed once |                |
+| ----------------------------------------------------- | ------- | ------- | ----------- | -------------- |
+| the default, 12 threads in two lanes (7)              | 0.424   | 0.292   | 0.263       | -38.0%, -9.9%  |
+| -t 8 (5)                                              | 0.541   | 0.348   | 0.301       | -44.4%, -13.5% |
+| one chunk of 60 s (5)                                 | 0.538   | 0.397   | 0.364       | -32.3%, -8.3%  |
+| v3, the default (3), 220 tokens                       | 0.453   |         | 0.265       | -41.5%         |
+| the fast mode, the default (3)                        | 0.421   |         | 0.232       | -44.9%         |
+| test.wav ten times, 600 s, 21 chunks (3), 2329 tokens | 4.662   | 2.867   | 2.593       | -44.4%, -9.6%  |
+
+(min to max at the default: 0.393 to 0.452, 0.290 to 0.294, 0.258 to
+0.265.) 228 times real time on test.wav, 231 on the ten minutes, where
+4332856 is 141 and 129. By threads, best of 5: 1: 1.270 s, 2: 0.682, 4:
+0.496, 6: 0.402, 8: 0.300, 10: 0.273, 12: 0.259; and in the copy 14:
+0.272 and 16: 0.291 against its 12's 0.270, so a thread a core stays.
+
+The stages, make PROFILE=1 (one lane), ms a run:
+
+| stage                             | 12 threads: neon-dp | neon-sme | 8 threads: neon-dp | neon-sme |
+| --------------------------------- | ------------------- | -------- | ------------------ | -------- |
+| the run                           | 433                 | 335      | 483                | 362      |
+| feed-forward                      | 229.2               | 163.0    | 262.5              | 170.5    |
+| q k v and the positions           | 76.7                | 54.7     | 81.1               | 57.1     |
+| pw1 and pw2                       | 43.3                | 29.0     | 47.6               | 30.2     |
+| attention out                     | 15.4                | 10.8     | 16.9               | 11.0     |
+| attention (float) and its softmax | 42.6                | 43.2     | 47.1               | 55.3     |
+| quantize                          | 13.1                | 15.3     | 8.1                | 11.2     |
+| subsampling                       | 10.7                | 10.0     | 12.3               | 12.0     |
+| GLU and the depthwise             | 9.4                 | 10.7     | 7.3                | 9.6      |
+
+The int8 products are 258 ms of the lane's 335 at 12 threads, 1.83 T a
+second where neon-dp's are 1.29 T and the probe's ceiling is 2.6: the
+units still wait on their threads' other work, less than they did.
+
+PK_SME_SHORT, the columns under which a call's last few are SDOT's: 4,
+10 and 16 (never padded) read 0.262, 0.261 and 0.264 s at the default
+and 0.373, 0.372 and 0.377 as one chunk. 10 stays.
+
+Set aside without building: FMOPA for the attention's float products. A
+run is 21.8 G fused multiply-adds of them (4096 T^2 a layer), done with
+the softmax in 43 ms by twelve threads, 0.5 T a second or more. FMOPA is
+256 multiply-adds an instruction where SMOPA is 1024: at SMOPA's 0.77 G
+instructions a second a unit that is 0.2 T, 0.4 T for both, under what
+the cores' FMLA gives now, and taken from the int8 products.
+
+Open: the diarizer's products packed once (a pk_packed sized for its
+activations); a unit's limit on a cluster of six; a second compiler; and
+the units' idle time, a third of their ceiling still.

@@ -68,7 +68,7 @@ void pk_quantize(pk_asr *a, pk_act *act, const float *x, size_t xs, uint32_t T, 
 /* The product, then `then` on each item's tile (core/passes.c) */
 static void gemm_then(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
                       const pk_act *act, int add, pk_tile_fn then, void *then_arg) {
-    pk_gemm_on(a->pool, out, os, w, bias, act, add, then, then_arg);
+    pk_gemm_on(a->pool, &a->packed, out, os, w, bias, act, add, then, then_arg);
 }
 
 void pk_gemm(pk_asr *a, float *out, size_t os, const pk_q8 *w, const float *bias,
@@ -348,7 +348,7 @@ static void layer(pk_asr *a, const pk_layer *L, uint32_t T) {
     pk_panels kj = { a->kp, a->o, T, Tp, D, dk }, pj = { a->pp, a->p, R, Pp, D, dk };
     PROF(PK_P_QKV, pk_gemm(a, a->q, D, &L->q, NULL, &a->act, 0);
                    gemm_then(a, a->o, D, &L->k, NULL, &a->act, 0, pk_panels_tile, &kj);
-                   pk_gemm_panels_on(a->pool, a->vp, (size_t)T * 16, &L->v, &a->act);
+                   pk_gemm_panels_on(a->pool, &a->packed, a->vp, (size_t)T * 16, &L->v, &a->act);
                    gemm_then(a, a->p, D, &L->pos, NULL, &a->ape, 0, pk_panels_tile, &pj));
     att_job aj = { a, L, T, Tp, Pp };
     PROF(PK_P_ATT, pk_par(a, att_item, &aj, (int)(H * ((T + PK_ATT_BLOCK - 1) / PK_ATT_BLOCK))));
