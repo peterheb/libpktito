@@ -57,6 +57,13 @@ def main(argv=None):
         "Nemotron-3-Diarization.nemo -> .pkf (the diarizer)",
     )
     c.add_argument("files", nargs="+", metavar="FILE")
+    c.add_argument(
+        "--nemo-base",
+        help="a transformers model.safetensors' base .nemo, for what transformers drops",
+    )
+    c.add_argument(
+        "--repo", help="a transformers checkpoint's HuggingFace repo, owner/name"
+    )
     t = sub.add_parser("tiny", help="a tiny .pkf with random weights, for the C checks")
     t.add_argument(
         "--diarizer", action="store_true", help="a diarizer's, not a recognizer's"
@@ -87,7 +94,7 @@ def main(argv=None):
         if len(a.files) == 2:
             diarconvert.convert_file(a.files[0], a.files[1])
         elif len(a.files) == 3:
-            convert.convert(*a.files)
+            convert.convert(*a.files, base=a.nemo_base, repo=a.repo)
         else:
             sys.exit(
                 "pktito-tools convert: model.nemo silero_vad.onnx out.pkf, or "

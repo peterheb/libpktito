@@ -34,9 +34,12 @@ import unicodedata
 
 import numpy as np
 
-from . import __version__, canon, nemo, pkf, silero, spm
+from . import __version__, canon, hf, pkf, silero, spm
 
 ARCH = "parakeet-tdt"
+
+# a HuggingFace owner's name as its maker writes it, for the credit
+ORGS = {"nvidia": "NVIDIA", "moondream": "Moondream"}
 
 
 def punctuation(pieces):
@@ -175,9 +178,11 @@ def layout(canonical, a):
     return out
 
 
-def convert(src, vad_src, dst, log=print):
+def convert(src, vad_src, dst, log=print, base=None, repo=None):
+    """src: a .nemo, or a transformers model.safetensors with base, the
+    .nemo it was made from, and repo, its HuggingFace name (hf.py)."""
     t0 = time.time()
-    nm = nemo.Nemo(src)
+    nm = hf.open_checkpoint(src, base)
     a = canon.arch(nm.config)
     sp = spm.Model(nm.tokenizer_model())
     if len(sp.pieces) != a["vocab"]:
@@ -187,7 +192,11 @@ def convert(src, vad_src, dst, log=print):
         )
     if 6 in sp.types:
         raise ValueError("the tokenizer has byte pieces, which pktito does not decode")
+    if isinstance(nm, hf.HF):
+        nm.check_tokenizer(sp.pieces)
     log("  read %s: %d tensors" % (os.path.basename(src), len(nm.state)))
+    if getattr(nm, "extra", None):
+        log("  left out, past the network: %s" % ", ".join(nm.extra))
     canonical = canon.tensors(nm.state, a)
     tensors = layout(canonical, a)
     vad, vad_sha = silero.tensors(vad_src)
@@ -197,7 +206,15 @@ def convert(src, vad_src, dst, log=print):
     params += [("n_durations", len(a["durations"]))]
     params += [("dur%d" % i, d) for i, d in enumerate(a["durations"])]
 
-    name = os.path.splitext(os.path.basename(src))[0]
+    if isinstance(nm, hf.HF):
+        if not repo or "/" not in repo:
+            raise ValueError(
+                "a safetensors checkpoint needs its HuggingFace repo, as owner/name"
+            )
+        name = repo.split("/")[1]
+    else:
+        repo = "nvidia/" + os.path.splitext(os.path.basename(src))[0]
+        name = repo.split("/")[1]
     card = os.path.join(os.path.dirname(src), "README.md")
     fm = front_matter(card)
     n_params = sum(
@@ -208,26 +225,42 @@ def convert(src, vad_src, dst, log=print):
     meta = {
         "family": "Parakeet TDT",
         "params": "%.0fM" % (n_params / 1e6),
-        "source": "nvidia/" + name,
+        "source": repo,
         "source_file": os.path.basename(src),
     }
     rev = revision(src)
     if rev:
         meta["revision"] = rev
     meta["source_sha256"] = sha256_file(src)
-    meta["card"] = "https://huggingface.co/nvidia/" + name
+    meta["card"] = "https://huggingface.co/" + repo
     if fm.get("license"):
         meta["license"] = fm["license"]
-    meta["credit"] = "NVIDIA"
-    meta["notice"] = (
-        "%s by NVIDIA, https://huggingface.co/nvidia/%s, licensed CC-BY-4.0 "
-        "(creativecommons.org/licenses/by/4.0). This file holds its weights "
-        "rounded to int8 and rearranged by pktito-tools." % (name, name)
-    )
+    if isinstance(nm, hf.HF):
+        # a post-trained derivative: its makers, and the base's, both credited
+        bname = os.path.splitext(os.path.basename(base))[0]
+        meta["base"] = "nvidia/" + bname
+        meta["base_sha256"] = sha256_file(base)
+        owner = ORGS.get(repo.split("/")[0], repo.split("/")[0])
+        meta["credit"] = "%s, from NVIDIA's %s" % (owner, bname)
+        meta["notice"] = (
+            "%s by %s, https://huggingface.co/%s, post-trained from %s by NVIDIA, "
+            "https://huggingface.co/nvidia/%s, both licensed CC-BY-4.0 "
+            "(creativecommons.org/licenses/by/4.0). This file holds its weights "
+            "rounded to int8 and rearranged by pktito-tools, its mel filterbank "
+            "and tokenizer the base's." % (name, owner, repo, bname, bname)
+        )
+    else:
+        meta["credit"] = "NVIDIA"
+        meta["notice"] = (
+            "%s by NVIDIA, https://huggingface.co/nvidia/%s, licensed CC-BY-4.0 "
+            "(creativecommons.org/licenses/by/4.0). This file holds its weights "
+            "rounded to int8 and rearranged by pktito-tools." % (name, name)
+        )
     langs = card_languages(card)
     if langs:
         meta["languages"] = langs
-    meta["nemo_version"] = str(nm.config.get("nemo_version", ""))
+    if not isinstance(nm, hf.HF):
+        meta["nemo_version"] = str(nm.config.get("nemo_version", ""))
     meta["vad"] = (
         "Silero VAD (github.com/snakers4/silero-vad), MIT, Copyright (c) 2020-present Silero Team"
     )
