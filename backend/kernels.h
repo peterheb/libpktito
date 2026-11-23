@@ -1,7 +1,8 @@
 /* The backend seam: every operation on the weights, and the elementwise
  * ones whose cost is an exponential. A build holds every backend its
- * compiler can make for the machine's family - neon-sve, neon-i8mm, neon-dp
- * and neon on AArch64; avx2-vnni, avx512-vnni and avx2 on x86-64 - and ref,
+ * compiler can make for the machine's family - neon-sme, neon-sve,
+ * neon-i8mm, neon-dp and neon on AArch64; avx2-vnni, avx512-vnni and avx2
+ * on x86-64 - and ref,
  * and the first of them whose instructions the CPU has, and whose probe if
  * it has one says it is worth them, is the one that runs
  * (backend/kernels.c): one binary for a family, whatever its CPU.
@@ -232,9 +233,9 @@ void pk_k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uint32_
  *
  * Every function above is a call through the table of the backend in use.
  * A backend's file defines its kernels as its own and exports the table:
- * pk_kernels_ref, pk_kernels_neon, _neon_dp, _neon_sve and _neon_i8mm
- * (backend/neon, without PK_NEON_DOTPROD, with it, and with PK_NEON_SVE or
- * PK_NEON_I8MM as well),
+ * pk_kernels_ref, pk_kernels_neon, _neon_dp, _neon_sve, _neon_i8mm and
+ * _neon_sme (backend/neon, without PK_NEON_DOTPROD, with it, and with
+ * PK_NEON_SVE, PK_NEON_I8MM or PK_NEON_SME as well),
  * pk_kernels_avx2, _avx2_vnni, _avx512_vnni and _amx_int8 (backend/avx2,
  * without PK_AVX_VNNI, and with it in AVX-VNNI's encoding, AVX512-VNNI's,
  * or AVX512-VNNI's with AMX), each compiled with its own instruction set,
@@ -246,13 +247,15 @@ typedef struct {
                                        "avx2", "fma", "avxvnni", "avx512vnni",
                                        "avx512vl", "asimddp" (ARMv8.2's dot product),
                                        "i8mm" (its matrix product, SMMLA), "sve",
-                                       "svei8mm" (SVE's SMMLA) */
+                                       "svei8mm" (SVE's SMMLA), "sme2" (SME2 at
+                                       a streaming vector of 512 bits) */
     int competes;                   /* nonzero for one that may be slower than the
                                        next on some cores, what the needs cannot
                                        say: taken only where its gemm_q8 measures
                                        the faster on the fastest cores
                                        (backend/kernels.c; neon-i8mm's SMMLA,
-                                       neon-dp-a76's tile) */
+                                       neon-dp-a76's tile, neon-sme's SMOPA on
+                                       a unit its cluster shares) */
     void (*quantize)(pk_act *a, const float *x, size_t xs);
     void (*gemm_q8)(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                     uint32_t rows, const pk_act *a, int add);
@@ -278,8 +281,8 @@ typedef struct {
 } pk_kernels;
 
 extern const pk_kernels pk_kernels_ref, pk_kernels_neon, pk_kernels_neon_dp, pk_kernels_neon_sve,
-                        pk_kernels_neon_i8mm, pk_kernels_neon_dp_a76, pk_kernels_avx2,
-                        pk_kernels_avx2_vnni, pk_kernels_avx512_vnni, pk_kernels_amx_int8;
+                        pk_kernels_neon_i8mm, pk_kernels_neon_dp_a76, pk_kernels_neon_sme,
+                        pk_kernels_avx2, pk_kernels_avx2_vnni, pk_kernels_avx512_vnni, pk_kernels_amx_int8;
 
 /* This build's backends, the fastest first and ref last, NULL-ended. */
 extern const pk_kernels *const pk_kernels_built[];

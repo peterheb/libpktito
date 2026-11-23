@@ -1,6 +1,6 @@
 /* The NEON backends: AArch64's SIMD, for every ARMv8 core from the A53 up.
  *
- * This file is five backends. Built as backend/neon it asks for ARMv8.0
+ * This file is six backends. Built as backend/neon it asks for ARMv8.0
  * and nothing more, which is what the A53 (Pi 3, Zero 2 W) and the A72 (Pi
  * 4) have; built as backend/neon-dp (that directory's kernels.c includes
  * this one with PK_NEON_DOTPROD) it multiplies int8 with SDOT, ARMv8.2's
@@ -14,7 +14,10 @@
  * V1 to V3 have both as well); and built as backend/neon-i8mm
  * (PK_NEON_I8MM) the same, without SVE, for the cores with I8MM alone
  * where its tile is the faster (the Galaxy S24's big cores and S25's, the
- * first Snapdragon X's).
+ * first Snapdragon X's); and built as backend/neon-sme (PK_NEON_SME) a
+ * product of 16 columns or more is SME2's SMOPA's, a panel by 16 columns
+ * an instruction, where a cluster's SME unit gives its cores more than
+ * their own SDOT (the M4 Pro).
  * The int8 product is the only kernel where they differ: the rest is fp32,
  * the same instructions on every core.
  *
@@ -31,6 +34,9 @@
 #include <arm_neon.h>
 #include <math.h>
 #include <string.h>
+#ifdef PK_NEON_SME
+#include <arm_sme.h>
+#endif
 
 /* neon-sve and neon-i8mm: the 4-column tiles on SMMLA (q8_mm4) */
 #if defined(PK_NEON_SVE) || defined(PK_NEON_I8MM)
@@ -1343,8 +1349,8 @@ static void q8_cols(float *out, size_t os, const int8_t *w, const float *ws, con
 
 /* Column blocks; in each, panel by panel, each in its two halves of 8 rows,
  * PK_Q8_NC columns at a time across the half. */
-static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
-                      uint32_t rows, const pk_act *a, int add) {
+static void q8_neon(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                    uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, nb = n / a->qb;
 #ifdef PK_Q8_KCHUNK
     if (n > PK_Q8_KCHUNK && PK_Q8_KCHUNK % a->qb == 0 && rows <= PK_Q8_KCHUNK_ROWS && a->T > 1) {
@@ -1365,6 +1371,179 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
         q8_cols(out, os, w, ws, bias, rows, a, add, c0, a->T - c0 < cb ? a->T : c0 + cb, 0, nb,
                 NULL, cb);
 }
+
+#ifdef PK_NEON_SME
+/* SME2 (the neon-sme build). SMOPA multiplies one vector of signed bytes
+ * by another into a tile of exact int32 sums: ZA[i][j] += the sum over k <
+ * 4 of zn[4i + k] zm[4j + k]. At a streaming vector of 512 bits, the one
+ * this is written for (core/os.c's "sme2" asks for it), a vector is 64
+ * bytes and a tile 16 by 16: zn is a panel's group as the file holds it,
+ * 4 inputs of each of 16 rows (core/pkf.h), zm the same 4 inputs of each
+ * of 16 columns, and the tile the panel by those columns - 1024
+ * multiply-adds an instruction where SDOT's is 16. The activations are a
+ * column after another, so sme_pack lays 16 columns out as zm first.
+ *
+ * A block's qb / 4 SMOPAs leave its sums in a tile, and the drain takes
+ * them to float as ref does: SCVTF, then one fused multiply-add by the
+ * block's 16 scales into a float tile, each output's chain in ref's order.
+ * The drain is most of the work at blocks of 32 (8 SMOPAs to 16 rows
+ * read, converted and accumulated), so block b's SMOPAs go to int tile b %
+ * 2 while block b - 1's tile drains, the two overlapping in the unit: one
+ * thread ran 0.73 T multiply-adds a second so on registers against 0.62
+ * to 0.63 T with one tile (CLIMB.md, 2026-10-24), and 0.78 to 0.80 T here
+ * with its loads and its packing, where SDOT's tile above does 0.19
+ * (2026-11-23).
+ *
+ * The SME unit is not a core's: a cluster's cores share one, and a
+ * thread in streaming mode waits its turn at it. Four threads of a
+ * cluster get 0.30 T each from theirs, 1.22 T together, against 0.74 T
+ * for the four on SDOT: an M4 Pro's eight performance cores, on two
+ * units, ran 2.43 T where SDOT's eight ran 1.46 (CLIMB.md, 2026-11-23).
+ * backend/kernels.c's probe on macOS is one thread's, which has a unit
+ * to itself. */
+
+/* The most inputs SMOPA takes, the model's widest (the feed-forward's
+ * down product and the subsampling's projection): a thread packs 16
+ * columns of them at a time into 64 KB of its own. */
+#define PK_SME_N 4096
+
+/* Columns [t0, t0 + 16) of a, those past its last as zeros, as SMOPA's
+ * second operand: group g's 64 bytes are its 4 inputs of column t0, then
+ * of t0 + 1, and so on; and beside them each block's 16 scales. Four
+ * columns' 16 inputs are a 4 by 4 transpose of 32-bit words. NEON, on the
+ * thread's own core, before it enters streaming mode. */
+static void sme_pack(int8_t *xp, float *dp, const pk_act *a, uint32_t t0) {
+    static const int8_t zeros[PK_SME_N] = { 0 };
+    const uint32_t n = a->n, nb = n / a->qb;
+    const int8_t *col[16];
+    for (uint32_t j = 0; j < 16; j++)
+        col[j] = t0 + j < a->T ? a->q + (size_t)(t0 + j) * n : zeros;
+    for (uint32_t k = 0; k < n; k += 16) {
+        int8_t *o = xp + (size_t)(k / 4) * 64;
+        for (uint32_t j = 0; j < 16; j += 4) {
+            const int32x4_t r0 = vreinterpretq_s32_s8(vld1q_s8(col[j] + k));
+            const int32x4_t r1 = vreinterpretq_s32_s8(vld1q_s8(col[j + 1] + k));
+            const int32x4_t r2 = vreinterpretq_s32_s8(vld1q_s8(col[j + 2] + k));
+            const int32x4_t r3 = vreinterpretq_s32_s8(vld1q_s8(col[j + 3] + k));
+            /* words 0 and 2 of each column, then 1 and 3, a pair of columns apart */
+            const int64x2_t e01 = vreinterpretq_s64_s32(vtrn1q_s32(r0, r1));
+            const int64x2_t o01 = vreinterpretq_s64_s32(vtrn2q_s32(r0, r1));
+            const int64x2_t e23 = vreinterpretq_s64_s32(vtrn1q_s32(r2, r3));
+            const int64x2_t o23 = vreinterpretq_s64_s32(vtrn2q_s32(r2, r3));
+            vst1q_s8(o + 4 * j, vreinterpretq_s8_s64(vtrn1q_s64(e01, e23)));
+            vst1q_s8(o + 64 + 4 * j, vreinterpretq_s8_s64(vtrn1q_s64(o01, o23)));
+            vst1q_s8(o + 128 + 4 * j, vreinterpretq_s8_s64(vtrn2q_s64(e01, e23)));
+            vst1q_s8(o + 192 + 4 * j, vreinterpretq_s8_s64(vtrn2q_s64(o01, o23)));
+        }
+    }
+    for (uint32_t b = 0; b < nb; b++)
+        for (uint32_t j = 0; j < 16; j++)
+            dp[(size_t)b * 16 + j] = t0 + j < a->T ? a->d[(size_t)(t0 + j) * nb + b] : 0.0f;
+}
+
+/* block bl's SMOPAs into int tile t: the panel's groups by the columns' */
+#define SME_BLOCK(t, bl)                                                                \
+    for (uint32_t g = (bl) * gb; g < ((bl) + 1) * gb; g++)                              \
+        svmopa_za32_s8_m(t, p8, p8, svld1_s8(p8, wp + (size_t)g * 64),                  \
+                         svld1_s8(p8, x + (size_t)g * 64))
+/* int tile t, block bl's sums, into float tile 2 by the block's scales, and
+ * the tile zeroed for the block after next: four rows a step (i, i + 4, i
+ * + 8 and i + 12 are ZA's vectors 4i + t and every sixteenth after it) */
+#define SME_DRAIN(t, bl)                                                                \
+    do {                                                                                \
+        const svfloat32_t db = svld1_f32(p32, d + (size_t)(bl) * 16);                   \
+        for (uint32_t i = 0; i < 4; i++)                                                \
+            svmla_single_za32_f32_vg1x4(4 * i + 2,                                      \
+                svcvt_f32_s32_x4(svread_za32_s32_vg1x4(4 * i + (t))), db);              \
+        svzero_mask_za((t) ? 0x22 : 0x11);                                              \
+    } while (0)
+
+/* nc packed columns (whole sixteens but perhaps the last) by every panel
+ * of the call: xp and dp are sme_pack's, a column block after another. */
+__arm_new("za") __arm_locally_streaming
+static void sme_cols(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                     uint32_t rows, uint32_t n, uint32_t qb, uint32_t nc, int add,
+                     const int8_t *xp, const float *dp) {
+    const svbool_t p8 = svptrue_b8(), p32 = svptrue_b32();
+    const uint32_t nb = n / qb, gb = qb / 4;
+    for (uint32_t c = 0; c < nc; c += 16) {
+        const int8_t *x = xp + (size_t)c * n;
+        const float *d = dp + (size_t)c * nb;
+        const uint32_t nt = nc - c < 16 ? nc - c : 16;
+        for (uint32_t r = 0; r < rows; r += 16) {
+            const int8_t *wp = w + (size_t)r * n;
+            uint32_t b = 1;
+            svzero_za();
+            SME_BLOCK(0, 0);
+            for (; b + 1 < nb; b += 2) {
+                SME_BLOCK(1, b);
+                SME_DRAIN(0, b - 1);
+                SME_BLOCK(0, b + 1);
+                SME_DRAIN(1, b);
+            }
+            if (b < nb) {                           /* an even count's last, in tile 1 */
+                SME_BLOCK(1, b);
+                SME_DRAIN(0, b - 1);
+                SME_DRAIN(1, b);
+            } else
+                SME_DRAIN(0, b - 1);
+            /* the float tile's column j is column c + j's 16 rows */
+            const svfloat32_t sc = svld1_f32(p32, ws + r);
+            for (uint32_t j = 0; j < nt; j++) {
+                float *o = out + (size_t)(c + j) * os + r;
+                svfloat32_t v = svread_ver_za32_f32_m(sc, p32, 2, j);   /* every lane read */
+                v = svmul_f32_x(p32, v, sc);
+                if (bias)
+                    v = svadd_f32_x(p32, v, svld1_f32(p32, bias + r));
+                if (add)
+                    v = svadd_f32_x(p32, svld1_f32(p32, o), v);
+                svst1_f32(p32, o, v);
+            }
+        }
+    }
+}
+#undef SME_BLOCK
+#undef SME_DRAIN
+
+/* A call's last columns, when they are fewer than this, are SDOT's: SMOPA
+ * multiplies 16 whatever it is given, and 16 columns at the 0.30 T a
+ * thread gets of a shared unit cost what 9.7 do at SDOT's 0.18 T
+ * (CLIMB.md, 2026-11-23). */
+#define PK_SME_SHORT 10
+
+/* SMOPA takes the columns in sixteens, as many column blocks at a time as
+ * the thread's 64 KB holds (4 at 1024 inputs, pk_gemm's 48 to 60 columns
+ * a call in one visit to streaming mode); a last group of PK_SME_SHORT or
+ * more is padded with zeros to 16, whose scales of 0 keep their chains at
+ * 0 and which are not written out. The rest are the NEON tiles': a short
+ * last group, the decoder's one column a call, an input wider than
+ * PK_SME_N, and blocks no multiple of 32 (none of the model's). */
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
+    const uint32_t n = a->n, nb = n / a->qb, T = a->T;
+    static _Thread_local _Alignas(64) int8_t xp[16 * PK_SME_N];
+    static _Thread_local _Alignas(64) float dp[16 * (PK_SME_N / 32)];
+    uint32_t Ts = T % 16 >= PK_SME_SHORT ? T : T & ~15u;        /* the columns SMOPA takes */
+    if (n > PK_SME_N || a->qb % 32)
+        Ts = 0;
+    const uint32_t step = 16 * (PK_SME_N / (n < PK_SME_N ? n : PK_SME_N));
+    for (uint32_t t = 0; t < Ts; t += step) {
+        const uint32_t nc = Ts - t < step ? Ts - t : step;
+        for (uint32_t c = 0; c < nc; c += 16)
+            sme_pack(xp + (size_t)c * n, dp + (size_t)c * nb, a, t + c);
+        sme_cols(out + (size_t)t * os, os, w, ws, bias, rows, n, a->qb, nc, add, xp, dp);
+    }
+    if (Ts < T) {
+        const pk_act rest = { a->q + (size_t)Ts * n, a->d + (size_t)Ts * nb, n, a->qb, T - Ts };
+        q8_neon(out + (size_t)Ts * os, os, w, ws, bias, rows, &rest, add);
+    }
+}
+#else
+static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
+                      uint32_t rows, const pk_act *a, int add) {
+    q8_neon(out, os, w, ws, bias, rows, a, add);
+}
+#endif /* PK_NEON_SME */
 
 /* ------------------------------------------------------ float products --- */
 
@@ -1882,7 +2061,16 @@ static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uin
         }
 }
 
-#if defined(PK_NEON_SVE)
+#if defined(PK_NEON_SME)
+/* SME2 at a streaming vector of 512 bits (core/os.c), where its product
+ * measures the faster with every one of the fastest cores on it at once
+ * (backend/kernels.c): a cluster shares its unit */
+static const char *const needs[] = { "asimddp", "sme2", NULL };
+const pk_kernels pk_kernels_neon_sme = {
+    .id = "neon-sme",
+    .name = "neon-sme (NEON and SME2: SMOPA int8, fp32)",
+    .competes = 1,
+#elif defined(PK_NEON_SVE)
 /* SVE for the loop's MOVPRFX. A core with I8MM and no SVE has neon-i8mm's
  * loop, where it measures the faster; SVE is named first, so that such a
  * core is told the SVE it lacks */
