@@ -13,7 +13,7 @@ wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
 
 A minute of English speech takes 0.22 s on a Ryzen 9 9950X (277 times
-real time), 0.49 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
+real time), 0.26 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
 Core 3 304, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut
 at its pauses as `./pktito-c` cuts it by default. Every backend computes the
 same bits on every machine.
@@ -181,7 +181,7 @@ the same bytes.
 ## How fast
 
 `./pktito-c bench`: Silero's test.wav (60 s of English), best of five,
-2026-10-20 (the 9950X's 2026-10-24). A machine's first row is what it picks itself, its default
+2026-10-20 (the 9950X's 2026-10-24; the M4 Pro's 2026-11-23, its chunks two at a time as the default takes them now, below). A machine's first row is what it picks itself, its default
 thread count and the fastest backend its CPU can run; the rows under it
 force another backend (`PKTITO_KERNELS`) or one thread. Seconds, and how
 many times real time, for the minute whole (`--max-chunk 60`, 750 encoder
@@ -189,9 +189,10 @@ frames) and in 30 s chunks, the default then:
 
 |                                      | compiler         | backend       | threads | whole         | in 30 s chunks |
 | ------------------------------------ | ---------------- | ------------- | ------- | ------------- | -------------- |
-| Apple M4 Pro                         | Apple clang 21.0 | `neon-dp`     | 12      | 0.487 (123x)  | 0.490 (122x)   |
-|                                      |                  | `neon`        | 12      | 1.047 (57x)   | 1.040 (58x)    |
-|                                      |                  | `ref`         | 12      | 20.6 (2.9x)   | 21.6 (2.8x)    |
+| Apple M4 Pro                         | Apple clang 21.0 | `neon-sme`    | 12      | 0.356 (169x)  | 0.262 (229x)   |
+|                                      |                  | `neon-dp`     | 12      | 0.470 (128x)  | 0.417 (144x)   |
+|                                      |                  | `neon`        | 12      | 0.955 (63x)   | 0.909 (66x)    |
+|                                      |                  | `ref`         | 12      | 20.4 (2.9x)   | 19.6 (3.1x)    |
 | Intel Core i9-12900HK                | gcc 15.2         | `avx2-vnni`   | 14      | 0.909 (66x)   | 0.828 (72x)    |
 |                                      |                  | `avx2-vnni`   | 1       | 3.28 (18.3x)  | 2.84 (21x)     |
 |                                      |                  | `avx2`        | 14      | 1.682 (36x)   | 1.597 (38x)    |
@@ -226,13 +227,16 @@ CPU at eight threads, both transcripts through one normalizer:
 | parakeet.cpp, v3 q8_0 | 1.96% | 30x (its Metal GPU path: 90x) |
 
 Where the time goes (`make PROFILE=1`, the minute whole). On the M4 Pro
-at eight threads: the feed-forward modules' int8 products 44%, the
-attention's float products 22%, q k v and the positions 14%, the
-convolution module 9%, the decoder 3%, the attention's output 3%,
-quantizing 3%, the features and subsampling 2%. On a Pi 5 at four, in
-that order: 43%, 20%, 13%, 10%, 3%, 3%, 5% and 3%; quantizing, which waits
-on memory there, is the share that grows. The int8 product runs at about
-56% of the M4's SDOT peak, at 19 multiply-adds a cycle of SDOT's 32 on an
+at eight threads, its int8 products on SME2's SMOPA: the feed-forward
+modules' int8 products 47%, the attention's float products 15%, q k v and
+the positions 16%, the convolution module 11%, the decoder 1%, the
+attention's output 3%, quantizing 3%, the features and subsampling 4%. On
+a Pi 5 at four, in that order: 43%, 20%, 13%, 10%, 3%, 3%, 5% and 3%;
+quantizing, which waits on memory there, is the share that grows. The
+int8 product runs at 1.75 T multiply-adds a second on the M4 Pro, about
+72% of what its two SME units give eight threads that do nothing else
+(a cluster's cores share one, backend/neon-dp/CLIMB.md, 2026-11-23), at
+19 multiply-adds a cycle of SDOT's 32 on an
 A76 (about 81% of what its blocks' float work leaves), and at 47 of VNNI's
 64 on a 12900HK P-core (about 92%).
 
@@ -244,7 +248,7 @@ each pass's items and still add their share: a Core 3 304, one P-core and
 four E-cores, runs the minute whole in 5.02 s on its P-core and 1.39 s on
 all five; a 12900HK in 0.96 s on its six P-cores and 0.91 s on all 14
 (though 8, 16 and 18 threads take 1.10 to 1.15 s there, the same in every
-pass); an M4 Pro in 0.50 s on its eight performance cores and 0.49 s on
+pass); an M4 Pro in 0.41 s on eight threads and 0.36 s on
 all 12. backend/\*/CLIMB.md has every measurement the kernels and the
 defaults rest on.
 
