@@ -18,5 +18,8 @@ if c.shape == ref.shape and np.array_equal(c, ref):
 else:
     n = min(len(c), len(ref))
     bad = np.flatnonzero((c[:n] != ref[:n]).any(1))
-    print("DIFFERENT: %d and %d rows, %d differ, the first %s" % (len(ref), len(c), len(bad), bad[:5]))
+    print(
+        "DIFFERENT: %d and %d rows, %d differ, the first %s"
+        % (len(ref), len(c), len(bad), bad[:5])
+    )
     sys.exit(1)

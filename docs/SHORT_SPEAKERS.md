@@ -96,8 +96,9 @@ column at the end and 34 are "other".
 | all of it, the 50 where a rule acted | 16.5%  | 17.6 | 43.7% |
 | the join check alone, over the 100   | 2.3%   | 2.5  | 12.2% |
 
-In time, on the M4 Pro with the reference running beside it: 4 to 49 s an
-episode, 28 s the median.
+The whole held run, the recording and all of the above, took 4 to 49 s an
+episode on the M4 Pro with the reference running beside it, 28 s the
+median.
 
 **The join check**, against a speaker-embedding model (ReDimNet2-B3, mean
 cosine between the two speakers' clips, 0.40 or more taken as one voice;
