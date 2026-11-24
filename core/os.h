@@ -64,12 +64,13 @@ int pk_os_fast_cores(void);
  * sets against every core (core/diar.c, layers). With two kinds they are
  * pk_os_fast_cores's. With three, a phone's prime, big and little, they
  * are the prime and the big: a Galaxy S24's X4 and five A720s without its
- * two A520s, the six its diarizer was quickest on (7.55 s for the ten
- * minutes, 8.76 on all eight: backend/neon-dp/CLIMB.md, 2026-11-24). On
- * Linux a core is of the slowest kind within 10% of the lowest
- * cpu_capacity, else cpufreq maximum; on macOS in the last perflevel; on
- * Windows of the lowest EfficiencyClass. All of them where the cores are
- * of one kind or the OS does not say. */
+ * two A520s, the six its diarizer was quickest on (7.56 s for the ten
+ * minutes, 8.77 on all eight, three cooled rounds' medians:
+ * backend/neon-dp/CLIMB.md, 2026-11-24). On Linux a core is of the
+ * slowest kind within 10% of the lowest cpu_capacity, else cpufreq
+ * maximum; on macOS in the last perflevel; on Windows of the lowest
+ * EfficiencyClass. All of them where the cores are of one kind or the OS
+ * does not say. */
 int pk_os_cores_but_slowest(void);
 
 /* The cluster of cores the calling thread is on as it asks, from 0: the

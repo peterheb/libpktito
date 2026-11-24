@@ -820,19 +820,25 @@ NeMo itself on this machine (float32, 16 threads) took 57 s for an hour and
 
 On a chip with more kinds of core than one the diarizer does not take
 every core for granted. Its first four full steps after the first run on
-every core and on all but the slowest kind by turns, and it keeps
-whichever's layers took less (core/diar.c, layers); the probabilities are
-the same bits on any threads. A lone fast core is not raced, and the
-narrow side is left early where it is behind: four layers in if not half
-as fast as every core, and at the end of its first turn if no layer of its
-was faster than every core's median.
+every core, on all but the slowest kind twice, and on every core again,
+and it keeps the narrow side only if that was the faster in both its
+turns, the second by a sixteenth of every core's median layer
+(core/diar.c, layers); the probabilities are the same bits on any
+threads. A lone fast core is not raced, and the narrow side is left early
+where it is behind: four layers in if not half as fast as every core, and
+at the end of its first turn if no layer of its was faster than every
+core's median. The narrow side's turns are between every core's so that
+clocks rising or falling through the four steps cannot give it both: a
+Snapdragon X Elite laptop under Windows, whose first run of a process is
+1.0 to 1.6 s over its later ones, kept eight of its twelve like cores in
+one process of two with the turns in alternation, 40% slower.
 Measured on 2026-11-24 over ten minutes of sound (test.wav ten times over,
 `pktito-c bench`): an M5 Ultra keeps its twelve fast cores, 1.25 s where
 its 36 cores take 1.81; a GB10 its ten X925s, 1.93 s against its twenty's
 2.50; a base M4 keeps all ten, 2.17 s against its four fast cores' 2.81,
 and an M4 Pro all twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
 The turns are run once a diarizer, and the recording they are run in pays
-for the side that loses: 0.03 s on the base M4 and 0.07 to 0.09 s on the M5 Ultra,
+for the side that loses: 0.03 s on the base M4 and 0.08 to 0.09 s on the M5 Ultra,
 one recording against the same with its count given. `pktito-c bench -v`
 prints each of its five runs, the first with the turns in it; and
 `pk_diar_settled` says when the count is the diarizer's choice made, for a

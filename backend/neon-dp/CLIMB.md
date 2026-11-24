@@ -4727,3 +4727,141 @@ every core's two turns where it wins (the M5 Ultra's 0.09 s). The early
 ways out err to every core, what the diarizer ran on before it raced; an
 early win decided on a turn a side errs to fewer threads, and a turn's
 median is what Linux's move of the threads and another job's hour bend.
+
+## 2026-11-24 - the diarizer's race: a drift in the clocks, and a win by a margin (hypothesis)
+
+37688bd on a Snapdragon X Elite under Windows (X1E-78-100, twelve Oryon
+cores alike in three clusters, of which Windows gives four
+EfficiencyClass 0 and eight class 1, so the narrow side is eight), from
+the session that holds it, `bench -v`, the ten minutes, back to back,
+not cooled, its clocks capped by firmware at times:
+
+| X1E-78-100    | the 5 runs, s                 | kept |
+| ------------- | ----------------------------- | ---- |
+| default       | 3.358 2.991 3.082 3.418 3.416 | 8    |
+| -t 12         | 3.138 2.113 2.235 2.424 2.466 |      |
+| -t 8          | 4.719 3.118 3.392 3.547 3.551 |      |
+| default again | 4.690 2.262 2.142 2.351 2.557 | 12   |
+
+Eight are 40% slower than twelve there and the race kept them once in
+two. A process's first run is 1.0 to 1.6 s over its later ones at any
+count: the clocks are still rising through the race's four steps, by more
+than the sides differ.
+
+The turns are every core, narrow, every core, narrow, and each side's
+median is over its two. So the narrow side's every turn is one step later
+than every core's, and clocks that rise with time are counted to it; and
+a median over two turns that differ by a ramp is anywhere between them.
+
+Two changes, and the second is that session's suggestion:
+
+1. The turns in the order every core, narrow, narrow, every core, and
+   the narrow side wins twice or not at all. Its first turn, by the way
+   out there is at its end: its best layer under the median of every
+   core's turn before it. Its second, by its median against every core's
+   turn after it. Clocks that rise through the four steps help it in the
+   first and hinder it in the second, clocks that fall the other way
+   about: no drift in one direction gives it both. The pool stays narrow
+   between its two turns, so that on Linux the second begins with its
+   threads where the first put them, and its median is of layers at
+   speed.
+2. And the second by a margin: the narrow side's median under 15/16 of
+   every core's, or every core. Fewer threads kept wrongly cost 30 to 40%
+   on that laptop and 7% on the M4 Pro; a win of under a sixteenth missed
+   costs under a sixteenth. The wins measured are far from it: the M5
+   Ultra's twelve at 0.69 of its 36 by the ten minutes' time, the GB10's
+   ten at 0.75, a Galaxy S24's six at 0.86 of its eight.
+
+Expect:
+
+- The picks unchanged on the GB10 (gcc, clang), the M5 Ultra and the base
+  M4, and the M4 Pro's twelve, where eight were kept once in twelve with
+  the Mac in use.
+- The GB10's ratio of the two second turns' medians near the 0.75 of its
+  times and in a narrower band than the 0.76 to 1.01 of the medians over
+  both turns (50 and 60 races above): the narrow side's second turn has
+  no move of threads in it.
+- One recording's cost as it is: the turns are as many.
+- The laptop's eight not kept, and an S24's six kept: the sessions' that
+  hold them.
+
+Kept if the picks hold here and make check-c passes; the laptop's runs
+decide whether it was enough.
+
+## 2026-11-24 - the diarizer's race: a drift in the clocks, and a win by a margin (kept here; the laptop's and the phone's runs to come)
+
+The turns are every core, narrow, narrow, every core (`side` in
+core/diar.c's layers), the pool left narrow between the narrow side's
+two, and at the race's end the narrow side is kept if its second turn's
+median layer is under 15/16 of every core's second (`TUNE_BY` 16); its
+first turn is judged by the two ways out as before. The probabilities are
+the same bits (conv2.wav's 94bfd1a8).
+
+A build that prints the race's ratios, three minutes a process, the
+narrow side over every core: its best layer at its first turn's end over
+the median of the turn before (the way out there goes at 1 and over), its
+first turn's median over the same, and its second's over every core's
+second (kept under 0.9375):
+
+| the race, narrow over every core | races | left early | best at turn's end | first turn's median | second turn's median | kept         |
+| -------------------------------- | ----- | ---------- | ------------------ | ------------------- | -------------------- | ------------ |
+| GB10, 10 of 20 (gcc 13.3)        | 60    | 0          | 0.65 to 0.85       | 0.73 to 1.07        | 0.69 to 0.87         | 10 in 60     |
+| GB10 held, 3 X925 + 5 A725       | 12    | 6          | 0.98 to 1.00       | 0.98 to 1.01        | 0.97 to 1.04         | all 8 in 12  |
+| GB10 held, 2 X925 + 5 A725       | 12    | 12         |                    |                     |                      | all 7 in 12  |
+| GB10 held, 2 X925 + 10 A725      | 12    | 12         |                    |                     |                      | all 12 in 12 |
+| M4 Pro, 8 of 12, in use          | 16    | 3          | 0.96 to 0.99       | 1.01 to 1.16        | 1.02 to 1.11         | all 12 in 16 |
+
+The GB10's second turn has a median of 0.78 and a 95th of 0.85; its
+first, 0.84 and 1.01, the move of its threads in it. So the second turn
+is the one a margin can be asked of: the first's median, or both turns'
+as one (0.76 to 1.01 above), would have lost the ten in some races, with
+a margin or without. The three X925s with five A725s are as fast as the eight, and
+the margin gives them every core where 37688bd's bare comparison would
+have been a toss.
+
+The tree itself, `pktito-c bench -v`, the ten minutes:
+
+| the ten minutes, s        | kept           | first run      | the four after | given the count: first, after  |
+| ------------------------- | -------------- | -------------- | -------------- | ------------------------------ |
+| M5 Ultra (Apple clang 21) | 12 in 6 of 6   | 1.369 to 1.379 | 1.261 to 1.272 | 1.268 to 1.274, 1.259 to 1.268 |
+| GB10 (gcc 13.3)           | 10 in 12 of 12 | 2.008 to 2.064 | 1.897 to 1.957 |                                |
+| GB10 (clang 18.1)         | 10 in 12 of 12 | 2.008 to 2.049 | 1.901 to 1.937 |                                |
+| base M4 (Apple clang 21)  | 10 in 6 of 6   | 2.162 to 2.190 | 2.121 to 2.156 |                                |
+| M4 Pro, in use            | 12 in 12 of 12 | 1.610 to 1.746 | 1.559 to 1.802 |                                |
+
+One recording, a process a run, medians by turns (the tree, then given
+its count; 37688bd's in brackets):
+
+| one recording, s | three minutes               | ten minutes                 |
+| ---------------- | --------------------------- | --------------------------- |
+| M5 Ultra         | 0.487, 0.402 (0.490, 0.403) | 1.422, 1.346 (1.427, 1.358) |
+| base M4          | 0.685, 0.655 (0.688, 0.659) | 2.301, 2.270 (2.306, 2.278) |
+| GB10 (gcc 13.3)  | 0.702, 0.643 (0.682, 0.636) | 2.190, 2.120 (2.173, 2.114) |
+
+Against what was expected:
+
+- The picks are unchanged on every board here, and the M4 Pro's twelve
+  were kept in 28 of 28 with the Mac in use, where 37688bd kept eight
+  once in twelve.
+- The GB10's second turn's band is 0.18 wide and tops at 0.87, where
+  both turns as one were 0.25 wide and topped at 1.01. Its least room
+  under the 0.9375 is 0.07 in 60 races.
+- The cost of the race is as it was on the Macs. On the GB10 it is 0.059
+  and 0.070 s where it was 0.046 and 0.059: 0.01 s more in both
+  recordings, not explained, and under the spread of the runs given
+  their count (0.627 to 0.659 s).
+
+`make check-c` passes on the M4 Pro (with check-tsan), the base M4, the
+M5 Ultra, the GB10 under gcc 13.3 and clang 18.1, the i9-12900HK (gcc
+15.2) and the Pi 5 (gcc 14.2).
+
+Not measured here, and what decides the change: the laptop it is for, and
+a three-kind phone. A Galaxy S24's six took 0.86 of its eight's time over
+the ten minutes, 0.08 under the margin if its layers' medians say the
+same; if the phone's second turns scatter over 0.9375, the margin wants
+to be a thirty-second.
+
+A lead, not measured: the recognizer's race (core/encoder.c, layers) sets
+every core against `pk_os_fast_cores`, the laptop's same eight of twelve,
+in turns of two layers that alternate, each side by one median. If
+Windows' two classes there are cores alike, it is open to the same drift.
