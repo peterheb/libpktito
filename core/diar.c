@@ -474,13 +474,14 @@ static double behind(pk_diar *d) {
  * the clocks still rising. Every turn of the narrow side was a step later
  * than every core's. With its two between every core's, clocks that rise
  * help it in its first and hinder it in its second, clocks that fall the
- * other way about, and it has to win both. The pool stays narrow between
- * the two, so the second starts with its threads where the first put
- * them and its median is of layers at speed: a GB10's ten took 0.69 to
- * 0.87 of its twenty's in 60 races, where the first turn's median took
- * 0.73 to 1.07; an M4 Pro's eight 1.02 to 1.11 of its twelve's in 13. A
- * sixteenth is between them, and a side kept wrongly costs more than a
- * win of under a sixteenth missed.
+ * other way about, and it has to win both: the laptop kept its twelve in
+ * 7 processes of 7 so. The pool stays narrow between the two, so the
+ * second starts with its threads where the first put them and its median
+ * is of layers at speed: a GB10's ten took 0.69 to 0.87 of its twenty's
+ * in 60 races, where the first turn's median took 0.73 to 1.07; an M4
+ * Pro's eight 1.02 to 1.11 of its twelve's in 13. A sixteenth is between
+ * them, and a side kept wrongly costs more than a win of under a
+ * sixteenth missed.
  *
  * A turn is a whole step on its side's threads, and where the narrow side
  * loses, its turns are the race's cost, once a diarizer and in no bench's

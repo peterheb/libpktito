@@ -5065,3 +5065,29 @@ A lead, not measured: the recognizer's race (core/encoder.c, layers) sets
 every core against `pk_os_fast_cores`, the laptop's same eight of twelve,
 in turns of two layers that alternate, each side by one median. If
 Windows' two classes there are cores alike, it is open to the same drift.
+
+## 2026-11-24 - the diarizer's race on two Snapdragon laptops under Windows (measured)
+
+5d0ddd9 under Windows, from the session that holds the boards: the
+X1E-78-100 the change was for (twelve cores alike, four and eight by
+Windows' classes, so eight the narrow side) and an X2E-84-100 (six Prime
+and six Performance cores, six the narrow side). `bench -v`, the ten
+minutes, a process a row's run, the best of each process's five in
+seconds:
+
+| 5d0ddd9, Windows | default: kept          | default, s     | -t 12, s       | fewer, s                                              |
+| ---------------- | ---------------------- | -------------- | -------------- | ----------------------------------------------------- |
+| X1E-78-100       | 12 in 7 processes of 7 | 2.005 to 2.349 | 2.057 to 2.196 | -t 8: 2.81 to 3.00                                    |
+| X2E-84-100       | 12 in 4 of 4           | 2.145 to 2.183 | 2.153 to 2.203 | -t 6: 3.84 to 3.92; held to the fast six 2.73 to 2.87 |
+
+The X1E's seven were four back to back and three after 90 to 120 s idle;
+37688bd kept its eight in one process of two there. check-c.ps1 passes on
+it. Twelve are the faster on the X2E too, its six fast cores alone near 30%
+slower; one default run after twenty minutes of load took 2.609
+s, its cores 6 to 11 limited in power under sustained work on every
+core.
+
+The lead above, the recognizer's race on the X1E: main's printed 12
+threads in 6 processes of 6, so it did not flip there as measured.
+
+Left: a Galaxy S24.
