@@ -3892,3 +3892,31 @@ rounds, the ten minutes at 16 threads: gcc 15.2 0.789-0.797 s before,
 the job saved is paid back in the items' waits for the sixteens other
 items are making, every item of the first round needing all of them
 (K's whole heads) or a third. Not kept.
+
+## 2026-11-24 - the softmax in zmm (hypothesis)
+
+An attention item's time, rdtsc around its parts (not committed), the
+ten minutes' six runs at 16 threads, Gcycles: the scores' int8 product
+13.7, the softmax 20.1, P·V 30.3, the output's quantizing 3.2; at one
+thread 9.2, 16.1, 20.4, 1.1. The softmax is the one float kernel the
+AVX-512 builds still run in ymm, about a cycle an element at one thread.
+In zmm as the others are (2026-10, the float kernels in zmm): the scale
+and the maximum, exact either way; the exponent's z_exp, lane for lane
+v_exp; the sums one zmm whose lane l holds what the ymm pair's lane l
+did (element i in lane i % 16), and a last 8 in ymm into its lower half;
+so ref's bits (tests/kcheck's softmax, lengths 1 to 700). Predicted: the
+softmax's share of the attention halved, the ten minutes 3 to 4% faster
+at 16 threads.
+
+## 2026-11-24 - the softmax in zmm (result: kept)
+
+kcheck's softmax cases ref's bits under gcc 15.2 and clang 21.1.8 on
+avx512-vnni, avx2-vnni and avx2; test10.wav's rows the same bytes. The
+ten minutes at 16 threads, five interleaved rounds (the machine's slower
+state came on in the fourth, so a round's pair is the comparison): gcc
+0.791/0.761, 0.791/0.765, 0.783/0.771, 0.817/0.789, 0.809/0.791 s, before
+and after, 1.6 to 3.8%; clang 0.805/0.781, 0.803/0.782, 0.804/0.787,
+0.826/0.807, 0.827/0.804, 2.1 to 3.0%. The three minutes on one thread
+1.682-1.684 to 1.594-1.596, 5.3%. The recognizer, v2 on test3.wav, six
+rounds at 16 threads 0.472-0.485 before, 0.473-0.484 after; two at one
+thread 3.715-3.719, 3.712-3.715: level, its attention's rows short.
