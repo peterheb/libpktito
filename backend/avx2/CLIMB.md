@@ -3920,3 +3920,45 @@ and after, 1.6 to 3.8%; clang 0.805/0.781, 0.803/0.782, 0.804/0.787,
 1.682-1.684 to 1.594-1.596, 5.3%. The recognizer, v2 on test3.wav, six
 rounds at 16 threads 0.472-0.485 before, 0.473-0.484 after; two at one
 thread 3.715-3.719, 3.712-3.715: level, its attention's rows short.
+
+## 2026-11-24 - the diarizer's climb on other x86 machines (a measurement)
+
+6b393ee against cda70af (the five changes above), the ten minutes, best
+of 5 a round, rounds interleaved, default threads; every machine's rows
+of test10.wav the same bytes from both trees on every backend run there.
+check-c passes at cda70af on the c7i and the c8a under gcc 13.3 and
+clang 18.1.3, kcheck and q8check holding amx-int8 to ref's bits on the
+c7i (the softmax in zmm is that build's too).
+
+| machine                                    | threads | backend     | compiler     | 6b393ee          | cda70af          |
+| ------------------------------------------ | ------- | ----------- | ------------ | ---------------- | ---------------- |
+| 9950X, WSL                                 | 16      | avx512-vnni | gcc 15.2     | 0.952-0.967 s    | 0.761-0.791      |
+| 9950X, WSL, held to avx2                   | 16      | avx2        | gcc 15.2     | 2.196-2.224      | 1.706-1.713      |
+| 9950X, WSL, held to avx2-vnni              | 16      | avx2-vnni   | gcc 15.2     | 1.360-1.365      | 1.125-1.134      |
+| EC2 c8a.4xlarge (EPYC 9R45, Zen 5)         | 16      | avx512-vnni | gcc 13.3     | 0.884-0.912      | 0.771-0.794      |
+| the same, held to avx2                     | 16      | avx2        | gcc 13.3     | 1.706-1.751      | 1.563-1.635      |
+| Strix Halo (Ryzen AI MAX+ 395), Linux      | 16      | avx512-vnni | gcc 13.3     | 1.139-1.146      | 1.050-1.054      |
+| the same, held to avx2-vnni                | 16      | avx2-vnni   | gcc 13.3     | 1.606-1.612      | 1.544-1.550      |
+| the same, held to avx2                     | 16      | avx2        | gcc 13.3     | 2.327-2.338      | 2.219-2.226      |
+| EC2 c7i.2xlarge (Xeon 8488C), 4 cores      | 4       | amx-int8    | gcc 13.3     | 3.741-3.807      | 3.564-3.706      |
+| the same, held to avx512-vnni              | 4       | avx512-vnni | gcc 13.3     | 4.334-4.415      | 4.228-4.256      |
+| i9-12900HK, Linux                          | 14      | avx2-vnni   | gcc 15.2     | 4.039-4.054      | 3.665-3.671      |
+| the same, held to avx2                     | 14      | avx2        | gcc 15.2     | 6.215-6.223      | 5.625-5.631      |
+| Core 3 304 (1 P + 4 E), Windows 11, mingw  | 5       | avx2-vnni   | gcc 13 win32 | 5.817-5.924      | 5.707-5.740      |
+| Ryzen 7 5700X (Zen 3), Linux               | 8       | avx2        | gcc 12.3     | 3.687-3.744      | 3.741-3.778      |
+| the same                                   | 8       | avx2        | gcc 11.4     | 3.714-3.746      | 3.737-3.757      |
+
+The Core 3 304 ran with Windows Update busy beside it (TiWorker), two
+rounds. The Zen 3 is the one that loses. By commit there, gcc 12.3, four
+rounds in an order and its reverse (687958a 048c121 d9e6fa1 6b393ee, then
+back): 6b393ee 3.748-3.753, d9e6fa1 3.741-3.754, 048c121 3.760-3.778,
+687958a 3.755-3.785. So the three rounds and the keys' two jobs are level
+there, and the one qkv job costs 0.5 to 0.7%: by its profile (PROFILE=1,
+two runs each) the job took 702-709 ms a run where q, k, v took 606-614,
+the rotation 25 and the keys and their means about 36 within the
+attention's 881-886 (845 after), some 35 ms more than the work it took
+on. The same split on the others: the Strix Halo 1.092-1.096 to
+1.079-1.085 (1.0%), the 12900HK 3.684-3.698 to 3.667-3.700 (level). On a
+single CCD of eight cores with the products in the plain AVX2 tile the
+passes it folded in were cheap, and the fold's cost is not found here.
+Left open: why, and a form of the fold that keeps the Zen 3 level.
