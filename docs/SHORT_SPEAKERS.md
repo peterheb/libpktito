@@ -21,7 +21,7 @@ C's rows are its rows bit for bit, and the stretches held the same.
 
 The diarizer's state between steps is about 0.6 MB (`pk_diar_save`), and a
 step is 27.2 s (340 frames of 80 ms). The engine keeps the state at every
-step boundary. At each boundary:
+step boundary that a rewind could still go back to. At each boundary:
 
 1. **Who is short.** A speaker with under 60 s of speech who has not been
    heard for 120 s starts a hold. Every other speaker under 60 s who has
@@ -143,9 +143,22 @@ splits for twice the cost.
 - The high level only. `pk_diar_run` and `pk_speakers` are as they were;
   `pk_diar_run_held` leaves NeMo's answer on purpose, as
   `pk_asr_transcribe`'s retry does, and `--no-hold` is the switch.
-- Memory: the rows twice over and one 0.6 MB state per step, 83 MB for an
-  hour. The budget bounds how far back a rewind can go, so older states
-  could be dropped; they are not yet.
+- Memory: the rows three times over and a 0.6 MB state per step that a
+  rewind could still reach. A rewind goes back to before the first word of
+  a speaker under a minute not yet settled, and no further than the budget
+  allows, so the states before both are dropped (core/hold.c, `keep`).
+  Keeping every state was 83 MB an hour. On the 100 episodes the peak
+  memory of `pktito-c probs`, model included, went from 149-280 MB to
+  141-210 MB, the rows the same bits, and no rewind reached a dropped
+  state. One that did would go back to the last state kept and hear the
+  stream from there: the same rows, later.
+- As the recording is heard (`pk_hold_new`, `pk_hold_to`, `pk_hold_end`):
+  a transcription that names its words' speakers as it goes asks for rows
+  as it needs them, of a recording still being read if need be, and is told
+  the first row a rewind changed. `pk_diar_run_held` is that run asked for
+  everything at once; tests/holdcheck holds the two to the same bits,
+  however the recording comes and the rows are asked for (on conv2.wav in
+  check-c; on a Pivot episode with 13 held stretches, by hand).
 - The audio is read again: where the diarizer goes back, and for the
   clips. pktito-c copies a pipe to a scratch file as it already did.
 - A held speaker's words are still transcribed. One that lands on no

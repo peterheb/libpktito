@@ -1021,6 +1021,11 @@ int64_t pk_diar_load(pk_diar *d, const void *state) {
     diar_state h;
     const char *o = state;
     memcpy(&h, o, sizeof h);
+    /* a state from another model's diarizer, or none: more cache or FIFO
+     * than this one has room for would be written past it */
+    if (h.nc > d->cmax || h.nf > (uint32_t)(d->w->fifo_len + d->w->chunk_len) || h.stt < 0
+        || (h.has_p != 0 && h.has_p != 1))
+        return -1;
     const size_t nc = (size_t)h.nc * d->D * sizeof(float), nf = (size_t)h.nf * d->D * sizeof(float);
     const size_t np = h.has_p ? (size_t)h.nc * d->S * sizeof(float) : 0;
     memcpy(d->cache, o + sizeof h, nc);

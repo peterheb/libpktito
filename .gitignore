@@ -20,6 +20,7 @@
 /tests/chunkcheck
 /tests/transcheck
 /tests/growcheck
+/tests/holdcheck
 /tests/sentcheck
 /tests/editioncheck
 /tests/fftcheck

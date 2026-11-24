@@ -277,7 +277,7 @@ MODEL ?= models/parakeet-tdt-0.6b-v2.pkf
 TINY  := tests/data/tiny.pkf
 TINY_DIAR := tests/data/tiny-diar.pkf
 TESTS := tests/kcheck tests/q8check tests/mathcheck tests/pkfcheck tests/wavcheck tests/capcheck tests/langcheck \
-         tests/chunkcheck tests/pathcheck tests/transcheck tests/growcheck tests/sentcheck tests/streamcheck \
+         tests/chunkcheck tests/pathcheck tests/transcheck tests/growcheck tests/holdcheck tests/sentcheck tests/streamcheck \
          tests/editioncheck
 BENCHES := tests/q8bench tests/gemmbench tests/spinbench
 
@@ -296,6 +296,9 @@ tests/chunkcheck: tests/chunkcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/chunkcheck.c $(LIB_OBJ) $(LDLIBS)
 tests/growcheck: tests/growcheck.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/growcheck.c $(LIB_OBJ) $(LDLIBS)
+
+tests/holdcheck: tests/holdcheck.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/holdcheck.c $(LIB_OBJ) $(LDLIBS)
 # transcheck includes core/transcribe.c itself, for its static parts
 tests/transcheck: tests/transcheck.c core/transcribe.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $(PLATFLAGS) $(INC) -o $@ tests/transcheck.c $(filter-out core/transcribe.o,$(LIB_OBJ)) $(LDLIBS)
