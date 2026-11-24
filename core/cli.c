@@ -2087,7 +2087,10 @@ static int bench(const opts *o, pk_model *m) {
     return 0;
 }
 
-/* bench on a diarizer's model: the diarizer alone over the file, best of 5 */
+/* bench on a diarizer's model: the diarizer alone over the file, best of
+ * 5. With -v each run's time too: the first is the one a recording gets,
+ * a new diarizer's, with its turns on every core and on fewer in it where
+ * it runs them (pk_diar_new). */
 static int bench_diar(const opts *o, const pk_model *dm) {
     size_t n;
     const int rate = pk_model_rate(dm);
@@ -2096,13 +2099,16 @@ static int bench_diar(const opts *o, const pk_model *dm) {
     pk_diar *dz = pk_diar_new(dm, o->threads);
     if (!dz)
         die("out of memory");
-    double best = 1e30;
+    double best = 1e30, took[5];
     rows_buf rb = { 0 };
     for (int rep = 0; rep < 5; rep++) {
         free(rb.p);
-        const double dt = diarize(dz, dm, &x, NULL, o->in, &rb, 0);
-        best = dt < best ? dt : best;
+        took[rep] = diarize(dz, dm, &x, NULL, o->in, &rb, 0);
+        best = took[rep] < best ? took[rep] : best;
     }
+    if (o->verbose)
+        fprintf(stderr, "pktito-c: the 5 runs took %.3f %.3f %.3f %.3f %.3f s\n", took[0], took[1], took[2], took[3],
+                took[4]);
     const double audio = (double)n / rate;
 #ifdef PK_PROFILE
     static const prof_row stage[] = { { PK_P_MEL, "features" }, { PK_P_SUB, "stacking" },

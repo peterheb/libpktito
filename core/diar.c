@@ -65,6 +65,17 @@
 static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static uint32_t up16(uint32_t x) { return (x + 15) & ~15u; }
 
+/* The race of every core against all but the slowest kind (layers): the
+ * steps raced, two a side, and the most of a step's layers timed; the
+ * narrow side's early way out of its first turn, the layers it is given
+ * and how many of every core's median the best of them may take (behind);
+ * and the part of every core's median it has to win its second turn by */
+#define TUNE_STEPS  4
+#define TUNE_LAYERS 32
+#define TUNE_OUT    4
+#define TUNE_FAR    2
+#define TUNE_BY     16
+
 typedef struct {
     float *sc;                   /* a block of attention scores: ATT_BLOCK x a step's keys */
     float *row;                  /* a frame of a layer norm's output, or a tile's hidden */
@@ -77,6 +88,15 @@ struct pk_diar {
     const pk_diarw *w;
     pk_pool *pool;
     int nth;
+    /* Every core, or every kind's but the slowest's (pk_os_cores_but_slowest,
+     * `fast` of them, the narrow side) where the cores are of more kinds
+     * than one and the threads are pktito's choice: `tune` the steps still
+     * to race (layers), their layers' times in took, every core's and the
+     * narrow side's; `wide` the threads the passes run on; `ran` once a
+     * step has. */
+    int fast, wide, tune, ran;
+    double took[2][TUNE_STEPS / 2 * TUNE_LAYERS];
+    uint32_t ntook[2];
     uint32_t S, S16, D, F, H, dk, P, U, f;
     uint32_t tmax;               /* a step's most frames: cache, FIFO, chunk and context */
     uint32_t emax;               /* a chunk's most 80 ms frames, its context included */
@@ -106,6 +126,7 @@ struct pk_diar {
     float *prob;                 /* [U tmax][S]: each 10 ms frame's probabilities */
     float *p80;                  /* [tmax][S]: each 80 ms frame's, their mean */
     pk_act act, hid, a1;         /* int8: a product's input; the hidden; the projection's */
+    pk_packed packed;            /* a product's input in the backend's order (passes.h) */
     diar_ws *tws;
     void *mem;                   /* the block every array here is carved from */
 
@@ -275,9 +296,9 @@ static void taps_item(void *arg, int i, int th) {
 static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     const uint32_t D = d->D, F = d->F, Tp = up16(T);
     PROF(PK_P_QUANT, normq(d, d->x, T, L->att_nw, L->att_nb));
-    PROF(PK_P_QKV, pk_gemm_on(d->pool, NULL, d->q, D, &L->q, NULL, &d->act, 0, NULL, NULL));
-    PROF(PK_P_QKV, pk_gemm_on(d->pool, NULL, d->k, D, &L->k, NULL, &d->act, 0, NULL, NULL));
-    PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, NULL, d->vp, (size_t)T * 16, &L->v, &d->act));
+    PROF(PK_P_QKV, pk_gemm_on(d->pool, &d->packed, d->q, D, &L->q, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_QKV, pk_gemm_on(d->pool, &d->packed, d->k, D, &L->k, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, &d->packed, d->vp, (size_t)T * 16, &L->v, &d->act));
     frames_job fj = { d, T };
     PROF(PK_P_POS, pk_pool_run(d->pool, rope_item, &fj, (int)((T + 15) / 16)));
     kpan_job kj = { { d->kp, d->k, T, Tp, D, d->dk }, D };
@@ -285,14 +306,14 @@ static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     att_job aj = { d, T, Tp };
     PROF(PK_P_ATT, pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB));
-    PROF(PK_P_ATTO, pk_gemm_on(d->pool, NULL, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL));
+    PROF(PK_P_ATTO, pk_gemm_on(d->pool, &d->packed, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL));
 
     PROF(PK_P_QUANT, normq(d, d->x, T, L->ff_nw, L->ff_nb));
     d->hid.n = F;
     d->hid.qb = QB;
     d->hid.T = T;
-    PROF(PK_P_FF, pk_gemm_on(d->pool, NULL, d->u, F, &L->up, L->up_b, &d->act, 0, geluq_tile, d));
-    PROF(PK_P_FF, pk_gemm_on(d->pool, NULL, d->x, D, &L->down, L->down_b, &d->hid, 1, NULL, NULL));
+    PROF(PK_P_FF, pk_gemm_on(d->pool, &d->packed, d->u, F, &L->up, L->up_b, &d->act, 0, geluq_tile, d));
+    PROF(PK_P_FF, pk_gemm_on(d->pool, &d->packed, d->x, D, &L->down, L->down_b, &d->hid, 1, NULL, NULL));
 }
 
 /* The final layer norm's T frames, quantized in d->act, to each 10 ms
@@ -301,7 +322,7 @@ static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
 static void head(pk_diar *d, uint32_t T) {
     const pk_diarw *w = d->w;
     const uint32_t P = d->P, U = d->U;
-    pk_gemm_on(d->pool, NULL, d->pj, P, &w->proj, w->proj_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->pj, P, &w->proj, w->proj_b, &d->act, 0, NULL, NULL);
 
     pk_quantize_on(d->pool, &d->a1, d->pj, P, T, P, QB);
     d->act.n = 3 * P;
@@ -309,19 +330,147 @@ static void head(pk_diar *d, uint32_t T) {
     d->act.T = T;
     frames_job fj = { d, T };
     pk_pool_run(d->pool, taps_item, &fj, (int)((T + 15) / 16));
-    pk_gemm_on(d->pool, NULL, d->ups, (size_t)U * P, &w->up, w->up_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->ups, (size_t)U * P, &w->up, w->up_b, &d->act, 0, NULL, NULL);
 
     /* the head, on U T frames of P: row t U + j of ups is 10 ms frame j of
      * 80 ms frame t */
     relu(d, d->ups, (size_t)U * T * P);
     pk_quantize_on(d->pool, &d->act, d->ups, P, U * T, P, QB);
-    pk_gemm_on(d->pool, NULL, d->hh, P, &w->head_hidden, w->head_hidden_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->hh, P, &w->head_hidden, w->head_hidden_b, &d->act, 0, NULL, NULL);
     relu(d, d->hh, (size_t)U * T * P);
     pk_quantize_on(d->pool, &d->act, d->hh, P, U * T, P, QB);
-    pk_gemm_on(d->pool, NULL, d->logit, d->S16, &w->head_out, w->head_out_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->logit, d->S16, &w->head_out, w->head_out_b, &d->act, 0, NULL, NULL);
     for (size_t r = 0; r < (size_t)U * T; r++)
         for (uint32_t s = 0; s < d->S; s++)
             d->prob[r * d->S + s] = pk_sigmoidf(d->logit[r * d->S16 + s]);
+}
+
+/* The median of t[0..n), n > 0, which it sorts */
+static double median(double *t, uint32_t n) {
+    for (uint32_t i = 1; i < n; i++)
+        for (uint32_t j = i; j > 0 && t[j - 1] > t[j]; j--) {
+            double x = t[j];
+            t[j] = t[j - 1];
+            t[j - 1] = x;
+        }
+    return (t[(n - 1) / 2] + t[n / 2]) / 2;
+}
+
+/* The narrow side's best layer so far over every core's median layer of
+ * the turn before: what its first turn's two ways out go by (layers). The
+ * best, because one layer at speed is enough to say what the side can do,
+ * and its first are slow while Linux moves its threads. The GB10's ten
+ * X925s, the side that wins there, against its twenty cores: 0.94 to 1.45
+ * at four layers in 60 races, and 0.68 to 0.84 at their turn's end in 50
+ * (backend/neon-dp/CLIMB.md, 2026-11-24). */
+static double behind(pk_diar *d) {
+    double best = d->took[1][0];
+    for (uint32_t i = 1; i < d->ntook[1]; i++)
+        best = d->took[1][i] < best ? d->took[1][i] : best;
+    return best / median(d->took[0], d->ntook[0]);
+}
+
+/* Every core, or all but the slowest kind? The encoder's question
+ * (encoder.c, layers), and its rule but for the narrow side, the length of
+ * a turn and what wins: the first TUNE_STEPS full steps after the
+ * diarizer's first run their layers on each by turns, a step a turn:
+ * every core, the narrow side twice, every core. The diarizer keeps the
+ * narrow side if it wins twice, its first turn by the ways out below and
+ * its second by its layers' median under every core's of the turn after
+ * it, less a TUNE_BY-th; else every core. A full step is tmax frames,
+ * every one of them the same shapes; the first step is the first pass
+ * over the weights' pages. A recording too short for the turns leaves the
+ * rest to the next.
+ *
+ * A step is one stream, each pass waiting for its slowest item, and the
+ * slow kind's are the last in: the ten minutes took an M5 Ultra's twelve
+ * fast cores 1.26 s and its 36 cores 1.89, a GB10's ten X925s 1.88 s and
+ * its twenty 2.50, while an M4 Pro's twelve and a base M4's ten were their
+ * fastest. The encoder's turns of two layers kept the GB10's ten in 8
+ * races of 14 here: when ten of twenty threads go to sleep, Linux takes
+ * some ten layers, 40 ms, to move the other ten onto the X925s, and a turn
+ * of two never saw them there; a step's 31 layers do, and their median
+ * leaves the move out. Turns of a step kept the ten in 12 runs of 12, the
+ * M5 Ultra's twelve and each M4's every core in 6 of 6
+ * (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
+ *
+ * The narrow side is every kind's cores but the slowest's
+ * (pk_os_cores_but_slowest): of two kinds the fast one, and of a phone's
+ * three its prime and big cores, a Galaxy S24's six of eight, where the
+ * ten minutes took 7.55 to 7.60 s on six threads and 8.76 to 8.78 on
+ * eight in three cooled rounds, and the race kept the six in 3 of 3.
+ *
+ * The order and the TUNE_BY-th are for clocks that move while the turns
+ * run. A Snapdragon X Elite laptop under Windows, twelve cores alike of
+ * which Windows calls eight the faster, kept the eight in one process of
+ * two when the turns were every core, narrow, every core, narrow and a
+ * side's two were one median; eight are 40% slower than twelve there, and
+ * a process's first run is 1.0 to 1.6 s over its later ones at any count,
+ * the clocks still rising. Every turn of the narrow side was a step later
+ * than every core's. With its two between every core's, clocks that rise
+ * help it in its first and hinder it in its second, clocks that fall the
+ * other way about, and it has to win both: the laptop kept its twelve in
+ * 7 processes of 7 so. The pool stays narrow between the two, so the
+ * second starts with its threads where the first put them and its median
+ * is of layers at speed: a GB10's ten took 0.69 to 0.87 of its twenty's
+ * in 60 races, where the first turn's median took 0.73 to 1.07; an M4
+ * Pro's eight 1.02 to 1.11 of its twelve's in 13. A sixteenth is between
+ * them, and a side kept wrongly costs more than a win of under a
+ * sixteenth missed.
+ *
+ * A turn is a whole step on its side's threads, and where the narrow side
+ * loses, its turns are the race's cost, once a diarizer and in no bench's
+ * best of five. So a side that cannot win is not run to the end:
+ *
+ * - A lone core is not raced. Held to one X925 and five A725s, a GB10's
+ *   three minutes took 4.96 s with two steps on the one, 1.65 s without.
+ * - TUNE_OUT layers into its first turn, a side whose best layer took over
+ *   TUNE_FAR times every core's median leaves the step's other layers and
+ *   the recording to every core. Twice is clear of the side that wins,
+ *   1.45 at most at four layers (behind).
+ * - At the end of that turn, a side with not one layer under every core's
+ *   median has lost too; the side that wins had 0.87 at most. Two X925s
+ *   are 1.9 times slower than they and ten A725s together, under twice:
+ *   the three minutes took 1.38 s with both their turns, 1.24 s with the
+ *   one, 1.09 s with no race.
+ *
+ * What is left is the turns of the side that loses: 0.03 s of a base M4's
+ * recording, one turn of its four of ten, 1.3 times slower, and 0.08 to
+ * 0.09 s of an M5 Ultra's, every core's two where its twelve win.
+ * pk_diar_settled is for a program that would not pay it twice (CLIMB.md,
+ * 2026-11-24). */
+static void layers(pk_diar *d, uint32_t T) {
+    const pk_diarw *w = d->w;
+    const uint32_t L = d->m->n_layers;
+    if (!d->tune || !d->ran || T < d->tmax) {
+        for (uint32_t i = 0; i < L; i++)
+            layer(d, &w->layers[i], T);
+        d->ran = 1;
+        return;
+    }
+    const int side = d->tune > 1 && d->tune < TUNE_STEPS;        /* every core, narrow, narrow, every core */
+    pk_pool_set_active(d->pool, side ? d->fast : d->nth);
+    for (uint32_t i = 0; i < L; i++) {
+        double t0 = pk_os_now();
+        layer(d, &w->layers[i], T);
+        if (d->tune && i < TUNE_LAYERS)
+            d->took[side][d->ntook[side]++] = pk_os_now() - t0;
+        /* the narrow side's first turn, TUNE_OUT layers in and at its end */
+        if (d->tune == TUNE_STEPS - 1
+            && ((i + 1 == TUNE_OUT && behind(d) > TUNE_FAR) || (i + 1 == L && behind(d) >= 1))) {
+            d->tune = 0;                 /* the way out: every core from here on */
+            d->wide = d->nth;
+            pk_pool_set_active(d->pool, d->wide);
+        }
+    }
+    if (d->tune && --d->tune == 0) {     /* each side's second turn, the later half of its times */
+        const uint32_t h = d->ntook[0] / 2;
+        const double narrow = median(d->took[1] + h, d->ntook[1] - h);
+        const double all = median(d->took[0] + h, d->ntook[0] - h);
+        d->wide = narrow * TUNE_BY < all * (TUNE_BY - 1) ? d->fast : d->nth;
+    }
+    /* narrow still between the narrow side's two turns: its threads stay where the first put them */
+    pk_pool_set_active(d->pool, d->tune == TUNE_STEPS - 2 ? d->fast : d->wide);
 }
 
 /* The step's T stacked frames in d->in to each 10 ms frame's speaker
@@ -329,8 +478,7 @@ static void head(pk_diar *d, uint32_t T) {
 static void forward(pk_diar *d, uint32_t T) {
     const pk_diarw *w = d->w;
     PROF(PK_P_NORM, norm(d, d->x, d->in, T, w->embed_nw, w->embed_nb));
-    for (uint32_t i = 0; i < d->m->n_layers; i++)
-        layer(d, &w->layers[i], T);
+    layers(d, T);
     PROF(PK_P_QUANT, normq(d, d->x, T, w->final_nw, w->final_nb));
     PROF(PK_P_HEAD, head(d, T));
 }
@@ -560,7 +708,7 @@ static int chunk(pk_diar *d, int64_t stt, int64_t end, int64_t left, int64_t rig
     memcpy(d->in + (size_t)nc * D, d->fifo, (size_t)nf * D * sizeof *d->in);
     float *in = d->in + (size_t)(nc + nf) * D;
     PROF(PK_P_SUB, pk_quantize_on(d->pool, &d->act, d->feat, (size_t)f * M, ne, f * M, QB));
-    PROF(PK_P_SUB, pk_gemm_on(d->pool, NULL, in, D, &d->w->stack_w, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_SUB, pk_gemm_on(d->pool, &d->packed, in, D, &d->w->stack_w, NULL, &d->act, 0, NULL, NULL));
     forward(d, T);
     /* each 80 ms frame's probabilities, the mean of its U, which the cache
      * scores (SortformerModules.downsample_preds) */
@@ -674,6 +822,9 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
         return NULL;
     }
     d->nth = pk_pool_threads(d->pool);
+    d->wide = d->nth;
+    d->fast = threads > 0 ? d->nth : pk_os_cores_but_slowest();
+    d->tune = d->fast > 1 && d->fast < d->nth ? TUNE_STEPS : 0;     /* a lone core is not raced (layers) */
     d->tws = calloc((size_t)d->nth, sizeof *d->tws);
     if (!d->tws) {
         pk_diar_free(d);
@@ -686,6 +837,15 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
     if (T * 3 * P > wide) wide = T * 3 * P;
     if (U * T * P > wide) wide = U * T * P;
     const uint64_t cap = (E8 + 2) * m->hop + m->n_fft + 1 + 65536;
+    /* the largest of d->act and d->hid in sixteens of columns, where the
+     * backend packs a product's (passes.h) */
+    uint64_t packed = 0;
+    if (pk_k_packs()) {
+        const uint64_t in[][2] = { { T, F }, { T, D }, { T, 3 * P }, { U * T, P }, { d->emax, d->f * M } };
+        for (size_t i = 0; i < sizeof in / sizeof in[0]; i++)
+            if (PK_PACKED_CAP(in[i][0], in[i][1]) > packed)
+                packed = PK_PACKED_CAP(in[i][0], in[i][1]);
+    }
     for (int pass = 0; pass < 2; pass++) {
         uint64_t p = pass ? ((uintptr_t)d->mem + 63) & ~(uintptr_t)63 : 0;
         CARVE(d->buf, cap, sizeof(float));
@@ -713,6 +873,9 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
         CARVE(d->hid.d, T * F / QB, sizeof(float));
         CARVE(d->a1.q, T * P, 1);
         CARVE(d->a1.d, T * P / QB, sizeof(float));
+        CARVE(d->packed.x, packed, 1);
+        CARVE(d->packed.d, packed / 32, sizeof(float));
+        CARVE(d->packed.st, packed / 512, 1);
         CARVE(d->cache, C * D, sizeof(float));
         CARVE(d->cache_p, C * S, sizeof(float));
         CARVE(d->fifo, ((size_t)w->fifo_len + w->chunk_len) * D, sizeof(float));
@@ -735,6 +898,7 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
         }
     }
     d->buf_cap = (size_t)cap;
+    d->packed.cap = (size_t)packed;
     /* the rotary positions' sines and cosines, position t of a step times
      * each frequency, the product a float32 multiply as NeMo forms it */
     const uint32_t h2 = d->dk / 2;
@@ -744,7 +908,8 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
     return d;
 }
 
-int pk_diar_threads(const pk_diar *d) { return d->nth; }
+int pk_diar_threads(const pk_diar *d) { return d->wide; }
+int pk_diar_settled(const pk_diar *d) { return d->tune == 0; }
 
 void pk_diar_reset(pk_diar *d) {
     d->got = 0;

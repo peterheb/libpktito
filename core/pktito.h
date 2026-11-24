@@ -657,11 +657,25 @@ long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const int32_t *s
  * the same memory. */
 typedef struct pk_diar pk_diar;
 
-/* A diarizer on `threads` threads (0: one a core), which pk_diar_threads
- * says. NULL if m is a recognizer's, or memory or a thread cannot be had. */
+/* A diarizer on `threads` threads (0: one a core). NULL if m is a
+ * recognizer's, or memory or a thread cannot be had. With 0, on a chip
+ * whose cores are of more kinds than one, the four whole chunks after its
+ * first, of one recording or several, are heard on every core and on
+ * every kind's but the slowest's by turns, and the diarizer keeps the
+ * fewer where they were the faster in both their turns, the second by a
+ * sixteenth; a lone fast core is not tried, and the fewer are left early
+ * where they are behind (core/diar.c, layers). pk_diar_threads says how
+ * many it runs on, and pk_diar_settled whether that is its choice made: 1
+ * if it was given its threads, had no turns to run or has run them, and 0
+ * before, when the count is every core's and not one to keep. A settled
+ * count given as `threads` to the diarizers after it on the same machine
+ * saves them the turns, which a program that makes a diarizer a recording
+ * runs every time: three minutes took an M5 Ultra 0.487 s with them and
+ * 0.402 s given its twelve (backend/neon-dp/CLIMB.md, 2026-11-24). */
 pk_diar *pk_diar_new(const pk_model *m, int threads);
 void     pk_diar_free(pk_diar *d);
 int      pk_diar_threads(const pk_diar *d);
+int      pk_diar_settled(const pk_diar *d);
 
 /* Rows [row, row + n) of a recording's probabilities, p[n][S], S =
  * pk_model_speakers: p[i S + s] is speaker s's in row row + i. The rows

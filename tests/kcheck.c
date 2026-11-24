@@ -282,19 +282,24 @@ static void gemm_f32_case(uint32_t rows, uint32_t ld, uint32_t k0, uint32_t n, u
     size_t bs = bias_kind == 2 ? os : 0;
     float *wfull = xmalloc((size_t)ld * rows * sizeof *wfull), *w = wfull + 16 * (size_t)k0;
     float *x = xmalloc(((size_t)T * xs + n) * sizeof *x);
+    /* each out with 16 columns past the call's, which a backend that takes
+     * columns sixteen at a time would write and no call may; they draw
+     * nothing from rnd(), so every case is the one it was */
+    const size_t no = (size_t)(T + 16) * os;
     float *b = xmalloc(((size_t)T * os + rows) * sizeof *b);
-    float *o1 = xmalloc(((size_t)T * os + rows) * sizeof *o1);
-    float *o2 = xmalloc(((size_t)T * os + rows) * sizeof *o2);
+    float *o1 = xmalloc(no * sizeof *o1);
+    float *o2 = xmalloc(no * sizeof *o2);
     for (size_t i = 0; i < (size_t)ld * rows; i++) wfull[i] = awkward(1.0f);
     for (size_t i = 0; i < (size_t)T * xs + n; i++) x[i] = awkward(1.0f);
     for (size_t i = 0; i < (size_t)T * os + rows; i++) b[i] = o1[i] = o2[i] = awkward(2.0f);
+    for (size_t i = (size_t)T * os + rows; i < no; i++) o1[i] = o2[i] = -1.0f;
     const float *bb = bias_kind ? b : NULL;
     kt->gemm_f32(o1, os, w, ld, rows, n, x, xs, T, bb, bs, relu);
     kr->gemm_f32(o2, os, w, ld, rows, n, x, xs, T, bb, bs, relu);
     char msg[128];
     snprintf(msg, sizeof msg, "gemm_f32 rows %u ld %u k0 %u n %u T %u bias %d relu %d", rows, ld, k0,
              n, T, bias_kind, relu);
-    same(msg, o1, o2, (size_t)T * os, 4);
+    same(msg, o1, o2, no, 4);
     for (uint32_t t = 0; t < T; t++)
         for (uint32_t r = 0; r < rows; r++) {
             double acc = bias_kind ? b[t * bs + r] : 0, mag = fabs(acc);
@@ -633,6 +638,119 @@ static void shared_cases(void) {
     pk_pool_free(pool);
 }
 
+/* The float product where a backend's columns go sixteen at a time and
+ * its panels four (neon-sme's FMOPA): every count of columns and panels a
+ * call can leave over, and the values at which such a path could part
+ * from ref. A NaN with a sign and a payload, in x, in the matrix and in
+ * the bias, which fmaf carries to the output and an instruction that
+ * writes ZA does not; an infinity by a zero; chains that end at -0, which
+ * ref's sum with the bias or with 0.0f makes +0; and the bias as out, with
+ * a NaN and without. One NaN to a call: where two meet, which survives is
+ * the instruction set's own choice. Each out has 16 columns more than the
+ * call's, which a block of 16 would write and no call may. */
+static void gemm_f32_odd_case(int kind, uint32_t rows, uint32_t n, uint32_t T, int bias_kind,
+                              int relu) {
+    const size_t os = rows + 16, xs = n + 3, bs = bias_kind == 2 ? os : 0;
+    float *w = xmalloc((size_t)n * rows * sizeof *w);
+    float *x = xmalloc(((size_t)T * xs + n) * sizeof *x);
+    const size_t no = (size_t)(T + 16) * os;
+    float *b = xmalloc(no * sizeof *b);
+    float *o1 = xmalloc(no * sizeof *o1);
+    float *o2 = xmalloc(no * sizeof *o2);
+    const uint32_t nanbits = 0xffc01234u;
+    float nan;
+    memcpy(&nan, &nanbits, sizeof nan);
+    for (size_t i = 0; i < (size_t)n * rows; i++) w[i] = kind == 4 ? 1e-30f : awkward(1.0f);
+    for (size_t i = 0; i < (size_t)T * xs + n; i++) x[i] = kind == 4 ? -1e-30f : awkward(1.0f);
+    for (size_t i = 0; i < no; i++) b[i] = o1[i] = o2[i] = awkward(2.0f);
+    const uint32_t t = rnd() % T;
+    const uint32_t k = rnd() % n;
+    const uint32_t r = rnd() % rows;
+    switch (kind) {
+    case 0: case 6: x[t * xs + k] = nan; break;
+    case 1: w[((size_t)(r / 16) * n + k) * 16 + r % 16] = nan; break;
+    case 2:
+        x[t * xs + k] = INFINITY;
+        w[((size_t)(r / 16) * n + k) * 16 + r % 16] = 0.0f;
+        break;
+    case 3: b[bs ? t * bs + r : r] = nan; break;
+    default: break;
+    }
+    const float *bb1 = bias_kind ? b : NULL, *bb2 = bias_kind ? b : NULL;
+    const int alias = kind >= 5;            /* the bias is out: each run adds to its own copy */
+    if (alias) {
+        memcpy(o1, b, no * sizeof *b);
+        memcpy(o2, b, no * sizeof *b);
+        bb1 = o1;
+        bb2 = o2;
+    }
+    kt->gemm_f32(o1, os, w, n, rows, n, x, xs, T, bb1, alias ? os : bs, relu);
+    kr->gemm_f32(o2, os, w, n, rows, n, x, xs, T, bb2, alias ? os : bs, relu);
+    char msg[128];
+    snprintf(msg, sizeof msg, "gemm_f32 odd %d: rows %u n %u T %u bias %d relu %d", kind, rows, n, T,
+             bias_kind, relu);
+    same(msg, o1, o2, no, 4);
+    xfree(w); xfree(x); xfree(b); xfree(o1); xfree(o2);
+}
+
+typedef struct {
+    const float *w, *x;
+    uint32_t rows, n, T;
+    size_t xs;
+    float *out;                             /* [items][T * rows] */
+} shared_f32_job;
+
+static void shared_f32_item(void *arg, int i, int th) {
+    shared_f32_job *j = arg;
+    (void)th;
+    kt->gemm_f32(j->out + (size_t)i * j->T * j->rows, j->rows, j->w, j->n, j->rows, j->n, j->x, j->xs,
+                 j->T, NULL, 0, 0);
+}
+
+static void f32_wide_cases(void) {
+    static const uint32_t Ts[] = { 2, 3, 15, 16, 17, 35 }, Rs[] = { 16, 48, 64, 80, 176 };
+    static const uint32_t Ns[] = { 1, 17, 64, 130 };
+    int i = 0;
+    for (uint32_t a = 0; a < 6; a++)
+        for (uint32_t b = 0; b < 5; b++)
+            for (uint32_t c = 0; c < 4; c++, i++)
+                gemm_f32_case(Rs[b], Ns[c] + 3, 1, Ns[c], Ts[a], Ns[c] + 5, i % 3, i / 3 % 2);
+    for (int kind = 0; kind < 7; kind++)
+        for (uint32_t a = 0; a < 6; a++)
+            for (uint32_t b = 1; b < 4; b += 2, i++)
+                gemm_f32_odd_case(kind, Rs[b], kind == 4 ? 3 : 40, Ts[a],
+                                  kind == 3 ? 1 + i % 2 : kind >= 5 ? 2 : kind == 4 ? 0 : i % 3,
+                                  kind == 4 ? i % 2 : i / 2 % 2);
+
+    /* and from several threads at once, as the int8 product's above: the
+     * attention's two shapes and one that leaves columns and panels over */
+    enum { ITEMS = 48 };
+    static const uint32_t shape[][3] = { { 688, 64, 16 }, { 64, 684, 16 }, { 80, 100, 37 } };
+    pk_pool *pool = pk_pool_new(8);
+    if (!pool) {
+        fprintf(stderr, "kcheck: no pool\n");
+        exit(1);
+    }
+    for (uint32_t s = 0; s < sizeof shape / sizeof shape[0]; s++) {
+        const uint32_t rows = shape[s][0], n = shape[s][1], T = shape[s][2];
+        float *w = xmalloc((size_t)rows * n * sizeof *w), *x = xmalloc((size_t)T * n * sizeof *x);
+        float *want = xmalloc((size_t)T * rows * sizeof *want);
+        float *out = xmalloc((size_t)ITEMS * T * rows * sizeof *out);
+        for (size_t k = 0; k < (size_t)rows * n; k++) w[k] = awkward(1.0f);
+        for (size_t k = 0; k < (size_t)T * n; k++) x[k] = awkward(1.0f);
+        kr->gemm_f32(want, rows, w, n, rows, n, x, n, T, NULL, 0, 0);
+        shared_f32_job j = { w, x, rows, n, T, n, out };
+        pk_pool_run(pool, shared_f32_item, &j, ITEMS);
+        for (int c = 0; c < ITEMS; c++) {
+            char msg[160];
+            snprintf(msg, sizeof msg, "gemm_f32 on 8 threads, call %d: rows %u n %u T %u", c, rows, n, T);
+            same(msg, out + (size_t)c * T * rows, want, (size_t)T * rows, 4);
+        }
+        xfree(w); xfree(x); xfree(want); xfree(out);
+    }
+    pk_pool_free(pool);
+}
+
 static void run(const char *model) {
     /* each rnd() in a statement of its own: the order a compiler evaluates
      * a call's arguments in is its own, and the cases should be the same
@@ -677,6 +795,7 @@ static void run(const char *model) {
     fast_cases(model);
     blocks_cases();         /* likewise */
     shared_cases();
+    f32_wide_cases();       /* likewise */
 }
 
 /* Each backend sees the same cases: the generator starts again for each.

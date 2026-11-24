@@ -11,7 +11,7 @@
 #                                 neon-sve     and SVE + I8MM's SMMLA: the GB10 (X925, A725)
 #                                 neon-i8mm    and I8MM's SMMLA, no SVE: Snapdragon 8, X
 #                                 neon-dp-a76  neon-dp in the A76's tile: Pi 5, Graviton2
-#                                 neon-sme     and SME2's SMOPA: the M4 Pro (macOS)
+#                                 neon-sme     and SME2's SMOPA and FMOPA: the M4 Pro (macOS)
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
 #                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
@@ -75,9 +75,10 @@ TUNE := $(if $(TUNE_$(CPU_PART)),-mtune=$(TUNE_$(CPU_PART)))
 ISA_neon := -march=armv8-a $(TUNE)
 ifeq ($(UNAME_S),Darwin)
   ISA_neon-dp := -mcpu=apple-m1
-  # neon-sme is neon-dp with SME2 for its int8 product (arm_sme.h's
-  # SMOPA and ZA); its probe is a function that makes ZA its own in
-  # streaming mode, which a compiler older than SME's keywords cannot take
+  # neon-sme is neon-dp with SME2 for its int8 and float products
+  # (arm_sme.h's SMOPA, FMOPA and ZA); its probe is a function that makes
+  # ZA its own in streaming mode, which a compiler older than SME's
+  # keywords cannot take
   ISA_neon-sme := -mcpu=apple-m1+sme2
 else
   ISA_neon-dp := -march=armv8.2-a+dotprod $(TUNE)
@@ -438,11 +439,14 @@ check-tsan:
 	cat tests/data/test.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 -m $(MODEL) - > /dev/null
 	cat tests/data/test.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 --max-chunk 12 -m $(MODEL) - > /dev/null
 	@# the diarizer's passes, on the tiny models: with a transcript, down a
-	@# pipe beside two lanes, and alone
+	@# pipe beside two lanes, and alone, on six threads and on the default,
+	@# where a chip of two kinds of core takes its steps on every core and on
+	@# the fast kind by turns
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 -m $(TINY) -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
 	cat tests/data/conv2.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 --json \
 	  -m $(TINY) -m $(TINY_DIAR) - > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan speakers -t 6 -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan speakers -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
 	@echo "check-tsan: no race on six threads, on two lanes of four, on the default, down a pipe as it is read, nor in the diarizer"
 
 check-math: tests/mathcheck
