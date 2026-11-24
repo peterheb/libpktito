@@ -1076,6 +1076,17 @@ done:
     return rc;
 }
 
+void pk_held_others(const pk_held *h, const pk_seg *w, size_t n, int32_t *out) {
+    for (size_t i = 0; i < n; i++) {
+        const int64_t mid = w[i].start + (w[i].end - w[i].start) / 2;
+        for (size_t k = 0; k < h->n_held; k++)
+            if (h->held[k].speaker < 0 && h->held[k].start <= mid && mid < h->held[k].end) {
+                out[i] = -1;
+                break;
+            }
+    }
+}
+
 int pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *out) {
     *out = (pk_held){ 0 };
     if (x->n < 0)

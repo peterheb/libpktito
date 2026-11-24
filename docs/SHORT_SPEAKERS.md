@@ -162,7 +162,9 @@ splits for twice the cost.
 - The audio is read again: where the diarizer goes back, and for the
   clips. pktito-c copies a pipe to a scratch file as it already did.
 - A held speaker's words are still transcribed. One that lands on no
-  speaker has no number: its rows are 0 in every column, and
-  `pk_speakers` gives its words to whoever else is heard there, or no one.
+  speaker has no number: its rows are 0 in every column, where
+  `pk_speakers`, NeMo's rule, gives a word to the first of equals, column
+  0, the first speaker heard. `pk_held_others` takes those words back: a
+  word whose middle is in a held stretch with no number is no one's.
 - The constants are core/hold.c's, chosen by hand on four podcasts before
   the 100 were run; none was tuned on the 100.

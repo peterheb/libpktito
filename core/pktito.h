@@ -786,6 +786,14 @@ typedef struct {
 int  pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *out);
 void pk_held_free(pk_held *h);
 
+/* The words of a held voice that took no number: out[i], pk_speakers'
+ * column for the word over samples w[i], set to -1, no one's, where the
+ * word's middle is in a stretch h held with speaker -1. Its rows there are
+ * 0 in every column, and pk_speakers, NeMo's rule, gives such a word to the
+ * first of equals, column 0, which is the first speaker heard: the voice
+ * the hold kept from a number would take theirs. */
+void pk_held_others(const pk_held *h, const pk_seg *w, size_t n, int32_t *out);
+
 /* The same as the recording is heard, for a caller that wants each row's
  * speakers before the end, as a transcription does that names its words'
  * speakers as it goes: pk_diar_run_held is pk_hold_new, pk_hold_end and
