@@ -13,7 +13,7 @@ wouldn't start from here, Sonny. That is to say, much of political philosophy...
 ```
 
 A minute of English speech takes 0.22 s on a Ryzen 9 9950X (277 times
-real time), 0.49 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
+real time), 0.25 s on an M4 Pro, 0.83 s on a Core i9-12900HK, 1.3 s on a
 Core 3 304, 3.7 s on a Raspberry Pi 5 and 45 s on a Raspberry Pi 3B+, cut
 at its pauses as `./pktito-c` cuts it by default. Every backend computes the
 same bits on every machine.
@@ -25,16 +25,16 @@ Neural Engine and NPUs").
 
 ## What this is
 
-|              |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| models       | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| backends     | `neon-sve` (SVE and I8MM's SMMLA: the GB10's X925 and A725), `neon-i8mm` (I8MM's SMMLA without SVE: Snapdragon 8 phones, Snapdragon X), `neon-dp-a76` (SDOT in a tile written for the A76, where its probe finds it the faster: the Pi 5, Graviton2), `neon-dp` (ARMv8.2 + SDOT: Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `amx-int8` (AMX's tiles: Sapphire and Granite Rapids), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
-| numerics     | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| audio        | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; AIFF and AIFF-C: PCM 8 to 32 bits either byte order, float 32/64, A-law, mu-law; any channel count; any rate, brought to 16 kHz                                                                                                                                                                                                                                                                                                                                                                               |
-| NPUs         | opt-in, in a build that asks for one: the encoder on Apple's Neural Engine (`make ANE=1`) or a Snapdragon's Hexagon NPU (`make QNN=1`), in fp16, from model files made for it ("The Neural Engine and NPUs")                                                                                                                                                                                                                                                                                                                                                                                           |
-| dependencies | the C library, libm and pthreads                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| systems      | Linux, macOS, and Windows 10 and later (built with MSYS2's MinGW-w64 gcc)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+|              |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| models       | Parakeet TDT 0.6B v2 (English) and v3 (25 European languages), converted from NVIDIA's `.nemo` checkpoints                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| backends     | `neon-sme` (SME2's SMOPA: Apple's M4 and M5 chips, on macOS), `neon-sve` (SVE and I8MM's SMMLA: the GB10's X925 and A725), `neon-i8mm` (I8MM's SMMLA without SVE: Snapdragon 8 phones, Snapdragon X), `neon-dp-a76` (SDOT in a tile written for the A76, where its probe finds it the faster: the Pi 5, Graviton2), `neon-dp` (ARMv8.2 + SDOT: Apple M), `neon` (ARMv8.0: Pi 3's A53, Pi 4's A72), `amx-int8` (AMX's tiles: Sapphire and Granite Rapids), `avx512-vnni` (AVX512-VNNI in zmm: Ice Lake and Tiger Lake, Zen 4 and 5), `avx2-vnni` (AVX-VNNI: Alder Lake and later Intel cores without AVX-512), `avx2` (Haswell and later), `ref` (scalar C, anything) |
+| numerics     | int8 weights and activations with exact integer sums; float32 attention, norms and decoder state (README, "Why int8")                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| what it does | a recording to punctuated, cased text, every token with its time; long recordings cut at their silences; live input transcribed at its pauses; subtitles                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| audio        | WAV: PCM 8/16/24/32, float 32/64, A-law, mu-law, EXTENSIBLE, RF64, streamed from a pipe; AIFF and AIFF-C: PCM 8 to 32 bits either byte order, float 32/64, A-law, mu-law; any channel count; any rate, brought to 16 kHz                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| NPUs         | opt-in, in a build that asks for one: the encoder on Apple's Neural Engine (`make ANE=1`) or a Snapdragon's Hexagon NPU (`make QNN=1`), in fp16, from model files made for it ("The Neural Engine and NPUs")                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| dependencies | the C library, libm and pthreads                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| systems      | Linux, macOS, and Windows 10 and later (built with MSYS2's MinGW-w64 gcc)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ## Try it
 
@@ -44,10 +44,11 @@ make BACKEND=ref              # scalar C alone, for anything
 ```
 
 A build holds every backend of its family that the compiler can make
-(neon-sve, neon-i8mm, neon-dp-a76, neon-dp and neon on AArch64; amx-int8,
-avx512-vnni, avx2-vnni and avx2 on x86-64) and the CPU picks the first it
-can run - neon-i8mm and neon-dp-a76 where their int8 product times the
-faster on its fastest cores - so a binary copied to
+(neon-sve, neon-i8mm, neon-dp-a76, neon-dp and neon on AArch64, and
+neon-sme on macOS; amx-int8, avx512-vnni, avx2-vnni and avx2 on x86-64) and
+the CPU picks the first it can run - neon-sme, neon-i8mm and neon-dp-a76
+where their int8 product times the faster on its fastest cores - so a
+binary copied to
 another machine of the family runs there at that machine's best: one
 built on an Alder Lake runs on a Zen 4, one built on a Pi 5 on a Pi 3.
 `./pktito-c info` says what the probe timed, and
@@ -167,8 +168,9 @@ And the bits are the same everywhere. `tests/data/test.v2.json` and
 `test.v3.json` are the transcripts `ref` writes for test.wav, every token and
 its time (`test.v2.fast.json` and `test.v3.fast.json` in the fast mode), and
 `make check-c` holds every backend on every machine to them byte for byte: so
-far `neon-sve` on a DGX Spark's GB10 (gcc 13.3 and clang 18.1), `neon-dp` on
-an M4 Pro (Apple clang 21) and a Pi 5 (gcc 14.2), `neon` on a
+far `neon-sve` on a DGX Spark's GB10 (gcc 13.3 and clang 18.1), `neon-sme`
+on an M4 Pro, a base M4 and an M5 Ultra (Apple clang 21), `neon-dp` on
+the M4 Pro and a Pi 5 (gcc 14.2), `neon` on a
 Pi 3B+ (gcc 14.2) and the M4 Pro, `avx2` and `avx2-vnni` on a 12900HK (gcc
 15.2) and on a Core 3 304 under Windows 11 (MSYS2's gcc 16.2), `avx2-vnni`,
 `avx512-vnni` and `avx2` on a Ryzen 9 9950X (gcc 15.2), `amx-int8` on a
@@ -179,7 +181,7 @@ the same bytes.
 ## How fast
 
 `./pktito-c bench`: Silero's test.wav (60 s of English), best of five,
-2026-10-20 (the 9950X's 2026-10-24). A machine's first row is what it picks itself, its default
+2026-10-20 (the 9950X's 2026-10-24; the M4 Pro's 2026-11-23, its chunks two at a time as the default takes them now, below). A machine's first row is what it picks itself, its default
 thread count and the fastest backend its CPU can run; the rows under it
 force another backend (`PKTITO_KERNELS`) or one thread. Seconds, and how
 many times real time, for the minute whole (`--max-chunk 60`, 750 encoder
@@ -187,9 +189,10 @@ frames) and in 30 s chunks, the default then:
 
 |                                      | compiler         | backend       | threads | whole         | in 30 s chunks |
 | ------------------------------------ | ---------------- | ------------- | ------- | ------------- | -------------- |
-| Apple M4 Pro                         | Apple clang 21.0 | `neon-dp`     | 12      | 0.487 (123x)  | 0.490 (122x)   |
-|                                      |                  | `neon`        | 12      | 1.047 (57x)   | 1.040 (58x)    |
-|                                      |                  | `ref`         | 12      | 20.6 (2.9x)   | 21.6 (2.8x)    |
+| Apple M4 Pro                         | Apple clang 21.0 | `neon-sme`    | 12      | 0.338 (178x)  | 0.254 (236x)   |
+|                                      |                  | `neon-dp`     | 12      | 0.470 (128x)  | 0.417 (144x)   |
+|                                      |                  | `neon`        | 12      | 0.955 (63x)   | 0.909 (66x)    |
+|                                      |                  | `ref`         | 12      | 20.4 (2.9x)   | 19.6 (3.1x)    |
 | Intel Core i9-12900HK                | gcc 15.2         | `avx2-vnni`   | 14      | 0.909 (66x)   | 0.828 (72x)    |
 |                                      |                  | `avx2-vnni`   | 1       | 3.28 (18.3x)  | 2.84 (21x)     |
 |                                      |                  | `avx2`        | 14      | 1.682 (36x)   | 1.597 (38x)    |
@@ -224,13 +227,17 @@ CPU at eight threads, both transcripts through one normalizer:
 | parakeet.cpp, v3 q8_0 | 1.96% | 30x (its Metal GPU path: 90x) |
 
 Where the time goes (`make PROFILE=1`, the minute whole). On the M4 Pro
-at eight threads: the feed-forward modules' int8 products 44%, the
-attention's float products 22%, q k v and the positions 14%, the
-convolution module 9%, the decoder 3%, the attention's output 3%,
-quantizing 3%, the features and subsampling 2%. On a Pi 5 at four, in
-that order: 43%, 20%, 13%, 10%, 3%, 3%, 5% and 3%; quantizing, which waits
-on memory there, is the share that grows. The int8 product runs at about
-56% of the M4's SDOT peak, at 19 multiply-adds a cycle of SDOT's 32 on an
+at eight threads, its int8 products on SME2's SMOPA: the feed-forward
+modules' int8 products 36%, the attention's float products 32%, q k v and
+the positions 12%, the convolution module 8%, the decoder 4%, the
+attention's output 2%, quantizing 2%, the features and subsampling 3%. On
+a Pi 5 at four, in that order: 43%, 20%, 13%, 10%, 3%, 3%, 5% and 3%;
+quantizing, which waits on memory there, is the share that grows. The
+int8 product runs at about 2.0 T multiply-adds a second on the M4 Pro,
+three quarters of what eight threads that do nothing else get of its SME
+units, two of a cluster at a time, and the others' SDOT (2.7 T; a
+cluster's cores share a unit, backend/neon-dp/CLIMB.md, 2026-11-23), at
+19 multiply-adds a cycle of SDOT's 32 on an
 A76 (about 81% of what its blocks' float work leaves), and at 47 of VNNI's
 64 on a 12900HK P-core (about 92%).
 
@@ -242,7 +249,7 @@ each pass's items and still add their share: a Core 3 304, one P-core and
 four E-cores, runs the minute whole in 5.02 s on its P-core and 1.39 s on
 all five; a 12900HK in 0.96 s on its six P-cores and 0.91 s on all 14
 (though 8, 16 and 18 threads take 1.10 to 1.15 s there, the same in every
-pass); an M4 Pro in 0.50 s on its eight performance cores and 0.49 s on
+pass); an M4 Pro in 0.40 s on eight threads and 0.34 s on
 all 12. backend/\*/CLIMB.md has every measurement the kernels and the
 defaults rest on.
 
@@ -1351,7 +1358,8 @@ core/        the model (encoder.c, decoder.c, mel.c), the file (model.c, pkf.h),
              passes over it (pool.c, passes.c), the CLI (cli.c)
 backend/     the seam (kernels.h, and kernels.c, which picks the backend that
              runs) and ref/, neon/ (and neon-dp/, neon-dp-a76/, neon-i8mm/,
-             neon-sve/), avx2/ (and avx2-vnni/, avx512-vnni/, amx-int8/); a
+             neon-sve/, neon-sme/), avx2/ (and avx2-vnni/, avx512-vnni/,
+             amx-int8/); a
              CLIMB.md beside each tuned backend
 npu/         the encoder on an NPU, in a build that asks for one: Core ML's
              (ane.m, make ANE=1) and QNN's (qnn.c, make QNN=1)

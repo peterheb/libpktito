@@ -21,7 +21,17 @@
 #include <string.h>
 
 const pk_kernels *const pk_kernels_built[] = {
-/* neon-sve first: on the GB10 15 to 16% faster than neon-dp at its ten
+/* neon-sme first, where SME2's SMOPA takes less time than the next's
+ * product: 0.36 to 0.44 of neon-dp's on an M4 Pro, a base M4 and an M5
+ * Ultra in the probe below, which macOS runs on one thread. A cluster's
+ * cores share the unit that reading is of, so neon-sme gives it to two
+ * threads at a time and SDOT to the cluster's others
+ * (backend/neon/kernels.c), which is what keeps one thread's reading the
+ * right pick on clusters of six (backend/neon-dp/CLIMB.md, 2026-11-23) */
+#ifdef PK_HAVE_neon_sme
+    &pk_kernels_neon_sme,
+#endif
+/* neon-sve next: on the GB10 15 to 16% faster than neon-dp at its ten
  * X925s, 24% on one (backend/neon-dp/CLIMB.md, 2026-11-02) */
 #ifdef PK_HAVE_neon_sve
     &pk_kernels_neon_sve,
@@ -343,6 +353,18 @@ void pk_k_quantize(pk_act *a, const float *x, size_t xs) { k()->quantize(a, x, x
 void pk_k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                   uint32_t rows, const pk_act *a, int add) {
     k()->gemm_q8(out, os, w, ws, bias, rows, a, add);
+}
+
+int pk_k_packs(void) { return k()->act_pack != NULL; }
+
+void pk_k_act_pack(int8_t *xp, float *dp, const pk_act *a, uint32_t t0) {
+    k()->act_pack(xp, dp, a, t0);
+}
+
+void pk_k_gemm_q8_packed(float *out, size_t os, const int8_t *w, const float *ws,
+                         const float *bias, uint32_t rows, const pk_act *a, int add,
+                         const int8_t *xp, const float *dp) {
+    k()->gemm_q8_packed(out, os, w, ws, bias, rows, a, add, xp, dp);
 }
 
 void pk_k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows, uint32_t n,

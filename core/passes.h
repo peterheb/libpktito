@@ -7,6 +7,8 @@
 #include "model.h"
 #include "pool.h"
 
+#include <stdatomic.h>
+
 /* make PROFILE=1: wall time in each stage of a transcription or a
  * diarization, read on the calling thread around whole passes, never inside
  * a kernel, and printed by `pktito-c bench`. The diarizer's stages are the
@@ -33,10 +35,27 @@ void pk_quantize_on(pk_pool *p, pk_act *act, const float *x, size_t xs, uint32_t
  * panels), on thread th */
 typedef void (*pk_tile_fn)(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th);
 
+/* A product's activations again in the backend's own order
+ * (pk_k_act_pack), where the backend has one (pk_k_packs): its columns in
+ * sixteens, each packed by the first item to need it and read by every item
+ * of the product after it. One serves a pool's products, which run one at a
+ * time, and holds the largest of their activations: cap bytes at x, cap /
+ * 32 floats at d, cap / 512 bytes at st, cap what PK_PACKED_CAP gives for
+ * the most columns and inputs (their blocks are 32 inputs or more, and so
+ * are they). */
+typedef struct {
+    size_t cap;
+    int8_t *x;                       /* [T up to a 16][n] */
+    float *d;                        /* [T up to a 16][n / qb] */
+    _Atomic unsigned char *st;       /* a sixteen's: 0, 1 while a thread packs it, 2 packed */
+} pk_packed;
+#define PK_PACKED_CAP(T, n) ((((size_t)(T) + 15) & ~(size_t)15) * (size_t)(n))
+
 /* out = w act (+ bias) (+ out, with add), rows and columns split over the
- * pool, then `then` (if not NULL) on each item's tile */
-void pk_gemm_on(pk_pool *p, float *out, size_t os, const pk_q8 *w, const float *bias,
-                const pk_act *act, int add, pk_tile_fn then, void *then_arg);
+ * pool, then `then` (if not NULL) on each item's tile. pk, or NULL: where
+ * the product's columns are packed for its items, if the backend packs. */
+void pk_gemm_on(pk_pool *p, pk_packed *pk, float *out, size_t os, const pk_q8 *w,
+                const float *bias, const pk_act *act, int add, pk_tile_fn then, void *then_arg);
 
 /* Inputs [k0, k0 + n) of column t of act from the n floats at x, whole
  * blocks quantized alone: the bytes and scales the whole column's
@@ -45,7 +64,8 @@ void pk_quant_part(pk_act *act, uint32_t t, uint32_t k0, uint32_t n, const float
 
 /* w act straight into pk_k_gemm_f32's panels, a panel ps floats apart, as
  * the attention's V is laid out (passes.c, panel_item) */
-void pk_gemm_panels_on(pk_pool *p, float *out, size_t ps, const pk_q8 *w, const pk_act *act);
+void pk_gemm_panels_on(pk_pool *p, pk_packed *pk, float *out, size_t ps, const pk_q8 *w,
+                       const pk_act *act);
 
 /* A product's tile transposed into pk_k_gemm_f32's panels (passes.c,
  * pk_panels_tile): src's n columns of D, head-major in heads of dk, into

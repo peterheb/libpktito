@@ -44,6 +44,9 @@ static int reserve(pk_asr *a, size_t T0) {
     /* the subsampling's windows (core/encoder.c, sub_item) */
     const size_t s1 = 3 * F1 * C, s2 = F2 * C, s3 = 3 * F2 * C, s4 = PK_SUB_BLOCK * F3 * C;
     const size_t sq = s2 > s4 ? s2 : s4;
+    /* the largest of a->act, a->hid and a->ape, where the backend packs */
+    const size_t pk_hid = PK_PACKED_CAP(Te, widest > F ? widest : F), pk_ape = PK_PACKED_CAP(R, D);
+    const size_t packed = !pk_k_packs() ? 0 : pk_hid > pk_ape ? pk_hid : pk_ape;
 
     void *mem = NULL;
     for (int pass = 0; pass < 2; pass++) {
@@ -68,6 +71,9 @@ static int reserve(pk_asr *a, size_t T0) {
         CARVE(a->ape.d, R * D / 32, sizeof(float));
         CARVE(a->hid.q, Te * F, 1);
         CARVE(a->hid.d, Te * F / 32, sizeof(float));
+        CARVE(a->packed.x, packed, 1);
+        CARVE(a->packed.d, packed / 32, sizeof(float));
+        CARVE(a->packed.st, packed / 512, 1);
         CARVE(a->fproj[0], Te * J, sizeof(float));
         CARVE(a->fproj[1], Te * J, sizeof(float));
         for (int t = 0; t < a->nth; t++) {
@@ -93,6 +99,7 @@ static int reserve(pk_asr *a, size_t T0) {
             a->mem = mem;
         }
     }
+    a->packed.cap = packed;
     a->cap = T0;
     return 0;
 }

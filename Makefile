@@ -1,7 +1,8 @@
 # pktito
 #
 #   make                          ./pktito-c for this machine's family, every backend in it:
-#                                 neon-sve, neon-i8mm, neon-dp-a76, neon-dp and neon on AArch64;
+#                                 neon-sve, neon-i8mm, neon-dp-a76, neon-dp and neon on AArch64
+#                                 (and neon-sme on macOS);
 #                                 amx-int8, avx512-vnni, avx2-vnni and avx2 on x86-64; and ref.
 #                                 The CPU picks one when it runs.
 #   make BACKEND=<name>           that backend alone, with ref:
@@ -10,6 +11,7 @@
 #                                 neon-sve     and SVE + I8MM's SMMLA: the GB10 (X925, A725)
 #                                 neon-i8mm    and I8MM's SMMLA, no SVE: Snapdragon 8, X
 #                                 neon-dp-a76  neon-dp in the A76's tile: Pi 5, Graviton2
+#                                 neon-sme     and SME2's SMOPA: the M4 Pro (macOS)
 #                                 avx2     x86-64 AVX2 + FMA
 #                                 avx2-vnni    and AVX-VNNI: Alder Lake and later, Zen 5
 #                                 avx512-vnni  and AVX512-VNNI in zmm: Ice Lake, Zen 4 and 5
@@ -50,6 +52,11 @@ UNAME_M := $(or $(firstword $(subst -, ,$(shell $(CC) -dumpmachine 2>/dev/null))
 UNAME_S := $(shell uname -s)
 ifneq ($(filter aarch64 arm64,$(UNAME_M)),)
   FAMILY := neon-sve neon-i8mm neon-dp-a76 neon-dp neon
+  # neon-sme on macOS alone: its feature and its vector length are asked of
+  # macOS (core/os.c), and it is measured on an M4 Pro and nowhere else yet
+  ifeq ($(UNAME_S),Darwin)
+    FAMILY := neon-sme $(FAMILY)
+  endif
 else ifneq ($(filter x86_64 amd64,$(UNAME_M)),)
   FAMILY := amx-int8 avx512-vnni avx2-vnni avx2
 endif
@@ -68,6 +75,10 @@ TUNE := $(if $(TUNE_$(CPU_PART)),-mtune=$(TUNE_$(CPU_PART)))
 ISA_neon := -march=armv8-a $(TUNE)
 ifeq ($(UNAME_S),Darwin)
   ISA_neon-dp := -mcpu=apple-m1
+  # neon-sme is neon-dp with SME2 for its int8 product (arm_sme.h's
+  # SMOPA and ZA); its probe is a function that makes ZA its own in
+  # streaming mode, which a compiler older than SME's keywords cannot take
+  ISA_neon-sme := -mcpu=apple-m1+sme2
 else
   ISA_neon-dp := -march=armv8.2-a+dotprod $(TUNE)
 endif
@@ -90,6 +101,7 @@ ISA_amx-int8 := $(ISA_avx512-vnni) -mamx-tile -mamx-int8
 PROBE := int x;
 PROBE_neon-sve := void f(void) { __asm__(".arch_extension sve\n.arch_extension i8mm\nmovprfx z0, z1\nsmmla z0.s, z1.b, z2.b"); }
 PROBE_neon-i8mm := void f(void) { __asm__(".arch_extension i8mm\nsmmla v0.4s, v1.16b, v2.16b"); }
+PROBE_neon-sme := __arm_new("za") __arm_locally_streaming void f(void) { __asm__("smopa za0.s, p0/m, p0/m, z0.b, z1.b"); }
 can_build = $(shell printf '%s\n' '$(or $(PROBE_$(1)),$(PROBE))' | $(CC) $(ISA_$(1)) -x c -c -o /dev/null - 2>/dev/null && echo $(1))
 BACKENDS := $(filter-out ref,$(if $(BACKEND),$(BACKEND),$(foreach b,$(FAMILY),$(call can_build,$(b)))))
 

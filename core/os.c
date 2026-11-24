@@ -37,6 +37,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #ifdef __APPLE__
+#include <pthread.h>
 #include <sys/sysctl.h>
 #endif
 #endif
@@ -343,6 +344,45 @@ int pk_os_cores(void) {
 #endif
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n < 1 ? 1 : (int)n;
+}
+
+#ifdef __APPLE__
+static unsigned char g_cluster[256]; /* a CPU's cluster, by its number */
+
+static void clusters_read(void) {
+    int levels = 1, cpu = 0, cluster = 0;
+    size_t len = sizeof levels;
+    if (sysctlbyname("hw.nperflevels", &levels, &len, NULL, 0) != 0)
+        return;
+    for (int l = levels - 1; l >= 0; l--) {
+        char name[48];
+        int count = 0, per = 0;
+        snprintf(name, sizeof name, "hw.perflevel%d.logicalcpu", l);
+        len = sizeof count;
+        if (sysctlbyname(name, &count, &len, NULL, 0) != 0 || count < 1)
+            continue;
+        snprintf(name, sizeof name, "hw.perflevel%d.cpusperl2", l);
+        len = sizeof per;
+        if (sysctlbyname(name, &per, &len, NULL, 0) != 0 || per < 1)
+            per = count;
+        for (int i = 0; i < count && cpu < (int)sizeof g_cluster; i++)
+            g_cluster[cpu++] = (unsigned char)(cluster + i / per);
+        cluster += (count + per - 1) / per;
+    }
+}
+#endif
+
+int pk_os_cluster(void) {
+#ifdef __APPLE__
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    size_t cpu = 0;
+    pthread_once(&once, clusters_read);
+    if (pthread_cpu_number_np(&cpu) != 0 || cpu >= sizeof g_cluster)
+        return 0;
+    return g_cluster[cpu];
+#else
+    return 0;
+#endif
 }
 
 int pk_os_fast_cores(void) {
@@ -884,14 +924,22 @@ static int cpu_has(const char *f) {
  * for apple-a12, and iPadOS 26 still runs on A12 iPads. The system names
  * each feature it has in hw.optional.arm (1 on the M4 Pro); one that does
  * not name it gets neon. I8MM (1 on the M4) puts neon-i8mm to its probe,
- * which keeps the M4 on neon-dp (backend/neon-dp/CLIMB.md, 2026-11-07). */
+ * which keeps the M4 on neon-dp (backend/neon-dp/CLIMB.md, 2026-11-07).
+ * "sme2" is SME2 with a streaming vector of 64 bytes, the length
+ * backend/neon's SMOPA product is written for (the M4's, and the most the
+ * system says a thread may have). */
 static int cpu_has(const char *f) {
     const char *name = !strcmp(f, "asimddp") ? "hw.optional.arm.FEAT_DotProd"
                        : !strcmp(f, "i8mm")  ? "hw.optional.arm.FEAT_I8MM"
+                       : !strcmp(f, "sme2")  ? "hw.optional.arm.FEAT_SME2"
                                              : NULL;
-    int has = 0;
-    size_t len = sizeof has;
-    return name && sysctlbyname(name, &has, &len, NULL, 0) == 0 && has;
+    int has = 0, svl = 0;
+    size_t len = sizeof has, svl_len = sizeof svl;
+    if (!name || sysctlbyname(name, &has, &len, NULL, 0) != 0 || !has)
+        return 0;
+    if (!strcmp(f, "sme2"))
+        return sysctlbyname("hw.optional.arm.sme_max_svl_b", &svl, &svl_len, NULL, 0) == 0 && svl == 64;
+    return 1;
 }
 
 #else /* elsewhere no feature can be asked for, and ref and neon need none */

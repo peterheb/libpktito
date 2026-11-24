@@ -91,6 +91,7 @@ struct pk_asr {
     float *pe, *p;                   /* [2Te-1][D]: positions, and their projection */
     float *kp, *vp, *pp;             /* K, V and P per head, as pk_k_gemm_f32 panels */
     pk_act act, ape, hid;            /* int8 activations; the positions'; the feed-forward's hidden */
+    pk_packed packed;                /* a product's of them, in the backend's order (passes.h) */
     pk_thread_ws *tws;
 
     /* the decoder */
