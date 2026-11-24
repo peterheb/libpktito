@@ -3812,3 +3812,48 @@ Open: a level whose clusters differ in size from another's on a chip of
 two dies would be numbered wrong by pk_os_cluster (none of the three);
 the E cores' unit, where one thread and two measured alike; the
 diarizer's products packed once; a second compiler.
+
+## 2026-11-23 - 4332856 against dd2faed on Graviton2 to 5, gcc 13.3 and clang 18.1: the same seconds (a measurement)
+
+What the Macs above could not say: whether the branch costs a board with
+no SME anything. Its core packs a product's columns only for a backend
+that has `act_pack`, which on Linux is none, so the expectation was no
+change. EC2 c6g, c7g, c8g and c9g, an xlarge each (4 cores), Ubuntu
+24.04, both trees built on the instance under each compiler, v2,
+tests/data/test.wav, rounds in rotated order.
+
+- `make check-c` passes on dd2faed on all four under both compilers, and
+  on c7g again with SVE at 128 bits. kcheck's shared calls run there on
+  every backend the build holds: neon-sve, neon-i8mm, neon-dp-a76,
+  neon-dp and neon on c7g, c8g and c9g, the last three on c6g.
+- The transcript's bytes are one on the sixteen builds, and the M4 Pro's.
+- The pick is 4332856's on each: neon-dp-a76 on c6g, neon-sve on the
+  others.
+
+Medians, seconds, 4332856 / dd2faed:
+
+|                        |           | gcc 13.3        | clang 18.1      |
+| ---------------------- | --------- | --------------- | --------------- |
+| c6g, N1, neon-dp-a76   | 4 threads | 2.908 / 2.912   | 2.888 / 2.888   |
+|                        | one core  | 11.487 / 11.522 | 11.482 / 11.463 |
+| c6g, neon-dp by name   | 4 threads | 3.141 / 3.142   | 3.115 / 3.118   |
+| c7g, V1, neon-sve, 256 | 4 threads | 1.944 / 1.944   | 1.927 / 1.925   |
+|                        | one core  | 6.363 / 6.376   | 6.306 / 6.302   |
+| c7g, neon-sve, 128     | 4 threads | 1.935 / 1.936   | 1.918 / 1.919   |
+| c7g, neon-dp by name   | 4 threads | 2.380 / 2.380   | 2.362 / 2.361   |
+| c8g, V2, neon-sve      | 4 threads | 1.621 / 1.623   | 1.610 / 1.610   |
+|                        | one core  | 5.260 / 5.261   | 5.228 / 5.229   |
+| c8g, neon-dp by name   | 4 threads | 1.840 / 1.841   | 1.824 / 1.824   |
+| c9g, V3, neon-sve      | 4 threads | 1.069 / 1.068   | 1.057 / 1.056   |
+|                        | one core  | 3.872 / 3.873   | 3.863 / 3.865   |
+| c9g, neon-dp by name   | 4 threads | 1.261 / 1.261   | 1.246 / 1.247   |
+
+(Five rounds at 4 threads, three on one core, `taskset -c 2 -t 1`, and
+at 128 bits.) Every row is within 0.3%, the fast mode's sixteen within
+0.2% (three rounds each). The widest is c6g's one core, +0.3% under gcc
+and -0.2% under clang, each outside its three rounds' range and of
+opposite sign: a build's layout, not the change.
+
+The files: results/m4climb-<type>/ in the bench bucket (sysinfo, both
+check-c logs, the rounds, and the instance's own log, which traces the
+batch's script line by line).
