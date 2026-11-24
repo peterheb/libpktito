@@ -434,6 +434,240 @@
       ]
     },
     {
+      "name": "parakeet-ultra",
+      "task": "transcribe",
+      "status": "stable",
+      "about": "25 European languages",
+      "languages": [
+        "en",
+        "es",
+        "fr",
+        "de",
+        "bg",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "et",
+        "fi",
+        "el",
+        "hu",
+        "it",
+        "lv",
+        "lt",
+        "mt",
+        "pl",
+        "pt",
+        "ro",
+        "sk",
+        "sl",
+        "sv",
+        "ru",
+        "uk"
+      ],
+      "by": "Moondream",
+      "license": "CC-BY-4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "source": "https://huggingface.co/moondream/parakeet-ultra",
+      "changes": "int8",
+      "notice": "Post-trained from NVIDIA's parakeet-tdt-0.6b-v3 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), CC-BY-4.0",
+      "includes": [
+        {
+          "name": "Silero VAD",
+          "task": "vad",
+          "by": "Silero Team",
+          "license": "MIT",
+          "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+          "source": "https://github.com/snakers4/silero-vad",
+          "notice": "Copyright (c) 2020-present Silero Team"
+        }
+      ],
+      "editions": [
+        {
+          "id": "cpu",
+          "about": "any CPU",
+          "runtime": {
+            "kind": "cpu"
+          },
+          "model": {
+            "file": "parakeet-ultra.pkf",
+            "bytes": 647552772,
+            "sha256": "e7f9345c8bfc257deb8686e510f7ee262243b84ded91289e6b5aeb75b9da0fc2",
+            "made": {
+              "by": "pktito-tools convert --nemo-base parakeet-tdt-0.6b-v3.nemo, from moondream/parakeet-ultra 73175eb; the file names its converter pktito-tools 0.9.8 4332856, the ultra branch's hf.py (8c37f0c) before its commit"
+            }
+          }
+        },
+        {
+          "id": "coreml",
+          "about": "Apple's Neural Engine",
+          "runtime": {
+            "kind": "coreml",
+            "macos": [15, 0],
+            "ios": [18, 0]
+          },
+          "model": {
+            "file": "parakeet-ultra-slim.pkf",
+            "bytes": 35188100,
+            "sha256": "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-ultra-encoder.mlmodelc.aar",
+            "bytes": 545271166,
+            "sha256": "958e706e1eb700b44b25802f56565395a0567b7047b104df82d2813dcc100c63",
+            "made": {
+              "by": "tools/ane/encoder.py --nemo-base, then aa archive",
+              "with": "coremltools 9.0, Xcode 27.2",
+              "on": "2026-11-23"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8650",
+          "about": "the Snapdragon 8 Gen 3 (Galaxy S24)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "57,75,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-ultra-slim.pkf",
+            "bytes": 35188100,
+            "sha256": "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-ultra-sm8650.qnn",
+            "bytes": 714506856,
+            "sha256": "56dccb011e4bff4e0d4b743bb69fc3900ddc82909d736ae23b2f19477c5debee",
+            "made": {
+              "by": "pktito-qnn-graph 2, libpktito ultra a5252d7, from the CPU edition's file",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-23",
+              "note": "run on the S24, 2026-11-23: AliceBench 174-188x, 46 words of 27,145 from the CPU's, punctuation and case only, WER the CPU's"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8750",
+          "about": "the Snapdragon 8 Elite (Galaxy S25)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "69,79,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-ultra-slim.pkf",
+            "bytes": 35188100,
+            "sha256": "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-ultra-sm8750.qnn",
+            "bytes": 713568872,
+            "sha256": "3333d9a6e3d5fb867a29f91873aeaf98ea2dcfe9a48c51fc923d83175ba16af5",
+            "made": {
+              "by": "pktito-qnn-graph 2, libpktito ultra a5252d7, from the CPU edition's file",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-23",
+              "note": "checked in QAIRT's emulation only (test.wav the CPU's), not yet on an S25"
+            }
+          }
+        },
+        {
+          "id": "qnn-sm8850",
+          "about": "the Snapdragon 8 Elite Gen 5 (Galaxy S26)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "87,81,8,1,0",
+            "systems": ["android"]
+          },
+          "model": {
+            "file": "parakeet-ultra-slim.pkf",
+            "bytes": 35188100,
+            "sha256": "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-ultra-sm8850.qnn",
+            "bytes": 714412648,
+            "sha256": "39e0774bfc542082bb7114851a0c8d90fafc566a669292053018d70514712b28",
+            "made": {
+              "by": "pktito-qnn-graph 2, libpktito ultra a5252d7, from the CPU edition's file",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-23",
+              "note": "checked in QAIRT's emulation only (test.wav the CPU's), not yet on an S26"
+            }
+          }
+        },
+        {
+          "id": "qnn-x1e80100",
+          "about": "the Snapdragon X Elite (X1E80100)",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "60,73,8,1,1",
+            "systems": ["android", "windows"]
+          },
+          "model": {
+            "file": "parakeet-ultra-slim.pkf",
+            "bytes": 35188100,
+            "sha256": "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-ultra-x1e80100.qnn",
+            "bytes": 714523240,
+            "sha256": "0fc4e9a38b9e402f4be65aceac7f4d06302252d015dd302b1f78aae603c1d6f2",
+            "made": {
+              "by": "pktito-qnn-graph 2, libpktito ultra a5252d7, from the CPU edition's file",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-23",
+              "note": "run on the Googlebook (Android) and snappy (Windows), 2026-11-23: AliceBench about 142x and 152x, 43 words from the CPU's, punctuation and case only, WER the CPU's"
+            }
+          }
+        },
+        {
+          "id": "qnn-sc8480xp",
+          "about": "the Snapdragon X2 Elite",
+          "runtime": {
+            "kind": "qnn",
+            "chip": "88,81,8,1,1",
+            "systems": ["windows"]
+          },
+          "model": {
+            "file": "parakeet-ultra-slim.pkf",
+            "bytes": 35188100,
+            "sha256": "9ce392cb86413d1cc8606bd8c63af15badc62f30d9cce4b49f33c34f833dcbaa",
+            "made": {
+              "by": "pktito-tools slim, from the CPU edition's file"
+            }
+          },
+          "encoder": {
+            "file": "parakeet-ultra-sc8480xp.qnn",
+            "bytes": 714445416,
+            "sha256": "ee69969fce9ce7a40fd26cf6560a73ee998f36c248a828dea84ed25462ec63e6",
+            "made": {
+              "by": "pktito-qnn-graph 2, libpktito ultra a5252d7, from the CPU edition's file",
+              "with": "QAIRT 2.51.0.260929",
+              "on": "2026-11-23",
+              "note": "run on the X2E-84-100, 2026-11-23: AliceBench about 288x, 47 words from the CPU's, punctuation and case only"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "nemotron-3-diarization",
       "task": "diarize",
       "status": "stable",
