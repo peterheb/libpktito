@@ -4492,3 +4492,24 @@ would halve SMOPA's drains and every backend's conversions, and is a
 question for diarquant.py first; and the softmax is now the attention's
 largest part on a unit, 1.8 ms a layer on one thread beside the scores'
 0.5.
+
+## 2026-11-24 - the queries with one scale a head: the probe (a measurement; the lead is small)
+
+The entry above left a lead it had not timed: a head's queries as one
+block of 64, a conversion and a fused multiply-add an output where two
+blocks have two. The probe again at 3276708 with the queries' block a
+macro (qkprobe64.c, a scratch program, not in the tree), a layer's scores
+on one thread of the M4 Pro, best of 30, in ms:
+
+|            | product, blocks of 32 | product, one block of 64 | float product, with K's panels |
+| ---------- | --------------------- | ------------------------ | ------------------------------ |
+| `neon-sme` | 0.474                 | 0.444                    | 0.498 + 0.058                  |
+| `neon-dp`  | 1.368                 | 1.289                    | 3.985 + 0.059                  |
+| `neon`     | 3.750                 | 3.568                    | 4.047 + 0.061                  |
+
+5 to 6% of the product, with the operands' rounding the same 0.14 ms
+beside it. On the unit the int8 scores would be 0.58 ms against float's
+0.56 where they are 0.61 now: the one thread's loss halved, not gone. On
+SDOT it is 0.08 ms of a layer's 21 or so, 0.4% of the diarizer. A rounding
+of its own to score against float32 for that is not worth its run, and
+the one above stays as measured.
