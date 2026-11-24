@@ -134,6 +134,8 @@ else {
         "conv2.wav: FAIL - the diarizer's stretches differ from tests\data\conv2.speakers.txt"; exit 1
     }
     "conv2.wav: the diarizer's stretches of speech are ref's"
+    # the held run as the recording is heard, against it read whole
+    run "tests\holdcheck.exe `"$Diar`" tests\data\conv2.wav"
     Remove-Item tests\t.txt
     if (-not $V2 -or -not (Test-Path $V2)) { "conv2.wav: no $V2 - skipped" }
     else {
