@@ -831,7 +831,8 @@ core's median. The narrow side's turns are between every core's so that
 clocks rising or falling through the four steps cannot give it both: a
 Snapdragon X Elite laptop under Windows, whose first run of a process is
 1.0 to 1.6 s over its later ones, kept eight of its twelve like cores in
-one process of two with the turns in alternation, 40% slower.
+one process of two with the turns in alternation, 40% slower, and its
+twelve in 7 of 7 with them so.
 Measured on 2026-11-24 over ten minutes of sound (test.wav ten times over,
 `pktito-c bench`): an M5 Ultra keeps its twelve fast cores, 1.25 s where
 its 36 cores take 1.81; a GB10 its ten X925s, 1.93 s against its twenty's
