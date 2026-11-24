@@ -2112,8 +2112,8 @@ static int bench_diar(const opts *o, const pk_model *dm) {
     const double audio = (double)n / rate;
 #ifdef PK_PROFILE
     static const prof_row stage[] = { { PK_P_MEL, "features" }, { PK_P_SUB, "stacking" },
-        { PK_P_NORM, "layer norm" }, { PK_P_QUANT, "norm + quantize" }, { PK_P_QKV, "q k v" },
-        { PK_P_POS, "rotation" }, { PK_P_ATT, "attention" }, { PK_P_ATTO, "attention out" },
+        { PK_P_NORM, "layer norm" }, { PK_P_QUANT, "norm + quantize" }, { PK_P_QKV, "q k v, keys" },
+        { PK_P_ATT, "attention" }, { PK_P_ATTO, "attention out" },
         { PK_P_FF, "ff + GELU" }, { PK_P_HEAD, "head" }, { PK_P_CACHE, "cache" } };
     print_profile(stage, (int)(sizeof stage / sizeof *stage));
 #endif

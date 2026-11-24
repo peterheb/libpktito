@@ -40,7 +40,7 @@
  * quantized in blocks of 32, the recognizer's rule (README, "Why int8";
  * docs/DIARIZATION.md, "Why int8", measures it for this model), and so
  * are the attention's scores, a head's keys the weights its queries meet
- * (keys_item). The attention's weighted sum is float, on pk_k_gemm_f32.
+ * (keys_tile). The attention's weighted sum is float, on pk_k_gemm_f32.
  * Each pass is split over the pool, and no output element depends on how,
  * so a run is the same bits on any number of threads and every backend
  * gives ref's. The rotation, the means and the cache's cut are plain loops
@@ -120,7 +120,7 @@ struct pk_diar {
     float *in;                   /* [tmax][D]: the cache, the FIFO and the chunk, stacked */
     float *x, *q, *k, *o;        /* [tmax][D]: the stream; the queries, keys, attention */
     float *u;                    /* [tmax][F]: the feed-forward's hidden */
-    int8_t *q8, *k8;             /* the scores' operands (keys_item): the queries, [H][tmax][dk],
+    int8_t *q8, *k8;             /* the scores' operands (keys_tile): the queries, [H][tmax][dk],
                                   * and each head's keys, a PK_Q8 matrix of a step's frames by dk */
     float *qd, *ks;              /* their scales: a query's blocks', a key's */
     float *vp;                   /* V as pk_k_gemm_f32 panels */
@@ -304,9 +304,12 @@ static void keys_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t
 typedef struct { pk_diar *d; uint32_t T, Tp; } att_job;
 
 /* One head over ATT_BLOCK queries: their scores against every key, the
- * int8 product (keys_item), divided by sqrt(dk) and softmaxed, and the
- * weighted sum of the values, a float one. No positions here: the
- * rotation put them in the queries and keys. */
+ * int8 product (keys_tile), divided by sqrt(dk) and softmaxed, and the
+ * weighted sum of the values, a float one, then quantized for the output
+ * projection while it is in this core's cache, where a job of its own
+ * after this one made the ten minutes 1.3 to 1.6% slower on the 9950X
+ * (backend/avx2/CLIMB.md, 2026-11-24). No positions here: the rotation put
+ * them in the queries and keys. */
 static void att_item(void *arg, int item, int th) {
     att_job *j = arg;
     pk_diar *d = j->d;
@@ -321,6 +324,9 @@ static void att_item(void *arg, int item, int th) {
         pk_k_softmax(sc + (size_t)i * j->Tp, T, scale);
     pk_k_gemm_f32(d->o + (size_t)i0 * D + h * dk, D, d->vp + (size_t)h * (dk / 16) * T * 16, T, dk, T, sc,
                   j->Tp, nq, NULL, 0, 0);
+    /* a head's dk inputs are whole blocks of the projection's */
+    for (uint32_t i = i0; i < i0 + nq; i++)
+        pk_quant_part(&d->act, i, h * dk, dk, d->o + (size_t)i * D + h * dk);
 }
 
 typedef struct { float *x; size_t n; } relu_job;
@@ -380,7 +386,6 @@ static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     PROF(PK_P_QKV, pk_parts_on(d->pool, qkv, 3));
     att_job aj = { d, T, Tp };
     PROF(PK_P_ATT, pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK))));
-    PROF(PK_P_QUANT, pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB));
     PROF(PK_P_ATTO, pk_gemm_on(d->pool, &d->packed, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL));
 
     PROF(PK_P_QUANT, normq(d, d->x, T, L->ff_nw, L->ff_nb));

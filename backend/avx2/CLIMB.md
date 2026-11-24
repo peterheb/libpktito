@@ -3858,3 +3858,37 @@ minutes (test3.wav), two rounds, gcc: 1 thread 1.682-1.687 to
 share of the job. Arm is built (aarch64 gcc, cross) and not run: its
 packed path takes the three parts' columns from one pk, which
 packed_for resets three times before the job starts.
+
+## 2026-11-24 - the attention's output quantized in its items (result: kept; built before this entry)
+
+The attention's output went to the output projection through a job of
+its own, pk_quantize_on, 20 ms a run at 16 threads. A head's 64 inputs
+are two whole blocks of 32, so each attention item now quantizes its own
+16 queries' slice of them (pk_quant_part, the same bytes as the whole
+column's) while they are in its cache, and the job is gone. Six
+interleaved rounds, the ten minutes at 16 threads: gcc 15.2 0.804-0.811
+s to 0.794-0.797, clang 21.1.8 0.816-0.821 to 0.800-0.810; 1.3 and 1.6%.
+This entry was written after the change was built and measured, not
+before.
+
+## 2026-11-24 - the layer norms made by the products that take them (hypothesis)
+
+Two jobs a layer are normq, LN(x) quantized into the products'
+activations, 36 ms a run at 16 threads, each a round trip of the pool.
+H6: the product makes them on demand instead, as backend/neon's packed
+columns are made (passes.c, pack): an item first makes each sixteen of
+its columns that no item has begun, the layer norm and the quantizing
+of those 16 frames, then waits for those another item is at, then runs.
+The qkv job's three parts share one set. The same operations on every
+frame, so the same bits. Predicted: most of the 36 ms, the run 2 to 4%
+faster at 16 threads.
+
+## 2026-11-24 - the layer norms made by the products that take them (result: rejected)
+
+Built as H6 has it (a pk_make in passes.c, both of a layer's normq jobs
+folded into the products after them), the same bytes. Five interleaved
+rounds, the ten minutes at 16 threads: gcc 15.2 0.789-0.797 s before,
+0.792-0.797 with it; clang 21.1.8 0.805-0.810 before, 0.801-0.815. Level:
+the job saved is paid back in the items' waits for the sixteens other
+items are making, every item of the first round needing all of them
+(K's whole heads) or a third. Not kept.
