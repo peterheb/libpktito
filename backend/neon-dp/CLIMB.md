@@ -3640,3 +3640,175 @@ tenth with the machine's state; 2dfc43f's call that packs its own
 columns is 1% behind ba52667's (k_act_pack reads a column of zeros by a
 mask where sme_pack had 4096 zeros to read). Either is far under the
 0.97 the probe asks. backend/kernels.c's comment says 0.36 to 0.40.
+
+## 2026-11-23 - neon-sme on an M5 Ultra and a base M4: the fleet's rounds (a measurement), and a unit's limit again (hypothesis)
+
+95bc7c6 against 4332856 on two more of Apple's chips (the fleet's check:
+v2, test.wav, Apple clang 21, best of 5 a round, each machine quiet):
+
+|                                 | 4332856, neon-dp | 95bc7c6, neon-sme | 95bc7c6, neon-dp forced |
+| ------------------------------- | ---------------- | ----------------- | ----------------------- |
+| M5 Ultra, 36 threads (8 rounds) | 0.183 to 0.185   | 0.202 to 0.206    | 0.179 to 0.180          |
+| M5 Ultra, -t 12                 | 0.276 to 0.285   | 0.205 to 0.207    |                         |
+| base M4, 10 threads (4 P + 6 E) | 0.576 to 0.582   | 0.418 to 0.422    |                         |
+
+The base M4 gains 27%. The M5 Ultra loses 10% at its default: its 36
+cores are six clusters of six (sysctl's cpusperl2), its neon-sme is the
+same 0.205 s at 12 threads and at 36, and neon-dp, which every core adds
+to, passes it at 36. The probe that took neon-sme there is one thread's
+(macOS gives no affinity to time a cluster's threads with), reading the
+unit a thread has to itself. A pick that is the slower on a machine is a
+defect of 95bc7c6.
+
+Hypothesis. A unit gives what it gives however many threads share it
+(on the M4 Pro 0.79 T to one, 1.07 to two, 1.18 to three, 1.22 to four),
+so the fourth to sixth threads of a cluster add nothing on SMOPA and
+would add a core's SDOT each (0.18 T here). The limit that was inside
+the spread on the M4 Pro's clusters of four (above: K = 3 0.266 and
+0.271 against 0.270 and 0.273) should be worth a third of the product on
+a cluster of six: K threads of a cluster in SMOPA at once, counted by
+cluster, the others on SDOT's tiles for that call. And against what cost
+K = 2 here, a thread on SDOT holding an item three times as long with
+the job waiting on it: a call in pieces of 48 columns, each piece asking
+for the unit again, so that the thread is on SMOPA from the moment a
+place is free. Expected: the M5 Ultra at 36 threads under neon-dp's
+0.180 s, the M4 Pro no slower than 0.263, and the base M4's six E cores
+(their unit 0.19 T to one thread, 0.24 to four; their SDOT 0.06 each)
+better with one or two on the unit than with six. To be measured on all
+three before the tree changes.
+
+## 2026-11-23 - neon-sme: a unit two threads' at a time, kept; an M5 Ultra's ten minutes 1.188 -> 0.933 s where 95bc7c6 took 1.261 (result)
+
+In a copy of 95bc7c6 with switches (K threads of a cluster in SMOPA at
+once, counted by the cluster pthread_cpu_number_np's CPU is in; a
+refused call's SDOT in pieces of P columns, asking again after each),
+`pktito-c bench`, v2, rounds in rotated order, medians, each machine
+quiet. "Ten minutes" is test.wav ten times over, 600 s in 21 chunks,
+which fills an M5 Ultra's nine lanes where test.wav's three chunks fill
+three; 232 and 2329 tokens in every run.
+
+M5 Ultra, 36 threads (six clusters of six), Apple clang 21:
+
+|                          | test.wav | one chunk of 60 s | ten minutes | -t 24 | -t 12 |
+| ------------------------ | -------- | ----------------- | ----------- | ----- | ----- |
+| neon-dp, forced          | 0.184    | 0.229             | 1.203       | 1.756 | 2.863 |
+| every thread on its unit | 0.209    | 0.248             | 1.265       | 1.364 | 2.000 |
+| K = 1, P = 48            |          |                   | 0.968       | 1.317 | 1.926 |
+| K = 2, the call whole    | 0.180    | 0.218             | 0.964       | 1.236 | 1.985 |
+| K = 2, P = 48            | 0.176    | 0.209             | 0.943       | 1.253 | 1.986 |
+| K = 2, P = 16            | 0.173    | 0.205             | 0.938       | 1.200 | 1.997 |
+| K = 3, P = 48            | 0.179    | 0.214             | 1.006       | 1.310 | 1.990 |
+| K = 4, the call whole    | 0.189    |                   | 1.089       |       |       |
+
+(-t 24 and -t 12 are the ten minutes; 4332856 itself reads as the
+copy's neon-dp, 0.184 and 1.201.) Base M4, 10 threads (a cluster of
+four P and one of six E), Apple clang 21:
+
+|                          | test.wav | ten minutes | test.wav, -t 4 |
+| ------------------------ | -------- | ----------- | -------------- |
+| 4332856, neon-dp         | 0.580    | 5.957       | 0.887          |
+| every thread on its unit | 0.419    | 4.216       | 0.577          |
+| K = 1, P = 16            | 0.415    | 4.118       |                |
+| K = 2, the call whole    | 0.381    |             |                |
+| K = 2, P = 16            | 0.375    | 3.772       | 0.526          |
+| K = 2, P = 48            | 0.380    | 3.805       |                |
+| K = 3, P = 16            | 0.379    | 3.841       | 0.540          |
+| P 3 and E 1, P = 16      | 0.376    | 3.756       |                |
+| P 2 and E 1, P = 16      | 0.377    |             |                |
+
+M4 Pro, 12 threads (two clusters of four P, one of four E), against
+95bc7c6's 0.259 and 2.556:
+
+|                         | test.wav | ten minutes | one chunk | -t 8  |
+| ----------------------- | -------- | ----------- | --------- | ----- |
+| every thread (the copy) | 0.264    | 2.578       | 0.358     | 0.306 |
+| K = 2, the call whole   | 0.268    |             |           |       |
+| K = 2, P = 16           | 0.254    | 2.544       | 0.336     | 0.305 |
+| K = 2, P = 48           | 0.262    | 2.535       |           |       |
+| K = 3, P = 16           | 0.251    | 2.524       | 0.342     | 0.303 |
+| K = 3, P = 48           | 0.254    | 2.502       |           |       |
+
+(95bc7c6 reads 0.355 as one chunk and 0.302 at -t 8.) Two a unit is the fastest on the clusters of six, by 3 to 7% over one
+and over three, and on the base M4; on the M4 Pro two and three are
+inside each other's rounds (0.249 to 0.257 and 0.249 to 0.252). One
+number for every cluster: one thread on the E cores' unit with two or
+three on the P cores' bought under 1% on the base M4 (the table) and
+cost 2 to 3% on the M4 Pro (0.263 against 0.256 with three on the P
+units, 0.269 against 0.263 with two, in the pieces' first form below).
+
+What did not hold of the hypothesis, and what else was tried:
+
+- Pieces as first written, every call's columns in pieces of 48 each
+  asking for the unit, cost 2 to 5% on the M5 Ultra at 12 threads, where
+  the limit seldom refuses (the ten minutes 2.118 s against 2.021): each piece is a call
+  of sme_cols, a start and stop of streaming mode and a ZA to clear. A
+  call that has the unit now keeps it to its last column and only a
+  refused call works in pieces; the tables above are that form, and at
+  12 threads it is the unlimited build's 1.99 to 2.00.
+- A floor under the limit, a call never refused while fewer than twice
+  the units' number are in SMOPA on the whole machine, whichever
+  clusters they are on: slower at every count (M5 Ultra, ten minutes, 36
+  threads 1.006 against 0.956; test.wav 0.186 against 0.175). Rejected.
+- The size of the gain on test.wav: 5% on the M5 Ultra, not the third
+  the kernel's rates promised, because its three chunks give 36 threads
+  three lanes and the longest chunk's twelve threads set the time. The
+  ten minutes, nine lanes, gain 22%.
+
+In the tree: core/os.c's pk_os_cluster (macOS: sysctl's perflevels, a
+level's CPUs in runs of its cpusperl2, the last level's first; the
+device tree's logical-cluster-id agrees on the three machines, the M5
+Ultra's levels alternating by die, 12 M, 6 P, 12 M, 6 P, in runs of
+six), and in backend/neon/kernels.c PK_SME_THREADS 2 and PK_SME_PIECE
+16, a count of each cluster's calls in SMOPA, a line a cluster.
+pk_k_gemm_q8_packed takes the unit at the first column it has a place
+and gives SDOT pieces until then; pk_k_gemm_q8, which is a call of
+sme_cols for each of its packings already, asks at each.
+
+tests/kcheck has the product from a pool of 8 at once, 48 calls of each
+of three shapes, whole and packed turn about, each held to ref's
+(neon-sme 2177 cases; the other backends run them too, 1896). A copy
+with the packed call's SDOT piece reading the first column's scales
+fails 15 of them, one with the other call's SDOT step written a float
+late 27 to 30. `make check-c` passes on the M4 Pro, the base M4 and the
+M5 Ultra, the transcript's bytes those of 95bc7c6.
+
+The tree's build, rounds in rotated order, medians (min to max):
+
+|                                    | 4332856                | 95bc7c6                | a unit two threads'    |        |
+| ---------------------------------- | ---------------------- | ---------------------- | ---------------------- | ------ |
+| M5 Ultra, test.wav, 36 threads (5) | 0.183 (0.182 to 0.185) | 0.207 (0.207 to 0.208) | 0.173 (0.172 to 0.175) | -5.5%  |
+| M5 Ultra, one chunk of 60 s (3)    | 0.229                  | 0.248                  | 0.206                  | -10.0% |
+| M5 Ultra, ten minutes (3)          | 1.188 (1.180 to 1.194) | 1.261                  | 0.933 (0.931 to 0.935) | -21.5% |
+| M5 Ultra, ten minutes, -t 24 (2)   | 1.740                  | 1.483                  | 1.192                  | -31.5% |
+| M5 Ultra, ten minutes, -t 12 (2)   | 2.870                  | 1.986                  | 1.999                  | -30.3% |
+| M5 Ultra, test.wav, -t 24 (3)      | 0.196                  | 0.172                  | 0.154                  | -21.4% |
+| M5 Ultra, test.wav, -t 12 (3)      | 0.286                  | 0.206                  | 0.208                  | -27.3% |
+| base M4, test.wav, 10 threads (5)  | 0.583 (0.576 to 0.584) | 0.421 (0.418 to 0.423) | 0.377 (0.376 to 0.378) | -35.3% |
+| base M4, one chunk of 60 s (3)     | 0.679                  | 0.555                  | 0.487                  | -28.3% |
+| base M4, ten minutes (2)           | 5.906                  | 4.204                  | 3.754                  | -36.4% |
+| base M4, test.wav, -t 4 (3)        | 0.888                  | 0.579                  | 0.525                  | -40.9% |
+| M4 Pro, test.wav, 12 threads (7)   |                        | 0.259 (0.257 to 0.263) | 0.255 (0.252 to 0.258) | -1.5%  |
+| M4 Pro, one chunk of 60 s (5)      |                        | 0.367 (0.364 to 0.368) | 0.354 (0.349 to 0.359) | -3.5%  |
+| M4 Pro, ten minutes (3)            |                        | 2.589 (2.577 to 2.615) | 2.533 (2.531 to 2.565) | -2.2%  |
+| M4 Pro, test.wav, -t 8 (5)         |                        | 0.303 (0.301 to 0.307) | 0.307 (0.306 to 0.310) | +1.3%  |
+
+(The last column is against 4332856 on the M5 Ultra and the base M4, and
+against 95bc7c6 on the M4 Pro, whose 4332856 is 0.424 and 4.662 above;
+the M4 Pro's 95bc7c6 is 2dfc43f's binary, the same code.)
+The M5 Ultra's ten minutes are 643 times real time where neon-dp's are 505. `pktito-c info` reads the probe at 0.411 there and 0.383 on the
+base M4; the pick is neon-sme on all three and the faster on all three.
+
+The stages on the M4 Pro, make PROFILE=1, the minute whole at 8 threads,
+medians of 5, ms a run: feed-forward 148.1, attention 127.9, q k v and
+the positions 49.0, pw1 and pw2 26.6, decoder 17.9, subsampling 9.9,
+attention out 9.3, GLU and the depthwise 7.5, quantize 7.2, mel 1.8,
+norms 1.1; 95bc7c6's code reads 158.7 to 159.9, 129.4 to 129.9 and 50.5
+to 50.8 for the first three. The int8 products are 233 ms, 2.0 T a
+second. (The stages of 2dfc43f's entry above are of the three chunks at
+the default; README's "Where the time goes" is of the minute whole, and
+its shares after 2c09c24 were the chunks'. They are the whole's now.)
+
+Open: a level whose clusters differ in size from another's on a chip of
+two dies would be numbered wrong by pk_os_cluster (none of the three);
+the E cores' unit, where one thread and two measured alike; the
+diarizer's products packed once; a second compiler.

@@ -36,6 +36,7 @@
 #include <string.h>
 #ifdef PK_NEON_SME
 #include <arm_sme.h>
+#include <stdatomic.h>
 #endif
 
 /* neon-sve and neon-i8mm: the 4-column tiles on SMMLA (q8_mm4) */
@@ -1395,12 +1396,15 @@ static void q8_neon(float *out, size_t os, const int8_t *w, const float *ws, con
  * (2026-11-23).
  *
  * The SME unit is not a core's: a cluster's cores share one, and a
- * thread in streaming mode waits its turn at it. Four threads of a
- * cluster get 0.30 T each from theirs, 1.22 T together, against 0.74 T
- * for the four on SDOT: an M4 Pro's eight performance cores, on two
- * units, ran 2.43 T where SDOT's eight ran 1.46 (CLIMB.md, 2026-11-23).
- * backend/kernels.c's probe on macOS is one thread's, which has a unit
- * to itself. */
+ * thread in streaming mode waits its turn at it. An M4 Pro's gives one
+ * thread 0.79 T, two 1.07 T together, three 1.18 and four 1.22, where a
+ * core's own SDOT is 0.18: a unit's third thread adds less there than it
+ * would on its NEON, and a cluster of six with every thread on its unit
+ * is slower than its six cores' SDOT (an M5 Ultra's 36 threads, 10%
+ * behind neon-dp end to end). So a unit is two threads' at a time and a
+ * call that finds it taken is SDOT's (sme_enter below; CLIMB.md,
+ * 2026-11-23). backend/kernels.c's probe on macOS is one thread's, which
+ * has a unit to itself. */
 
 /* The most inputs of a product that packs its own columns (k_gemm_q8), the
  * model's widest (the feed-forward's down product and the subsampling's
@@ -1530,23 +1534,75 @@ static void sme_rest(float *out, size_t os, const int8_t *w, const float *ws, co
         q8_neon(out + (size_t)Ts * os, os, w, ws, bias, rows, &rest, add);
 }
 
+/* A unit's threads at a time, a cluster's others on SDOT: 2 is the
+ * fastest of 1, 2, 3 and 4 on an M5 Ultra's clusters of six (ten minutes
+ * of speech at 36 threads in 0.94 s, 0.97, 1.01 and 1.09, where neon-dp
+ * takes 1.20 and every thread on its unit 1.27) and on a base M4's four P
+ * and six E (3.77 s against 3.84 with 3 and 4.22 with all), and inside
+ * the rounds' spread of 3 and of all on an M4 Pro's clusters of four
+ * (CLIMB.md, 2026-11-23). */
+#define PK_SME_THREADS 2
+
+/* The columns a call that found its unit taken gives SDOT before it asks
+ * again, so that it is on SMOPA from the moment a place is free and a
+ * product does not wait on a thread at a third of the speed. A call that
+ * has a place keeps it to its last column: each sme_cols is a start and
+ * stop of streaming mode, which in pieces of 48 cost 2 to 5% at an M5
+ * Ultra's 12 threads. 16 against 48: 0.938 and 0.943 s there at 36
+ * threads, 3.77 and 3.81 on a base M4 (CLIMB.md, 2026-11-23). A multiple
+ * of 16, as the packed columns are laid. */
+#define PK_SME_PIECE 16
+
+/* the threads in SMOPA on a cluster's unit, a cache line a cluster */
+static struct {
+    _Alignas(64) atomic_int in;
+} sme_unit[32];
+
+/* A place at the unit of the cluster the thread is on, which sme_leave
+ * gives back, or -1 where PK_SME_THREADS have it. A thread the system
+ * moves keeps the place it took: the count is of calls and at times a
+ * little off, which costs time and never a bit. */
+static int sme_enter(void) {
+    const int u = pk_os_cluster() % 32;
+    if (atomic_fetch_add(&sme_unit[u].in, 1) < PK_SME_THREADS)
+        return u;
+    atomic_fetch_sub(&sme_unit[u].in, 1);
+    return -1;
+}
+
+static void sme_leave(int u) { atomic_fetch_sub(&sme_unit[u].in, 1); }
+
 /* pk_k_gemm_q8_packed: the columns as k_act_pack left them, a product's
- * packed once for all its calls (core/passes.c) */
+ * packed once for all its calls (core/passes.c). SMOPA's from the first
+ * column at which the unit has a place, SDOT's in pieces until then. */
 static void k_gemm_q8_packed(float *out, size_t os, const int8_t *w, const float *ws,
                              const float *bias, uint32_t rows, const pk_act *a, int add,
                              const int8_t *xp, const float *dp) {
-    const uint32_t Ts = sme_takes(a->T);
-    if (Ts)
-        sme_cols(out, os, w, ws, bias, rows, a->n, a->qb, Ts, add, xp, dp);
+    const uint32_t n = a->n, nb = n / a->qb, Ts = sme_takes(a->T);
+    for (uint32_t t = 0; t < Ts;) {
+        const int u = sme_enter();
+        if (u >= 0) {
+            sme_cols(out + (size_t)t * os, os, w, ws, bias, rows, n, a->qb, Ts - t, add,
+                     xp + (size_t)t * n, dp + (size_t)t * nb);
+            sme_leave(u);
+            break;
+        }
+        const uint32_t nc = Ts - t < PK_SME_PIECE ? Ts - t : PK_SME_PIECE;
+        const pk_act piece = { a->q + (size_t)t * n, a->d + (size_t)t * nb, n, a->qb, nc };
+        q8_neon(out + (size_t)t * os, os, w, ws, bias, rows, &piece, add);
+        t += nc;
+    }
     sme_rest(out, os, w, ws, bias, rows, a, add, Ts);
 }
 
 /* pk_k_gemm_q8: a call that packs its own columns, as many sixteens at a
- * time as the thread's 64 KB holds (4 at 1024 inputs): the diarizer's
- * products, and any caller with no packed columns to give. One thread
- * loses a third of SMOPA's rate to it in slices of 64 rows (511 to 578 G
- * against 786 to 804, CLIMB.md, 2026-11-23). An input wider than PK_SME_N
- * and blocks no multiple of 32 (none of the model's) are the NEON tiles'. */
+ * time as the thread's 64 KB holds (4 at 1024 inputs), each of those
+ * SMOPA's where the unit has a place as it comes to them and SDOT's where
+ * not: the diarizer's products, and any caller with no packed columns to
+ * give. One thread loses a third of SMOPA's rate to the packing in slices
+ * of 64 rows (511 to 578 G against 786 to 804, CLIMB.md, 2026-11-23). An
+ * input wider than PK_SME_N and blocks no multiple of 32 (none of the
+ * model's) are the NEON tiles'. */
 static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, const float *bias,
                       uint32_t rows, const pk_act *a, int add) {
     const uint32_t n = a->n, nb = n / a->qb;
@@ -1556,9 +1612,16 @@ static void k_gemm_q8(float *out, size_t os, const int8_t *w, const float *ws, c
     const uint32_t step = 16 * (PK_SME_N / (n < PK_SME_N ? n : PK_SME_N));
     for (uint32_t t = 0; t < Ts; t += step) {
         const uint32_t nc = Ts - t < step ? Ts - t : step;
-        for (uint32_t c = 0; c < nc; c += 16)
-            k_act_pack(xp + (size_t)c * n, dp + (size_t)c * nb, a, t + c);
-        sme_cols(out + (size_t)t * os, os, w, ws, bias, rows, n, a->qb, nc, add, xp, dp);
+        const int u = sme_enter();
+        if (u >= 0) {
+            for (uint32_t c = 0; c < nc; c += 16)
+                k_act_pack(xp + (size_t)c * n, dp + (size_t)c * nb, a, t + c);
+            sme_cols(out + (size_t)t * os, os, w, ws, bias, rows, n, a->qb, nc, add, xp, dp);
+            sme_leave(u);
+        } else {
+            const pk_act piece = { a->q + (size_t)t * n, a->d + (size_t)t * nb, n, a->qb, nc };
+            q8_neon(out + (size_t)t * os, os, w, ws, bias, rows, &piece, add);
+        }
     }
     sme_rest(out, os, w, ws, bias, rows, a, add, Ts);
 }

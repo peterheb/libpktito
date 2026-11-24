@@ -24,6 +24,7 @@
 #include "model.h"
 #include "os.h"
 #include "pkf.h"
+#include "pool.h"
 #include "vmath.h"
 
 #include <math.h>
@@ -564,6 +565,74 @@ static void blocks_cases(void) {
     }
 }
 
+/* The int8 product from several threads at once. A backend's calls may
+ * share what one thread never contends for: neon-sme's share a cluster's
+ * SME unit, which two threads have at a time while the others' calls are
+ * SDOT's in pieces until it has a place (backend/neon/kernels.c). So a
+ * pool of 8 runs the same product 48 times, each into an output of its
+ * own, whole and from packed columns turn about, and each is held to
+ * ref's: a last group SMOPA pads, one it leaves to SDOT, and whole
+ * sixteens. */
+typedef struct {
+    const int8_t *w, *xp;
+    const float *ws, *dp;
+    const pk_act *a;
+    uint32_t rows;
+    float *out;                             /* [items][a->T * rows] */
+} shared_job;
+
+static void shared_item(void *arg, int i, int th) {
+    shared_job *j = arg;
+    float *o = j->out + (size_t)i * j->a->T * j->rows;
+    (void)th;
+    if (j->xp && i % 2)
+        kt->gemm_q8_packed(o, j->rows, j->w, j->ws, NULL, j->rows, j->a, 0, j->xp, j->dp);
+    else
+        kt->gemm_q8(o, j->rows, j->w, j->ws, NULL, j->rows, j->a, 0);
+}
+
+static void shared_cases(void) {
+    enum { ITEMS = 48 };
+    static const uint32_t shape[][3] = { { 64, 1024, 203 }, { 64, 4096, 53 }, { 128, 1024, 96 } };
+    pk_pool *pool = pk_pool_new(8);
+    if (!pool) {
+        fprintf(stderr, "kcheck: no pool\n");
+        exit(1);
+    }
+    for (uint32_t s = 0; s < sizeof shape / sizeof shape[0]; s++) {
+        const uint32_t rows = shape[s][0], n = shape[s][1], T = shape[s][2], qb = 32, nb = n / qb;
+        const uint32_t Tp = (T + 15) & ~15u;
+        int8_t *w = xmalloc((size_t)rows * n);
+        float *ws = xmalloc(rows * sizeof *ws), *x = xmalloc((size_t)T * n * sizeof *x);
+        for (uint32_t r = 0; r < rows; r++) {
+            ws[r] = 0.01f * (frand() + 1.5f);
+            for (uint32_t k = 0; k < n; k++)
+                *wq_at(w, n, r, k) = (int8_t)((int)(rnd() % 255) - 127);
+        }
+        for (size_t i = 0; i < (size_t)T * n; i++) x[i] = awkward(2.0f);
+        pk_act a = { xmalloc((size_t)T * n), xmalloc((size_t)T * nb * 4), n, qb, T };
+        kr->quantize(&a, x, n);
+        int8_t *xp = kt->act_pack ? xmalloc((size_t)Tp * n) : NULL;
+        float *dp = kt->act_pack ? xmalloc((size_t)Tp * nb * sizeof *dp) : NULL;
+        for (uint32_t t0 = 0; xp && t0 < T; t0 += 16)
+            kt->act_pack(xp + (size_t)t0 * n, dp + (size_t)t0 * nb, &a, t0);
+        float *want = xmalloc((size_t)T * rows * sizeof *want);
+        float *out = xmalloc((size_t)ITEMS * T * rows * sizeof *out);
+        kr->gemm_q8(want, rows, w, ws, NULL, rows, &a, 0);
+        shared_job j = { w, xp, ws, dp, &a, rows, out };
+        pk_pool_run(pool, shared_item, &j, ITEMS);
+        for (int i = 0; i < ITEMS; i++) {
+            char msg[160];
+            snprintf(msg, sizeof msg, "gemm_q8%s on 8 threads, call %d: rows %u n %u T %u",
+                     xp && i % 2 ? "_packed" : "", i, rows, n, T);
+            same(msg, out + (size_t)i * T * rows, want, (size_t)T * rows, 4);
+        }
+        xfree(w); xfree(ws); xfree(x); xfree(a.q); xfree(a.d);
+        xfree(xp); xfree(dp); xfree(want); xfree(out);
+    }
+    pk_pool_free(pool);
+}
+
 static void run(const char *model) {
     /* each rnd() in a statement of its own: the order a compiler evaluates
      * a call's arguments in is its own, and the cases should be the same
@@ -607,6 +676,7 @@ static void run(const char *model) {
     quant_tiny_case();      /* it draws from rnd() and moves no case before it */
     fast_cases(model);
     blocks_cases();         /* likewise */
+    shared_cases();
 }
 
 /* Each backend sees the same cases: the generator starts again for each.

@@ -60,6 +60,17 @@ int pk_os_cores(void);
  * them where the cores are of one kind or the OS does not say. */
 int pk_os_fast_cores(void);
 
+/* The cluster of cores the calling thread is on as it asks, from 0: the
+ * cores that share an L2, and on Apple's chips with SME the one unit
+ * (backend/neon/kernels.c counts a unit's threads by it). macOS's, from
+ * sysctl's perflevels: a level's logicalcpu in runs of its cpusperl2, the
+ * last level's first, which is the device tree's logical-cluster-id on an
+ * M4 Pro (E 0 to 3, P 4 to 7 and 8 to 11), a base M4 (E 0 to 5, P 6 to 9)
+ * and an M5 Ultra (six of six; its two levels alternate by die, which runs
+ * of six get right and runs of two sizes would not). 0 on every other
+ * system. The thread may have moved by the time its answer is used. */
+int pk_os_cluster(void);
+
 /* fn(arg, i, n) on n of the fastest kind's cores at once (pk_os_fast_cores's),
  * all of them up to PK_OS_ON_FAST, or where the system gives no speeds,
  * of every core: on Linux and Windows from a thread of its own held to
