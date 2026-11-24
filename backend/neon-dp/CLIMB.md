@@ -5137,3 +5137,26 @@ The recognizer (v2, test.wav, the best of five): its default, eight
 threads, 1.328, 1.435 and 1.513 s; given six, 1.511, 1.366 and 1.584.
 They overlap at 8% either way, so the lead that its race sets every core
 against the fastest kind alone is not shown to cost this phone anything.
+
+## 2026-11-24 - the int8 scores on a Galaxy S24 (a measurement)
+
+From the session that holds the phone, over adb, with the race's rows
+above: `neon-i8mm`, NDK r30's clang 21.0.0, cooled between runs, three
+rounds in rotation, `bench -v`, the ten minutes, the best of five in
+seconds, float scores (5d0ddd9) and int8 (6b393ee, which is 5d0ddd9
+merged into these):
+
+| the ten minutes, s | float, 5d0ddd9      | int8, 6b393ee       | medians               | kept, int8  |
+| ------------------ | ------------------- | ------------------- | --------------------- | ----------- |
+| default            | 7.673, 7.746, 7.693 | 6.983, 7.030, 6.982 | 7.693 to 6.983, -9.2% | 6 in 3 of 3 |
+| -t 6               | 7.560, 7.682, 7.541 | 6.887, 6.882, 6.873 | 7.560 to 6.882, -9.0% |             |
+| -t 8               | 8.674, 8.610, 8.697 | 8.041, 8.064, 7.985 | 8.674 to 8.041, -7.3% |             |
+
+The int8 scores are the faster in every round at every count, by the
+most of any board measured. The check over adb (`make adb`)
+passes at 6b393ee. Round 1's five runs in the order they ran: the default
+6.98, 7.50, 7.71, 7.84 and 8.60 s, given six 6.89, 7.44, 7.74, 7.93 and
+8.12; the first is the best, as with float scores, so the default's 0.09
+to 0.15 s over -t 6 is the race's cost here too.
+
+Of the boards the entries above call not measured, none is left.

@@ -820,22 +820,29 @@ it was taken on the boards' times: the diarizer with float scores and
 with these, `pktito-c bench` by turns, medians in seconds, on 2026-11-24
 (backend/neon-dp/CLIMB.md has the rounds):
 
-| float scores to int8     | backend, threads     | the ten minutes                                        | test.wav on one thread |
-| ------------------------ | -------------------- | ------------------------------------------------------ | ---------------------- |
-| Pi 3B+ (gcc)             | `neon`, 4            | conv2.wav's minute: 15.94-16.02 to 15.68-15.74 (-1.7%) |                        |
-| Pi 5 (gcc 14.2)          | `neon-dp-a76`, 4     | 17.18 to 15.78 (-8.1%)                                 | 5.554 to 5.163 (-7.0%) |
-| GB10 (gcc 13.3)          | `neon-sve`, 10 of 20 | 1.911 to 1.795 (-6.1%)                                 | 1.147 to 1.059 (-7.7%) |
-| GB10 (clang 18.1)        | `neon-sve`, 10 of 20 | 1.908 to 1.786 (-6.4%)                                 | 1.110 to 1.034 (-6.8%) |
-| i9-12900HK (gcc 15.2)    | `avx2-vnni`, 14      | 4.283 to 4.045 (-5.5%)                                 | 1.272 to 1.172 (-7.9%) |
-| Ryzen 9 9950X (gcc 15.2) | `avx512-vnni`, 16    | 0.989-0.999 to 0.947-0.962 (-4.3%)                     |                        |
-| base M4 (Apple clang 21) | `neon-sme`, 10       | 2.163 to 2.054 (-5.0%)                                 | 0.555 to 0.561 (+1.1%) |
-| M5 Ultra                 | `neon-sme`, 12 of 36 | 1.254 to 1.212 (-3.3%)                                 | 0.522 to 0.528 (+1.1%) |
-| M4 Pro, in use           | `neon-sme`, 12       | 1.645 to 1.611 (-2.1%)                                 | 0.540 to 0.550 (+1.9%) |
+| float scores to int8            | backend, threads     | the ten minutes                                        | test.wav on one thread |
+| ------------------------------- | -------------------- | ------------------------------------------------------ | ---------------------- |
+| Pi 3B+ (gcc)                    | `neon`, 4            | conv2.wav's minute: 15.94-16.02 to 15.68-15.74 (-1.7%) |                        |
+| Pi 5 (gcc 14.2)                 | `neon-dp-a76`, 4     | 17.18 to 15.78 (-8.1%)                                 | 5.554 to 5.163 (-7.0%) |
+| Galaxy S24 (NDK r30 clang 21.0) | `neon-i8mm`, 6 of 8  | 7.693 to 6.983 (-9.2%)                                 |                        |
+| GB10 (gcc 13.3)                 | `neon-sve`, 10 of 20 | 1.911 to 1.795 (-6.1%)                                 | 1.147 to 1.059 (-7.7%) |
+| GB10 (clang 18.1)               | `neon-sve`, 10 of 20 | 1.908 to 1.786 (-6.4%)                                 | 1.110 to 1.034 (-6.8%) |
+| i9-12900HK (gcc 15.2)           | `avx2-vnni`, 14      | 4.283 to 4.045 (-5.5%)                                 | 1.272 to 1.172 (-7.9%) |
+| Ryzen 9 9950X (gcc 15.2)        | `avx512-vnni`, 16    | 0.989-0.999 to 0.947-0.962 (-4.3%)                     |                        |
+| base M4 (Apple clang 21)        | `neon-sme`, 10       | 2.163 to 2.054 (-5.0%)                                 | 0.555 to 0.561 (+1.1%) |
+| M5 Ultra                        | `neon-sme`, 12 of 36 | 1.254 to 1.212 (-3.3%)                                 | 0.522 to 0.528 (+1.1%) |
+| M4 Pro, in use                  | `neon-sme`, 12       | 1.645 to 1.611 (-2.1%)                                 | 0.540 to 0.550 (+1.9%) |
 
 The M4 Pro's twelve are level: its rounds ran 1.574 to 1.800 s and 1.559
 to 1.623. The 9950X's are its five rounds' ranges, the int8 scores the
 faster in every pair; the Pi 3B+'s its three rounds' over conv2.wav's
-minute, not the ten, the int8 the faster in every round. Where the float product was FMLA's or FMA's the scores are SDOT's, SMMLA's
+minute, not the ten, the int8 the faster in every round. The S24's are
+three cooled rounds over adb with the race's later order on both sides
+(5d0ddd9 to 6b393ee), each the best of five, which on a phone that warms
+is the first run; given six threads 7.560 to 6.882 (-9.0%), given all
+eight 8.674 to 8.041 (-7.3%).
+
+Where the float product was FMLA's or FMA's the scores are SDOT's, SMMLA's
 or VNNI's now, at under two fifths of their time (4.10 to 1.55 ms a layer
 on one thread of an M4 Pro held to `neon-dp`, their operands' rounding
 included). On an SME Mac the unit's FMOPA
@@ -985,7 +992,7 @@ all ten, 2.17 s against its four fast cores' 2.81, and an M4 Pro all
 twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
 The attention's scores were float in those runs; with them in int8 ("The
 attention in int8", above) the kept threads' ten minutes are 1.21 s on the
-M5 Ultra, 1.80 on the GB10 and 2.05 on the base M4.
+M5 Ultra, 1.80 on the GB10, 6.98 on the S24 and 2.05 on the base M4.
 The turns are run once a diarizer, and the recording they are run in pays
 for the side that loses: 0.03 s on the base M4 and 0.08 to 0.09 s on the M5 Ultra,
 one recording against the same with its count given. `pktito-c bench -v`
