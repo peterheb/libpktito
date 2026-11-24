@@ -814,6 +814,11 @@ void pk_held_others(const pk_held *h, const pk_seg *w, size_t n, int32_t *out);
 typedef struct pk_hold pk_hold;
 pk_hold *pk_hold_new(pk_diar *d, const pk_model *m, const pk_audio *x);
 int64_t  pk_hold_to(pk_hold *h, int64_t want, const float **p, int64_t *from);
+/* fn(arg, from, to) as a voice is held and the diarizer goes back: it
+ * hears the recording again from `from` seconds, to where it had got,
+ * `to`, before pk_hold_to returns, for a caller that says why it waits. On
+ * the thread that called pk_hold_to or pk_hold_end. NULL for none. */
+void     pk_hold_notify(pk_hold *h, void (*fn)(void *arg, double from, double to), void *arg);
 int      pk_hold_end(pk_hold *h, pk_held *out);
 void     pk_hold_free(pk_hold *h);
 

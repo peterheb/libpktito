@@ -58,6 +58,17 @@ static int64_t grow_wait(void *arg, int64_t want) {
     return got;
 }
 
+/* pk_hold_notify's calls: how many, and whether each went back */
+typedef struct {
+    int n, bad;
+} told;
+
+static void on_again(void *arg, double from, double to) {
+    told *t = arg;
+    t->n++;
+    t->bad |= !(from >= 0 && from <= to);
+}
+
 static int same(const pk_held *a, const pk_held *b, size_t S) {
     if (a->rows != b->rows || a->n_held != b->n_held || a->again != b->again)
         return 0;
@@ -112,6 +123,8 @@ int main(int argc, char **argv) {
                 CHECK(h, "pk_hold_new");
                 if (!h)
                     continue;
+                told t = { 0, 0 };
+                pk_hold_notify(h, on_again, &t);
                 /* rows asked for: one at a time, a step's worth or so, or all at once */
                 int64_t given = 0, want = 0;
                 int ok = 1;
@@ -147,6 +160,8 @@ int main(int argc, char **argv) {
                 CHECK(!pk_hold_end(h, &part), "pk_hold_end");
                 CHECK(same(&part, &whole, S), "pk_hold_to's run gives pk_diar_run_held's result, bit for bit");
                 CHECK(!g.bad_read, "no sample is read before a wait has said it is there");
+                CHECK(!t.bad && (t.n > 0) == (whole.n_held > 0),
+                      "pk_hold_notify says each going back, from before where it had got, once there is one");
                 pk_held_free(&part);
                 pk_hold_free(h);
                 runs++;

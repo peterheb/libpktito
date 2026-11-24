@@ -71,6 +71,7 @@ struct pk_hold {
     int64_t  n;                 /* the recording's samples, once it has ended; INT64_MAX till then */
     int      ended;
     int32_t  hop, up, stack;    /* the model's: for its rows from its samples */
+    int32_t  rate;              /* and its samples a second */
     int32_t  cap;               /* the recording's rows there is room for */
     size_t   n_state;           /* and the states */
     size_t  S;
@@ -115,6 +116,8 @@ struct pk_hold {
     int64_t  dirty;             /* the first of the recording's rows changed since the last call */
     int32_t  shown;             /* the rows the last call gave */
     float   *P;                 /* the recording's rows, [cap][S] */
+    void   (*notify)(void *arg, double from, double to);
+    void    *notify_arg;
 };
 typedef struct pk_hold hold;
 
@@ -910,6 +913,7 @@ pk_hold *pk_hold_new(pk_diar *d, const pk_model *m, const pk_audio *x) {
         return NULL;
     *h = (hold){ .d = d, .x = *x, .n = INT64_MAX, .S = m->dw.n_spk };
     h->hop = (int32_t)m->hop, h->up = (int32_t)m->dw.upsample, h->stack = (int32_t)m->dw.stack;
+    h->rate = (int32_t)m->sample_rate;
     h->R = (int64_t)m->hop * m->dw.stack / m->dw.upsample;
     h->sec = (int32_t)(m->sample_rate / h->R);
     h->step = (int32_t)(m->dw.chunk_len * m->dw.upsample);
@@ -972,7 +976,11 @@ static int step(hold *h) {
         free(h->state[j]);
         h->state[j] = NULL;
     }
-    /* the recording's rows from the stream's row e on are heard again */
+    /* the recording's rows from the stream's row e on are heard again:
+     * said first, for a caller that waits on them meanwhile */
+    if (h->notify)
+        h->notify(h->notify_arg, (double)((int64_t)h->at[e] * h->R) / h->rate,
+                  (double)((int64_t)h->at[b - 1] * h->R) / h->rate);
     if (h->at[e] < h->dirty)
         h->dirty = h->at[e];
     if (h->given > h->at[e])
@@ -984,6 +992,11 @@ static int step(hold *h) {
     h->finished = h->away = 0;
     h->b = next;
     return 0;
+}
+
+void pk_hold_notify(pk_hold *h, void (*fn)(void *arg, double from, double to), void *arg) {
+    h->notify = fn;
+    h->notify_arg = arg;
 }
 
 int64_t pk_hold_to(pk_hold *h, int64_t want, const float **p, int64_t *from) {
