@@ -281,6 +281,13 @@ static int allowed_cores(long *cpu, int max) {
     return n;
 }
 
+/* A core's speed as the system gives it: cpu_capacity, else the cpufreq
+ * maximum. -1 where it does not say. */
+static long core_speed(long cpu) {
+    const long s = sysfs_long(cpu, "cpu_capacity");
+    return s >= 0 ? s : sysfs_long(cpu, "cpufreq/cpuinfo_max_freq");
+}
+
 /* Of allowed_cores's, the fastest kind's (pk_os_fast_cores says which):
  * their CPUs into fast, and how many, of the *cores in all. 0 where a core
  * does not say its speed. */
@@ -288,9 +295,7 @@ static int fast_cpus(cpu_set_t *fast, int *cores) {
     long cpu[1024], speed[1024], top = 0;
     int n = *cores = allowed_cores(cpu, 1024);
     for (int i = 0; i < n; i++) {
-        long s = sysfs_long(cpu[i], "cpu_capacity");
-        if (s < 0)
-            s = sysfs_long(cpu[i], "cpufreq/cpuinfo_max_freq");
+        const long s = core_speed(cpu[i]);
         if (s < 0)
             return 0;
         speed[i] = s;
@@ -397,6 +402,40 @@ int pk_os_fast_cores(void) {
     int cores, n = fast_cpus(&fast, &cores);
     if (n > 0)
         return n;
+#endif
+    return pk_os_cores();
+}
+
+int pk_os_cores_but_slowest(void) {
+#ifdef __APPLE__
+    int levels = 0, n = 0;
+    size_t len = sizeof levels;
+    if (sysctlbyname("hw.nperflevels", &levels, &len, NULL, 0) != 0)
+        levels = 0;
+    for (int l = 0; l < levels - 1; l++) {       /* the last level is the slowest kind */
+        char name[48];
+        int count = 0;
+        snprintf(name, sizeof name, "hw.perflevel%d.physicalcpu", l);
+        len = sizeof count;
+        if (sysctlbyname(name, &count, &len, NULL, 0) != 0 || count < 1)
+            return pk_os_cores();
+        n += count;
+    }
+    if (n > 0)
+        return n;
+#endif
+#ifdef __linux__
+    long cpu[1024], speed[1024], low = 0;
+    int n = allowed_cores(cpu, 1024), k = 0;
+    for (int i = 0; i < n; i++) {
+        if ((speed[i] = core_speed(cpu[i])) < 0)
+            return pk_os_cores();
+        low = i == 0 || speed[i] < low ? speed[i] : low;
+    }
+    for (int i = 0; i < n; i++)
+        k += speed[i] * 10 > low * 11;
+    if (k > 0)
+        return k;
 #endif
     return pk_os_cores();
 }
@@ -576,15 +615,16 @@ FILE *pk_os_temp(void) {
  * processor record a core, counted where the process may run (`start
  * /affinity`), in processor group 0, which holds every machine with up to
  * 64 logical processors. */
-/* the cores the process may run on, every one or only those of the
- * highest EfficiencyClass (0 on a chip of one kind) */
-static int cores(int fastest, DWORD_PTR *mask, int max) {
+/* the cores the process may run on: every one (which 0), those of the
+ * highest EfficiencyClass (1), or of every class but the lowest (2). A
+ * chip of one kind has one class, and its every core is all three. */
+static int cores(int which, DWORD_PTR *mask, int max) {
     DWORD_PTR pmask = ~(DWORD_PTR)0, smask;
     GetProcessAffinityMask(GetCurrentProcess(), &pmask, &smask);
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
     char *buf = len ? malloc(len) : NULL;
-    int n = 0, top = -1;
+    int n = 0, top = -1, low = 256;
     for (int pass = 0; pass < 2; pass++) {
         if (!buf || !GetLogicalProcessorInformationEx(RelationProcessorCore,
                           (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(void *)buf, &len))
@@ -595,9 +635,11 @@ static int cores(int fastest, DWORD_PTR *mask, int max) {
             const DWORD_PTR m = (DWORD_PTR)r->Processor.GroupMask[0].Mask & pmask;
             if (!m || (mask && r->Processor.GroupMask[0].Group != 0))
                 continue;
-            if (pass == 0)
-                top = r->Processor.EfficiencyClass > top ? r->Processor.EfficiencyClass : top;
-            else if (!fastest || r->Processor.EfficiencyClass == top) {
+            const int kind = r->Processor.EfficiencyClass;
+            if (pass == 0) {
+                top = kind > top ? kind : top;
+                low = kind < low ? kind : low;
+            } else if (which == 0 || top == low || (which == 1 ? kind == top : kind > low)) {
                 if (mask && n < max)
                     mask[n] = m;
                 n++;
@@ -610,6 +652,7 @@ static int cores(int fastest, DWORD_PTR *mask, int max) {
 
 int pk_os_cores(void) { return cores(0, NULL, 0); }
 int pk_os_fast_cores(void) { return cores(1, NULL, 0); }
+int pk_os_cores_but_slowest(void) { return cores(2, NULL, 0); }
 
 typedef struct {
     int (*fn)(void *, int, int);
@@ -771,6 +814,7 @@ FILE *pk_os_temp(void) { return tmpfile(); }
 
 int pk_os_cores(void) { return 1; }
 int pk_os_fast_cores(void) { return 1; }
+int pk_os_cores_but_slowest(void) { return 1; }
 int pk_os_on_fast_cores(int (*fn)(void *, int, int), void *arg) { return fn(arg, 0, 1); }
 
 double pk_os_now(void) {

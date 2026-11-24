@@ -1681,6 +1681,38 @@ static void diar_engine_cases(const pk_model *m, int deep) {
         x[i] = i % 2 ? 1e30f : -3e38f;
     diar_run(d3, m, x, n, 0, 1, NULL, "samples of 1e30");
 
+    /* a diarizer of pktito's own threads (pk_diar_new, 0): one given its
+     * threads is settled from the first; this one once its turns are run,
+     * the same bits through them, on a count from the lone core's up to
+     * every core's, every core's if there were no turns to run; and a
+     * diarizer given the count it kept is settled on it */
+    {
+        const size_t n0 = 6 * 16000 + 17, rows0 = (size_t)diar_nrows(m, n0) * S;
+        float *x0 = audio(n0), *r0 = malloc(rows0 * sizeof *r0), *rk = malloc(rows0 * sizeof *rk);
+        pk_diar *d0 = pk_diar_new(m, 0);
+        g_cases++;
+        if (!d0 || !pk_diar_settled(d1) || pk_diar_threads(d1) != 1 || !pk_diar_settled(d3) || pk_diar_threads(d3) != 3)
+            FAIL("pk_diar_settled of a diarizer given its threads, or pk_diar_new on a thread a core");
+        else if (!diar_run(d1, m, x0, n0, 0, 1, r0, "a recording to settle on")) {
+            const int all = pk_diar_threads(d0), was = pk_diar_settled(d0);
+            if (!diar_run(d0, m, x0, n0, 0, 1, rk, "a recording on pktito's own threads"))
+                same_rows(r0, rk, rows0, "a recording on pktito's own threads");
+            const int kept = pk_diar_threads(d0);
+            g_cases++;
+            if (!pk_diar_settled(d0) || kept < 1 || kept > all || (was && kept != all))
+                FAIL("pk_diar_settled after %zu samples: %d, on %d threads of %d", n0, pk_diar_settled(d0), kept, all);
+            pk_diar *dk = pk_diar_new(m, kept);
+            g_cases++;
+            if (!dk || !pk_diar_settled(dk) || pk_diar_threads(dk) != kept)
+                FAIL("a diarizer given the %d threads another kept", kept);
+            else if (!diar_run(dk, m, x0, n0, 0, 1, rk, "a recording on the threads another kept"))
+                same_rows(r0, rk, rows0, "a recording on the threads another kept");
+            pk_diar_free(dk);
+        }
+        pk_diar_free(d0);
+        free(x0), free(r0), free(rk);
+    }
+
     /* a run fn stops: 1, and the next recording as if it had not been */
     free(x);
     x = audio(n);

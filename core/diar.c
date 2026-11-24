@@ -65,10 +65,14 @@
 static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static uint32_t up16(uint32_t x) { return (x + 15) & ~15u; }
 
-/* The race of every core against the fast kind (layers): the steps raced,
- * two a side, and the most of a step's layers timed */
+/* The race of every core against all but the slowest kind (layers): the
+ * steps raced, two a side, and the most of a step's layers timed; and the
+ * narrow side's early way out of its first turn, the layers it is given
+ * and how many of every core's median the best of them may take (behind) */
 #define TUNE_STEPS  4
 #define TUNE_LAYERS 32
+#define TUNE_OUT    4
+#define TUNE_FAR    2
 
 typedef struct {
     float *sc;                   /* a block of attention scores: ATT_BLOCK x a step's keys */
@@ -82,11 +86,12 @@ struct pk_diar {
     const pk_diarw *w;
     pk_pool *pool;
     int nth;
-    /* Every core, or the fast kind alone (pk_os_fast_cores, `fast` of them)
-     * where the cores are of two kinds and the threads are pktito's choice:
-     * `tune` the steps still to race (layers), their layers' times in took,
-     * every core's and the fast kind's; `wide` the threads the passes run
-     * on; `ran` once a step has. */
+    /* Every core, or every kind's but the slowest's (pk_os_cores_but_slowest,
+     * `fast` of them, the narrow side) where the cores are of more kinds
+     * than one and the threads are pktito's choice: `tune` the steps still
+     * to race (layers), their layers' times in took, every core's and the
+     * narrow side's; `wide` the threads the passes run on; `ran` once a
+     * step has. */
     int fast, wide, tune, ran;
     double took[2][TUNE_STEPS / 2 * TUNE_LAYERS];
     uint32_t ntook[2];
@@ -349,14 +354,28 @@ static double median(double *t, uint32_t n) {
     return (t[(n - 1) / 2] + t[n / 2]) / 2;
 }
 
-/* Every core, or the fast kind alone? The encoder's question (encoder.c,
- * layers), and its rule but for the length of a turn: the first
- * TUNE_STEPS full steps after the diarizer's first run their layers on
- * each by turns, a step a turn, and the diarizer keeps whichever's layers
- * took less, each side by the median of its own. A full step is tmax
- * frames, every one of them the same shapes; the first step is the first
- * pass over the weights' pages. A recording too short for the turns
- * leaves the rest to the next.
+/* The narrow side's best layer so far over every core's median layer of
+ * the turn before: what its first turn's two ways out go by (layers). The
+ * best, because one layer at speed is enough to say what the side can do,
+ * and its first are slow while Linux moves its threads. The GB10's ten
+ * X925s, the side that wins there, against its twenty cores: 0.94 to 1.45
+ * at four layers in 60 races, and 0.68 to 0.84 at their turn's end in 50
+ * (backend/neon-dp/CLIMB.md, 2026-11-24). */
+static double behind(pk_diar *d) {
+    double best = d->took[1][0];
+    for (uint32_t i = 1; i < d->ntook[1]; i++)
+        best = d->took[1][i] < best ? d->took[1][i] : best;
+    return best / median(d->took[0], d->ntook[0]);
+}
+
+/* Every core, or all but the slowest kind? The encoder's question
+ * (encoder.c, layers), and its rule but for the narrow side and the length
+ * of a turn: the first TUNE_STEPS full steps after the diarizer's first
+ * run their layers on each by turns, a step a turn, and the diarizer
+ * keeps whichever's layers took less, each side by the median of its own.
+ * A full step is tmax frames, every one of them the same shapes; the
+ * first step is the first pass over the weights' pages. A recording too
+ * short for the turns leaves the rest to the next.
  *
  * A step is one stream, each pass waiting for its slowest item, and the
  * slow kind's are the last in: the ten minutes took an M5 Ultra's twelve
@@ -368,7 +387,35 @@ static double median(double *t, uint32_t n) {
  * of two never saw them there; a step's 31 layers do, and their median
  * leaves the move out. Turns of a step kept the ten in 12 runs of 12, the
  * M5 Ultra's twelve and each M4's every core in 6 of 6
- * (backend/neon-dp/CLIMB.md, 2026-11-23 and 24). */
+ * (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
+ *
+ * The narrow side is every kind's cores but the slowest's
+ * (pk_os_cores_but_slowest): of two kinds the fast one, and of a phone's
+ * three its prime and big cores, a Galaxy S24's six of eight, where the
+ * ten minutes took 7.55 s on six threads and 8.76 on eight (the phone's
+ * first round of three).
+ *
+ * A turn is a whole step on its side's threads, and where the narrow side
+ * loses, its turns are the race's cost, once a diarizer and in no bench's
+ * best of five. So a side that cannot win is not run to the end:
+ *
+ * - A lone core is not raced. Held to one X925 and five A725s, a GB10's
+ *   three minutes took 4.96 s with two steps on the one, 1.65 s without.
+ * - TUNE_OUT layers into its first turn, a side whose best layer took over
+ *   TUNE_FAR times every core's median leaves the step's other layers and
+ *   the recording to every core. Twice is clear of the side that wins,
+ *   1.45 at most at four layers (behind).
+ * - At the end of that turn, a side with not one layer under every core's
+ *   median has lost too; the side that wins had 0.87 at most. Two X925s
+ *   are 1.9 times slower than they and ten A725s together, under twice:
+ *   the three minutes took 1.38 s with both their turns, 1.24 s with the
+ *   one, 1.09 s with no race.
+ *
+ * What is left is the turns of the side that loses: 0.03 s of a base M4's
+ * recording, one turn of its four of ten, 1.3 times slower, and 0.07 to
+ * 0.09 s of an M5 Ultra's, every core's two where its twelve win.
+ * pk_diar_settled is for a program that would not pay it twice (CLIMB.md,
+ * 2026-11-24). */
 static void layers(pk_diar *d, uint32_t T) {
     const pk_diarw *w = d->w;
     const uint32_t L = d->m->n_layers;
@@ -383,10 +430,17 @@ static void layers(pk_diar *d, uint32_t T) {
     for (uint32_t i = 0; i < L; i++) {
         double t0 = pk_os_now();
         layer(d, &w->layers[i], T);
-        if (i < TUNE_LAYERS)
+        if (d->tune && i < TUNE_LAYERS)
             d->took[side][d->ntook[side]++] = pk_os_now() - t0;
+        /* the narrow side's first turn, TUNE_OUT layers in and at its end */
+        if (d->tune == TUNE_STEPS - 1
+            && ((i + 1 == TUNE_OUT && behind(d) > TUNE_FAR) || (i + 1 == L && behind(d) >= 1))) {
+            d->tune = 0;                 /* the way out: every core from here on */
+            d->wide = d->nth;
+            pk_pool_set_active(d->pool, d->wide);
+        }
     }
-    if (--d->tune == 0)
+    if (d->tune && --d->tune == 0)
         d->wide = median(d->took[1], d->ntook[1]) < median(d->took[0], d->ntook[0]) ? d->fast : d->nth;
     pk_pool_set_active(d->pool, d->wide);
 }
@@ -741,8 +795,8 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
     }
     d->nth = pk_pool_threads(d->pool);
     d->wide = d->nth;
-    d->fast = threads > 0 ? d->nth : pk_os_fast_cores();
-    d->tune = d->fast > 0 && d->fast < d->nth ? TUNE_STEPS : 0;
+    d->fast = threads > 0 ? d->nth : pk_os_cores_but_slowest();
+    d->tune = d->fast > 1 && d->fast < d->nth ? TUNE_STEPS : 0;     /* a lone core is not raced (layers) */
     d->tws = calloc((size_t)d->nth, sizeof *d->tws);
     if (!d->tws) {
         pk_diar_free(d);
@@ -827,6 +881,7 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
 }
 
 int pk_diar_threads(const pk_diar *d) { return d->wide; }
+int pk_diar_settled(const pk_diar *d) { return d->tune == 0; }
 
 void pk_diar_reset(pk_diar *d) {
     d->got = 0;
