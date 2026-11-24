@@ -994,8 +994,10 @@ The attention's scores were float in those runs; with them in int8 ("The
 attention in int8", above) the kept threads' ten minutes are 1.21 s on the
 M5 Ultra, 1.80 on the GB10, 6.98 on the S24 and 2.05 on the base M4.
 The turns are run once a diarizer, and the recording they are run in pays
-for the side that loses: 0.03 s on the base M4 and 0.08 to 0.09 s on the M5 Ultra,
-one recording against the same with its count given. `pktito-c bench -v`
+for the side that loses: 0.03 s on the base M4 and 0.08 to 0.09 s on the M5
+Ultra, one recording against the same with its count given; on a Galaxy
+S24 0.06 to 0.15 s by a bench's first run, and 0.3 to 0.4 s by one
+recording a process, whose rounds differ by as much. `pktito-c bench -v`
 prints each of its five runs, the first with the turns in it; and
 `pk_diar_settled` says when the count is the diarizer's choice made, for a
 program that makes a diarizer a recording and would keep the count.

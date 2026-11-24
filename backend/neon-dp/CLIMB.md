@@ -5160,3 +5160,44 @@ passes at 6b393ee. Round 1's five runs in the order they ran: the default
 to 0.15 s over -t 6 is the race's cost here too.
 
 Of the boards the entries above call not measured, none is left.
+
+## 2026-11-24 - the diarizer's race on a Galaxy S24: one recording (measured)
+
+The one-shot the entry of the race on this phone left to come, from the
+session that holds it: `probs --no-hold`, a process a run, timed by the
+phone's /proc/uptime, cooled under 30.0 °C before every run, the four
+builds in rotation each round. ab7cc7f has no race and runs on all
+eight; 5d0ddd9 is the race as it stands; 6b393ee the same with the scores
+in int8. Seconds, rounds 1, 2 and 3, and their mean:
+
+| one recording, s | ab7cc7f, no race       | 5d0ddd9, default       | 5d0ddd9, -t 6          | 6b393ee, default       |
+| ---------------- | ---------------------- | ---------------------- | ---------------------- | ---------------------- |
+| three minutes    | 2.58, 2.61, 2.83: 2.67 | 2.43, 2.63, 2.69: 2.58 | 2.35, 2.11, 2.45: 2.30 | 2.32, 2.45, 2.35: 2.37 |
+| ten minutes      | 9.73, 9.07, 9.58: 9.46 | 9.01, 8.45, 8.94: 8.80 | 8.51, 8.80, 7.87: 8.39 | 7.29, 8.08, 8.32: 7.90 |
+
+Every run returned 0, and the check over adb (`make adb`) passes at the
+three builds.
+
+- The race costs a job 0.28 s of the three minutes and 0.41 s of the ten
+  by the means, where 3c70e85's cost 1.0 to 2.0 s. By the round it is
+  +0.08, +0.52 and +0.24 s, and +0.50, -0.35 and +1.07: one build's
+  rounds differ by 0.1 to 0.3 s over the three minutes and 0.6 to 1.0
+  over the ten, as much as the cost and more.
+- With the race a job is faster than before there was one: 3% and 7%
+  under ab7cc7f's, and 11% and 16% with the scores in int8 (13% of the
+  ten minutes without its round 1).
+
+Expected was 0.1 to 0.2 s: the first step and every core's two turns on
+eight threads, three steps of 0.38 s (the 7.56 s of twenty, given six) at
+13 to 15% more, 0.16 s. The means are over it and the rounds cannot say
+by how much. The tighter measure of the same turns is `bench -v`'s first
+run above, the load and the process's start left out: the default 0.06
+to 0.15 s over -t 6 in six pairs of rounds, at a spread under 2%.
+
+No cause for more is seen in the code: a turn runs its step's layers and
+nothing else, the pool changes a count and wakes its sleepers, the
+columns are packed once a diarizer. What the one-shot has that the bench
+has not is the first seconds of a process, where the phone's clocks and
+its placing of eight threads, then six, are settling. A lead, not
+followed: the phone apps keep the count (`pk_diar_settled`), so the turns
+are paid by `pktito-c` a run and by a phone's first jobs.
