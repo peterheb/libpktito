@@ -34,6 +34,12 @@ import numpy as np
 from . import sortformer
 from .reference import _ln, _sigmoid, lin, mm
 
+# The attention's products as a study rounds them (tools/diarquant.py's
+# qk8 and pv8): "smooth" takes each head's mean key off its keys first,
+# "qk" (Q, K) and "pv" (P, V) return the operands rounded. Empty, the
+# attention is the model's.
+ATT = {}
+
 # The model card's configuration for a recording heard after the fact
 # ("very high latency", 30.4 s): chunks of 340 frames with 40 of right
 # context, a FIFO of 40 and a cache update every 300 frames. The cache keeps
@@ -304,9 +310,16 @@ def layer(x, cos, sin, w, i, a):
     Q = _turn(heads(mm(h, w, q + "att.q")), cos, sin)
     K = _turn(heads(mm(h, w, q + "att.k")), cos, sin)
     V = heads(mm(h, w, q + "att.v"))
+    if ATT.get("smooth"):
+        # a query's scores all move by q . mean(K), which its softmax undoes
+        K = K - K.mean(1, keepdims=True)
+    if ATT.get("qk"):
+        Q, K = ATT["qk"](Q, K)
     s = Q @ K.transpose(0, 2, 1) / math.sqrt(dk)  # [H][T][T]
     s = np.exp(s - s.max(-1, keepdims=True))
     s /= s.sum(-1, keepdims=True)
+    if ATT.get("pv"):
+        s, V = ATT["pv"](s, V)
     o = (s @ V).transpose(1, 0, 2).reshape(T, D)
     x = x + lin(o, w, q + "att.o")
     h = _ln(x, w[q + "ff.norm.w"], w[q + "ff.norm.b"], a["ln_eps"])
