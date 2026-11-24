@@ -836,8 +836,9 @@ twelve in 7 of 7 with them so.
 Measured on 2026-11-24 over ten minutes of sound (test.wav ten times over,
 `pktito-c bench`): an M5 Ultra keeps its twelve fast cores, 1.25 s where
 its 36 cores take 1.81; a GB10 its ten X925s, 1.93 s against its twenty's
-2.50; a base M4 keeps all ten, 2.17 s against its four fast cores' 2.81,
-and an M4 Pro all twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
+2.50; a Galaxy S24 six of its eight, 7.69 s against 8.67; a base M4 keeps
+all ten, 2.17 s against its four fast cores' 2.81, and an M4 Pro all
+twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
 The turns are run once a diarizer, and the recording they are run in pays
 for the side that loses: 0.03 s on the base M4 and 0.08 to 0.09 s on the M5 Ultra,
 one recording against the same with its count given. `pktito-c bench -v`

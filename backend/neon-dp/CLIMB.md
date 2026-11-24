@@ -4891,3 +4891,49 @@ The lead above, the recognizer's race on the X1E: main's printed 12
 threads in 6 processes of 6, so it did not flip there as measured.
 
 Left: a Galaxy S24.
+
+## 2026-11-24 - the diarizer's race on a Galaxy S24 (measured)
+
+From the session that holds the phone (an X4, five A720s of two clocks
+and two A520s, so six the narrow side), over adb: `neon-i8mm`, built by
+NDK r30's clang 21.0.0, cooled between runs, three rounds in rotation.
+`bench -v`, the ten minutes, the best of five in seconds:
+
+| the ten minutes, s | round 1 | 2     | 3     | kept        |
+| ------------------ | ------- | ----- | ----- | ----------- |
+| 5d0ddd9, default   | 7.673   | 7.746 | 7.693 | 6 in 3 of 3 |
+| 5d0ddd9, -t 6      | 7.560   | 7.682 | 7.541 |             |
+| 5d0ddd9, -t 8      | 8.674   | 8.610 | 8.697 |             |
+
+The six are kept, eight taking 13 to 15% longer, and the margin stays a
+sixteenth. The default is 0.06 to 0.15 s over -t 6 by the round. The
+check over adb (`make adb`) passes at ab7cc7f, 3c70e85 and 5d0ddd9.
+
+Round 1's five runs, in the order they ran: the default 7.67,
+8.27, 8.51, 8.71 and 9.50 s, and given six 7.56, 8.20, 8.55, 8.81 and
+9.78. The first is the best and each one after is slower, the phone
+warming: so this phone's best of five is its first run, the one with the
+race in it, and the default's 0.11 s over -t 6 there is the race's cost.
+
+One recording, a process each (`probs --no-hold`, by /proc/uptime),
+before there was a race and with its first form:
+
+| one recording, s | ab7cc7f, no race | 3c70e85             |
+| ---------------- | ---------------- | ------------------- |
+| three minutes    | 2.58, 2.44, 2.58 | 3.90, 4.09, 3.94    |
+| ten minutes      | 9.99, 9.41, 9.93 | 10.98, 11.43, 10.95 |
+
+1.0 to 2.0 s a diarizer. Inferred from the code, not measured apart:
+3c70e85's narrow side was the fastest kind alone, this phone's one X4,
+and two whole steps ran on it, the lone core's cost the held GB10 showed
+above (4.96 s against 1.65). At 0.42 s a step on eight threads, 1.4 s is
+a step on the X4 alone at 1.1 s. Since 37688bd the narrow side is six and
+a lone core is not raced, and what should be left is the first step and
+every core's two turns on eight threads where six are 13 to 15% faster,
+0.1 to 0.2 s (inferred), which the first runs' 0.06 to 0.15 s over -t 6
+agree with. The same one-shot at 5d0ddd9 is to come.
+
+The recognizer (v2, test.wav, the best of five): its default, eight
+threads, 1.328, 1.435 and 1.513 s; given six, 1.511, 1.366 and 1.584.
+They overlap at 8% either way, so the lead that its race sets every core
+against the fastest kind alone is not shown to cost this phone anything.
