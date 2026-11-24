@@ -3962,3 +3962,49 @@ on. The same split on the others: the Strix Halo 1.092-1.096 to
 single CCD of eight cores with the products in the plain AVX2 tile the
 passes it folded in were cheap, and the fold's cost is not found here.
 Left open: why, and a form of the fold that keeps the Zen 3 level.
+
+## 2026-11-24 - the Zen 3's cost of the one qkv job, and ff by column chunk (measurements; one change kept)
+
+Where the Zen 3 (Ryzen 7 5700X, avx2, 8 threads, gcc 12.3) pays for
+048c121. Thread time in the items (rdtsc, not committed), the ten
+minutes' runs: before it the rotation's items 3.04 Gcycles, the means'
+2.27 and the keys' 2.94, 8.25 in all; after it K's tiles (rotation,
+mean, keys) 7.76 and Q's (rotation, quantizing) 3.83, 11.59. The
+products themselves are level (K's whole heads 27.8 Gcycles, Q's
+chunks 27.0), and q8bench there runs 684, 342 and 228 columns a call at
+87.5 to 89.0 GMAC/s alike, so it is not the whole-width K. The same work
+in the tiles takes 40% more thread time there; on Zen 5 the jobs it
+saves are worth more than that. Variants, each the same bytes, the ten
+minutes, rounds in an order and its reverse:
+
+| variant                                                     | Zen 3, gcc 12.3 (8 thr.) | 9950X, gcc 15.2 (16)  |
+| ----------------------------------------------------------- | ------------------------ | --------------------- |
+| d9e6fa1, before the job                                     | 3.705-3.753 s            |                       |
+| cda70af                                                     | 3.751-3.800              | 0.765-0.766           |
+| A: K's frames turned as they go into the mean (one pass)    | 3.752-3.778              | 0.756-0.768           |
+| B: K split as Q, its rotation in its tiles, the means and keys jobs back | 3.750-3.789 | 0.788-0.790   |
+| Q: the queries turned and quantized in a job of their own   | 3.725-3.756              | 0.767-0.774           |
+| S: the three parts as three jobs                            | 3.775-3.791              | 0.820-0.826           |
+| A + the rotation's loop vectorized (restrict)               | 3.753-3.776              | 0.755-0.765           |
+
+At 4 threads on the Zen 3 A against d9e6fa1 is the same, 6.544-6.740
+against 6.499-6.635. None brings the Zen 3 back. The rotation's loop
+was scalar (its halves could alias as gcc and clang saw them); with
+restrict both vectorize it, the bytes the same, and it moves nothing
+measurable on either machine, so it is not kept. A is kept: level on the
+9950X under both compilers (gcc above; clang 0.771-0.780 against
+0.773-0.779) and 1.2% on the Strix Halo, 1.036-1.040 s against
+1.049-1.051 (gcc 13.3, three rounds); on the 12900HK level, 3.668-3.697
+against 3.663-3.703 (gcc 15.2). Left open: what the Zen 3 pays
+for in the tiles.
+
+ff by column chunk (an item a chunk of frames: up, GELU and its
+quantizing, down, all its rows, in that core; one job where there were
+two), as a variable for the chunk, the same bytes. The ten minutes, three
+rounds: 9950X, gcc 15.2, the two jobs 0.757-0.767 s; chunks of 12
+0.789-0.793, 18 0.768-0.774, 24 0.759-0.774, 36 0.792-0.796, 48
+0.806-0.810. Strix Halo, gcc 13.3: two jobs 1.036-1.040; 24 1.044-1.046;
+12 1.113-1.118. Rejected. Twelve to 24 frames are 29 to 57 items, so a
+chunk wide enough for each call's own work (the panels' weight sums,
+the copy of its columns) is too few items to fill sixteen threads'
+rounds, and each item streams all 2 MB of the layer's ff weights.

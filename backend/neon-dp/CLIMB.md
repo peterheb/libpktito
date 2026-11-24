@@ -5065,3 +5065,35 @@ A lead, not measured: the recognizer's race (core/encoder.c, layers) sets
 every core against `pk_os_fast_cores`, the laptop's same eight of twelve,
 in turns of two layers that alternate, each side by one median. If
 Windows' two classes there are cores alike, it is open to the same drift.
+
+## 2026-11-24 - the x86 diarizer climb's passes on a Pi 5 (a measurement)
+
+The changes of backend/avx2/CLIMB.md, 2026-11-24 (pk_gemm_on's three
+rounds, the keys' jobs, V's columns split, the one qkv job, the attention
+output quantized in its items), 6b393ee against 8054cc0, on pi5a (Pi 5,
+four A76, neon-dp-a76, gcc; 14.2 at the 2026-11-10 check, not re-read
+for this one). make check-c passes; test3.wav's `probs --no-hold` the
+same bytes as 6b393ee's. The ten minutes, best of 5, three interleaved
+rounds: 6b393ee 15.922, 15.921, 15.957 s; 8054cc0 15.619, 15.631, 15.647
+s: 1.8% faster, the spread within each under 0.3%. Measured and reported
+by the session that ran the Arm board; mixed-core Arm (a GB10, an Apple
+chip), where pk_gemm_on's earlier column rule was decided, is not timed.
+
+The same two trees on mixed-core Arm, measured and reported by
+libpktito-mac-hillclimb (interim; its full logs to follow). check-c
+passes on an M5 Ultra (neon-sme) and on a GB10 under gcc 13.3 and clang
+18.1, rows the same bytes on both:
+
+- M5 Ultra (12 P + 24 E): the default 1.216 to 1.141 s (6.1%); -t 12
+  9.0%; -t 36 1.788 to 1.139 (36%). The race used to keep the twelve and
+  now keeps all 36 (6 of 6): twelve are still 3% faster (1.105 against
+  1.139), inside the race's sixteenth (TUNE_BY), so every core wins the
+  tie. The three rounds made the E-cores' share worth enough to tie.
+  Not changed here.
+- GB10 (10 X925 + 10 A725), gcc: the default 11.8% faster, still on
+  the ten; -t 20 16.0%; held to 3 X925 and 5 A725, 18.0%.
+- The recognizer, v2 on the M5 Ultra: 0.914 to 0.912 s, the same
+  transcript.
+
+So pk_gemm_on's three rounds lose nowhere measured, mixed cores
+included, where its whole-width-first rule of 2026-11-03 had.

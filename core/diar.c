@@ -274,11 +274,15 @@ static void keys_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t
     int8_t *kq = d->tws[th].kq;
     for (uint32_t h = r0 / dk; h < (r0 + nr) / dk; h++) {
         float *k = d->k + (size_t)h * dk;
-        rotate(d, d->k, h, 0, T);
         memset(mean, 0, dk * sizeof *mean);
-        for (uint32_t t = 0; t < T; t++)
+        /* each frame turned, then into the sums: one pass where two were,
+         * the ten minutes 1.2% faster on a Strix Halo (backend/avx2/CLIMB.md,
+         * 2026-11-24) */
+        for (uint32_t t = 0; t < T; t++) {
+            rotate(d, d->k, h, t, 1);
             for (uint32_t c = 0; c < dk; c++)
                 mean[c] += k[(size_t)t * D + c];
+        }
         for (uint32_t c = 0; c < dk; c++)
             mean[c] = mean[c] / (float)T;
         int8_t *w = d->k8 + (size_t)h * Tp * dk;
