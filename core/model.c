@@ -712,7 +712,7 @@ static int bind_sortformer(pk_file *f, pk_model *m) {
     /* the shapes the kernels take, as a recognizer's: 16-row panels and
      * 32-input blocks, and heads that are whole blocks, a head's
      * dimensions being the input of its scores' int8 product (core/diar.c,
-     * keys_item) and in pairs for the rotation; and a cache that holds
+     * keys_tile) and in pairs for the rotation; and a cache that holds
      * each speaker's silence frames and a frame of its own */
     if ((m->n_fft & (m->n_fft - 1)) || D % 32 || F % 32 || P % 32 || !dk || dk % 32
         || (w->stack * m->n_mels) % 32)

@@ -40,7 +40,7 @@
  * quantized in blocks of 32, the recognizer's rule (README, "Why int8";
  * docs/DIARIZATION.md, "Why int8", measures it for this model), and so
  * are the attention's scores, a head's keys the weights its queries meet
- * (keys_item). The attention's weighted sum is float, on pk_k_gemm_f32.
+ * (keys_tile). The attention's weighted sum is float, on pk_k_gemm_f32.
  * Each pass is split over the pool, and no output element depends on how,
  * so a run is the same bits on any number of threads and every backend
  * gives ref's. The rotation, the means and the cache's cut are plain loops
@@ -120,7 +120,7 @@ struct pk_diar {
     float *in;                   /* [tmax][D]: the cache, the FIFO and the chunk, stacked */
     float *x, *q, *k, *o;        /* [tmax][D]: the stream; the queries, keys, attention */
     float *u;                    /* [tmax][F]: the feed-forward's hidden */
-    int8_t *q8, *k8;             /* the scores' operands (keys_item): the queries, [H][tmax][dk],
+    int8_t *q8, *k8;             /* the scores' operands (keys_tile): the queries, [H][tmax][dk],
                                   * and each head's keys, a PK_Q8 matrix of a step's frames by dk */
     float *qd, *ks;              /* their scales: a query's blocks', a key's */
     float *vp;                   /* V as pk_k_gemm_f32 panels */
@@ -208,35 +208,35 @@ static pk_act queries(const pk_diar *d, uint32_t h, uint32_t t0, uint32_t nt) {
     return (pk_act){ d->q8 + at * d->dk, d->qd + at * (d->dk / QB), d->dk, QB, nt };
 }
 
-/* Each frame's queries and keys turned by its rotary angles: in each head,
- * dimensions i and i + dk/2 as a pair (torch's "rotate half"),
+/* Frames [t0, t0 + nt) of head h's dimensions in x ([T][D]: the queries or
+ * the keys) turned by their rotary angles: dimensions i and i + dk/2 as a
+ * pair (torch's "rotate half"),
  *
  *   (a, b) -> (a cos - b sin, b cos + a sin)
  *
  * which is NeMo's x cos + rotate_half(x) sin, operation for operation. */
-static void rope_item(void *arg, int i, int th) {
-    (void)th;
-    frames_job *j = arg;
-    pk_diar *d = j->d;
-    const uint32_t h2 = d->dk / 2, t0 = (uint32_t)i * 16, nt = min32(16, j->T - t0);
+static void rotate(const pk_diar *d, float *x, uint32_t h, uint32_t t0, uint32_t nt) {
+    const uint32_t h2 = d->dk / 2;
     for (uint32_t t = t0; t < t0 + nt; t++) {
         const float *c = d->cosr + (size_t)t * h2, *s = d->sinr + (size_t)t * h2;
-        float *v[2] = { d->q + (size_t)t * d->D, d->k + (size_t)t * d->D };
-        for (int which = 0; which < 2; which++)
-            for (uint32_t h = 0; h < d->H; h++) {
-                float *z = v[which] + (size_t)h * d->dk;
-                for (uint32_t k = 0; k < h2; k++) {
-                    const float a = z[k], b = z[k + h2];
-                    z[k] = a * c[k] - b * s[k];
-                    z[k + h2] = b * c[k] + a * s[k];
-                }
-            }
+        float *z = x + (size_t)t * d->D + (size_t)h * d->dk;
+        for (uint32_t k = 0; k < h2; k++) {
+            const float a = z[k], b = z[k + h2];
+            z[k] = a * c[k] - b * s[k];
+            z[k + h2] = b * c[k] + a * s[k];
+        }
     }
-    /* the queries are the scores' activations (keys_item), quantized here
-     * while this core has them */
-    for (uint32_t h = 0; h < d->H; h++) {
-        pk_act a = queries(d, h, t0, nt);
-        pk_k_quantize(&a, d->q + (size_t)t0 * d->D + h * d->dk, d->D);
+}
+
+/* The tile of Q's product rows [r0, r0 + nr), whole heads, by frames [c0,
+ * c0 + nc): turned, and quantized as the scores' activations (keys_tile) */
+static void queries_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th) {
+    (void)th;
+    pk_diar *d = ((frames_job *)arg)->d;
+    for (uint32_t h = r0 / d->dk; h < (r0 + nr) / d->dk; h++) {
+        rotate(d, d->q, h, c0, nc);
+        pk_act a = queries(d, h, c0, nc);
+        pk_k_quantize(&a, d->q + (size_t)c0 * d->D + h * d->dk, d->D);
     }
 }
 
@@ -253,7 +253,8 @@ static void rope_item(void *arg, int i, int th) {
  * the others instead of the offset they share. Then each key is
  * pk_k_quantize's block, its bytes laid into PK_Q8's panels (core/pkf.h:
  * 16 keys a panel, a group the same 4 dimensions of each), the keys past
- * the step's last zeros. An item is a head.
+ * the step's last zeros. All of it in the tile of K's product that is the
+ * head's every key (layer), while that is in the core's cache.
  *
  * docs/DIARIZATION.md, "The attention in int8", measures the rounding
  * against float32: AMI's DER 0.006 points more with the mean key off (t
@@ -264,43 +265,55 @@ static void rope_item(void *arg, int i, int th) {
  * FMOPA at 64 inputs, so a Mac gains on its threads off the unit (a base
  * M4 5%), and one thread alone loses 1 to 2% (backend/neon-dp/CLIMB.md,
  * 2026-11-24). */
-static void keys_item(void *arg, int item, int th) {
+static void keys_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_t nc, int th) {
+    (void)c0;
     frames_job *j = arg;
     pk_diar *d = j->d;
-    const uint32_t D = d->D, dk = d->dk, T = j->T, Tp = up16(T), h = (uint32_t)item;
-    float *k = d->k + (size_t)h * dk, *mean = d->tws[th].row;
-    memset(mean, 0, dk * sizeof *mean);
-    for (uint32_t t = 0; t < T; t++)
-        for (uint32_t c = 0; c < dk; c++)
-            mean[c] += k[(size_t)t * D + c];
-    for (uint32_t c = 0; c < dk; c++)
-        mean[c] = mean[c] / (float)T;
-
-    int8_t *w = d->k8 + (size_t)h * Tp * dk, *kq = d->tws[th].kq;
-    float *ws = d->ks + (size_t)h * Tp;
-    for (uint32_t t0 = 0; t0 < T; t0 += 16, w += (size_t)16 * dk) {
-        const uint32_t nt = min32(16, T - t0);
-        for (uint32_t t = t0; t < t0 + nt; t++)
+    const uint32_t D = d->D, dk = d->dk, T = nc, Tp = up16(T);
+    float *mean = d->tws[th].row;
+    int8_t *kq = d->tws[th].kq;
+    for (uint32_t h = r0 / dk; h < (r0 + nr) / dk; h++) {
+        float *k = d->k + (size_t)h * dk;
+        memset(mean, 0, dk * sizeof *mean);
+        /* each frame turned, then into the sums: one pass where two were,
+         * the ten minutes 1.2% faster on a Strix Halo (backend/avx2/CLIMB.md,
+         * 2026-11-24) */
+        for (uint32_t t = 0; t < T; t++) {
+            rotate(d, d->k, h, t, 1);
             for (uint32_t c = 0; c < dk; c++)
-                k[(size_t)t * D + c] -= mean[c];
-        pk_act a = { kq, ws + t0, dk, dk, nt };
-        pk_k_quantize(&a, k + (size_t)t0 * D, D);
-        if (nt < 16) {
-            memset(w, 0, (size_t)16 * dk);
-            memset(ws + t0 + nt, 0, (16 - nt) * sizeof *ws);
+                mean[c] += k[(size_t)t * D + c];
         }
-        for (uint32_t r = 0; r < nt; r++)
-            for (uint32_t g = 0; g < dk / PK_QG; g++)
-                memcpy(w + (size_t)g * PK_QR * PK_QG + r * PK_QG, kq + (size_t)r * dk + g * PK_QG, PK_QG);
+        for (uint32_t c = 0; c < dk; c++)
+            mean[c] = mean[c] / (float)T;
+        int8_t *w = d->k8 + (size_t)h * Tp * dk;
+        float *ws = d->ks + (size_t)h * Tp;
+        for (uint32_t t0 = 0; t0 < T; t0 += 16, w += (size_t)16 * dk) {
+            const uint32_t nt = min32(16, T - t0);
+            for (uint32_t t = t0; t < t0 + nt; t++)
+                for (uint32_t c = 0; c < dk; c++)
+                    k[(size_t)t * D + c] -= mean[c];
+            pk_act a = { kq, ws + t0, dk, dk, nt };
+            pk_k_quantize(&a, k + (size_t)t0 * D, D);
+            if (nt < 16) {
+                memset(w, 0, (size_t)16 * dk);
+                memset(ws + t0 + nt, 0, (16 - nt) * sizeof *ws);
+            }
+            for (uint32_t r = 0; r < nt; r++)
+                for (uint32_t g = 0; g < dk / PK_QG; g++)
+                    memcpy(w + (size_t)g * PK_QR * PK_QG + r * PK_QG, kq + (size_t)r * dk + g * PK_QG, PK_QG);
+        }
     }
 }
 
 typedef struct { pk_diar *d; uint32_t T, Tp; } att_job;
 
 /* One head over ATT_BLOCK queries: their scores against every key, the
- * int8 product (keys_item), divided by sqrt(dk) and softmaxed, and the
- * weighted sum of the values, a float one. No positions here: the
- * rotation put them in the queries and keys. */
+ * int8 product (keys_tile), divided by sqrt(dk) and softmaxed, and the
+ * weighted sum of the values, a float one, then quantized for the output
+ * projection while it is in this core's cache, where a job of its own
+ * after this one made the ten minutes 1.3 to 1.6% slower on the 9950X
+ * (backend/avx2/CLIMB.md, 2026-11-24). No positions here: the rotation put
+ * them in the queries and keys. */
 static void att_item(void *arg, int item, int th) {
     att_job *j = arg;
     pk_diar *d = j->d;
@@ -315,6 +328,9 @@ static void att_item(void *arg, int item, int th) {
         pk_k_softmax(sc + (size_t)i * j->Tp, T, scale);
     pk_k_gemm_f32(d->o + (size_t)i0 * D + h * dk, D, d->vp + (size_t)h * (dk / 16) * T * 16, T, dk, T, sc,
                   j->Tp, nq, NULL, 0, 0);
+    /* a head's dk inputs are whole blocks of the projection's */
+    for (uint32_t i = i0; i < i0 + nq; i++)
+        pk_quant_part(&d->act, i, h * dk, dk, d->o + (size_t)i * D + h * dk);
 }
 
 typedef struct { float *x; size_t n; } relu_job;
@@ -362,15 +378,18 @@ static void taps_item(void *arg, int i, int th) {
 static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     const uint32_t D = d->D, F = d->F, Tp = up16(T);
     PROF(PK_P_QUANT, normq(d, d->x, T, L->att_nw, L->att_nb));
-    PROF(PK_P_QKV, pk_gemm_on(d->pool, &d->packed, d->q, D, &L->q, NULL, &d->act, 0, NULL, NULL));
-    PROF(PK_P_QKV, pk_gemm_on(d->pool, &d->packed, d->k, D, &L->k, NULL, &d->act, 0, NULL, NULL));
-    PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, &d->packed, d->vp, (size_t)T * 16, &L->v, &d->act));
+    /* one job: K a whole head an item, the largest, first; then Q and V */
     frames_job fj = { d, T };
-    PROF(PK_P_POS, pk_pool_run(d->pool, rope_item, &fj, (int)((T + 15) / 16)));
-    PROF(PK_P_ATT, pk_pool_run(d->pool, keys_item, &fj, (int)d->H));
+    pk_gemm_job kj, qj;
+    pk_panel_job vj;
+    const pk_part qkv[3] = {
+        pk_gemm_part(&kj, d->pool, &d->packed, d->k, D, &L->k, NULL, &d->act, 0, d->dk, 1, keys_tile, &fj),
+        pk_gemm_part(&qj, d->pool, &d->packed, d->q, D, &L->q, NULL, &d->act, 0, d->dk, 0, queries_tile, &fj),
+        pk_panels_part(&vj, d->pool, &d->packed, d->vp, (size_t)T * 16, &L->v, &d->act),
+    };
+    PROF(PK_P_QKV, pk_parts_on(d->pool, qkv, 3));
     att_job aj = { d, T, Tp };
     PROF(PK_P_ATT, pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK))));
-    PROF(PK_P_QUANT, pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB));
     PROF(PK_P_ATTO, pk_gemm_on(d->pool, &d->packed, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL));
 
     PROF(PK_P_QUANT, normq(d, d->x, T, L->ff_nw, L->ff_nb));

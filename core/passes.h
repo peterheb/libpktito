@@ -57,6 +57,31 @@ typedef struct {
 void pk_gemm_on(pk_pool *p, pk_packed *pk, float *out, size_t os, const pk_q8 *w,
                 const float *bias, const pk_act *act, int add, pk_tile_fn then, void *then_arg);
 
+/* A job's items in parts, for one pk_pool_run over several passes'
+ * (pk_parts_on): part k's items after those of the parts before it */
+typedef struct { pk_job_fn fn; void *arg; int items; } pk_part;
+void pk_parts_on(pk_pool *p, const pk_part *parts, int n);
+
+/* pk_gemm_on's items as a part, its job in j. unit, if not 0: every item's
+ * rows a multiple of unit; whole: every item every column. For a then that
+ * needs them, core/diar.c's heads. Parts in one job that share a pk share
+ * their activations. */
+typedef struct {
+    float *out;
+    size_t os;
+    const pk_q8 *w;
+    const float *bias;
+    const pk_act *act;
+    int add;
+    uint32_t step, rb, cstep;
+    pk_tile_fn then;
+    void *then_arg;
+    const pk_packed *pk;             /* the columns packed, or NULL */
+} pk_gemm_job;
+pk_part pk_gemm_part(pk_gemm_job *j, pk_pool *p, pk_packed *pk, float *out, size_t os, const pk_q8 *w,
+                     const float *bias, const pk_act *act, int add, uint32_t unit, int whole, pk_tile_fn then,
+                     void *then_arg);
+
 /* Inputs [k0, k0 + n) of column t of act from the n floats at x, whole
  * blocks quantized alone: the bytes and scales the whole column's
  * quantizing gives them */
@@ -65,6 +90,16 @@ void pk_quant_part(pk_act *act, uint32_t t, uint32_t k0, uint32_t n, const float
 /* w act straight into pk_k_gemm_f32's panels, a panel ps floats apart, as
  * the attention's V is laid out (passes.c, panel_item) */
 void pk_gemm_panels_on(pk_pool *p, pk_packed *pk, float *out, size_t ps, const pk_q8 *w,
+                       const pk_act *act);
+typedef struct {
+    float *out;
+    size_t ps;
+    const pk_q8 *w;
+    const pk_act *act;
+    uint32_t rb, cstep;
+    const pk_packed *pk;             /* the columns packed, or NULL */
+} pk_panel_job;
+pk_part pk_panels_part(pk_panel_job *j, pk_pool *p, pk_packed *pk, float *out, size_t ps, const pk_q8 *w,
                        const pk_act *act);
 
 /* A product's tile transposed into pk_k_gemm_f32's panels (passes.c,

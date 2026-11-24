@@ -5201,3 +5201,62 @@ has not is the first seconds of a process, where the phone's clocks and
 its placing of eight threads, then six, are settling. A lead, not
 followed: the phone apps keep the count (`pk_diar_settled`), so the turns
 are paid by `pktito-c` a run and by a phone's first jobs.
+
+## 2026-11-24 - the x86 diarizer climb's passes on a Pi 5 (a measurement)
+
+The changes of backend/avx2/CLIMB.md, 2026-11-24 (pk_gemm_on's three
+rounds, the keys' jobs, V's columns split, the one qkv job, the attention
+output quantized in its items), 6b393ee against 8054cc0, on pi5a (Pi 5,
+four A76, neon-dp-a76, gcc; 14.2 at the 2026-11-10 check, not re-read
+for this one). make check-c passes; test3.wav's `probs --no-hold` the
+same bytes as 6b393ee's. The ten minutes, best of 5, three interleaved
+rounds: 6b393ee 15.922, 15.921, 15.957 s; 8054cc0 15.619, 15.631, 15.647
+s: 1.8% faster, the spread within each under 0.3%. Measured and reported
+by the session that ran the Arm board; mixed-core Arm (a GB10, an Apple
+chip), where pk_gemm_on's earlier column rule was decided, is not timed.
+
+The same two trees on mixed-core Arm, measured and reported by
+libpktito-mac-hillclimb (interim; its full logs to follow). check-c
+passes on an M5 Ultra (neon-sme) and on a GB10 under gcc 13.3 and clang
+18.1, rows the same bytes on both:
+
+- M5 Ultra (12 P + 24 E): the default 1.216 to 1.141 s (6.1%); -t 12
+  9.0%; -t 36 1.788 to 1.139 (36%). The race used to keep the twelve and
+  now keeps all 36 (6 of 6): twelve are still 3% faster (1.105 against
+  1.139), inside the race's sixteenth (TUNE_BY), so every core wins the
+  tie. The three rounds made the E-cores' share worth enough to tie.
+  Not changed here.
+- GB10 (10 X925 + 10 A725), gcc: the default 11.8% faster, still on
+  the ten; -t 20 16.0%; held to 3 X925 and 5 A725, 18.0%.
+- The recognizer, v2 on the M5 Ultra: 0.914 to 0.912 s, the same
+  transcript.
+
+So pk_gemm_on's three rounds lose nowhere measured, mixed cores
+included, where its whole-width-first rule of 2026-11-03 had.
+
+The final figures for the entry above, six rounds on every board, trees
+by turns with the order swapped each round, the median of the rounds'
+bests (libpktito-mac-hillclimb; logs and its tab.py on the M4 Pro in
+~/pktito-share/libpktito/x86-diar-climb-8054cc0-arm/). The interim's
+GB10 rows were gcc only and four rounds; pi5a's gcc re-read: Debian
+14.2.0-19. check-c passes on the M4 Pro and the base M4 too (neon-sme);
+`probs --no-hold` of test10.wav and v2's transcript of it the same bytes
+in both trees on all four boards.
+
+| board, ten minutes    | default          | a given count         | all cores             |
+| --------------------- | ---------------- | --------------------- | --------------------- |
+| M5 Ultra              | 1.216 to 1.141 s | -t 12: 1.214 to 1.105 | -t 36: 1.788 to 1.139 |
+| GB10, gcc 13.3        | 1.763 to 1.560 s | -t 10: 1.764 to 1.561 | -t 20: 2.254 to 1.879 |
+| GB10, clang 18.1      | 1.760 to 1.546 s | -t 10: 1.765 to 1.546 | -t 20: 2.253 to 1.868 |
+| base M4 (4 P + 6 E)   | 2.042 to 1.960 s | -t 4: 2.630 to 2.558  | -t 10: 4.0% faster    |
+| M4 Pro, in use, noisy | 1.622 to 1.454 s | -t 12: 1.504 to 1.504 | -t 8: 1.659 to 1.640  |
+
+The GB10 held to 3 X925 and 5 A725 (taskset -c 5-7,10-14): gcc 4.113 to
+3.370 s (18.1%), clang 4.057 to 3.418 (15.8%). The GB10 keeps its ten and
+the base M4 its ten in 6 of 6 in both trees; the M4 Pro kept twelve in 5
+of 6 before and 6 of 6 after; its 30 runs' means, default 1.656 to 1.593,
+read as level to a few percent faster. The recognizer (v2, test10.wav)
+level everywhere: M5 Ultra 0.914 to 0.911, GB10 2.518 to 2.512 (gcc) and
+2.494 to 2.498 (clang), base M4 3.467 to 3.463. test.wav on the GB10's
+twenty cores, the case 2026-11-03's whole-width rule lost by 5.5 to 7.3%:
+gcc 0.304 to 0.297 s, clang 0.299 to 0.294; base M4 0.350 to 0.350.

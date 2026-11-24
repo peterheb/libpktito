@@ -77,21 +77,8 @@ static void pack(const pk_packed *pk, const pk_act *act, uint32_t g0, uint32_t g
             ;
 }
 
-typedef struct {
-    float *out;
-    size_t os;
-    const pk_q8 *w;
-    const float *bias;
-    const pk_act *act;
-    int add;
-    uint32_t step, rb, cstep;
-    pk_tile_fn then;
-    void *then_arg;
-    const pk_packed *pk;             /* the columns packed, or NULL */
-} gemm_job;
-
 static void gemm_item(void *arg, int i, int th) {
-    gemm_job *j = arg;
+    pk_gemm_job *j = arg;
     uint32_t r0 = ((uint32_t)i % j->rb) * j->step, nr = min32(j->step, j->w->rows - r0);
     uint32_t c0 = ((uint32_t)i / j->rb) * j->cstep, nc = min32(j->cstep, j->act->T - c0);
     pk_act sub = *j->act;
@@ -128,13 +115,19 @@ static void gemm_item(void *arg, int i, int th) {
  * sums - stays a few percent of it; whole sixteens where the columns are
  * packed, each chunk's first then a sixteen's first. Every output is still
  * one call's, so the bits do not depend on the split. Each item then hands
- * its tile to then, if there is one. */
-void pk_gemm_on(pk_pool *p, pk_packed *pk, float *out, size_t os, const pk_q8 *w,
-                const float *bias, const pk_act *act, int add, pk_tile_fn then, void *then_arg) {
-    const uint32_t nth = (uint32_t)pk_pool_active(p);
-    const uint32_t step = w->rows / 256 >= 2 * nth ? 256 : 64, rb = (w->rows + step - 1) / step;
-    uint32_t best = 1, best_idle = UINT32_MAX, best_all = 1;
-    for (uint32_t cc = 1; cc <= 8 && (cc == 1 || act->T / cc >= 48); cc++) {
+ * its tile to then, if there is one.
+ *
+ * And at least three rounds where the columns allow: the diarizer's ten
+ * minutes on the 9950X at 16 threads took 0.90 s where its products were one
+ * or two rounds and 0.82 at three, its threads' items unequal in time (a
+ * product's caller waited 105 ms a run for the others); level on a Strix
+ * Halo and a 12900HK, and for the recognizer on all three
+ * (backend/avx2/CLIMB.md, 2026-11-24). */
+static uint32_t col_step(uint32_t rb, uint32_t T, uint32_t nth, int packed) {
+    uint32_t best = 1, best_idle = UINT32_MAX, best_all = 1, cc0 = 1;
+    while (rb * cc0 < 3 * nth && cc0 < 8 && T / (cc0 + 1) >= 48)
+        cc0++;                       /* three rounds at least, where the columns allow */
+    for (uint32_t cc = cc0; cc <= 8 && (cc == 1 || T / cc >= 48); cc++) {
         uint32_t items = rb * cc, all = (items + nth - 1) / nth * nth;
         /* the idle share of the last round, compared as fractions */
         if ((uint64_t)(all - items) * best_all < (uint64_t)best_idle * all) {
@@ -143,12 +136,49 @@ void pk_gemm_on(pk_pool *p, pk_packed *pk, float *out, size_t os, const pk_q8 *w
             best_all = all;
         }
     }
+    uint32_t cstep = (T + best - 1) / best;
+    cstep = best == 1 ? T : packed ? (cstep + 15) / 16 * 16 : (cstep + 11) / 12 * 12;
+    return cstep ? cstep : 1;
+}
+
+pk_part pk_gemm_part(pk_gemm_job *j, pk_pool *p, pk_packed *pk, float *out, size_t os, const pk_q8 *w,
+                     const float *bias, const pk_act *act, int add, uint32_t unit, int whole, pk_tile_fn then,
+                     void *then_arg) {
+    const uint32_t nth = (uint32_t)pk_pool_active(p);
+    uint32_t step = w->rows / 256 >= 2 * nth ? 256 : 64;
+    if (unit)
+        step = (step + unit - 1) / unit * unit;
+    const uint32_t rb = (w->rows + step - 1) / step;
     pk = packed_for(pk, act);
-    uint32_t cstep = (act->T + best - 1) / best;
-    cstep = best == 1 ? act->T : pk ? (cstep + 15) / 16 * 16 : (cstep + 11) / 12 * 12;
-    uint32_t cc = cstep ? (act->T + cstep - 1) / cstep : 1;
-    gemm_job j = { out, os, w, bias, act, add, step, rb, cstep ? cstep : 1, then, then_arg, pk };
-    pk_pool_run(p, gemm_item, &j, (int)(rb * cc));
+    const uint32_t cstep = whole ? (act->T ? act->T : 1) : col_step(rb, act->T, nth, pk != NULL);
+    const uint32_t cc = act->T ? (act->T + cstep - 1) / cstep : 1;
+    *j = (pk_gemm_job){ out, os, w, bias, act, add, step, rb, cstep, then, then_arg, pk };
+    return (pk_part){ gemm_item, j, (int)(rb * cc) };
+}
+
+void pk_gemm_on(pk_pool *p, pk_packed *pk, float *out, size_t os, const pk_q8 *w,
+                const float *bias, const pk_act *act, int add, pk_tile_fn then, void *then_arg) {
+    pk_gemm_job j;
+    const pk_part part = pk_gemm_part(&j, p, pk, out, os, w, bias, act, add, 0, 0, then, then_arg);
+    pk_pool_run(p, part.fn, part.arg, part.items);
+}
+
+typedef struct { const pk_part *parts; int n; } parts_job;
+
+static void parts_item(void *arg, int i, int th) {
+    const parts_job *j = arg;
+    int k = 0;
+    for (; k < j->n - 1 && i >= j->parts[k].items; k++)
+        i -= j->parts[k].items;
+    j->parts[k].fn(j->parts[k].arg, i, th);
+}
+
+void pk_parts_on(pk_pool *p, const pk_part *parts, int n) {
+    parts_job j = { parts, n };
+    int items = 0;
+    for (int k = 0; k < n; k++)
+        items += parts[k].items;
+    pk_pool_run(p, parts_item, &j, items);
 }
 
 /* Inputs [k0, k0 + n) of column t of act, from the n floats at x: whole
@@ -168,33 +198,46 @@ void pk_quant_part(pk_act *act, uint32_t t, uint32_t k0, uint32_t n, const float
  * which is the product's 16-row panel r / 16 laid out with its columns 16
  * floats apart, so one call a panel, os 16, writes it in place. A 64-row
  * slice an item, as pk_gemm deals them. */
-typedef struct {
-    float *out;
-    size_t ps;
-    const pk_q8 *w;
-    const pk_act *act;
-    const pk_packed *pk;             /* the columns packed, or NULL */
-} panel_job;
-
 static void panel_item(void *arg, int i, int th) {
     (void)th;
-    panel_job *j = arg;
-    if (j->pk)                       /* a panel is every column's */
-        pack(j->pk, j->act, 0, (j->act->T + 15) / 16);
-    for (uint32_t r = (uint32_t)i * 64; r < min32((uint32_t)i * 64 + 64, j->w->rows); r += 16) {
-        float *out = j->out + (size_t)(r / 16) * j->ps;
+    pk_panel_job *j = arg;
+    const uint32_t r0 = (uint32_t)i % j->rb * 64, c0 = (uint32_t)i / j->rb * j->cstep;
+    pk_act sub = *j->act;
+    const size_t nb = sub.n / sub.qb;
+    sub.q += (size_t)c0 * sub.n;
+    sub.d += (size_t)c0 * nb;
+    sub.T = min32(j->cstep, j->act->T - c0);
+    if (j->pk)                       /* c0 is a whole sixteen */
+        pack(j->pk, j->act, c0 / 16, (c0 + sub.T + 15) / 16);
+    for (uint32_t r = r0; r < min32(r0 + 64, j->w->rows); r += 16) {
+        float *out = j->out + (size_t)(r / 16) * j->ps + (size_t)c0 * 16;
         const int8_t *w = j->w->q + (size_t)r * j->w->cols;
         if (j->pk)
-            pk_k_gemm_q8_packed(out, 16, w, j->w->s + r, NULL, 16, j->act, 0, j->pk->x, j->pk->d);
+            pk_k_gemm_q8_packed(out, 16, w, j->w->s + r, NULL, 16, &sub, 0, j->pk->x + (size_t)c0 * sub.n,
+                                j->pk->d + (size_t)c0 * nb);
         else
-            pk_k_gemm_q8(out, 16, w, j->w->s + r, NULL, 16, j->act, 0);
+            pk_k_gemm_q8(out, 16, w, j->w->s + r, NULL, 16, &sub, 0);
     }
+}
+
+/* 64-row slices, and their columns in chunks as pk_gemm_on's, to fill the
+ * pool's last round: a 512-row V is 8 slices, which sixteen threads took
+ * as one round half idle */
+pk_part pk_panels_part(pk_panel_job *j, pk_pool *p, pk_packed *pk, float *out, size_t ps, const pk_q8 *w,
+                       const pk_act *act) {
+    const uint32_t rb = (w->rows + 63) / 64;
+    pk = packed_for(pk, act);
+    const uint32_t cstep = col_step(rb, act->T, (uint32_t)pk_pool_active(p), pk != NULL);
+    const uint32_t cc = act->T ? (act->T + cstep - 1) / cstep : 1;
+    *j = (pk_panel_job){ out, ps, w, act, rb, cstep, pk };
+    return (pk_part){ panel_item, j, (int)(rb * cc) };
 }
 
 void pk_gemm_panels_on(pk_pool *p, pk_packed *pk, float *out, size_t ps, const pk_q8 *w,
                        const pk_act *act) {
-    panel_job j = { out, ps, w, act, packed_for(pk, act) };
-    pk_pool_run(p, panel_item, &j, (int)((w->rows + 63) / 64));
+    pk_panel_job j;
+    const pk_part part = pk_panels_part(&j, p, pk, out, ps, w, act);
+    pk_pool_run(p, part.fn, part.arg, part.items);
 }
 
 /* K and the position table as pk_k_gemm_f32 panels, made by the items of

@@ -3721,3 +3721,289 @@ each, two threads, gcc: the c7i 1.098 s normal and 0.929 s fast, the c8i
 
 Not run: Android; the Pi 3B+ (its backend, neon, ran on the Pi 400 and
 on every machine above it).
+
+## 2026-11-24 - the diarizer's passes on the 9950X: where sixteen threads wait (hypothesis)
+
+The ten minutes (test10.wav, `pktito-c bench -m nemotron-3-diarization.pkf`)
+at 6b393ee, gcc 15.2, avx512-vnni, best of 5: 0.941 to 0.958 s at the
+default 16 threads (one a core: cpu_capacity is 1024 on all 32 CPUs under
+WSL, so pk_os_cores_but_slowest gives every core and the diarizer does not
+race), 0.958 at 8, 0.87 to 0.88 at 20 to 28, 1.24 at 32; clang 21.1.8
+0.964 at 16. The machine has two states a sitting apart, 0.875 and 0.945
+s for the same binary, so every comparison below is interleaved in one
+sitting. Eight threads are as fast as sixteen: per pass, from a pool with
+a clock around each job (not committed), five runs at 8 and 16 threads,
+ms a run:
+
+| pass                      | items a job | 8 threads | 16 threads | of it the caller's wait at 16 |
+| ------------------------- | ----------- | --------- | ---------- | ----------------------------- |
+| the products (pk_gemm_on) | 8 to 32     | 524       | 475        | 105                           |
+| attention (att_item)      | 344         | 292       | 196        | 7                             |
+| the keys (keys_item)      | 8, a head   | 49        | 73         | 29                            |
+| V's panels (panel_item)   | 8           | 22        | 56         | 21                            |
+| normq                     | 43          | 20        | 35         | 7                             |
+| rotation (rope_item)      | 43          | 14        | 28         | 5                             |
+| pk_quantize_on            | 43          | 7         | 19         | 4                             |
+
+The keys and V's panels are a job of 8 items, so half of sixteen threads
+wait out each, and their items read lines the product before wrote on
+every core. Hypotheses, each the same bits:
+
+- H1. The keys in two jobs: each head's mean by dimensions, 16 a item (32
+  items, each mean the same sum in the same order), then the keys
+  quantized into their panels 16 frames an item (344 items). The keys'
+  73 ms to some 20; the run 4 to 5% faster at 16 threads.
+- H2. V's panels split by columns as well as rows, as pk_gemm_on splits
+  (whole sixteens, every output one call's), to fill the pool's rounds.
+  56 ms to some 25; 2 to 3%.
+- H3. The products' split for one kind of core: their caller's wait is
+  105 ms of 475 at 16 threads, where each job is one or two rounds of
+  items. More, smaller items, or whole-width items first (pk-gemm-split,
+  2026-11-03: -3.4/-4.6% on this machine for the recognizer); to be
+  measured.
+
+The packed activations that backend/neon has (pk_k_act_pack) are not
+among them: the zmm tile's per-call copy of its columns, skipped
+outright (wrong bits, a timing only), moved the run 0.6% (0.875 to
+0.870, and 0.877 to 0.867, interleaved), inside the spread.
+
+## 2026-11-24 - the diarizer's passes on the 9950X: where sixteen threads wait (result: H1, H2, H3 kept)
+
+The ten minutes, best of 5 a round, rounds interleaved in one sitting, 16
+threads (the default), avx512-vnni; every build's `pktito-c probs
+--no-hold` of test10.wav the same bytes as 6b393ee's, and test3.wav's
+the same through ref, avx2, avx2-vnni and avx512-vnni:
+
+| tree                 | gcc 15.2, four rounds | clang 21.1.8, four rounds |
+| -------------------- | --------------------- | ------------------------- |
+| 6b393ee              | 0.952 to 0.967 s      | 0.966 to 0.992 s          |
+| H1, the keys in two  | 0.932 to 0.952        |                           |
+| H1 + H2, V's columns | 0.906 to 0.921        |                           |
+| H1 + H2 + H3         | 0.826 to 0.839        | 0.835 to 0.862            |
+
+H1 1.6% where 4 to 5 was predicted; H2 a further 2.5 to 3%. H3, built
+first as a variable (not committed): at least R rounds of items where
+the columns allow (chunks of 48 or more, 8 at most), the rest of the
+rule as it was. Three rounds of each R interleaved, the ten minutes at
+16 threads: R 0 (the rule before) 0.900 to 0.911, 2 0.882, 3 0.816 to
+0.821, 4 0.822 to 0.840, 6 0.817 to 0.833. Three it is: the up product
+(32 slices) is one round at 16 threads until then. At other counts, R 0
+against 3, two rounds: 4 threads 1.677-1.690 against 1.679, 8 0.974-0.987
+against 0.965-0.977, 12 0.913-0.927 against 0.888-0.894, 20 0.821-0.847
+against 0.810-0.817, 24 0.847-0.863 against 0.808-0.815. So sixteen
+threads are now as fast as twenty, where they were 9% slower.
+
+The same variable on the recognizer here, v2 on test3.wav (180 s), three
+rounds: 16 threads 0.471-0.487 s either way, 8 threads 0.583-0.638
+against 0.582-0.618. And on two machines that are not WSL, default
+threads, three interleaved rounds each:
+
+| machine                        | compiler | diarizer, R 0 / R 3       | recognizer v2, R 0 / R 3  |
+| ------------------------------ | -------- | ------------------------- | ------------------------- |
+| Strix Halo (Ryzen AI MAX+ 395) | gcc 13.3 | 1.095-1.097 / 1.091-1.095 | 0.617-0.624 / 0.614-0.630 |
+| i9-12900HK, 14 threads         | gcc 15.2 | 3.701-3.732 / 3.698-3.716 | 2.239-2.249 / 2.229-2.251 |
+
+Level on both. The Strix Halo runs its first run after an idle spell
+fast (0.866 s) and the rest at its power limit (1.09), so only the later
+rounds are compared. Why the 9950X under WSL gains and these do not is
+not separated here: its threads' items are unequal in time (the
+caller's wait at 16 threads was 105 ms of the products' 475 before), and
+three rounds is room for the pool to even them; the Strix Halo, whose
+sixteen threads are power-bound, and the 12900HK, which races its
+P-cores against every core, may not have the spread to win back. Native
+Windows on the 9950X is not measured.
+
+After the three, a run's passes at 16 threads, gcc, ms a run: the
+products 408 (the caller's wait 50), attention 199, V's panels 44,
+normq 36, rotation 28, the keys 25 and their means 16, pk_quantize_on 20. Bigger attention blocks (ATT_BLOCK 32, 48, 64 queries for 16, the
+same bits) moved nothing: 0.820 to 0.833 s each against 0.823 to 0.833,
+three rounds. An item's time there is mostly P·V's float product, at its
+FMAs' bound.
+
+## 2026-11-24 - the diarizer's q, k, v, rotation and keys as one job (hypothesis)
+
+After the three above, a layer's attention half is six jobs before the
+scores: q, k, V's panels, the rotation, the keys' means, the keys; 44 +
+28 + 16 + 25 ms a run of them besides the two products, each a round
+trip of the pool and a read of lines another core wrote.
+
+H4. One job of three products' items: k first, a whole head an item
+(every column, so its tile is the head's every key: the rotation, the
+mean in frame order, the subtraction and the keys' panels done in the
+tile while it is in the core's cache), then q's items (each rotating and
+quantizing its tile's queries), then V's. The same operations in the same
+order on every value, so the same bits. Predicted: the rotation's,
+means' and keys' 69 ms mostly gone, two jobs fewer a layer; the run 5 to
+8% faster at 16 threads. The 8 whole heads are the largest items and go
+first, so they end before the job does at 16 threads; at 2 to 8 threads
+they are a larger share and the gain smaller.
+
+## 2026-11-24 - the diarizer's q, k, v, rotation and keys as one job (result: kept)
+
+Built as the hypothesis has it (pk_parts_on, pk_gemm_part,
+pk_panels_part in core/passes.c). test10.wav's rows the same bytes as
+before, test3.wav's through ref, avx2, avx2-vnni and avx512-vnni. The
+ten minutes at 16 threads, four interleaved rounds, best of 5 each:
+
+| compiler     | before           | one job          |
+| ------------ | ---------------- | ---------------- |
+| gcc 15.2     | 0.818 to 0.822 s | 0.793 to 0.801 s |
+| clang 21.1.8 | 0.840 to 0.844   | 0.812 to 0.814   |
+
+3.0 and 3.3%, where 5 to 8 was predicted. At fewer threads, the three
+minutes (test3.wav), two rounds, gcc: 1 thread 1.682-1.687 to
+1.671-1.680, 2 0.886-0.893 to 0.884-0.888, 4 0.473-0.477 to 0.472, 8
+0.270-0.274 to 0.269-0.272: no loss where the 8 whole heads are a larger
+share of the job. Arm is built (aarch64 gcc, cross) and not run: its
+packed path takes the three parts' columns from one pk, which
+packed_for resets three times before the job starts.
+
+## 2026-11-24 - the attention's output quantized in its items (result: kept; built before this entry)
+
+The attention's output went to the output projection through a job of
+its own, pk_quantize_on, 20 ms a run at 16 threads. A head's 64 inputs
+are two whole blocks of 32, so each attention item now quantizes its own
+16 queries' slice of them (pk_quant_part, the same bytes as the whole
+column's) while they are in its cache, and the job is gone. Six
+interleaved rounds, the ten minutes at 16 threads: gcc 15.2 0.804-0.811
+s to 0.794-0.797, clang 21.1.8 0.816-0.821 to 0.800-0.810; 1.3 and 1.6%.
+This entry was written after the change was built and measured, not
+before.
+
+## 2026-11-24 - the layer norms made by the products that take them (hypothesis)
+
+Two jobs a layer are normq, LN(x) quantized into the products'
+activations, 36 ms a run at 16 threads, each a round trip of the pool.
+H6: the product makes them on demand instead, as backend/neon's packed
+columns are made (passes.c, pack): an item first makes each sixteen of
+its columns that no item has begun, the layer norm and the quantizing
+of those 16 frames, then waits for those another item is at, then runs.
+The qkv job's three parts share one set. The same operations on every
+frame, so the same bits. Predicted: most of the 36 ms, the run 2 to 4%
+faster at 16 threads.
+
+## 2026-11-24 - the layer norms made by the products that take them (result: rejected)
+
+Built as H6 has it (a pk_make in passes.c, both of a layer's normq jobs
+folded into the products after them), the same bytes. Five interleaved
+rounds, the ten minutes at 16 threads: gcc 15.2 0.789-0.797 s before,
+0.792-0.797 with it; clang 21.1.8 0.805-0.810 before, 0.801-0.815. Level:
+the job saved is paid back in the items' waits for the sixteens other
+items are making, every item of the first round needing all of them
+(K's whole heads) or a third. Not kept.
+
+## 2026-11-24 - the softmax in zmm (hypothesis)
+
+An attention item's time, rdtsc around its parts (not committed), the
+ten minutes' six runs at 16 threads, Gcycles: the scores' int8 product
+13.7, the softmax 20.1, P·V 30.3, the output's quantizing 3.2; at one
+thread 9.2, 16.1, 20.4, 1.1. The softmax is the one float kernel the
+AVX-512 builds still run in ymm, about a cycle an element at one thread.
+In zmm as the others are (2026-10, the float kernels in zmm): the scale
+and the maximum, exact either way; the exponent's z_exp, lane for lane
+v_exp; the sums one zmm whose lane l holds what the ymm pair's lane l
+did (element i in lane i % 16), and a last 8 in ymm into its lower half;
+so ref's bits (tests/kcheck's softmax, lengths 1 to 700). Predicted: the
+softmax's share of the attention halved, the ten minutes 3 to 4% faster
+at 16 threads.
+
+## 2026-11-24 - the softmax in zmm (result: kept)
+
+kcheck's softmax cases ref's bits under gcc 15.2 and clang 21.1.8 on
+avx512-vnni, avx2-vnni and avx2; test10.wav's rows the same bytes. The
+ten minutes at 16 threads, five interleaved rounds (the machine's slower
+state came on in the fourth, so a round's pair is the comparison): gcc
+0.791/0.761, 0.791/0.765, 0.783/0.771, 0.817/0.789, 0.809/0.791 s, before
+and after, 1.6 to 3.8%; clang 0.805/0.781, 0.803/0.782, 0.804/0.787,
+0.826/0.807, 0.827/0.804, 2.1 to 3.0%. The three minutes on one thread
+1.682-1.684 to 1.594-1.596, 5.3%. The recognizer, v2 on test3.wav, six
+rounds at 16 threads 0.472-0.485 before, 0.473-0.484 after; two at one
+thread 3.715-3.719, 3.712-3.715: level, its attention's rows short.
+
+## 2026-11-24 - the diarizer's climb on other x86 machines (a measurement)
+
+6b393ee against cda70af (the five changes above), the ten minutes, best
+of 5 a round, rounds interleaved, default threads; every machine's rows
+of test10.wav the same bytes from both trees on every backend run there.
+check-c passes at cda70af on the c7i and the c8a under gcc 13.3 and
+clang 18.1.3, kcheck and q8check holding amx-int8 to ref's bits on the
+c7i (the softmax in zmm is that build's too).
+
+| machine                                   | threads | backend     | compiler     | 6b393ee       | cda70af     |
+| ----------------------------------------- | ------- | ----------- | ------------ | ------------- | ----------- |
+| 9950X, WSL                                | 16      | avx512-vnni | gcc 15.2     | 0.952-0.967 s | 0.761-0.791 |
+| 9950X, WSL, held to avx2                  | 16      | avx2        | gcc 15.2     | 2.196-2.224   | 1.706-1.713 |
+| 9950X, WSL, held to avx2-vnni             | 16      | avx2-vnni   | gcc 15.2     | 1.360-1.365   | 1.125-1.134 |
+| EC2 c8a.4xlarge (EPYC 9R45, Zen 5)        | 16      | avx512-vnni | gcc 13.3     | 0.884-0.912   | 0.771-0.794 |
+| the same, held to avx2                    | 16      | avx2        | gcc 13.3     | 1.706-1.751   | 1.563-1.635 |
+| Strix Halo (Ryzen AI MAX+ 395), Linux     | 16      | avx512-vnni | gcc 13.3     | 1.139-1.146   | 1.050-1.054 |
+| the same, held to avx2-vnni               | 16      | avx2-vnni   | gcc 13.3     | 1.606-1.612   | 1.544-1.550 |
+| the same, held to avx2                    | 16      | avx2        | gcc 13.3     | 2.327-2.338   | 2.219-2.226 |
+| EC2 c7i.2xlarge (Xeon 8488C), 4 cores     | 4       | amx-int8    | gcc 13.3     | 3.741-3.807   | 3.564-3.706 |
+| the same, held to avx512-vnni             | 4       | avx512-vnni | gcc 13.3     | 4.334-4.415   | 4.228-4.256 |
+| i9-12900HK, Linux                         | 14      | avx2-vnni   | gcc 15.2     | 4.039-4.054   | 3.665-3.671 |
+| the same, held to avx2                    | 14      | avx2        | gcc 15.2     | 6.215-6.223   | 5.625-5.631 |
+| Core 3 304 (1 P + 4 E), Windows 11, mingw | 5       | avx2-vnni   | gcc 13 win32 | 5.817-5.924   | 5.707-5.740 |
+| Ryzen 7 5700X (Zen 3), Linux              | 8       | avx2        | gcc 12.3     | 3.687-3.744   | 3.741-3.778 |
+| the same                                  | 8       | avx2        | gcc 11.4     | 3.714-3.746   | 3.737-3.757 |
+
+The Core 3 304 ran with Windows Update busy beside it (TiWorker), two
+rounds. The Zen 3 is the one that loses. By commit there, gcc 12.3, four
+rounds in an order and its reverse (687958a 048c121 d9e6fa1 6b393ee, then
+back): 6b393ee 3.748-3.753, d9e6fa1 3.741-3.754, 048c121 3.760-3.778,
+687958a 3.755-3.785. So the three rounds and the keys' two jobs are level
+there, and the one qkv job costs 0.5 to 0.7%: by its profile (PROFILE=1,
+two runs each) the job took 702-709 ms a run where q, k, v took 606-614,
+the rotation 25 and the keys and their means about 36 within the
+attention's 881-886 (845 after), some 35 ms more than the work it took
+on. The same split on the others: the Strix Halo 1.092-1.096 to
+1.079-1.085 (1.0%), the 12900HK 3.684-3.698 to 3.667-3.700 (level). On a
+single CCD of eight cores with the products in the plain AVX2 tile the
+passes it folded in were cheap, and the fold's cost is not found here.
+Left open: why, and a form of the fold that keeps the Zen 3 level.
+
+## 2026-11-24 - the Zen 3's cost of the one qkv job, and ff by column chunk (measurements; one change kept)
+
+Where the Zen 3 (Ryzen 7 5700X, avx2, 8 threads, gcc 12.3) pays for
+048c121. Thread time in the items (rdtsc, not committed), the ten
+minutes' runs: before it the rotation's items 3.04 Gcycles, the means'
+2.27 and the keys' 2.94, 8.25 in all; after it K's tiles (rotation,
+mean, keys) 7.76 and Q's (rotation, quantizing) 3.83, 11.59. The
+products themselves are level (K's whole heads 27.8 Gcycles, Q's
+chunks 27.0), and q8bench there runs 684, 342 and 228 columns a call at
+87.5 to 89.0 GMAC/s alike, so it is not the whole-width K. The same work
+in the tiles takes 40% more thread time there; on Zen 5 the jobs it
+saves are worth more than that. Variants, each the same bytes, the ten
+minutes, rounds in an order and its reverse:
+
+| variant                                                                  | Zen 3, gcc 12.3 (8 thr.) | 9950X, gcc 15.2 (16) |
+| ------------------------------------------------------------------------ | ------------------------ | -------------------- |
+| d9e6fa1, before the job                                                  | 3.705-3.753 s            |                      |
+| cda70af                                                                  | 3.751-3.800              | 0.765-0.766          |
+| A: K's frames turned as they go into the mean (one pass)                 | 3.752-3.778              | 0.756-0.768          |
+| B: K split as Q, its rotation in its tiles, the means and keys jobs back | 3.750-3.789              | 0.788-0.790          |
+| Q: the queries turned and quantized in a job of their own                | 3.725-3.756              | 0.767-0.774          |
+| S: the three parts as three jobs                                         | 3.775-3.791              | 0.820-0.826          |
+| A + the rotation's loop vectorized (restrict)                            | 3.753-3.776              | 0.755-0.765          |
+
+At 4 threads on the Zen 3 A against d9e6fa1 is the same, 6.544-6.740
+against 6.499-6.635. None brings the Zen 3 back. The rotation's loop
+was scalar (its halves could alias as gcc and clang saw them); with
+restrict both vectorize it, the bytes the same, and it moves nothing
+measurable on either machine, so it is not kept. A is kept: level on the
+9950X under both compilers (gcc above; clang 0.771-0.780 against
+0.773-0.779) and 1.2% on the Strix Halo, 1.036-1.040 s against
+1.049-1.051 (gcc 13.3, three rounds); on the 12900HK level, 3.668-3.697
+against 3.663-3.703 (gcc 15.2). Left open: what the Zen 3 pays
+for in the tiles.
+
+ff by column chunk (an item a chunk of frames: up, GELU and its
+quantizing, down, all its rows, in that core; one job where there were
+two), as a variable for the chunk, the same bytes. The ten minutes, three
+rounds: 9950X, gcc 15.2, the two jobs 0.757-0.767 s; chunks of 12
+0.789-0.793, 18 0.768-0.774, 24 0.759-0.774, 36 0.792-0.796, 48
+0.806-0.810. Strix Halo, gcc 13.3: two jobs 1.036-1.040; 24 1.044-1.046;
+12 1.113-1.118. Rejected. Twelve to 24 frames are 29 to 57 items, so a
+chunk wide enough for each call's own work (the panels' weight sums,
+the copy of its columns) is too few items to fill sixteen threads'
+rounds, and each item streams all 2 MB of the layer's ff weights.

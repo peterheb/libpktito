@@ -1538,6 +1538,21 @@ static void k_softmax(float *x, uint32_t n, float scale) {
     const __m256 sv = _mm256_set1_ps(scale);
     __m256 mv = _mm256_set1_ps(-INFINITY);
     uint32_t i = 0;
+#ifdef __AVX512F__
+    /* in zmm: lane for lane what the ymm loops below do, the sums' lane l
+     * element i % 16 == l's, as the ymm pair's is (CLIMB.md, the softmax in
+     * zmm) */
+    {
+        const __m512 zs = _mm512_set1_ps(scale);
+        __m512 zm = _mm512_set1_ps(-INFINITY);
+        for (; i + 16 <= n; i += 16) {
+            __m512 y = _mm512_mul_ps(_mm512_loadu_ps(x + i), zs);
+            _mm512_storeu_ps(x + i, y);
+            zm = _mm512_max_ps(y, zm);
+        }
+        mv = _mm256_max_ps(z_lo(zm), z_hi(zm));
+    }
+#endif
     for (; i + 8 <= n; i += 8) {
         __m256 y = _mm256_mul_ps(_mm256_loadu_ps(x + i), sv);
         _mm256_storeu_ps(x + i, y);
@@ -1551,7 +1566,21 @@ static void k_softmax(float *x, uint32_t n, float scale) {
     /* lane i % 16 takes element i: vector j of two holds lanes 8j .. 8j+7 */
     const __m256 mm = _mm256_set1_ps(m);
     __m256 a[2] = { _mm256_setzero_ps(), _mm256_setzero_ps() };
-    for (i = 0; i + 8 <= n; i += 8) {
+    i = 0;
+#ifdef __AVX512F__
+    {
+        const __m512 zmm_ = _mm512_set1_ps(m);
+        __m512 za = _mm512_setzero_ps();
+        for (; i + 16 <= n; i += 16) {
+            __m512 e = z_exp(_mm512_sub_ps(_mm512_loadu_ps(x + i), zmm_));
+            _mm512_storeu_ps(x + i, e);
+            za = _mm512_add_ps(za, e);
+        }
+        a[0] = z_lo(za);
+        a[1] = z_hi(za);
+    }
+#endif
+    for (; i + 8 <= n; i += 8) {
         __m256 e = v_exp(_mm256_sub_ps(_mm256_loadu_ps(x + i), mm));
         _mm256_storeu_ps(x + i, e);
         a[(i / 8) % 2] = _mm256_add_ps(a[(i / 8) % 2], e);
@@ -1565,7 +1594,14 @@ static void k_softmax(float *x, uint32_t n, float scale) {
     }
     float inv = 1.0f / lanes_sum(_mm256_loadu_ps(tail), _mm256_loadu_ps(tail + 8));
     const __m256 iv = _mm256_set1_ps(inv);
-    for (i = 0; i + 8 <= n; i += 8) _mm256_storeu_ps(x + i, _mm256_mul_ps(_mm256_loadu_ps(x + i), iv));
+    i = 0;
+#ifdef __AVX512F__
+    {
+        const __m512 zi = _mm512_set1_ps(inv);
+        for (; i + 16 <= n; i += 16) _mm512_storeu_ps(x + i, _mm512_mul_ps(_mm512_loadu_ps(x + i), zi));
+    }
+#endif
+    for (; i + 8 <= n; i += 8) _mm256_storeu_ps(x + i, _mm256_mul_ps(_mm256_loadu_ps(x + i), iv));
     for (; i < n; i++) x[i] = x[i] * inv;
 }
 
