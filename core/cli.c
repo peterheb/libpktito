@@ -995,7 +995,7 @@ static long cues_of(capwords *c, const char *lang, int64_t media_end, int speake
     if (speakers && !*named)
         die("out of memory");
     for (size_t i = 0; speakers && i < c->n; i++)
-        if (!i || c->spk[i] != c->spk[i - 1]) {
+        if ((!i || c->spk[i] != c->spk[i - 1]) && c->spk[i] > 0) {    /* 0: a held voice, no one's */
             const size_t l = strlen(c->w[i].text) + 24;
             if (!((*named)[i] = malloc(l)))
                 die("out of memory");
@@ -1038,7 +1038,7 @@ static void cap_print(capwords *c, int vtt, const char *lang, int64_t media_end,
         printf(" --> ");
         sub_time(cue[k].end, vtt ? '.' : ',');
         putchar('\n');
-        if (vtt && speakers)
+        if (vtt && speakers && c->spk[cue[k].first] > 0)
             printf("<v Speaker %d>", (int)c->spk[cue[k].first]);
         for (int32_t i = cue[k].first; i < cue[k].first + cue[k].n; i++) {
             if (i > cue[k].first)
@@ -1065,7 +1065,7 @@ static void json_captions(sbuf *b, capwords *c, const char *lang, int64_t media_
         sb_time(b, (double)cue[k].start / 1000);
         sb_printf(b, ", \"end\": ");
         sb_time(b, (double)cue[k].end / 1000);
-        if (speakers)
+        if (speakers && c->spk[cue[k].first] > 0)
             sb_printf(b, ", \"speaker\": %d", (int)c->spk[cue[k].first]);
         sb_printf(b, ", \"lines\": [");
         line.n = 0;
@@ -1130,6 +1130,7 @@ typedef struct {
     const pk_model *dm;
     const float *dp;
     size_t drows;
+    pk_held dheld;                   /* what pk_diar_run_held held: for pk_held_others */
     uint32_t frame;                  /* the recognizer's encoder frame, in samples */
     int32_t num[PK_MAX_SPK];         /* each diarizer column's speaker, 0 until it says a word */
     int heard;                       /* speakers numbered so far */
@@ -1187,7 +1188,7 @@ static void json_segment(chunk_out *p, size_t first, size_t n, int32_t who) {
     sb_time(b, start);
     sb_printf(b, ", \"end\": ");
     sb_time(b, end);
-    if (p->dm)
+    if (p->dm && who > 0)              /* 0: a held voice that took no number, no one's */
         sb_printf(b, ", \"speaker\": %d", (int)who);
     sb_printf(b, ", \"text\": ");
     sb_str(b, p->text);
@@ -1275,8 +1276,10 @@ static void print_sentences(chunk_out *p, const pk_chunk_out *ch, const pk_word 
             continue;
         if (spk) {
             const int32_t who = p->tailspk[s[k].first];
-            if (who != p->said)
+            if (who != p->said && who > 0)
                 printf("%sSpeaker %d: ", p->lines ? p->many ? " " : "\n" : "", (int)who);
+            else if (who != p->said)        /* a held voice that took no number: a turn of its own, unnamed */
+                fputs(p->lines ? p->many ? " " : "\n" : "", stdout);
             else if (p->many)
                 putchar(' ');
             p->said = who;
@@ -1311,8 +1314,13 @@ static size_t chunk_words(chunk_out *p, const pk_chunk_out *ch, pk_word *wd, int
         at[k] = (pk_seg){ ch->at.start + (int64_t)wd[k].start * p->frame,
                           ch->at.start + (int64_t)wd[k].end * p->frame };
     pk_speakers(p->dm, p->dp, p->drows, p->frame, at, nw, spk);
+    pk_held_others(&p->dheld, at, nw, spk);
     free(at);
     for (size_t k = 0; k < nw; k++) {
+        if (spk[k] < 0) {                /* a held voice that took no number: 0, no one's */
+            spk[k] = 0;
+            continue;
+        }
         if (!p->num[spk[k]])
             p->num[spk[k]] = ++p->heard;
         spk[k] = p->num[spk[k]];
@@ -1460,10 +1468,12 @@ static void print_late(late_chunks *l, void *out) {
     free(l->c);
 }
 
-/* A diarizer's rows, kept as pk_diar_run hands them over */
+/* A diarizer's rows, kept as pk_diar_run hands them over; with the hold,
+ * what it held */
 typedef struct {
     float *p;
     size_t n, cap, S;
+    pk_held held;
 } rows_buf;
 
 static int keep_rows(void *arg, int64_t row, size_t n, const float *p) {
@@ -1520,7 +1530,7 @@ static double hear(pk_diar *dz, const pk_audio *x, const file_audio *f, const ch
  * and reads the recording again where it goes back */
 static double diarize(pk_diar *dz, const pk_model *dm, const pk_audio *x, const file_audio *f, const char *path,
                       rows_buf *rb, int hold) {
-    *rb = (rows_buf){ NULL, 0, 0, (size_t)pk_model_speakers(dm) };
+    *rb = (rows_buf){ NULL, 0, 0, (size_t)pk_model_speakers(dm), { 0 } };
     if (!hold)
         return hear(dz, x, f, path, keep_rows, rb);
     const double t0 = pk_os_now();
@@ -1533,7 +1543,7 @@ static double diarize(pk_diar *dz, const pk_model *dm, const pk_audio *x, const 
     rb->p = h.p;
     rb->n = rb->cap = h.rows;
     h.p = NULL;
-    pk_held_free(&h);
+    rb->held = h;
     return pk_os_now() - t0;
 }
 
@@ -1695,6 +1705,7 @@ static int transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr 
         out.dm = dm;
         out.dp = rb.p;
         out.drows = rb.n;
+        out.dheld = rb.held;
         out.frame = (uint32_t)llround(out.fs * rate);
     }
     pk_transcribe_opts to;
@@ -1765,6 +1776,7 @@ static int transcribe_file(const opts *o, const char *path, pk_model *m, pk_asr 
     free(out.text);
     free(out.tailspk);
     free(rb.p);
+    pk_held_free(&rb.held);
     close_audio(&f);
     return 1;
 }
@@ -2103,6 +2115,7 @@ static int bench_diar(const opts *o, const pk_model *dm) {
     rows_buf rb = { 0 };
     for (int rep = 0; rep < 5; rep++) {
         free(rb.p);
+        pk_held_free(&rb.held);
         took[rep] = diarize(dz, dm, &x, NULL, o->in, &rb, 0);
         best = took[rep] < best ? took[rep] : best;
     }
@@ -2123,6 +2136,7 @@ static int bench_diar(const opts *o, const pk_model *dm) {
     printf("audio     %.1f s, %zu rows of %d speakers\n", audio, rb.n, pk_model_speakers(dm));
     printf("best of 5 %.3f s  %.1fx real time\n", best, audio / best);
     free(rb.p);
+    pk_held_free(&rb.held);
     free(all);
     pk_diar_free(dz);
     return 0;
@@ -2164,6 +2178,7 @@ static int diar_probs(const opts *o, const pk_model *dm) {
         diarize(dz, dm, &x, &f, o->in, &rb, 1);
         print_rows(&rp, 0, rb.n, rb.p);
         free(rb.p);
+        pk_held_free(&rb.held);
     }
     close_audio(&f);
     pk_diar_free(dz);
@@ -2251,6 +2266,7 @@ static int speakers(const opts *o, const pk_model *dm) {
     free(sp.s);
     free(seg);
     free(rb.p);
+    pk_held_free(&rb.held);
     pk_diar_free(dz);
     return 0;
 }

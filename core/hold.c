@@ -65,14 +65,19 @@ typedef struct {
     int32_t  speaker;   /* at the end: their column, or -1 */
 } stretch;
 
-typedef struct {
+struct pk_hold {
     pk_diar *d;
-    const pk_audio *x;
+    pk_audio x;
+    int64_t  n;                 /* the recording's samples, once it has ended; INT64_MAX till then */
+    int      ended;
+    int32_t  hop, up, stack;    /* the model's: for its rows from its samples */
+    int32_t  cap;               /* the recording's rows there is room for */
+    size_t   n_state;           /* and the states */
     size_t  S;
     int64_t R;                  /* samples a row */
     int32_t sec;                /* rows a second */
     int32_t step, ctx;          /* rows a step, and after it that its chunk hears */
-    int32_t T;                  /* the recording's rows */
+    int32_t T;                  /* the recording's rows: those heard of so far till it ends */
 
     int32_t *at, nk;            /* the stream */
     float   *A;                 /* its rows, [T][S] */
@@ -102,7 +107,16 @@ typedef struct {
     int32_t *list;              /* a run's stream: at's rows, and -1 for a row of silence */
     float   *q;                 /* and its rows */
     size_t   cap_list;
-} hold;
+
+    /* pk_hold_to's */
+    int32_t  b;                 /* the next step's end to look at */
+    int      heard;             /* the recording heard through */
+    int32_t  given;             /* the recording's rows given that a step has looked at */
+    int64_t  dirty;             /* the first of the recording's rows changed since the last call */
+    int32_t  shown;             /* the rows the last call gave */
+    float   *P;                 /* the recording's rows, [cap][S] */
+};
+typedef struct pk_hold hold;
 
 /* ------------------------------------------------------------ hearing --- */
 
@@ -118,8 +132,8 @@ static int samples(const hold *h, const int32_t *list, int64_t base, int64_t s, 
                 run++;
         const size_t k = (size_t)(run * h->R - off) < n ? (size_t)(run * h->R - off) : n;
         const int64_t at = (int64_t)list[i] * h->R + off;
-        const size_t in = list[i] < 0 || at >= h->x->n ? 0 : (int64_t)k < h->x->n - at ? k : (size_t)(h->x->n - at);
-        if (in && h->x->read(h->x->arg, at, out, in))
+        const size_t in = list[i] < 0 || at >= h->n ? 0 : (int64_t)k < h->n - at ? k : (size_t)(h->n - at);
+        if (in && h->x.read(h->x.arg, at, out, in))
             return -1;
         memset(out + in, 0, (k - in) * sizeof *out);
         out += k;
@@ -162,6 +176,14 @@ static int64_t back_to(hold *h, int32_t e) {
     return pk_diar_load(h->d, h->state[e / h->step]);
 }
 
+/* The last step at or before e whose state is kept (keep): 0, the start,
+ * if none is */
+static int32_t kept_to(const hold *h, int32_t e) {
+    while (e && !h->state[e / h->step])
+        e -= h->step;
+    return e;
+}
+
 /* Room in h->list and h->q for a run of n rows */
 static int room(hold *h, size_t n) {
     if (n <= h->cap_list)
@@ -186,7 +208,10 @@ static int hear_whole(hold *h, int32_t e, const int32_t *list, int64_t base, int
     const int64_t end = length(h, e + n, n ? list[e + n - 1 - base] : -1);
     int rc = 0;
     h->away = 1;
-    for (int64_t s = back_to(h, e); s < end && !rc;) {
+    const int64_t from = back_to(h, e);
+    if (from < 0)
+        return -1;
+    for (int64_t s = from; s < end && !rc;) {
         const size_t c = end - s < PIECE ? (size_t)(end - s) : PIECE;
         if (samples(h, list, base, s, h->piece, c))
             return -1;
@@ -199,24 +224,105 @@ static int hear_whole(hold *h, int32_t e, const int32_t *list, int64_t base, int
     return rc || k.have != e + n ? -1 : 0;
 }
 
-/* The stream heard on until its rows reach b, or its end: each step's
- * state kept as it is passed */
-static int hear_to(hold *h, int32_t b) {
-    sink k = { h->A, 0, h->T, h->S, h->have };
-    const int64_t end = length(h, h->nk, h->nk ? h->at[h->nk - 1] : -1);
-    while (h->have < b && h->fed < end) {
-        const size_t c = end - h->fed < PIECE ? (size_t)(end - h->fed) : PIECE;
-        if (samples(h, h->at, 0, h->fed, h->piece, c) || pk_diar_feed(h->d, h->piece, c, rows_in, &k))
-            return -1;
-        h->fed += (int64_t)c;
-        if (k.have > h->have) {                 /* a chunk: the state after it */
-            h->have = (int32_t)k.have;
-            const size_t j = (size_t)(h->have / h->step), z = pk_diar_save(h->d, h->scratch);
-            free(h->state[j]);
-            if (!(h->state[j] = malloc(z)))
-                return -1;
-            memcpy(h->state[j], h->scratch, z);
+/* Room for the recording's first `rows` rows, and the stream on through
+ * them: rows the recording has past the stream's last are kept. */
+static int grow(hold *h, int32_t rows) {
+    if (rows > h->cap) {
+        int64_t want = h->cap ? 2 * (int64_t)h->cap : 4096;
+        const int32_t cap = (int32_t)(want < rows ? rows : want > INT32_MAX / 8 ? INT32_MAX / 8 : want);
+        const size_t S = h->S, n_state = (size_t)cap / (size_t)h->step + 2;
+        int32_t *at = realloc(h->at, ((size_t)cap + 1) * sizeof *at);
+        if (at)
+            h->at = at;
+        float *A = realloc(h->A, ((size_t)cap + 1) * S * sizeof *A);
+        if (A)
+            h->A = A;
+        float *P = realloc(h->P, ((size_t)cap + 1) * S * sizeof *P);
+        if (P)
+            h->P = P;
+        uint8_t *mask = realloc(h->mask, (size_t)cap + 1);
+        if (mask)
+            h->mask = mask;
+        uint8_t *gone = realloc(h->gone, (size_t)cap + 1);
+        if (gone)
+            h->gone = gone;
+        int32_t *settled = realloc(h->settled, ((size_t)cap / (size_t)h->sec + 2) * sizeof *settled);
+        if (settled)
+            h->settled = settled;
+        void **state = realloc(h->state, n_state * sizeof *state);
+        if (state) {
+            for (size_t j = h->n_state; j < n_state; j++)
+                state[j] = NULL;
+            h->state = state;
+            h->n_state = n_state;
         }
+        if (!at || !A || !P || !mask || !gone || !settled || !state)
+            return -1;
+        h->cap = cap;
+    }
+    while (h->T < rows)
+        h->at[h->nk++] = h->T++;
+    return 0;
+}
+
+/* The recording has ended, n samples long: pk_diar_run's rows, the last of
+ * which may be short of R samples, or have a part of a hop over, which the
+ * mel does not frame */
+static int the_end(hold *h, int64_t n) {
+    if (n / h->R > INT32_MAX / 8 - 1)           /* rows counted in int32 with room to spare */
+        return -1;
+    const int32_t T = (int32_t)((n / h->hop * h->up + h->stack - 1) / h->stack);
+    if (grow(h, T))
+        return -1;
+    h->n = n;
+    h->ended = 1;
+    h->L = T && n - (int64_t)(T - 1) * h->R < h->R ? n - (int64_t)(T - 1) * h->R : h->R;
+    return 0;
+}
+
+/* The recording read to its row `rows` at least, or to its end: a
+ * recording still being read is waited for (pk_audio's wait) */
+static int more(hold *h, int64_t rows) {
+    if (h->ended)
+        return 0;
+    const int64_t want = rows * h->R, n = h->x.wait(h->x.arg, want);
+    if (n < 0)
+        return -1;
+    if (n < want)
+        return the_end(h, n);
+    if (n / h->R > INT32_MAX / 8 - 1)
+        return -1;
+    return grow(h, (int32_t)(n / h->R));
+}
+
+/* The stream heard on until its rows reach b, or its end: each step's
+ * state kept as it is passed. A recording still being read is read on as
+ * the stream needs; the rows are the same whatever the pieces it is fed
+ * in (pk_diar_feed). */
+static int hear_to(hold *h, int32_t b) {
+    sink k = { h->A, 0, h->cap, h->S, h->have };
+    for (;;) {
+        const int64_t end = length(h, h->nk, h->nk ? h->at[h->nk - 1] : -1);
+        while (h->have < b && h->fed < end) {
+            const size_t c = end - h->fed < PIECE ? (size_t)(end - h->fed) : PIECE;
+            if (samples(h, h->at, 0, h->fed, h->piece, c) || pk_diar_feed(h->d, h->piece, c, rows_in, &k))
+                return -1;
+            h->fed += (int64_t)c;
+            if (k.have > h->have) {             /* a chunk: the state after it */
+                h->have = (int32_t)k.have;
+                const size_t j = (size_t)(h->have / h->step), z = pk_diar_save(h->d, h->scratch);
+                free(h->state[j]);
+                if (!(h->state[j] = malloc(z)))
+                    return -1;
+                memcpy(h->state[j], h->scratch, z);
+            }
+        }
+        if (h->have >= b || h->ended)
+            break;
+        if (more(h, (int64_t)h->T + h->step))   /* fed all there is: a step more of the recording */
+            return -1;
+        k.p = h->A;
+        k.cap = h->cap;
     }
     if (h->have < b) {                          /* the end, its last chunks with what context there is */
         if (pk_diar_finish(h->d, rows_in, &k) || k.have != h->nk)
@@ -499,6 +605,53 @@ static int look(hold *h, int32_t b, int32_t *back, int32_t *next) {
     return 1;
 }
 
+/* The states no rewind can reach, dropped (each 0.6 MB; all of them kept
+ * were 83 MB an hour, docs/SHORT_SPEAKERS.md). After look at row b found
+ * none to hold, a rewind goes back to before the first row of a speaker
+ * held then (look: their first row, less PAD_CS and the chunk's context),
+ * and that speaker is one heard now and short of a minute, or one not yet
+ * heard, whose rows are past b. And it costs, within the budget, what it
+ * hears again, rows (b' - e) less the rows cut: the cut rows are, of those
+ * heard now, the widened rows of the speakers short of a minute, and at
+ * most all of those past b; so e is no further back than b less the budget
+ * at its most (the whole recording's quarter) less those widened rows. A
+ * state before both bounds is dropped. A speaker's rows past a rewind are
+ * heard again and may come out otherwise; should a rewind then reach a
+ * dropped state, it goes back to the last kept before it and hears the
+ * stream from there, which gives the same rows (pk_diar_load), only later.
+ * h->mask and h->gone are free after look. */
+static void keep(hold *h, int32_t b) {
+    const int32_t pad = PAD_CS * h->sec / 100, margin = (GAP_S + 1) * h->sec;
+    int32_t lo = b, gone = 0;
+    memset(h->gone, 0, (size_t)b);
+    for (size_t s = 0; s < h->S; s++) {
+        if (!h->speech[s] || h->speech[s] >= MIN_S * h->sec || is_settled(h, h->first[s]))
+            continue;
+        int32_t r = 0;                          /* the first in the stream: at is ascending */
+        while (h->at[r] < h->first[s])
+            r++;
+        if (r < lo)
+            lo = r;
+        widen(h, b, s);
+        for (int32_t k = 0; k < b; k++)
+            h->gone[k] |= h->mask[k];
+        gone += margin;                         /* a pause bridged to a stretch past b */
+    }
+    for (int32_t k = 0; k < b; k++)
+        gone += h->gone[k];
+    const int64_t budget = (int64_t)h->T / 4 + BUDGET_S * h->sec - h->again;
+    const int64_t far = (int64_t)b - budget - gone;
+    if (far > lo - pad)
+        lo = (int32_t)far;
+    else
+        lo -= pad;
+    lo -= h->ctx + 1;
+    for (int32_t j = 1; lo > 0 && j < lo / h->step; j++) {
+        free(h->state[j]);
+        h->state[j] = NULL;
+    }
+}
+
 /* ------------------------------------------------------------ the end --- */
 
 static int by_speech(const void *a, const void *b) {
@@ -552,8 +705,7 @@ static int place(hold *h) {
     qsort(order, (size_t)n_open, sizeof *order, by_speech);
     int32_t e = h->nk - h->ctx - 1;
     e = e > 0 ? e / h->step * h->step : 0;
-    while (e && !h->state[e / h->step])
-        e -= h->step;
+    e = kept_to(h, e);
     const int32_t base = e > 2 ? e - 2 : 0;
     int32_t n = h->nk - base;
     size_t need = (size_t)n;
@@ -734,90 +886,152 @@ void pk_held_free(pk_held *o) {
     *o = (pk_held){ 0 };
 }
 
-static void hold_free(hold *h) {
+void pk_hold_free(pk_hold *h) {
+    if (!h)
+        return;
+    pk_diar_reset(h->d);
     for (size_t i = 0; i < h->n_held; i++) {
         free(h->held[i].row);
         free(h->held[i].prob);
     }
-    for (int32_t j = 0; h->state && j <= h->T / h->step; j++)
+    for (size_t j = 0; h->state && j < h->n_state; j++)
         free(h->state[j]);
     free(h->state), free(h->scratch), free(h->piece), free(h->held), free(h->first_of), free(h->settled);
     free(h->at), free(h->A), free(h->speech), free(h->first), free(h->last), free(h->known), free(h->who);
-    free(h->mask), free(h->gone), free(h->list), free(h->q);
+    free(h->mask), free(h->gone), free(h->list), free(h->q), free(h->P);
+    free(h);
 }
 
-int pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *out) {
-    *out = (pk_held){ 0 };
-    if (x->n < 0 || m->dw.stack % m->dw.upsample)   /* a row is a whole number of the mel's hops */
-        return -1;
-    hold h = { .d = d, .x = x, .S = m->dw.n_spk, .R = (int64_t)m->hop * m->dw.stack / m->dw.upsample };
-    h.sec = (int32_t)(m->sample_rate / h.R);
-    h.step = (int32_t)(m->dw.chunk_len * m->dw.upsample);
-    h.ctx = (int32_t)((m->dw.chunk_left > m->dw.chunk_right ? m->dw.chunk_left : m->dw.chunk_right) * m->dw.upsample);
-    if (x->n / h.R > INT32_MAX / 8 || h.step <= h.ctx + 3 || h.R * h.step < PIECE || h.sec < 1)
-        return -1;
-    /* pk_diar_run's rows: the last may be short of R samples, or have a
-     * part of a hop over, which the mel does not frame */
-    h.T = (int32_t)((x->n / m->hop * m->dw.upsample + m->dw.stack - 1) / m->dw.stack);
-    h.L = h.T && x->n - (int64_t)(h.T - 1) * h.R < h.R ? x->n - (int64_t)(h.T - 1) * h.R : h.R;
-    const size_t S = h.S, T = (size_t)h.T, steps = T / (size_t)h.step + 2;
-    h.at = malloc((T + 1) * sizeof *h.at);
-    h.A = malloc((T + 1) * S * sizeof *h.A);
-    h.state = calloc(steps, sizeof *h.state);
-    h.scratch = malloc(pk_diar_state_size(d));
-    h.piece = malloc(PIECE * sizeof *h.piece);
-    h.settled = malloc((T / (size_t)h.sec + 2) * sizeof *h.settled);
-    h.speech = malloc(S * sizeof *h.speech);
-    h.first = malloc(S * sizeof *h.first);
-    h.last = malloc(S * sizeof *h.last);
-    h.known = malloc(S * sizeof *h.known);
-    h.who = malloc(S);
-    h.mask = malloc(T + 1);
-    h.gone = malloc(T + 1);
-    int rc = -1;
-    if (!h.at || !h.A || !h.state || !h.scratch || !h.piece || !h.settled || !h.speech || !h.first || !h.last
-        || !h.known || !h.who || !h.mask || !h.gone)
-        goto done;
-    h.nk = h.T;
-    for (int32_t r = 0; r < h.T; r++)
-        h.at[r] = r;
-    pk_diar_reset(d);
-    for (int32_t b = h.step;;) {
-        if (hear_to(&h, b < h.nk ? b : h.nk))
-            goto done;
-        if (b >= h.nk)
-            break;
-        int32_t e, next;
-        const int cut = look(&h, b, &e, &next);
-        if (cut < 0)
-            goto done;
-        if (!cut) {
-            if (h.away && !h.finished)          /* the diarizer heard clips: back to where it was */
-                h.fed = back_to(&h, h.have);
-            h.away = 0;
-            b += h.step;
-            continue;
-        }
-        for (int32_t j = e / h.step + 1; j <= h.T / h.step; j++) {
-            free(h.state[j]);
-            h.state[j] = NULL;
-        }
-        h.have = e;
-        h.fed = back_to(&h, e);
-        h.finished = h.away = 0;
-        b = next;
+pk_hold *pk_hold_new(pk_diar *d, const pk_model *m, const pk_audio *x) {
+    if ((x->n < 0 && !x->wait) || m->dw.stack % m->dw.upsample)  /* a row is a whole number of the mel's hops */
+        return NULL;
+    hold *h = calloc(1, sizeof *h);
+    if (!h)
+        return NULL;
+    *h = (hold){ .d = d, .x = *x, .n = INT64_MAX, .S = m->dw.n_spk };
+    h->hop = (int32_t)m->hop, h->up = (int32_t)m->dw.upsample, h->stack = (int32_t)m->dw.stack;
+    h->R = (int64_t)m->hop * m->dw.stack / m->dw.upsample;
+    h->sec = (int32_t)(m->sample_rate / h->R);
+    h->step = (int32_t)(m->dw.chunk_len * m->dw.upsample);
+    h->ctx = (int32_t)((m->dw.chunk_left > m->dw.chunk_right ? m->dw.chunk_left : m->dw.chunk_right) * m->dw.upsample);
+    h->L = h->R;
+    h->b = h->step;
+    h->dirty = INT64_MAX;
+    const size_t S = h->S;
+    h->scratch = malloc(pk_diar_state_size(d));
+    h->piece = malloc(PIECE * sizeof *h->piece);
+    h->speech = malloc(S * sizeof *h->speech);
+    h->first = malloc(S * sizeof *h->first);
+    h->last = malloc(S * sizeof *h->last);
+    h->known = malloc(S * sizeof *h->known);
+    h->who = malloc(S);
+    /* a step longer than the context its chunk hears past it, as look's
+     * going back needs; a step of at least PIECE samples, so that a feed
+     * hands over one chunk at most and hear_to saves the state after each
+     * (Nemotron 3 Diarization's step is 435,200 samples, PIECE 2,560) */
+    if (h->step <= h->ctx + 3 || h->R * h->step < PIECE || h->sec < 1 || !h->scratch || !h->piece || !h->speech
+        || !h->first || !h->last || !h->known || !h->who || (x->n >= 0 ? the_end(h, x->n) : grow(h, 0))) {
+        pk_hold_free(h);
+        return NULL;
     }
-    if (place(&h))
+    pk_diar_reset(d);
+    return h;
+}
+
+/* A step of the run: the stream heard to h->b and looked at there */
+static int step(hold *h) {
+    const int32_t b = h->b;
+    /* what the step's chunk hears, the context past it with a frame over,
+     * read before it is known whether the recording ends first */
+    const int64_t need = (int64_t)b + h->ctx + 3 - h->nk;
+    if (need > 0 && more(h, (int64_t)h->T + need))
+        return -1;
+    if (hear_to(h, b < h->nk ? b : h->nk))
+        return -1;
+    if (b >= h->nk) {                           /* the recording's end */
+        h->heard = 1;
+        h->given = h->T;
+        return 0;
+    }
+    int32_t e, next;
+    const int cut = look(h, b, &e, &next);
+    if (cut < 0)
+        return -1;
+    if (!cut) {
+        if (h->away && !h->finished)            /* the diarizer heard clips: back to where it was */
+            h->fed = back_to(h, h->have);
+        if (h->fed < 0)
+            return -1;
+        h->away = 0;
+        keep(h, b);
+        h->given = h->at[b - 1] + 1;
+        h->b = b + h->step;
+        return 0;
+    }
+    for (size_t j = (size_t)(e / h->step) + 1; j < h->n_state; j++) {
+        free(h->state[j]);
+        h->state[j] = NULL;
+    }
+    /* the recording's rows from the stream's row e on are heard again */
+    if (h->at[e] < h->dirty)
+        h->dirty = h->at[e];
+    if (h->given > h->at[e])
+        h->given = h->at[e];
+    h->have = kept_to(h, e);                    /* e itself, but for a state keep dropped */
+    h->fed = back_to(h, h->have);
+    if (h->fed < 0)
+        return -1;
+    h->finished = h->away = 0;
+    h->b = next;
+    return 0;
+}
+
+int64_t pk_hold_to(pk_hold *h, int64_t want, const float **p, int64_t *from) {
+    while (!h->heard && h->given < want)
+        if (step(h))
+            return -1;
+    /* the rows changed since the last call, or given since: the stream's
+     * where it was kept, 0 where it was not */
+    const size_t S = h->S;
+    int64_t f = h->dirty < h->shown ? h->dirty : h->shown;
+    if (f > h->given)
+        f = h->given;
+    memset(h->P + (size_t)f * S, 0, (size_t)(h->given - f) * S * sizeof *h->P);
+    int32_t lo = 0, hi = h->have;               /* the stream's first row at or past f */
+    while (lo < hi) {
+        const int32_t mid = lo + (hi - lo) / 2;
+        if (h->at[mid] < f)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    for (int32_t r = lo; r < h->have && h->at[r] < h->given; r++)
+        memcpy(h->P + (size_t)h->at[r] * S, h->A + (size_t)r * S, S * sizeof *h->P);
+    h->dirty = INT64_MAX;
+    h->shown = h->given;
+    *p = h->P;
+    *from = f;
+    return h->given;
+}
+
+int pk_hold_end(pk_hold *h, pk_held *out) {
+    *out = (pk_held){ 0 };
+    while (!h->heard)
+        if (step(h))
+            return -1;
+    const size_t S = h->S, T = (size_t)h->T;
+    int rc = -1;
+    if (place(h))
         goto done;
     /* the recording's rows: the stream's where it was kept, and where it
      * was not, each held speaker's probability in the column they took */
     if (!(out->p = calloc((T ? T : 1) * S, sizeof *out->p)))
         goto done;
-    for (int32_t r = 0; r < h.nk; r++)
-        memcpy(out->p + (size_t)h.at[r] * S, h.A + (size_t)r * S, S * sizeof *out->p);
+    for (int32_t r = 0; r < h->nk; r++)
+        memcpy(out->p + (size_t)h->at[r] * S, h->A + (size_t)r * S, S * sizeof *out->p);
     size_t n_seg = 0;
-    for (size_t i = 0; i < h.n_held; i++) {
-        const stretch *t = &h.held[i];
+    for (size_t i = 0; i < h->n_held; i++) {
+        const stretch *t = &h->held[i];
         for (int32_t k = 0; k < t->n; k++) {
             n_seg += !k || t->row[k] != t->row[k - 1] + 1;
             if (t->speaker >= 0 && t->prob[k] > out->p[(size_t)t->row[k] * S + (size_t)t->speaker])
@@ -826,17 +1040,17 @@ int pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *
     }
     if (!(out->held = malloc((n_seg ? n_seg : 1) * sizeof *out->held)))
         goto done;
-    for (size_t i = 0; i < h.n_held; i++) {
-        const stretch *t = &h.held[i];
+    for (size_t i = 0; i < h->n_held; i++) {
+        const stretch *t = &h->held[i];
         for (int32_t k = 0; k < t->n; k++) {
             if (!k || t->row[k] != t->row[k - 1] + 1)
-                out->held[out->n_held++] = (pk_spk_seg){ (int64_t)t->row[k] * h.R, 0, t->speaker };
-            out->held[out->n_held - 1].end = length(&h, (int64_t)t->row[k] + 1, t->row[k]);
+                out->held[out->n_held++] = (pk_spk_seg){ (int64_t)t->row[k] * h->R, 0, t->speaker };
+            out->held[out->n_held - 1].end = length(h, (int64_t)t->row[k] + 1, t->row[k]);
         }
     }
     /* one voice on two numbers */
     int32_t to[PK_MAX_SPK];
-    if (!(out->joined = malloc(S * sizeof *out->joined)) || join(&h, to))
+    if (!(out->joined = malloc(S * sizeof *out->joined)) || join(h, to))
         goto done;
     for (size_t s = 0; s < S; s++) {
         out->joined[s] = to[s];
@@ -853,12 +1067,34 @@ int pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *
         if (out->held[i].speaker >= 0)
             out->held[i].speaker = to[out->held[i].speaker];
     out->rows = T;
-    out->again = (double)(h.again + h.extra) / h.sec;
+    out->again = (double)(h->again + h->extra) / h->sec;
     rc = 0;
 done:
-    pk_diar_reset(d);
-    hold_free(&h);
+    pk_diar_reset(h->d);
     if (rc)
         pk_held_free(out);
+    return rc;
+}
+
+void pk_held_others(const pk_held *h, const pk_seg *w, size_t n, int32_t *out) {
+    for (size_t i = 0; i < n; i++) {
+        const int64_t mid = w[i].start + (w[i].end - w[i].start) / 2;
+        for (size_t k = 0; k < h->n_held; k++)
+            if (h->held[k].speaker < 0 && h->held[k].start <= mid && mid < h->held[k].end) {
+                out[i] = -1;
+                break;
+            }
+    }
+}
+
+int pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *out) {
+    *out = (pk_held){ 0 };
+    if (x->n < 0)
+        return -1;
+    pk_hold *h = pk_hold_new(d, m, x);
+    if (!h)
+        return -1;
+    const int rc = pk_hold_end(h, out);
+    pk_hold_free(h);
     return rc;
 }

@@ -701,7 +701,9 @@ void pk_diar_reset(pk_diar *d);
  * writes that to `state`, room for pk_diar_state_size bytes (about 0.6 MB
  * for Nemotron 3 Diarization once its cache is full), and returns the bytes
  * written. pk_diar_load takes a diarizer of the same model back to it, and
- * returns the sample the next pk_diar_feed must start from, which is before
+ * returns the sample the next pk_diar_feed must start from (-1, the
+ * diarizer unchanged, for a state with more cache or FIFO than it has room
+ * for: another model's), which is before
  * the saved state's last chunk ended (the next chunk's first frame reaches
  * back 16 ms, and further in a model whose chunks have context before
  * them). Fed the same samples from there, it hands over the same rows as
@@ -767,9 +769,12 @@ size_t pk_speaker_segments(const pk_model *d, const float *p, size_t rows, pk_sp
  * A recording that never has seven numbers in use, and no two of them
  * joined, gets pk_diar_run's rows.
  * x is read again where the diarizer goes back, so its read must give any
- * sample asked for. The memory is the rows twice over and a state for each
- * 27.2 s (0.6 MB each). d is the diarizer of model m, and is left reset.
- * Returns 0, or -1 for want of memory or a read that failed. */
+ * sample asked for. The memory is the rows three times over and a state
+ * for each 27.2 s that a going back could still reach (0.6 MB each; on
+ * docs/SHORT_SPEAKERS.md's 100 podcasts, pktito-c's peak with the model
+ * 141-210 MB, where keeping all of them was 149-280). d is the diarizer
+ * of model m, and is left reset. Returns 0, or -1 for want of memory or a
+ * read that failed. */
 typedef struct {
     float      *p;
     size_t      rows;
@@ -780,5 +785,36 @@ typedef struct {
 } pk_held;
 int  pk_diar_run_held(pk_diar *d, const pk_model *m, const pk_audio *x, pk_held *out);
 void pk_held_free(pk_held *h);
+
+/* The words of a held voice that took no number: out[i], pk_speakers'
+ * column for the word over samples w[i], set to -1, no one's, where the
+ * word's middle is in a stretch h held with speaker -1. Its rows there are
+ * 0 in every column, and pk_speakers, NeMo's rule, gives such a word to the
+ * first of equals, column 0, which is the first speaker heard: the voice
+ * the hold kept from a number would take theirs. */
+void pk_held_others(const pk_held *h, const pk_seg *w, size_t n, int32_t *out);
+
+/* The same as the recording is heard, for a caller that wants each row's
+ * speakers before the end, as a transcription does that names its words'
+ * speakers as it goes: pk_diar_run_held is pk_hold_new, pk_hold_end and
+ * pk_hold_free. x may be a recording still being read (n < 0 and a wait),
+ * which is waited for as the rows need it.
+ *
+ * pk_hold_to hears until the recording's rows [0, want) are given, or all
+ * of them are, and returns how many are, with *p the recording's rows
+ * [given][S] so far as pk_hold_end's p would be with nothing held after
+ * them, a held voice's rows 0. A row given is not final: a voice held later
+ * takes the diarizer back to before its first word, and the rows from there
+ * on are heard again, so *from is the first row that may differ from what
+ * the last call gave (0 the first time), and rows past the count returned
+ * are not given yet, though the last call may have given them. *p is the
+ * run's and lasts until the next call. -1 for want of memory or a failed
+ * read. pk_hold_end hears what is left, and gives the run's result, as
+ * pk_diar_run_held does; pk_hold_to is not called after it. */
+typedef struct pk_hold pk_hold;
+pk_hold *pk_hold_new(pk_diar *d, const pk_model *m, const pk_audio *x);
+int64_t  pk_hold_to(pk_hold *h, int64_t want, const float **p, int64_t *from);
+int      pk_hold_end(pk_hold *h, pk_held *out);
+void     pk_hold_free(pk_hold *h);
 
 #endif /* PKTITO_H */

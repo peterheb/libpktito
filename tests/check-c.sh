@@ -87,6 +87,9 @@ else
   ./pktito-c speakers -m $d tests/data/conv2.wav | cmp -s - tests/data/conv2.speakers.txt \
     && echo "conv2.wav: the diarizer's stretches of speech are ref's" \
     || { echo "conv2.wav: FAIL - the diarizer's stretches differ from tests/data/conv2.speakers.txt"; exit 1; }
+  # the held run as the recording is heard, against it read whole
+  o=$(./tests/holdcheck $d tests/data/conv2.wav) || { echo "$o"; exit 1; }
+  echo "$o" | tail -1
   f=models/parakeet-tdt-0.6b-v2.pkf
   if [ ! -f $f ]; then echo "conv2.wav: no $f - skipped"
   else

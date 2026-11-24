@@ -1589,6 +1589,17 @@ static void diar_engine_cases(const pk_model *m, int deep) {
             g_cases++;
             if (pk_diar_save(d1, st) > pk_diar_state_size(d1))
                 FAIL("pk_diar_save: more than pk_diar_state_size");
+            /* a state with more cache, or more FIFO, than the diarizer has
+             * room for (another model's) is refused, not written past it:
+             * its counts follow the int64 of where the next chunk starts */
+            for (int field = 0; field < 2; field++) {
+                const uint32_t big = 0xffffffffu, keep = ((const uint32_t *)((const char *)st + 8))[field];
+                memcpy((char *)st + 8 + 4 * field, &big, 4);
+                g_cases++;
+                if (pk_diar_load(d3, st) != -1)
+                    FAIL("pk_diar_load: a state with more %s than there is room for", field ? "FIFO" : "cache");
+                memcpy((char *)st + 8 + 4 * field, &keep, 4);
+            }
             for (int other = 0; other < 2; other++) {
                 /* the same to the end of the last chunk's context, then the recording backwards */
                 const size_t same = (size_t)k.next * R + ctx + m->n_fft;
