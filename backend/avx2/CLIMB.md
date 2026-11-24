@@ -3735,15 +3735,15 @@ sitting. Eight threads are as fast as sixteen: per pass, from a pool with
 a clock around each job (not committed), five runs at 8 and 16 threads,
 ms a run:
 
-| pass                       | items a job | 8 threads | 16 threads | of it the caller's wait at 16 |
-| -------------------------- | ----------- | --------- | ---------- | ----------------------------- |
-| the products (pk_gemm_on)  | 8 to 32     | 524       | 475        | 105                           |
-| attention (att_item)       | 344         | 292       | 196        | 7                             |
-| the keys (keys_item)       | 8, a head   | 49        | 73         | 29                            |
-| V's panels (panel_item)    | 8           | 22        | 56         | 21                            |
-| normq                      | 43          | 20        | 35         | 7                             |
-| rotation (rope_item)       | 43          | 14        | 28         | 5                             |
-| pk_quantize_on             | 43          | 7         | 19         | 4                             |
+| pass                      | items a job | 8 threads | 16 threads | of it the caller's wait at 16 |
+| ------------------------- | ----------- | --------- | ---------- | ----------------------------- |
+| the products (pk_gemm_on) | 8 to 32     | 524       | 475        | 105                           |
+| attention (att_item)      | 344         | 292       | 196        | 7                             |
+| the keys (keys_item)      | 8, a head   | 49        | 73         | 29                            |
+| V's panels (panel_item)   | 8           | 22        | 56         | 21                            |
+| normq                     | 43          | 20        | 35         | 7                             |
+| rotation (rope_item)      | 43          | 14        | 28         | 5                             |
+| pk_quantize_on            | 43          | 7         | 19         | 4                             |
 
 The keys and V's panels are a job of 8 items, so half of sixteen threads
 wait out each, and their items read lines the product before wrote on
@@ -3774,12 +3774,12 @@ threads (the default), avx512-vnni; every build's `pktito-c probs
 --no-hold` of test10.wav the same bytes as 6b393ee's, and test3.wav's
 the same through ref, avx2, avx2-vnni and avx512-vnni:
 
-| tree                   | gcc 15.2, four rounds | clang 21.1.8, four rounds |
-| ---------------------- | --------------------- | ------------------------- |
-| 6b393ee                | 0.952 to 0.967 s      | 0.966 to 0.992 s          |
-| H1, the keys in two    | 0.932 to 0.952        |                           |
-| H1 + H2, V's columns   | 0.906 to 0.921        |                           |
-| H1 + H2 + H3           | 0.826 to 0.839        | 0.835 to 0.862            |
+| tree                 | gcc 15.2, four rounds | clang 21.1.8, four rounds |
+| -------------------- | --------------------- | ------------------------- |
+| 6b393ee              | 0.952 to 0.967 s      | 0.966 to 0.992 s          |
+| H1, the keys in two  | 0.932 to 0.952        |                           |
+| H1 + H2, V's columns | 0.906 to 0.921        |                           |
+| H1 + H2 + H3         | 0.826 to 0.839        | 0.835 to 0.862            |
 
 H1 1.6% where 4 to 5 was predicted; H2 a further 2.5 to 3%. H3, built
 first as a variable (not committed): at least R rounds of items where
@@ -3798,10 +3798,10 @@ rounds: 16 threads 0.471-0.487 s either way, 8 threads 0.583-0.638
 against 0.582-0.618. And on two machines that are not WSL, default
 threads, three interleaved rounds each:
 
-| machine                         | compiler | diarizer, R 0 / R 3        | recognizer v2, R 0 / R 3 |
-| ------------------------------- | -------- | -------------------------- | ------------------------ |
-| Strix Halo (Ryzen AI MAX+ 395)  | gcc 13.3 | 1.095-1.097 / 1.091-1.095  | 0.617-0.624 / 0.614-0.630|
-| i9-12900HK, 14 threads          | gcc 15.2 | 3.701-3.732 / 3.698-3.716  | 2.239-2.249 / 2.229-2.251|
+| machine                        | compiler | diarizer, R 0 / R 3       | recognizer v2, R 0 / R 3  |
+| ------------------------------ | -------- | ------------------------- | ------------------------- |
+| Strix Halo (Ryzen AI MAX+ 395) | gcc 13.3 | 1.095-1.097 / 1.091-1.095 | 0.617-0.624 / 0.614-0.630 |
+| i9-12900HK, 14 threads         | gcc 15.2 | 3.701-3.732 / 3.698-3.716 | 2.239-2.249 / 2.229-2.251 |
 
 Level on both. The Strix Halo runs its first run after an idle spell
 fast (0.866 s) and the rest at its power limit (1.09), so only the later
@@ -3815,8 +3815,7 @@ Windows on the 9950X is not measured.
 
 After the three, a run's passes at 16 threads, gcc, ms a run: the
 products 408 (the caller's wait 50), attention 199, V's panels 44,
-normq 36, rotation 28, the keys 25 and their means 16, pk_quantize_on
-20. Bigger attention blocks (ATT_BLOCK 32, 48, 64 queries for 16, the
+normq 36, rotation 28, the keys 25 and their means 16, pk_quantize_on 20. Bigger attention blocks (ATT_BLOCK 32, 48, 64 queries for 16, the
 same bits) moved nothing: 0.820 to 0.833 s each against 0.823 to 0.833,
 three rounds. An item's time there is mostly P·V's float product, at its
 FMAs' bound.
@@ -3930,23 +3929,23 @@ check-c passes at cda70af on the c7i and the c8a under gcc 13.3 and
 clang 18.1.3, kcheck and q8check holding amx-int8 to ref's bits on the
 c7i (the softmax in zmm is that build's too).
 
-| machine                                    | threads | backend     | compiler     | 6b393ee          | cda70af          |
-| ------------------------------------------ | ------- | ----------- | ------------ | ---------------- | ---------------- |
-| 9950X, WSL                                 | 16      | avx512-vnni | gcc 15.2     | 0.952-0.967 s    | 0.761-0.791      |
-| 9950X, WSL, held to avx2                   | 16      | avx2        | gcc 15.2     | 2.196-2.224      | 1.706-1.713      |
-| 9950X, WSL, held to avx2-vnni              | 16      | avx2-vnni   | gcc 15.2     | 1.360-1.365      | 1.125-1.134      |
-| EC2 c8a.4xlarge (EPYC 9R45, Zen 5)         | 16      | avx512-vnni | gcc 13.3     | 0.884-0.912      | 0.771-0.794      |
-| the same, held to avx2                     | 16      | avx2        | gcc 13.3     | 1.706-1.751      | 1.563-1.635      |
-| Strix Halo (Ryzen AI MAX+ 395), Linux      | 16      | avx512-vnni | gcc 13.3     | 1.139-1.146      | 1.050-1.054      |
-| the same, held to avx2-vnni                | 16      | avx2-vnni   | gcc 13.3     | 1.606-1.612      | 1.544-1.550      |
-| the same, held to avx2                     | 16      | avx2        | gcc 13.3     | 2.327-2.338      | 2.219-2.226      |
-| EC2 c7i.2xlarge (Xeon 8488C), 4 cores      | 4       | amx-int8    | gcc 13.3     | 3.741-3.807      | 3.564-3.706      |
-| the same, held to avx512-vnni              | 4       | avx512-vnni | gcc 13.3     | 4.334-4.415      | 4.228-4.256      |
-| i9-12900HK, Linux                          | 14      | avx2-vnni   | gcc 15.2     | 4.039-4.054      | 3.665-3.671      |
-| the same, held to avx2                     | 14      | avx2        | gcc 15.2     | 6.215-6.223      | 5.625-5.631      |
-| Core 3 304 (1 P + 4 E), Windows 11, mingw  | 5       | avx2-vnni   | gcc 13 win32 | 5.817-5.924      | 5.707-5.740      |
-| Ryzen 7 5700X (Zen 3), Linux               | 8       | avx2        | gcc 12.3     | 3.687-3.744      | 3.741-3.778      |
-| the same                                   | 8       | avx2        | gcc 11.4     | 3.714-3.746      | 3.737-3.757      |
+| machine                                   | threads | backend     | compiler     | 6b393ee       | cda70af     |
+| ----------------------------------------- | ------- | ----------- | ------------ | ------------- | ----------- |
+| 9950X, WSL                                | 16      | avx512-vnni | gcc 15.2     | 0.952-0.967 s | 0.761-0.791 |
+| 9950X, WSL, held to avx2                  | 16      | avx2        | gcc 15.2     | 2.196-2.224   | 1.706-1.713 |
+| 9950X, WSL, held to avx2-vnni             | 16      | avx2-vnni   | gcc 15.2     | 1.360-1.365   | 1.125-1.134 |
+| EC2 c8a.4xlarge (EPYC 9R45, Zen 5)        | 16      | avx512-vnni | gcc 13.3     | 0.884-0.912   | 0.771-0.794 |
+| the same, held to avx2                    | 16      | avx2        | gcc 13.3     | 1.706-1.751   | 1.563-1.635 |
+| Strix Halo (Ryzen AI MAX+ 395), Linux     | 16      | avx512-vnni | gcc 13.3     | 1.139-1.146   | 1.050-1.054 |
+| the same, held to avx2-vnni               | 16      | avx2-vnni   | gcc 13.3     | 1.606-1.612   | 1.544-1.550 |
+| the same, held to avx2                    | 16      | avx2        | gcc 13.3     | 2.327-2.338   | 2.219-2.226 |
+| EC2 c7i.2xlarge (Xeon 8488C), 4 cores     | 4       | amx-int8    | gcc 13.3     | 3.741-3.807   | 3.564-3.706 |
+| the same, held to avx512-vnni             | 4       | avx512-vnni | gcc 13.3     | 4.334-4.415   | 4.228-4.256 |
+| i9-12900HK, Linux                         | 14      | avx2-vnni   | gcc 15.2     | 4.039-4.054   | 3.665-3.671 |
+| the same, held to avx2                    | 14      | avx2        | gcc 15.2     | 6.215-6.223   | 5.625-5.631 |
+| Core 3 304 (1 P + 4 E), Windows 11, mingw | 5       | avx2-vnni   | gcc 13 win32 | 5.817-5.924   | 5.707-5.740 |
+| Ryzen 7 5700X (Zen 3), Linux              | 8       | avx2        | gcc 12.3     | 3.687-3.744   | 3.741-3.778 |
+| the same                                  | 8       | avx2        | gcc 11.4     | 3.714-3.746   | 3.737-3.757 |
 
 The Core 3 304 ran with Windows Update busy beside it (TiWorker), two
 rounds. The Zen 3 is the one that loses. By commit there, gcc 12.3, four
@@ -3977,15 +3976,15 @@ in the tiles takes 40% more thread time there; on Zen 5 the jobs it
 saves are worth more than that. Variants, each the same bytes, the ten
 minutes, rounds in an order and its reverse:
 
-| variant                                                     | Zen 3, gcc 12.3 (8 thr.) | 9950X, gcc 15.2 (16)  |
-| ----------------------------------------------------------- | ------------------------ | --------------------- |
-| d9e6fa1, before the job                                     | 3.705-3.753 s            |                       |
-| cda70af                                                     | 3.751-3.800              | 0.765-0.766           |
-| A: K's frames turned as they go into the mean (one pass)    | 3.752-3.778              | 0.756-0.768           |
-| B: K split as Q, its rotation in its tiles, the means and keys jobs back | 3.750-3.789 | 0.788-0.790   |
-| Q: the queries turned and quantized in a job of their own   | 3.725-3.756              | 0.767-0.774           |
-| S: the three parts as three jobs                            | 3.775-3.791              | 0.820-0.826           |
-| A + the rotation's loop vectorized (restrict)               | 3.753-3.776              | 0.755-0.765           |
+| variant                                                                  | Zen 3, gcc 12.3 (8 thr.) | 9950X, gcc 15.2 (16) |
+| ------------------------------------------------------------------------ | ------------------------ | -------------------- |
+| d9e6fa1, before the job                                                  | 3.705-3.753 s            |                      |
+| cda70af                                                                  | 3.751-3.800              | 0.765-0.766          |
+| A: K's frames turned as they go into the mean (one pass)                 | 3.752-3.778              | 0.756-0.768          |
+| B: K split as Q, its rotation in its tiles, the means and keys jobs back | 3.750-3.789              | 0.788-0.790          |
+| Q: the queries turned and quantized in a job of their own                | 3.725-3.756              | 0.767-0.774          |
+| S: the three parts as three jobs                                         | 3.775-3.791              | 0.820-0.826          |
+| A + the rotation's loop vectorized (restrict)                            | 3.753-3.776              | 0.755-0.765          |
 
 At 4 threads on the Zen 3 A against d9e6fa1 is the same, 6.544-6.740
 against 6.499-6.635. None brings the Zen 3 back. The rotation's loop
