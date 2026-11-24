@@ -960,10 +960,14 @@ NeMo itself on this machine (float32, 16 threads) took 57 s for an hour and
 3.5 GB, Transformers 30 s and 4.1 GB; NeMo 3.0.0 ran v2's hour in 50 s and
 3.9 GB (measured).
 
-On a chip with two kinds of core the diarizer does not take every core for
-granted. Its first four full steps after the first run on every core and
-on the fast kind alone by turns, and it keeps whichever's layers took less
-(core/diar.c, layers); the probabilities are the same bits on any threads.
+On a chip with more kinds of core than one the diarizer does not take
+every core for granted. Its first four full steps after the first run on
+every core and on all but the slowest kind by turns, and it keeps
+whichever's layers took less (core/diar.c, layers); the probabilities are
+the same bits on any threads. A lone fast core is not raced, and the
+narrow side is left early where it is behind: four layers in if not half
+as fast as every core, and at the end of its first turn if no layer of its
+was faster than every core's median.
 Measured on 2026-11-24 over ten minutes of sound (test.wav ten times over,
 `pktito-c bench`): an M5 Ultra keeps its twelve fast cores, 1.25 s where
 its 36 cores take 1.81; a GB10 its ten X925s, 1.93 s against its twenty's
@@ -972,6 +976,12 @@ and an M4 Pro all twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
 The attention's scores were float in those runs; with them in int8 ("The
 attention in int8", above) the kept threads' ten minutes are 1.21 s on the
 M5 Ultra, 1.80 on the GB10 and 2.05 on the base M4.
+The turns are run once a diarizer, and the recording they are run in pays
+for the side that loses: 0.03 s on the base M4 and 0.07 to 0.09 s on the M5 Ultra,
+one recording against the same with its count given. `pktito-c bench -v`
+prints each of its five runs, the first with the turns in it; and
+`pk_diar_settled` says when the count is the diarizer's choice made, for a
+program that makes a diarizer a recording and would keep the count.
 
 The latency is paid in compute: every step encodes the cache again, so
 shorter chunks pay for it more often. The card's 1.04 s configuration

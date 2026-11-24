@@ -4571,3 +4571,351 @@ with 30 s of a third voice after it, and for it at 44.1 kHz, with
 `--no-hold` and without: the model's own rows did not move in between,
 and none of the three is a recording the hold changes. Rows scored for a
 rounding are `probs --no-hold`'s.
+
+## 2026-11-24 - the diarizer's race: what it costs a recording, and a chip of three kinds (hypothesis)
+
+Two things the race of 3c70e85 was not measured for.
+
+**Its cost.** `pktito-c bench` is the best of 5 on one diarizer, and the
+race is run once, in the first: no number above has its cost in it. A
+user's one recording does. `pktito-c probs --no-hold`, a process and a
+diarizer a run, wall seconds, 9 rounds by turns, medians, on the M4 Pro's
+twelve, with the fast kind's count forced in a scratch build (oneshot.py
+and the build are scratch, not in the tree):
+
+| M4 Pro, one recording      | 3 minutes | 10 minutes |
+| -------------------------- | --------- | ---------- |
+| no race (-t 12)            | 0.498     | 1.722      |
+| the race as it is, 8 of 12 | 0.535     | 1.829      |
+| the fast kind 4 of 12      | 0.611     | 1.921      |
+| the fast kind 2 of 12      | 0.656     | 1.943      |
+| the fast kind 1 of 12      | 0.891     | 2.128      |
+
+The fast kind's two turns are two whole steps on its threads, and where
+it is one core that is two steps on one thread: 79% more for three
+minutes. A phone with one prime core is that chip (fast_cpus takes the
+cores within 10% of the highest capacity), and an Intel of 1 P + 4 E.
+
+**Three kinds.** A Galaxy S24 is one X4, five A720s and two A520s. From
+the session that holds the phone, the first of three rounds, the ten
+minutes, neon-i8mm: 8.746 s before the race (1a03e70, its eight); 9.420 s
+with it (3c70e85, keeping eight); 8.760 at -t 8 and 7.552 at -t 6. Six is
+its best count, and the race's sides are one and eight.
+
+So two changes:
+
+1. The race's narrow side is every kind's cores but the slowest's
+   (pk_os_cores_but_slowest): on a chip of two kinds the fast kind as
+   now, on the S24 its six. On Linux a core is of the slowest kind within
+   10% of the lowest capacity; macOS's last perflevel; Windows' lowest
+   EfficiencyClass.
+2. A way out of the narrow side's first turn. Four layers in, if not one
+   of them was within twice every core's median layer of the step before,
+   every core has won: the step's other layers and the recording's other
+   steps run on every core, and the race is over.
+
+Why four layers and twice. The narrow side's first layers are slow on
+Linux while the scheduler moves its threads (the entry of 2026-11-24
+above), so the way out must not take that for a loss. The GB10's narrow
+turn, its best layer so far over every core's median, eight runs
+(load 0.1 to 2.0; a scratch build printing the race's layers):
+
+| the first k layers | 1            | 2            | 4            | 8            | 16           | 31           |
+| ------------------ | ------------ | ------------ | ------------ | ------------ | ------------ | ------------ |
+| GB10, 10 of 20     | 1.16 to 1.50 | 1.06 to 1.27 | 1.05 to 1.20 | 1.02 to 1.20 | 0.74 to 1.04 | 0.72 to 0.83 |
+
+and the M4 Pro's with the count forced, three runs each, at k = 4: 8 of
+12 0.98 to 0.99, 4 of 12 1.35 to 1.63, 2 of 12 2.02 to 2.32, 1 of 12 3.89
+to 3.91. Twice is clear of the GB10's 1.20 and under a lone core's 3.9.
+
+Expect:
+
+- The picks of 3c70e85 unchanged where the kinds are two: the GB10 its
+  ten in 12 runs of 12, the M5 Ultra its twelve, the M4 Pro, the base M4
+  and the i9-12900HK every core. No pick here goes through the way out
+  (the M4 Pro's 8 of 12 is 0.98 at four layers).
+- The M4 Pro with the count forced to 1: the three minutes 0.891 to about
+  0.52 s, four layers on one thread (8.6 ms each for 2.2) over no race.
+  Forced to 2 it is on the edge and may go either way; to 4, as now.
+- The S24: the narrow side its six, kept, the ten minutes at -t 6's 7.55
+  s for 8.75; no layer on one thread.
+- The worst case: a narrow side not half as fast as every core costs four
+  of its layers, once a diarizer: of a 1 P + 4 E chip, four layers on one
+  thread, of a step's 31.
+
+Kept if the picks hold on the GB10 (gcc and clang), the M5 Ultra and both
+M4s, make check-c passes, and the forced count's one recording comes down
+as said. The S24's and a Windows board's are the sessions' that hold
+them. The recognizer's race has the same two sides (core/asr.c) and turns
+of two layers, which cost a lone core little; whether it wants the six on
+an S24 is a bench of v2 at -t 6 there, not run.
+
+## 2026-11-24 - the diarizer's race: all but the slowest kind, a way out, a lone core not raced (kept)
+
+The two changes of the entry above and a third the measuring asked for.
+The narrow side is pk_os_cores_but_slowest's cores. Four layers into its
+first turn (TUNE_OUT), a narrow side whose best layer took over twice
+(TUNE_FAR) every core's median leaves the race to every core. And a
+narrow side of one core is not raced. The probabilities are the same bits
+(conv2.wav's `probs`, md5 94bfd1a8). `make check-c` passes on the M4 Pro
+(with check-tsan), the base M4, the M5 Ultra, the GB10 (gcc 13.3 and
+clang 18.1), the i9-12900HK (gcc 15.2) and the Pi 5 (gcc 14.2).
+
+**The picks hold.** `pktito-c bench`, the ten minutes, a process a run:
+
+| board            | cores, narrow side | kept           | best of 5, s   |
+| ---------------- | ------------------ | -------------- | -------------- |
+| M5 Ultra         | 36, 12             | 12 in 6 of 6   | 1.252 to 1.259 |
+| GB10, gcc 13.3   | 20, 10             | 10 in 12 of 12 | 1.862 to 1.923 |
+| GB10, clang 18.1 | 20, 10             | 10 in 12 of 12 | 1.901 to 1.926 |
+| M4 Pro           | 12, 8              | 12 in 6 of 6   | 1.567 to 1.687 |
+| base M4          | 10, 4              | 10 in 6 of 6   | 2.119 to 2.147 |
+
+(The GB10's and the M4 Pro's rows are of the tree before the lone core's
+rule, which a narrow side of ten or eight does not reach.) The GB10's 24
+ran one after another, its load rising from 0.2 to 10 with them.
+
+**The count forced**, as in the entry above: the M4 Pro, a scratch build
+of the way out before the lone core's rule, one recording, wall seconds,
+medians, and how often the way out was taken in three runs printing it:
+
+| M4 Pro, one recording   | 3 minutes | 10 minutes | the way out |
+| ----------------------- | --------- | ---------- | ----------- |
+| no race (-t 12)         | 0.494     | 1.680      |             |
+| 8 of 12, as the chip is | 0.509     | 1.809      | 0 of 3      |
+| 4 of 12                 | 0.609     | 1.938      | 0 of 3      |
+| 2 of 12                 | 0.504     | 1.730      | 3 of 3      |
+| 1 of 12                 | 0.535     | 1.686      | 3 of 3      |
+
+3c70e85's race in the same rounds took 0.659 s at 2 of 12 and 0.898 at 1.
+As said: 1 of 12 came to 0.535 for the 0.52 expected, 4 of 12 is as it
+was, and 2 of 12, on the edge, took the way out every time.
+
+**A lone core under Linux is worse than the forced count said**, which is
+the third change. The GB10 held to fewer cores by taskset is a chip of
+another shape with its own scheduler: `taskset -c 0-4,19` is one X925 and
+five A725s (pk_os_cores 6, the narrow side 1), `0-4,18,19` two and five
+(7 and 2). One recording, wall seconds, medians of 7 rounds by turns:
+
+| GB10 held to         | 1 X925 + 5 A725, 3 min | 10 min | 2 X925 + 5 A725, 3 min | 10 min |
+| -------------------- | ---------------------- | ------ | ---------------------- | ------ |
+| no race (-t 6, -t 7) | 1.653                  | 5.813  | 1.268                  | 4.413  |
+| 3c70e85's race       | 4.959                  | 9.133  | 1.510                  | 5.040  |
+| the way out alone    | 2.124                  | 6.052  |                        |        |
+| with the lone core's | 1.659                  | 5.824  | 1.335                  | 4.539  |
+
+3c70e85's two steps on the one core cost 3.3 s there, twice what the
+whole recording takes without them, and the way out's four layers still
+0.47 s: a lone thread's layers with five threads asleep beside it are not
+-t 1's. So a narrow side of one is not raced: 1.659 s, no race's time.
+
+A side of two is of two minds there. Sixteen runs of the three minutes
+held to two X925s and five A725s, a scratch build printing what four
+layers in saw: in 13 the two's best layer was 2.44 to 2.55 times every
+core's median (5.05 once) and the way out was taken, 1.30 to 1.37 s; in 3
+it was 1.58 to 1.60, the race ran to its end and the recording took 1.46
+to 1.48 s, as 3c70e85's. No race, 1.23 s.
+
+**Why twice, and why the turns stay.** Sixty races on the GB10 (3c70e85's
+build printing its layers, one after another, the load 2.0 to 7.5), the
+narrow side's time over every core's median layer:
+
+| GB10, 10 of 20, 60 races         | least | median | 95th | most |
+| -------------------------------- | ----- | ------ | ---- | ---- |
+| best of its first 2 layers       | 0.94  | 1.18   | 1.45 | 1.47 |
+| best of its first 4 layers       | 0.94  | 1.12   | 1.41 | 1.45 |
+| best of its first 8 layers       | 0.82  | 1.10   | 1.30 | 1.40 |
+| its first turn's median          | 0.78  | 0.90   | 1.10 | 1.16 |
+| its two turns' median (the race) | 0.76  | 0.85   | 0.97 | 0.99 |
+
+The eight runs of the entry above had 1.05 to 1.20 at four layers; sixty
+have up to 1.45. Twice is still clear of it, and 1.5 would not be. In 12
+of the 60 the narrow side's first turn alone would have lost (Linux's
+move of the threads can last past half a step) and over both turns it
+lost in none: the race is not to be decided on a turn a side, so a narrow
+side between every core's speed and half of it runs its two turns and
+loses them.
+
+**What the race still costs a recording**, the tree, one recording, wall
+seconds, medians of 7 rounds by turns:
+
+| one recording      | 3 minutes, raced | given the count | 10 minutes, raced | given the count |
+| ------------------ | ---------------- | --------------- | ----------------- | --------------- |
+| base M4, keeps 10  | 0.714            | 0.655 (-t 10)   | 2.329             | 2.266           |
+| M5 Ultra, keeps 12 | 0.490            | 0.404 (-t 12)   | 1.427             | 1.343           |
+| i9-12900HK         | 1.271            | 1.271 (-t 14)   | 4.416             | 4.416           |
+
+The base M4's narrow side is 1.3 times slower and its two turns 0.06 s;
+the M5 Ultra's wins, and its cost is every core's two turns, 0.086 s
+(every core, -t 36, takes 0.612 and 1.984; 3c70e85's race 0.489 and
+1.425, as this one). Hence pk_diar_settled, for a program that makes a
+diarizer a recording: 1 once the count is the diarizer's choice made, and
+that count given to pk_diar_new as `threads` runs no turns. A count kept
+is one race's result, though, and a race can be turned. On the M4 Pro in
+use while measuring (load 4 to 6), where one recording's ten minutes take
+1.715 s at -t 12 and 1.844 at -t 8, one bench of five kept 8 (1.839 s for
+the others' 1.643 to 1.657) and one new diarizer of twelve kept 8 (five
+minutes of noise each, a scratch program). A program that keeps a count
+should be able to race again.
+
+**The i9-12900HK has never run this race**, nor the recognizer's. Its
+kernel gives every core cpu_capacity 1024 (cpu0's cpuinfo_max_freq is
+5,000,000 and cpu12's 3,800,000), so its fastest kind, its all but the
+slowest and its cores are 14 each, before this change and after: the
+"every core" the entries above give its race was no race. Its SMT lead of
+2026-11-23 stands; telling its kinds by cpufreq where the capacities are
+one is a lead beside it, not taken.
+
+**Not explained.** The M4 Pro's ten minutes with the race are 0.11 to
+0.13 s over no race in three sets (the entry above's table, this one's,
+and 1.810 against 1.703 in 9 rounds after), its three minutes 0.015 to
+0.037 s; the race is over inside the three minutes, so some 0.08 s of the
+ten come after it. The count kept was 12 in 12 runs of 12 printing it
+(`speakers -v`), the threads' share of items on the E cluster the same
+with the race and without (0.133 in a scratch build counting them), and
+one diarizer's runs after its first do not show it: 20 runs' mean 1.675
+s, 24 runs given the twelve 1.689. The M5 Ultra and the base M4 have the
+same cost at three minutes and at ten. That Mac was in use; measure again
+on a quiet one before reading it.
+
+**The worst case, as it stands.** A narrow side of one core: nothing. Of
+two or more and not half as fast as every core: four of its layers, of a
+step's 31, once a diarizer. Between every core's speed and half of it:
+its two turns, 2 x (its ratio - 1) steps, the base M4's 0.06 s. Where it
+wins: every core's two turns, the M5 Ultra's 0.086 s. A program that
+keeps a settled count pays any of them once.
+
+Open: the S24, whose capacities (369 for its two A520s, 842 and 897 for
+its five A720s, 1024) give the narrow side six by the rule, run by the
+session that holds it; Windows' cores(), built and checked by a session
+on Windows (it cannot be built on this Mac); an iPhone's two and four,
+not measured, which pays its two turns if its two are between one and two
+times slower. The recognizer's race is as it was (pk_os_fast_cores).
+
+## 2026-11-24 - the diarizer's race: the end of the narrow side's first turn (hypothesis)
+
+Twice at four layers leaves the narrow sides between every core's speed
+and half of it to run both their turns, and that band is wider than the
+core counts say. The GB10 held to two X925s and ten A725s (`taskset -c
+0-4,10-14,18,19`): its two are not six times slower than its twelve but
+1.85 to 1.92, a step waiting on its slowest item. Sixteen runs of the
+three minutes: 14 raced to the end, 1.37 to 1.39 s, and 2 took the way
+out (2.88, 2.98), 1.15 and 1.24 s; no race, 1.08 to 1.11 s. A quarter
+more for a race the two cannot win, and the shape is a laptop's 2 P + 8 E.
+
+The narrow side's first turn, whole, says more than its four layers, and
+Linux's move of the threads does not hide it: one layer at speed is
+enough. The narrow side's best layer of its first turn over every core's
+median of the turn before, 3c70e85's build printing its layers:
+
+| GB10                        | runs | least | median | 95th | most |
+| --------------------------- | ---- | ----- | ------ | ---- | ---- |
+| whole, 10 of 20 (it wins)   | 50   | 0.68  | 0.77   | 0.84 | 0.84 |
+| 3 X925 + 5 A725 (level)     | 12   | 0.92  | 1.01   | 1.34 | 1.39 |
+| 2 X925 + 5 A725 (it loses)  | 12   | 1.58  | 2.45   | 2.49 | 2.51 |
+| 2 X925 + 10 A725 (it loses) | 12   | 1.81  | 1.90   | 1.94 | 2.74 |
+
+(The whole GB10's races by both turns' medians were 0.76 to 1.01 in the
+same 50: one of them lost, where the 60 before had none.)
+
+So a second way out, with no number of its own: at the end of the narrow
+side's first turn, if not one of its layers was under every core's median
+layer, every core has won. A side that wins had 0.84 at most; one that
+loses and is let through is within a layer's spread of every core, and
+its second turn costs little.
+
+Expect:
+
+- The GB10 held to two and ten: the three minutes' 1.38 s to about 1.23,
+  one turn of the two's instead of two; to two and five, the runs that
+  raced to the end (1.47 s) to about 1.35.
+- The base M4: one recording's 0.059 s over no race to about 0.03.
+- The picks: the GB10 its ten under gcc and clang, the M5 Ultra its
+  twelve, the base M4 its ten. The M4 Pro's eight are level with its
+  twelve four layers in (0.98) and 7% slower over the recording: this
+  look sends some of its races to every core, which is its faster side.
+
+Kept if those hold and make check-c passes.
+
+## 2026-11-24 - the diarizer's race: the end of the narrow side's first turn (kept)
+
+At the end of the narrow side's first turn, a side with not one layer
+under every core's median layer leaves the race to every core (core/diar.c,
+layers). `make check-c` passes on the M4 Pro (with check-tsan), the base
+M4, the M5 Ultra, the GB10 (gcc 13.3, clang 18.1), the i9-12900HK (gcc
+15.2) and the Pi 5 (gcc 14.2); conv2.wav's `probs` are the same bits.
+
+**The sides that lose leave**, the GB10 held by taskset, sixteen runs of
+the three minutes each, a scratch build printing what the looks saw:
+
+| GB10 held to     | left at four layers            | left at the turn's end         | before, raced to the end | no race      |
+| ---------------- | ------------------------------ | ------------------------------ | ------------------------ | ------------ |
+| 2 X925 + 10 A725 | 1 run (2.84): 1.26 s           | 15 (1.83 to 1.93): 1.22-1.26 s | 1.37 to 1.39 s           | 1.08 to 1.11 |
+| 2 X925 + 5 A725  | 10 (2.45 to 4.65): 1.30-1.38 s | 6 (1.58 to 1.60): 1.35-1.36 s  | 1.46 to 1.48 s           | 1.23         |
+
+As expected (1.23 and 1.35).
+
+**The side that wins is not cut.** Forty races on the whole GB10 with the
+printing build: all forty ran to the end, the ten X925s' best layer at
+their first turn's end 0.87 of every core's median at most.
+
+**The picks, and the default against its count given.** `pktito-c bench
+-v` now prints each of its five runs (the first is a new diarizer's, with
+the race in it), the ten minutes, a process a row:
+
+| board            | kept           | first run, s   | the four after, s | given that count, every run, s |
+| ---------------- | -------------- | -------------- | ----------------- | ------------------------------ |
+| M5 Ultra         | 12 in 6 of 6   | 1.371 to 1.379 | 1.260 to 1.272    | 1.223 to 1.271 (3 processes)   |
+| GB10, gcc 13.3   | 10 in 12 of 12 | 1.990 to 2.047 | 1.855 to 1.940    | 1.920 to 1.983 (4)             |
+| GB10, clang 18.1 | 10 in 12 of 12 | 2.003 to 2.039 | 1.897 to 1.942    |                                |
+| base M4          | 10 in 6 of 6   | 2.160 to 2.181 | 2.121 to 2.166    | 2.155 to 2.185 (4)             |
+
+After its first run a diarizer that raced runs as one given its count.
+The M4 Pro kept 12 in 16 recordings of 16 (three minutes, `speakers -v`),
+15 of 16 racing to the end and one leaving at the turn's end (the
+printing build).
+
+**One recording**, wall seconds, medians (base M4 9 rounds, the others 7):
+
+| one recording | 3 minutes | given its count | 10 minutes | given its count |
+| ------------- | --------- | --------------- | ---------- | --------------- |
+| base M4       | 0.688     | 0.659 (-t 10)   | 2.306      | 2.278           |
+| M5 Ultra      | 0.490     | 0.403 (-t 12)   | 1.427      | 1.358           |
+| GB10          | 0.682     | 0.636 (-t 10)   | 2.173      | 2.114           |
+
+The base M4's 0.059 s is 0.029, as expected. The GB10's every core (-t 20) takes 0.760 and 2.577 s: the race is 0.05 to 0.06 s of the first
+recording and 0.08 to 0.40 s back.
+
+**The worst case, as it stands.** A narrow side of one core: nothing. Of
+two or more and not half as fast as every core: four of its layers. Not
+faster than every core: one turn, (its ratio - 1) steps and under a step.
+Where it wins: every core's two turns. Once a diarizer; a program that
+keeps a settled count (pk_diar_settled) pays it once.
+
+**A default slower than its own count given** is what the session with
+the S24 saw of 3c70e85 there: 9.42 to 9.51 s by default, 8.76 to 8.78 at
+-t 8, both on 8 threads, best of 5, three cooled rounds. The table above
+has no such thing after the first run on three boards. Not measured on
+the phone; what `bench -v` there would show if it is the first run: a
+cooled phone's first run is its best, and by default it is the race's,
+which in 3c70e85 was two steps on the X4 alone. With this tree the narrow
+side there is six, the count the phone was fastest at.
+
+The M4 Pro does not settle it either way: its runs are of two speeds
+whatever the threads' origin. Four processes each, by turns, the Mac in
+use: raced, 1.585 to 1.824 s over 20 runs, mean 1.696; given 12, 1.515 to
+1.758, mean 1.651; in both a process moves between about 1.55 and 1.70
+from one run to the next. That is the "not explained" of the entry above,
+and the 8% between the two speeds is a lead for the pool on macOS.
+
+**Set aside.** Sixty races on the whole GB10 while its vLLM worker was at
+work (GPU 96%, load 9.8 with nothing of this running): 20 kept in 43, 10
+in 17. Not this change's measure, by the board's rule; but a race run
+beside another job picks for that hour, which is the case against keeping
+its count for good.
+
+Not taken: an early win for the narrow side, which would give back one of
+every core's two turns where it wins (the M5 Ultra's 0.09 s). The early
+ways out err to every core, what the diarizer ran on before it raced; an
+early win decided on a turn a side errs to fewer threads, and a turn's
+median is what Linux's move of the threads and another job's hour bend.
