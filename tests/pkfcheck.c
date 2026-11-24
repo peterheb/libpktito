@@ -481,6 +481,7 @@ static void diar_param_cases(void) {
     DP("an upsampling that does not divide a row's samples", "upsample", v.u = 3);
     DP("an upsampling the tensors do not have", "upsample", v.u = 4);
     DP("proj_dim not a multiple of 32", "proj_dim", v.u = 48);
+    DP("heads narrower than a block", "n_heads", v.u = 4);
     DP("no speakers", "n_spk", v.u = 0);
     DP("17 speakers", "n_spk", v.u = 17);
     DP("chunk_len 0", "chunk_len", v.u = 0);

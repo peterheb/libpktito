@@ -211,7 +211,7 @@ DIAR_ARCH = [
     ("log_guard", 2.0**-24),
     ("n_layers", 2),
     ("d_model", 64),
-    ("n_heads", 4),
+    ("n_heads", 2),
     ("ff_dim", 128),
     ("ln_eps", 1e-5),
     ("rope_theta", 10000.0),

@@ -63,6 +63,16 @@ earlier one for the classes it names. This model's classes:
   head    head.hidden and head.out (their inputs: ReLU's outputs)
   enc     all of them
 
+The attention's two products have rules of their own, after the weights':
+"qk8" rounds the scores' operands, the queries in blocks of 32 of a head's
+64 dimensions and the keys with a scale a key, after each head's mean key
+is taken off its keys (no change before rounding, since a query's scores
+all move by the same amount, which its softmax undoes; "qk8raw" rounds
+without it); "pv8" rounds the weighted sum's, the probabilities in blocks
+of 32 along the step's keys and the values with a scale a channel. Each is
+the form pktito's int8 product would take: activations in blocks, a weight
+a row.
+
 "f32@CLASSES" leaves those classes unrounded, and the rule "f32cuts" makes
 every cache cut keep the frames float32's kept, so that what is left is the
 network's own rounding. "f64" alone is the float64 reference: what rounding
@@ -112,13 +122,55 @@ def classes(name):
     return set()
 
 
+def _a8pad(x, n):
+    """quantcheck.py's a8b(n) over the last axis, its last block short
+    where the axis is not a multiple of n (a step's keys)"""
+    T = x.shape[-1]
+    pad = (-T) % n
+    y = np.concatenate([x, np.zeros(x.shape[:-1] + (pad,), x.dtype)], -1) if pad else x
+    return quantcheck.a8b(n)(y)[..., :T]
+
+
+def _qk8(Q, K):
+    """Q as the activations of a product over a head's 64 dimensions, in
+    blocks of 32; K as its weights, a scale a key"""
+    return (
+        quantcheck.a8b(32)(Q).astype(np.float32),
+        quantcheck.a8row(K).astype(np.float32),
+    )
+
+
+def _pv8(P, V):
+    """P as the activations of a product over the step's keys, in blocks
+    of 32 along them; V as its weights, a scale a channel"""
+    return (
+        _a8pad(P, 32).astype(np.float32),
+        quantcheck.a8row(V.transpose(0, 2, 1)).transpose(0, 2, 1).astype(np.float32),
+    )
+
+
+# the attention's roundings (nemotron3.ATT), a configuration's rules beside
+# the weights': qk8 rounds the scores' operands after taking each head's
+# mean key off its keys (exact before rounding: a query's softmax undoes
+# the shift), qk8raw without that, pv8 the weighted sum's
+ATT_RULES = {
+    "qk8": {"smooth": True, "qk": _qk8},
+    "qk8raw": {"qk": _qk8},
+    "pv8": {"pv": _pv8},
+}
+
+
 def parse(cfg):
     """[(weight rounding or None, activation rounding or None, classes)] in
-    order, and whether float32's cuts are imposed."""
-    rules, fixed = [], False
+    order, whether float32's cuts are imposed, and the attention's
+    roundings (nemotron3.ATT)."""
+    rules, fixed, att = [], False, {}
     for rule in cfg.split(";"):
         if rule == "f32cuts":
             fixed = True
+            continue
+        if rule in ATT_RULES:
+            att.update(ATT_RULES[rule])
             continue
         on = {"enc"}
         if "@" in rule:
@@ -132,7 +184,7 @@ def parse(cfg):
         ):
             raise SystemExit("unknown configuration %r" % cfg)
         rules.append((quantcheck.WQ.get(wq), quantcheck.AQ.get(aq), on))
-    return rules, fixed
+    return rules, fixed, att
 
 
 def setup(w32, rules):
@@ -200,11 +252,14 @@ def _job(job):
         wd, mm = _W["w"], PLAIN_MM
     else:
         if _W["cfg"] != cfg:
-            rules, _ = parse(cfg)
+            rules = parse(cfg)[0]
             _W.pop("wd", None)  # never two rounded copies at once
             _W["wd"], _W["mm"], _W["cfg"] = setup(_W["w"], rules) + (cfg,)
         wd, mm = _W["wd"], _W["mm"]
         fixed = parse(cfg)[1]
+    nemotron3.ATT.clear()
+    if cfg != "f64":
+        nemotron3.ATT.update(parse(cfg)[2])
     nemotron3.mm = reference.mm = mm
     _CUTS["record"] = [] if cfg == "f32" else None
     _CUTS["impose"] = None
@@ -428,9 +483,12 @@ def load_words(path):
         return None
     with open(path, encoding="utf-8") as f:
         j = json.load(f)
-    # pktito/1: the sentences' words, in order (README, "JSON")
+    # pktito/1: the sentences' words, in order (README, "JSON"); "chunks" is
+    # the layout before it, which the study's word files of 2026-11-08 have
     return [
-        (w["start"], w["end"], w["word"]) for s in j["segments"] for w in s["words"]
+        (w["start"], w["end"], w["word"])
+        for s in j.get("segments", j.get("chunks", []))
+        for w in s["words"]
     ]
 
 

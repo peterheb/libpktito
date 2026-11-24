@@ -424,11 +424,13 @@ Each operation and what has it (backend/kernels.h), or what is new:
   1536 at once), the attention's output, the feed-forward (512 to 2048 and
   back), the projection (512 to 192), the upsampler (576 to 1536) and the
   head (192 to 192; 192 to 8, padded to 16 at conversion).
-- **the attention's products**: `pk_k_gemm_f32`, as core/encoder.c lays
-  them out, without the position half that Parakeet's needs: heads of 64,
-  no padding, `pk_k_softmax` with a scale of 1/8.
+- **the attention's products**: the scores are `pk_k_gemm_q8`'s too, a
+  head's queries against its keys as int8 weights ("The attention in
+  int8", below), and the weighted sum is `pk_k_gemm_f32`'s, as
+  core/encoder.c lays it out. No position half as Parakeet's needs: heads
+  of 64, no padding, `pk_k_softmax` with a scale of 1/8.
 - **the rotation (new)**: the queries and keys, after their products and
-  before K is laid out as panels, each pair (x_i, x_i+32) of a head turned
+  before the scores' operands are rounded, each pair (x_i, x_i+32) of a head turned
   to (x_i cos - x_i+32 sin, x_i+32 cos + x_i sin) by the frame's angle: a
   loop in core/, the same bits on every backend. The angles are the
   position (0 to 683) times 10000^(-i/32), a float32 product as NeMo forms
@@ -712,7 +714,8 @@ recordings with float32's cuts, 2 min in two processes (2.8 GB).
 
 The engine's C (core/diar.c and the kernels as 897d54c left them; its rows
 as `pktito-c probs` prints them for a diarizer's model, avx512-vnni on the
-9950X, which are ref's bits), scored by diarquant.py
+9950X, which are ref's bits; `probs --no-hold` since 19ad40b, which has
+`probs` print pk_diar_run_held's rows without it), scored by diarquant.py
 (`--configs rows:DIR`) against the same float32 runs, beside the rule's
 rows from the tables above:
 
@@ -750,6 +753,154 @@ counting their ads and clips. The C's labels differ from float32's in
 3,133 of 5.9 million (0.053%), DER against float32 0.46%, and one word
 of 21,104 goes to another speaker. Both hear the same 18 voices, none
 split, merged or renumbered. The one-voice episode gets one speaker.
+
+### The attention in int8 (2026-11-23)
+
+The rule leaves the attention's two products float: the scores QKᵀ and
+the weighted sum P·V, on pk_k_gemm_f32. They are 36.5% of the diarizer's
+time on an M4 Pro (neon-dp, ten minutes of test.wav, `make PROFILE=1`:
+863 ms of 2.297 s), the largest stage beside the feed-forward's 38.5%.
+Rounded the way pk_k_gemm_q8 would compute them, each a configuration of
+diarquant.py added to the rule's (its docstring defines them):
+
+- `qk8`: each head's mean key taken off its keys, which changes nothing
+  before rounding (a query's scores all move by one amount, and its
+  softmax undoes it) and narrows what the keys' scales must cover; then
+  the queries in blocks of 32 of a head's 64 dimensions, and the keys a
+  scale a key, as a weight's row;
+- `qk8raw`: the same without the mean key taken off;
+- `pv8`: the probabilities in blocks of 32 along the step's keys, the
+  values a scale a channel.
+
+Measured on the same recordings against the same float32 runs (the 9950X,
+~/diar-int8, diarquant.py at 6a7529c; the rule's row reproduces the
+table above):
+
+| AMI                                 | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
+| ----------------------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ---------------------------------- |
+| the rule                            | 0.085%         | +0.00050 (4.9) | 0.89%                 | 9.21% (+0.010, t 0.4)                  | 221                      | 836                                         | +140, -181                     | 0, 0, 1                            |
+| the rule, QKᵀ int8, no mean key off | 0.084%         | +0.00052 (2.8) | 0.89%                 | 9.22% (+0.048, t 1.4)                  | 241                      | 849                                         | +168, -179                     | 0, 0, 0                            |
+| the rule, QKᵀ int8 (`qk8`)          | 0.082%         | +0.00043 (2.4) | 0.88%                 | 9.21% (+0.006, t 0.2)                  | 273                      | 847                                         | +180, -186                     | 0, 0, 1                            |
+| the rule, P·V int8 (`pv8`)          | 0.083%         | +0.00037 (1.8) | 0.89%                 | 9.22% (+0.024, t 1.3)                  | 237                      | 843                                         | +166, -173                     | 0, 0, 1                            |
+| the rule, both                      | 0.085%         | +0.00067 (3.8) | 0.90%                 | 9.24% (+0.049, t 2.2)                  | 238                      | 853                                         | +182, -164                     | 0, 0, 1                            |
+
+| synthetic                           | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
+| ----------------------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ------------------------------------------- |
+| the rule                            | 0.023%         | +0.00007 (1.7) | 0.21%                 | 5.83% (-0.020, t -1.0)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, QKᵀ int8, no mean key off | 0.024%         | +0.00026 (1.6) | 0.23%                 | 5.83% (-0.024, t -1.1)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, QKᵀ int8 (`qk8`)          | 0.037%         | +0.00041 (1.4) | 0.35%                 | 5.82% (-0.038, t -1.4)                 | 0                        | 129                                         | +0, -0                         | 42, 0, 0                                    |
+| the rule, P·V int8 (`pv8`)          | 0.030%         | +0.00069 (1.1) | 0.26%                 | 5.83% (-0.017, t -0.7)                 | 43                       | 129                                         | +0, -1                         | 43, 1, 1                                    |
+| the rule, both                      | 0.025%         | +0.00017 (2.0) | 0.24%                 | 5.82% (-0.038, t -1.7)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+
+What it shows:
+
+- **The scores take int8 once the mean key is off.** `qk8` moves DER
+  against the true speakers by +0.006 (t 0.2), the rule's own +0.010, and
+  changes fewer of float32's labels than the rule does; its 273 moved
+  words are within the configurations' 182 to 277 above. Without the
+  mean key taken off the same rounding costs +0.048 (t 1.4): the keys
+  share a large offset that a scale a key otherwise spends its range on.
+  Its one speaker fewer on the synthetic set is conv5's, where the model
+  hears its host as three voices and the C already hears six for
+  float32's seven; the other eight conversations are unchanged.
+- **The weighted sum alone passes too, but is the less safe half.** `pv8`
+  costs +0.024 (t 1.3) on AMI, and on the synthetic set it splits one of
+  conv5's speakers and merges another, moving its 43 words. The
+  probabilities are mostly small, and blocks of 32 round the small ones
+  to zero.
+- **Both together are a step past the rule**, +0.049 (t 2.2), about what
+  the int8 weights alone cost before their activations were rounded too.
+- **So the attention's int8 is `qk8`, and P·V stays float.**
+
+The C computes its scores so (core/diar.c, keys_item): each head's mean
+key a float32 sum over the step's frames in their order, the queries and
+the keys through `pk_k_quantize`, the product `pk_k_gemm_q8`, the same
+bits on every backend. It changes ref's bits, every board's with them, so
+it was taken on the boards' times: the diarizer with float scores and
+with these, `pktito-c bench` by turns, medians in seconds, on 2026-11-24
+(backend/neon-dp/CLIMB.md has the rounds):
+
+| float scores to int8            | backend, threads     | the ten minutes                                        | test.wav on one thread |
+| ------------------------------- | -------------------- | ------------------------------------------------------ | ---------------------- |
+| Pi 3B+ (gcc)                    | `neon`, 4            | conv2.wav's minute: 15.94-16.02 to 15.68-15.74 (-1.7%) |                        |
+| Pi 5 (gcc 14.2)                 | `neon-dp-a76`, 4     | 17.18 to 15.78 (-8.1%)                                 | 5.554 to 5.163 (-7.0%) |
+| Galaxy S24 (NDK r30 clang 21.0) | `neon-i8mm`, 6 of 8  | 7.693 to 6.983 (-9.2%)                                 |                        |
+| GB10 (gcc 13.3)                 | `neon-sve`, 10 of 20 | 1.911 to 1.795 (-6.1%)                                 | 1.147 to 1.059 (-7.7%) |
+| GB10 (clang 18.1)               | `neon-sve`, 10 of 20 | 1.908 to 1.786 (-6.4%)                                 | 1.110 to 1.034 (-6.8%) |
+| i9-12900HK (gcc 15.2)           | `avx2-vnni`, 14      | 4.283 to 4.045 (-5.5%)                                 | 1.272 to 1.172 (-7.9%) |
+| Ryzen 9 9950X (gcc 15.2)        | `avx512-vnni`, 16    | 0.989-0.999 to 0.947-0.962 (-4.3%)                     |                        |
+| base M4 (Apple clang 21)        | `neon-sme`, 10       | 2.163 to 2.054 (-5.0%)                                 | 0.555 to 0.561 (+1.1%) |
+| M5 Ultra                        | `neon-sme`, 12 of 36 | 1.254 to 1.212 (-3.3%)                                 | 0.522 to 0.528 (+1.1%) |
+| M4 Pro, in use                  | `neon-sme`, 12       | 1.645 to 1.611 (-2.1%)                                 | 0.540 to 0.550 (+1.9%) |
+
+The M4 Pro's twelve are level: its rounds ran 1.574 to 1.800 s and 1.559
+to 1.623. The 9950X's are its five rounds' ranges, the int8 scores the
+faster in every pair; the Pi 3B+'s its three rounds' over conv2.wav's
+minute, not the ten, the int8 the faster in every round. The S24's are
+three cooled rounds over adb with the race's later order on both sides
+(5d0ddd9 to 6b393ee), each the best of five, which on a phone that warms
+is the first run; given six threads 7.560 to 6.882 (-9.0%), given all
+eight 8.674 to 8.041 (-7.3%).
+
+Where the float product was FMLA's or FMA's the scores are SDOT's, SMMLA's
+or VNNI's now, at under two fifths of their time (4.10 to 1.55 ms a layer
+on one thread of an M4 Pro held to `neon-dp`, their operands' rounding
+included). On an SME Mac the unit's FMOPA
+already ran them as fast as its SMOPA runs a product 64 inputs wide, whose
+sums leave the tile block by block, so a Mac gains on the threads that
+are off the unit and one thread alone is 1 to 2% slower.
+
+The tables above are diarquant.py's rounding, which the C's differs from
+at float32's own rounding (the mean's order of summing, a reciprocal where
+numpy divides). So the C's rows were scored as the rule's were in "The C,
+measured the same way": the model's own rows, `pktito-c probs --no-hold`,
+before the scores were int8 (299d03a) and with them (3276708),
+`avx512-vnni` on the 9950X at 16 threads (gcc 15.2), under
+`--configs rows:DIR` against the same float32 runs, on 2026-11-24. Under
+them are the rows `--speakers` goes by, `probs` without the flag, which
+since 19ad40b are pk_diar_run_held's (docs/SHORT_SPEAKERS.md):
+
+| AMI                    | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
+| ---------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ---------------------------------- |
+| the C, float scores    | 0.086%         | +0.00052 (3.3) | 0.91%                 | 9.23% (+0.064, t 1.6)                  | 264                      | 837                                         | +173, -191                     | 0, 0, 1                            |
+| the C, the scores int8 | 0.092%         | +0.00069 (2.3) | 0.93%                 | 9.24% (+0.061, t 1.6)                  | 299                      | 848                                         | +173, -185                     | 0, 0, 1                            |
+| float scores, held     | 0.086%         | +0.00052 (3.3) | 0.91%                 | 9.23% (+0.065, t 1.6)                  | 264                      | 837                                         | +173, -191                     | 0, 0, 1                            |
+| the scores int8, held  | 0.092%         | +0.00069 (2.3) | 0.94%                 | 9.24% (+0.061, t 1.6)                  | 299                      | 848                                         | +173, -185                     | 0, 0, 1                            |
+
+| synthetic              | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
+| ---------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ------------------------------------------- |
+| the C, float scores    | 0.040%         | +0.00054 (1.3) | 0.35%                 | 5.80% (-0.091, t -1.4)                 | 17                       | 112                                         | +0, -0                         | 42, 0, 0                                    |
+| the C, the scores int8 | 0.025%         | +0.00027 (1.6) | 0.23%                 | 5.83% (-0.006, t -0.3)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| float scores, held     | 0.053%         | +0.00092 (1.8) | 0.47%                 | 5.81% (-0.071, t -1.0)                 | 17                       | 112                                         | +0, -0                         | 42, 0, 0                                    |
+| the scores int8, held  | 0.039%         | +0.00073 (1.7) | 0.37%                 | 5.82% (-0.021, t -0.8)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+
+With float scores the model's own rows are the ones "The C, measured the
+same way" scored on 2026-11-09, byte for byte on all 25 recordings, and
+its figures come back. With its scores in int8 the C sits where it sat:
+AMI's DER against the true speakers is +0.061 where it was +0.064, t 1.6
+both, inside the configurations' 9.21% to 9.28%. It moves 35 more of
+AMI's words to another speaker, 299 for 264, and 11 more are not the true
+speaker's, 848 for 837, where float32 has 855. numpy's `qk8` is nearer
+float32 than that (+0.006), and the distance is the C's own from before
+the scores were int8. On the synthetic set the C is nearer float32 than
+it was, 0.025% of its labels changed for 0.040%: conv5's 17 moved words
+and its speaker fewer are gone, 43 heard as float32 hears.
+
+The held rows are scored against float32's own, so what the hold changes
+is among their changed labels: 0.013 to 0.014 points more of the
+synthetic set's, with float scores and with int8, and next to nothing of
+AMI's. The hold is processing on top of the model that decides by its
+rows, so a rounding can change what it holds; in these recordings the
+words' counts, the changes of speaker and the speakers heard are the same
+with it and without.
+
+The runs are in ~/diar-int8 on the 9950X: cache/ with one directory per
+configuration (w8row+a8b32;qk8 and the rest), results/att-ami-fa.json and
+att-synth.json, scripts/run_att.sh. The 100 runs took 3,831 s at five
+jobs. The C's own rows are `rows-299d03a-nohold/` and
+`rows-3276708-nohold/` there, scored in `results/nohold-*.json`; the held
+ones `rows-299d03a/` and `rows-3276708/`, in `results/before-*.json` and
+`results/qk8c-*.json`, 81 s of `pktito-c probs` for the 25 recordings.
 
 ## 7. What it costs
 
@@ -839,6 +990,9 @@ its 36 cores take 1.81; a GB10 its ten X925s, 1.93 s against its twenty's
 2.50; a Galaxy S24 six of its eight, 7.69 s against 8.67; a base M4 keeps
 all ten, 2.17 s against its four fast cores' 2.81, and an M4 Pro all
 twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
+The attention's scores were float in those runs; with them in int8 ("The
+attention in int8", above) the kept threads' ten minutes are 1.21 s on the
+M5 Ultra, 1.80 on the GB10, 6.98 on the S24 and 2.05 on the base M4.
 The turns are run once a diarizer, and the recording they are run in pays
 for the side that loses: 0.03 s on the base M4 and 0.08 to 0.09 s on the M5 Ultra,
 one recording against the same with its count given. `pktito-c bench -v`
@@ -1199,8 +1353,8 @@ full:
   `pk_sigmoidf` and the cut's logarithms `pk_logf`. No libm function
   reaches a label. (Stage 2.)
 - **Every matrix product through backend/kernels.h, ref the definition.**
-  Every matrix is `pk_k_gemm_q8`, the attention's products
-  `pk_k_gemm_f32`, the norms `pk_k_layernorm`, the softmax `pk_k_softmax`;
+  Every matrix is `pk_k_gemm_q8`, and the attention's scores with them;
+  its weighted sum is `pk_k_gemm_f32`, the norms `pk_k_layernorm`, the softmax `pk_k_softmax`;
   GELU is a new kernel, `pk_k_gelu`, in ref first and then in each tuned
   backend, held to ref bit for bit by tests/kcheck. The rotation and the
   cut's 80 ms means are plain loops in core/ over activations and
