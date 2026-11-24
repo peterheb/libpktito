@@ -68,13 +68,15 @@ static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static uint32_t up16(uint32_t x) { return (x + 15) & ~15u; }
 
 /* The race of every core against all but the slowest kind (layers): the
- * steps raced, two a side, and the most of a step's layers timed; and the
+ * steps raced, two a side, and the most of a step's layers timed; the
  * narrow side's early way out of its first turn, the layers it is given
- * and how many of every core's median the best of them may take (behind) */
+ * and how many of every core's median the best of them may take (behind);
+ * and the part of every core's median it has to win its second turn by */
 #define TUNE_STEPS  4
 #define TUNE_LAYERS 32
 #define TUNE_OUT    4
 #define TUNE_FAR    2
+#define TUNE_BY     16
 
 typedef struct {
     float *sc;                   /* a block of attention scores: ATT_BLOCK x a step's keys */
@@ -434,13 +436,16 @@ static double behind(pk_diar *d) {
 }
 
 /* Every core, or all but the slowest kind? The encoder's question
- * (encoder.c, layers), and its rule but for the narrow side and the length
- * of a turn: the first TUNE_STEPS full steps after the diarizer's first
- * run their layers on each by turns, a step a turn, and the diarizer
- * keeps whichever's layers took less, each side by the median of its own.
- * A full step is tmax frames, every one of them the same shapes; the
- * first step is the first pass over the weights' pages. A recording too
- * short for the turns leaves the rest to the next.
+ * (encoder.c, layers), and its rule but for the narrow side, the length of
+ * a turn and what wins: the first TUNE_STEPS full steps after the
+ * diarizer's first run their layers on each by turns, a step a turn:
+ * every core, the narrow side twice, every core. The diarizer keeps the
+ * narrow side if it wins twice, its first turn by the ways out below and
+ * its second by its layers' median under every core's of the turn after
+ * it, less a TUNE_BY-th; else every core. A full step is tmax frames,
+ * every one of them the same shapes; the first step is the first pass
+ * over the weights' pages. A recording too short for the turns leaves the
+ * rest to the next.
  *
  * A step is one stream, each pass waiting for its slowest item, and the
  * slow kind's are the last in: the ten minutes took an M5 Ultra's twelve
@@ -457,8 +462,25 @@ static double behind(pk_diar *d) {
  * The narrow side is every kind's cores but the slowest's
  * (pk_os_cores_but_slowest): of two kinds the fast one, and of a phone's
  * three its prime and big cores, a Galaxy S24's six of eight, where the
- * ten minutes took 7.55 s on six threads and 8.76 on eight (the phone's
- * first round of three).
+ * ten minutes took 7.55 to 7.60 s on six threads and 8.76 to 8.78 on
+ * eight in three cooled rounds.
+ *
+ * The order and the TUNE_BY-th are for clocks that move while the turns
+ * run. A Snapdragon X Elite laptop under Windows, twelve cores alike of
+ * which Windows calls eight the faster, kept the eight in one process of
+ * two when the turns were every core, narrow, every core, narrow and a
+ * side's two were one median; eight are 40% slower than twelve there, and
+ * a process's first run is 1.0 to 1.6 s over its later ones at any count,
+ * the clocks still rising. Every turn of the narrow side was a step later
+ * than every core's. With its two between every core's, clocks that rise
+ * help it in its first and hinder it in its second, clocks that fall the
+ * other way about, and it has to win both. The pool stays narrow between
+ * the two, so the second starts with its threads where the first put
+ * them and its median is of layers at speed: a GB10's ten took 0.69 to
+ * 0.87 of its twenty's in 60 races, where the first turn's median took
+ * 0.73 to 1.07; an M4 Pro's eight 1.02 to 1.11 of its twelve's in 13. A
+ * sixteenth is between them, and a side kept wrongly costs more than a
+ * win of under a sixteenth missed.
  *
  * A turn is a whole step on its side's threads, and where the narrow side
  * loses, its turns are the race's cost, once a diarizer and in no bench's
@@ -477,7 +499,7 @@ static double behind(pk_diar *d) {
  *   one, 1.09 s with no race.
  *
  * What is left is the turns of the side that loses: 0.03 s of a base M4's
- * recording, one turn of its four of ten, 1.3 times slower, and 0.07 to
+ * recording, one turn of its four of ten, 1.3 times slower, and 0.08 to
  * 0.09 s of an M5 Ultra's, every core's two where its twelve win.
  * pk_diar_settled is for a program that would not pay it twice (CLIMB.md,
  * 2026-11-24). */
@@ -490,7 +512,7 @@ static void layers(pk_diar *d, uint32_t T) {
         d->ran = 1;
         return;
     }
-    const int side = d->tune % 2;        /* every core's turn first: TUNE_STEPS is even */
+    const int side = d->tune > 1 && d->tune < TUNE_STEPS;        /* every core, narrow, narrow, every core */
     pk_pool_set_active(d->pool, side ? d->fast : d->nth);
     for (uint32_t i = 0; i < L; i++) {
         double t0 = pk_os_now();
@@ -505,9 +527,14 @@ static void layers(pk_diar *d, uint32_t T) {
             pk_pool_set_active(d->pool, d->wide);
         }
     }
-    if (d->tune && --d->tune == 0)
-        d->wide = median(d->took[1], d->ntook[1]) < median(d->took[0], d->ntook[0]) ? d->fast : d->nth;
-    pk_pool_set_active(d->pool, d->wide);
+    if (d->tune && --d->tune == 0) {     /* each side's second turn, the later half of its times */
+        const uint32_t h = d->ntook[0] / 2;
+        const double narrow = median(d->took[1] + h, d->ntook[1] - h);
+        const double all = median(d->took[0] + h, d->ntook[0] - h);
+        d->wide = narrow * TUNE_BY < all * (TUNE_BY - 1) ? d->fast : d->nth;
+    }
+    /* narrow still between the narrow side's two turns: its threads stay where the first put them */
+    pk_pool_set_active(d->pool, d->tune == TUNE_STEPS - 2 ? d->fast : d->wide);
 }
 
 /* The step's T stacked frames in d->in to each 10 ms frame's speaker
