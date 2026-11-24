@@ -4919,3 +4919,11 @@ every core's two turns where it wins (the M5 Ultra's 0.09 s). The early
 ways out err to every core, what the diarizer ran on before it raced; an
 early win decided on a turn a side errs to fewer threads, and a turn's
 median is what Linux's move of the threads and another job's hour bend.
+
+## 2026-11-24 - the int8 scores on a Pi 3B+ (a measurement)
+
+From the session that ran it, 3276708 on the Pi 3B+ (gcc, `neon`, four
+threads): `make check-c` passes, and the diarizer over conv2.wav's minute
+took 15.94 to 16.02 s with float scores (299d03a) and 15.68 to 15.74 s
+with int8 in three rounds, 1.7% less, the int8 the faster in every round.
+Of the entries above's "not measured", a phone is left.
