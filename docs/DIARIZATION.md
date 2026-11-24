@@ -714,7 +714,8 @@ recordings with float32's cuts, 2 min in two processes (2.8 GB).
 
 The engine's C (core/diar.c and the kernels as 897d54c left them; its rows
 as `pktito-c probs` prints them for a diarizer's model, avx512-vnni on the
-9950X, which are ref's bits), scored by diarquant.py
+9950X, which are ref's bits; `probs --no-hold` since 19ad40b, which has
+`probs` print pk_diar_run_held's rows without it), scored by diarquant.py
 (`--configs rows:DIR`) against the same float32 runs, beside the rule's
 rows from the tables above:
 
@@ -843,39 +844,54 @@ are off the unit and one thread alone is 1 to 2% slower.
 The tables above are diarquant.py's rounding, which the C's differs from
 at float32's own rounding (the mean's order of summing, a reciprocal where
 numpy divides). So the C's rows were scored as the rule's were in "The C,
-measured the same way": `pktito-c probs` before the scores were int8
-(299d03a) and with them (3276708), `avx512-vnni` on the 9950X at 16
-threads (gcc 15.2), under `--configs rows:DIR` against the same float32
-runs, on 2026-11-24:
+measured the same way": the model's own rows, `pktito-c probs --no-hold`,
+before the scores were int8 (299d03a) and with them (3276708),
+`avx512-vnni` on the 9950X at 16 threads (gcc 15.2), under
+`--configs rows:DIR` against the same float32 runs, on 2026-11-24. Under
+them are the rows `--speakers` goes by, `probs` without the flag, which
+since 19ad40b are pk_diar_run_held's (docs/SHORT_SPEAKERS.md):
 
 | AMI                    | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
 | ---------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ---------------------------------- |
-| the C, float scores    | 0.086%         | +0.00052 (3.3) | 0.91%                 | 9.23% (+0.065, t 1.6)                  | 264                      | 837                                         | +173, -191                     | 0, 0, 1                            |
-| the C, the scores int8 | 0.092%         | +0.00069 (2.3) | 0.94%                 | 9.24% (+0.061, t 1.6)                  | 299                      | 848                                         | +173, -185                     | 0, 0, 1                            |
+| the C, float scores    | 0.086%         | +0.00052 (3.3) | 0.91%                 | 9.23% (+0.064, t 1.6)                  | 264                      | 837                                         | +173, -191                     | 0, 0, 1                            |
+| the C, the scores int8 | 0.092%         | +0.00069 (2.3) | 0.93%                 | 9.24% (+0.061, t 1.6)                  | 299                      | 848                                         | +173, -185                     | 0, 0, 1                            |
+| float scores, held     | 0.086%         | +0.00052 (3.3) | 0.91%                 | 9.23% (+0.065, t 1.6)                  | 264                      | 837                                         | +173, -191                     | 0, 0, 1                            |
+| the scores int8, held  | 0.092%         | +0.00069 (2.3) | 0.94%                 | 9.24% (+0.061, t 1.6)                  | 299                      | 848                                         | +173, -185                     | 0, 0, 1                            |
 
 | synthetic              | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
 | ---------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ------------------------------------------- |
-| the C, float scores    | 0.053%         | +0.00092 (1.8) | 0.47%                 | 5.81% (-0.071, t -1.0)                 | 17                       | 112                                         | +0, -0                         | 42, 0, 0                                    |
-| the C, the scores int8 | 0.039%         | +0.00073 (1.7) | 0.37%                 | 5.82% (-0.021, t -0.8)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the C, float scores    | 0.040%         | +0.00054 (1.3) | 0.35%                 | 5.80% (-0.091, t -1.4)                 | 17                       | 112                                         | +0, -0                         | 42, 0, 0                                    |
+| the C, the scores int8 | 0.025%         | +0.00027 (1.6) | 0.23%                 | 5.83% (-0.006, t -0.3)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| float scores, held     | 0.053%         | +0.00092 (1.8) | 0.47%                 | 5.81% (-0.071, t -1.0)                 | 17                       | 112                                         | +0, -0                         | 42, 0, 0                                    |
+| the scores int8, held  | 0.039%         | +0.00073 (1.7) | 0.37%                 | 5.82% (-0.021, t -0.8)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
 
-With its scores in int8 the C sits where it sat with them float: AMI's
-DER against the true speakers is +0.061 where it was +0.065, t 1.6 both,
-inside the configurations' 9.21% to 9.28%. It moves 35 more of AMI's
-words to another speaker, 299 for 264, and 11 more are not the true
+With float scores the model's own rows are the ones "The C, measured the
+same way" scored on 2026-11-09, byte for byte on all 25 recordings, and
+its figures come back. With its scores in int8 the C sits where it sat:
+AMI's DER against the true speakers is +0.061 where it was +0.064, t 1.6
+both, inside the configurations' 9.21% to 9.28%. It moves 35 more of
+AMI's words to another speaker, 299 for 264, and 11 more are not the true
 speaker's, 848 for 837, where float32 has 855. numpy's `qk8` is nearer
 float32 than that (+0.006), and the distance is the C's own from before
-the scores were int8 ("The C, measured the same way": +0.064). On the
-synthetic set the C is nearer float32 than it was: conv5's 17 moved words
-and its speaker fewer are gone, 43 heard as float32 hears. Two of the
-synthetic set's conversations have their speakers renumbered, before and
-after.
+the scores were int8. On the synthetic set the C is nearer float32 than
+it was, 0.025% of its labels changed for 0.040%: conv5's 17 moved words
+and its speaker fewer are gone, 43 heard as float32 hears.
+
+The held rows are scored against float32's own, so what the hold changes
+is among their changed labels: 0.013 to 0.014 points more of the
+synthetic set's, with float scores and with int8, and next to nothing of
+AMI's. The hold is processing on top of the model that decides by its
+rows, so a rounding can change what it holds; in these recordings the
+words' counts, the changes of speaker and the speakers heard are the same
+with it and without.
 
 The runs are in ~/diar-int8 on the 9950X: cache/ with one directory per
 configuration (w8row+a8b32;qk8 and the rest), results/att-ami-fa.json and
 att-synth.json, scripts/run_att.sh. The 100 runs took 3,831 s at five
-jobs. The C's rows are rows-299d03a/ and rows-3276708/ there, their
-scores results/before-_.json and qk8c-_.json; `pktito-c probs` took 81 s
-for the 25 recordings.
+jobs. The C's own rows are `rows-299d03a-nohold/` and
+`rows-3276708-nohold/` there, scored in `results/nohold-*.json`; the held
+ones `rows-299d03a/` and `rows-3276708/`, in `results/before-*.json` and
+`results/qk8c-*.json`, 81 s of `pktito-c probs` for the 25 recordings.
 
 ## 7. What it costs
 

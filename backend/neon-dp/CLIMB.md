@@ -4539,3 +4539,35 @@ rounds turn about: 0.989 to 0.999 s with float scores, 0.947 to 0.962
 with int8, 4.3% less, the int8 the faster in every pair.
 
 Still not measured: a phone and a Pi 3B+.
+
+## 2026-11-24 - the int8 scores' rows: the entry above scored the held rows (a correction, with the model's own)
+
+The rows scored in the entry above were `pktito-c probs`'s as it prints
+them now, which since 19ad40b (2026-11-22) are pk_diar_run_held's: the
+short speakers' hold, processing on top of the model
+(docs/SHORT_SPEAKERS.md). docs/DIARIZATION.md's "The C, measured the same
+way" of 2026-11-09 scored the model's own rows, and the synthetic set's
+line with float scores did not match it: 0.053% of labels changed above,
+0.040% there. The session on the 9950X bisected that on conv8 to 19ad40b,
+and with `--no-hold` 299d03a's rows are 2026-11-09's byte for byte on all
+25 recordings. The model's own rows, `probs --no-hold`, scored the same
+way:
+
+|                                       | AMI, float scores | AMI, int8 scores | synthetic, float scores | synthetic, int8 scores |
+| ------------------------------------- | ----------------- | ---------------- | ----------------------- | ---------------------- |
+| labels changed                        | 0.086%            | 0.092%           | 0.040%                  | 0.025%                 |
+| DER against float32's                 | 0.91%             | 0.93%            | 0.35%                   | 0.23%                  |
+| DER against the truth, from float32's | +0.064 (t 1.6)    | +0.061 (t 1.6)   | -0.091 (t -1.4)         | -0.006 (t -0.3)        |
+| words to another speaker              | 264               | 299              | 17                      | 0                      |
+| words not the true speaker's          | 837               | 848              | 112                     | 129                    |
+
+The reading is the entry above's: on AMI the C is where it was, on the
+synthetic set nearer float32. docs/DIARIZATION.md, "The attention in
+int8", has both sets of rows, each named.
+
+On the M4 Pro (neon-sme), 7fbd322 (the commit 2026-11-09 scored), 4ba872e
+(the one before the hold) and 299d03a print one md5 for conv2.wav, for it
+with 30 s of a third voice after it, and for it at 44.1 kHz, with
+`--no-hold` and without: the model's own rows did not move in between,
+and none of the three is a recording the hold changes. Rows scored for a
+rounding are `probs --no-hold`'s.
