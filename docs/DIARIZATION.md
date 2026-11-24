@@ -751,6 +751,77 @@ counting their ads and clips. The C's labels differ from float32's in
 of 21,104 goes to another speaker. Both hear the same 18 voices, none
 split, merged or renumbered. The one-voice episode gets one speaker.
 
+### The attention in int8 (2026-11-23)
+
+The rule leaves the attention's two products float: the scores QKᵀ and
+the weighted sum P·V, on pk_k_gemm_f32. They are 36.5% of the diarizer's
+time on an M4 Pro (neon-dp, ten minutes of test.wav, `make PROFILE=1`:
+863 ms of 2.297 s), the largest stage beside the feed-forward's 38.5%.
+Rounded the way pk_k_gemm_q8 would compute them, each a configuration of
+diarquant.py added to the rule's (its docstring defines them):
+
+- `qk8`: each head's mean key taken off its keys, which changes nothing
+  before rounding (a query's scores all move by one amount, and its
+  softmax undoes it) and narrows what the keys' scales must cover; then
+  the queries in blocks of 32 of a head's 64 dimensions, and the keys a
+  scale a key, as a weight's row;
+- `qk8raw`: the same without the mean key taken off;
+- `pv8`: the probabilities in blocks of 32 along the step's keys, the
+  values a scale a channel.
+
+Measured on the same recordings against the same float32 runs (the 9950X,
+~/diar-int8, diarquant.py at 6a7529c; the rule's row reproduces the
+table above):
+
+| AMI                                 | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
+| ----------------------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ---------------------------------- |
+| the rule                            | 0.085%         | +0.00050 (4.9) | 0.89%                 | 9.21% (+0.010, t 0.4)                  | 221                      | 836                                         | +140, -181                     | 0, 0, 1                            |
+| the rule, QKᵀ int8, no mean key off | 0.084%         | +0.00052 (2.8) | 0.89%                 | 9.22% (+0.048, t 1.4)                  | 241                      | 849                                         | +168, -179                     | 0, 0, 0                            |
+| the rule, QKᵀ int8 (`qk8`)          | 0.082%         | +0.00043 (2.4) | 0.88%                 | 9.21% (+0.006, t 0.2)                  | 273                      | 847                                         | +180, -186                     | 0, 0, 1                            |
+| the rule, P·V int8 (`pv8`)          | 0.083%         | +0.00037 (1.8) | 0.89%                 | 9.22% (+0.024, t 1.3)                  | 237                      | 843                                         | +166, -173                     | 0, 0, 1                            |
+| the rule, both                      | 0.085%         | +0.00067 (3.8) | 0.90%                 | 9.24% (+0.049, t 2.2)                  | 238                      | 853                                         | +182, -164                     | 0, 0, 1                            |
+
+| synthetic                           | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
+| ----------------------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ------------------------------------------- |
+| the rule                            | 0.023%         | +0.00007 (1.7) | 0.21%                 | 5.83% (-0.020, t -1.0)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, QKᵀ int8, no mean key off | 0.024%         | +0.00026 (1.6) | 0.23%                 | 5.83% (-0.024, t -1.1)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+| the rule, QKᵀ int8 (`qk8`)          | 0.037%         | +0.00041 (1.4) | 0.35%                 | 5.82% (-0.038, t -1.4)                 | 0                        | 129                                         | +0, -0                         | 42, 0, 0                                    |
+| the rule, P·V int8 (`pv8`)          | 0.030%         | +0.00069 (1.1) | 0.26%                 | 5.83% (-0.017, t -0.7)                 | 43                       | 129                                         | +0, -1                         | 43, 1, 1                                    |
+| the rule, both                      | 0.025%         | +0.00017 (2.0) | 0.24%                 | 5.82% (-0.038, t -1.7)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+
+What it shows:
+
+- **The scores take int8 once the mean key is off.** `qk8` moves DER
+  against the true speakers by +0.006 (t 0.2), the rule's own +0.010, and
+  changes fewer of float32's labels than the rule does; its 273 moved
+  words are within the configurations' 182 to 277 above. Without the
+  mean key taken off the same rounding costs +0.048 (t 1.4): the keys
+  share a large offset that a scale a key otherwise spends its range on.
+  Its one speaker fewer on the synthetic set is conv5's, where the model
+  hears its host as three voices and the C already hears six for
+  float32's seven; the other eight conversations are unchanged.
+- **The weighted sum alone passes too, but is the less safe half.** `pv8`
+  costs +0.024 (t 1.3) on AMI, and on the synthetic set it splits one of
+  conv5's speakers and merges another, moving its 43 words. The
+  probabilities are mostly small, and blocks of 32 round the small ones
+  to zero.
+- **Both together are a step past the rule**, +0.049 (t 2.2), about what
+  the int8 weights alone cost before their activations were rounded too.
+- **So the attention's int8 is `qk8`, and P·V stays float.** The C does
+  not do it yet: it changes ref's bits, every backend's with them, so it
+  is taken only if the C computes it faster than float on each kind of
+  board. Measured since on the M4s, the scores' share is smaller than
+  the table's 36.5% suggests: pk_k_gemm_f32 on SME's FMOPA (libpktito
+  branch diar-climb, ref's bits) takes the attention from 857 to 534 ms
+  of ten minutes, the scores about a quarter of what is left, so `qk8`
+  would save some 5% of the diarizer there and more on boards without
+  SME, where the attention is still on NEON or AVX.
+
+The runs are in ~/diar-int8 on the 9950X: cache/ with one directory per
+configuration (w8row+a8b32;qk8 and the rest), results/att-ami-fa.json and
+att-synth.json, scripts/run_att.sh. The 100 runs took 3,831 s at five
+jobs.
+
 ## 7. What it costs
 
 ### Time
