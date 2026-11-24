@@ -819,33 +819,63 @@ it was taken on the boards' times: the diarizer with float scores and
 with these, `pktito-c bench` by turns, medians in seconds, on 2026-11-24
 (backend/neon-dp/CLIMB.md has the rounds):
 
-| float scores to int8     | backend, threads     | the ten minutes        | test.wav on one thread |
-| ------------------------ | -------------------- | ---------------------- | ---------------------- |
-| Pi 5 (gcc 14.2)          | `neon-dp-a76`, 4     | 17.18 to 15.78 (-8.1%) | 5.554 to 5.163 (-7.0%) |
-| GB10 (gcc 13.3)          | `neon-sve`, 10 of 20 | 1.911 to 1.795 (-6.1%) | 1.147 to 1.059 (-7.7%) |
-| GB10 (clang 18.1)        | `neon-sve`, 10 of 20 | 1.908 to 1.786 (-6.4%) | 1.110 to 1.034 (-6.8%) |
-| i9-12900HK (gcc 15.2)    | `avx2-vnni`, 14      | 4.283 to 4.045 (-5.5%) | 1.272 to 1.172 (-7.9%) |
-| base M4 (Apple clang 21) | `neon-sme`, 10       | 2.163 to 2.054 (-5.0%) | 0.555 to 0.561 (+1.1%) |
-| M5 Ultra                 | `neon-sme`, 12 of 36 | 1.254 to 1.212 (-3.3%) | 0.522 to 0.528 (+1.1%) |
-| M4 Pro, in use           | `neon-sme`, 12       | 1.645 to 1.611 (-2.1%) | 0.540 to 0.550 (+1.9%) |
+| float scores to int8     | backend, threads     | the ten minutes                    | test.wav on one thread |
+| ------------------------ | -------------------- | ---------------------------------- | ---------------------- |
+| Pi 5 (gcc 14.2)          | `neon-dp-a76`, 4     | 17.18 to 15.78 (-8.1%)             | 5.554 to 5.163 (-7.0%) |
+| GB10 (gcc 13.3)          | `neon-sve`, 10 of 20 | 1.911 to 1.795 (-6.1%)             | 1.147 to 1.059 (-7.7%) |
+| GB10 (clang 18.1)        | `neon-sve`, 10 of 20 | 1.908 to 1.786 (-6.4%)             | 1.110 to 1.034 (-6.8%) |
+| i9-12900HK (gcc 15.2)    | `avx2-vnni`, 14      | 4.283 to 4.045 (-5.5%)             | 1.272 to 1.172 (-7.9%) |
+| Ryzen 9 9950X (gcc 15.2) | `avx512-vnni`, 16    | 0.989-0.999 to 0.947-0.962 (-4.3%) |                        |
+| base M4 (Apple clang 21) | `neon-sme`, 10       | 2.163 to 2.054 (-5.0%)             | 0.555 to 0.561 (+1.1%) |
+| M5 Ultra                 | `neon-sme`, 12 of 36 | 1.254 to 1.212 (-3.3%)             | 0.522 to 0.528 (+1.1%) |
+| M4 Pro, in use           | `neon-sme`, 12       | 1.645 to 1.611 (-2.1%)             | 0.540 to 0.550 (+1.9%) |
 
 The M4 Pro's twelve are level: its rounds ran 1.574 to 1.800 s and 1.559
-to 1.623. Where the float product was FMLA's or FMA's the scores are SDOT's, SMMLA's
+to 1.623. The 9950X's are its five rounds' ranges, the int8 scores the
+faster in every pair. Where the float product was FMLA's or FMA's the scores are SDOT's, SMMLA's
 or VNNI's now, at under two fifths of their time (4.10 to 1.55 ms a layer
 on one thread of an M4 Pro held to `neon-dp`, their operands' rounding
 included). On an SME Mac the unit's FMOPA
 already ran them as fast as its SMOPA runs a product 64 inputs wide, whose
 sums leave the tile block by block, so a Mac gains on the threads that
-are off the unit and one thread alone is 1 to 2% slower. The tables above
-are diarquant.py's rounding, which the C's differs from at float32's own
-rounding (the mean's order of summing, a reciprocal where numpy divides);
-the C's own rows, `pktito-c probs` scored under `rows:DIR` as the rule's
-were, are not among them.
+are off the unit and one thread alone is 1 to 2% slower.
+
+The tables above are diarquant.py's rounding, which the C's differs from
+at float32's own rounding (the mean's order of summing, a reciprocal where
+numpy divides). So the C's rows were scored as the rule's were in "The C,
+measured the same way": `pktito-c probs` before the scores were int8
+(299d03a) and with them (3276708), `avx512-vnni` on the 9950X at 16
+threads (gcc 15.2), under `--configs rows:DIR` against the same float32
+runs, on 2026-11-24:
+
+| AMI                    | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 9.19%) | words to another speaker | words not the true speaker's (float32: 855) | changes of speaker added, lost | speakers split, merged, renumbered |
+| ---------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ---------------------------------- |
+| the C, float scores    | 0.086%         | +0.00052 (3.3) | 0.91%                 | 9.23% (+0.065, t 1.6)                  | 264                      | 837                                         | +173, -191                     | 0, 0, 1                            |
+| the C, the scores int8 | 0.092%         | +0.00069 (2.3) | 0.94%                 | 9.24% (+0.061, t 1.6)                  | 299                      | 848                                         | +173, -185                     | 0, 0, 1                            |
+
+| synthetic              | labels changed | dBCE (t)       | DER against float32's | DER against the truth (float32: 5.84%) | words to another speaker | words not the true speaker's (float32: 129) | changes of speaker added, lost | speakers heard (float32: 43), split, merged |
+| ---------------------- | -------------- | -------------- | --------------------- | -------------------------------------- | ------------------------ | ------------------------------------------- | ------------------------------ | ------------------------------------------- |
+| the C, float scores    | 0.053%         | +0.00092 (1.8) | 0.47%                 | 5.81% (-0.071, t -1.0)                 | 17                       | 112                                         | +0, -0                         | 42, 0, 0                                    |
+| the C, the scores int8 | 0.039%         | +0.00073 (1.7) | 0.37%                 | 5.82% (-0.021, t -0.8)                 | 0                        | 129                                         | +0, -0                         | 43, 0, 0                                    |
+
+With its scores in int8 the C sits where it sat with them float: AMI's
+DER against the true speakers is +0.061 where it was +0.065, t 1.6 both,
+inside the configurations' 9.21% to 9.28%. It moves 35 more of AMI's
+words to another speaker, 299 for 264, and 11 more are not the true
+speaker's, 848 for 837, where float32 has 855. numpy's `qk8` is nearer
+float32 than that (+0.006), and the distance is the C's own from before
+the scores were int8 ("The C, measured the same way": +0.064). On the
+synthetic set the C is nearer float32 than it was: conv5's 17 moved words
+and its speaker fewer are gone, 43 heard as float32 hears. Two of the
+synthetic set's conversations have their speakers renumbered, before and
+after.
 
 The runs are in ~/diar-int8 on the 9950X: cache/ with one directory per
 configuration (w8row+a8b32;qk8 and the rest), results/att-ami-fa.json and
 att-synth.json, scripts/run_att.sh. The 100 runs took 3,831 s at five
-jobs.
+jobs. The C's rows are rows-299d03a/ and rows-3276708/ there, their
+scores results/before-_.json and qk8c-_.json; `pktito-c probs` took 81 s
+for the 25 recordings.
 
 ## 7. What it costs
 

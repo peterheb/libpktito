@@ -250,7 +250,8 @@ static void rope_item(void *arg, int i, int th) {
  *
  * docs/DIARIZATION.md, "The attention in int8", measures the rounding
  * against float32: AMI's DER 0.006 points more with the mean key off (t
- * 0.2), 0.048 without. And the time: the product is SDOT's or VNNI's where the
+ * 0.2), 0.048 without, in numpy; and this C's rows 0.061 more where they
+ * were 0.065 with the scores float (t 1.6 both). And the time: the product is SDOT's or VNNI's where the
  * float one was FMLA's or FMA's, the ten minutes 6% less on a GB10 and an
  * i9-12900HK and 8% on a Pi 5; an SME unit's SMOPA is level with its
  * FMOPA at 64 inputs, so a Mac gains on its threads off the unit (a base

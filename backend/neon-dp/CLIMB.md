@@ -4513,3 +4513,29 @@ beside it. On the unit the int8 scores would be 0.58 ms against float's
 SDOT it is 0.08 ms of a layer's 21 or so, 0.4% of the diarizer. A rounding
 of its own to score against float32 for that is not worth its run, and
 the one above stays as measured.
+
+## 2026-11-24 - the int8 scores: the C's rows against float32, and the 9950X (a measurement)
+
+What the result above left unmeasured, from the session on the 9950X
+(gcc 15.2, avx512-vnni, 16 threads). `pktito-c probs` of 299d03a and of
+3276708 over docs/DIARIZATION.md's 25 recordings, scored by diarquant.py
+(`--configs rows:DIR`) against the same float32 runs as its tables:
+
+|                                       | AMI, float scores | AMI, int8 scores | synthetic, float scores | synthetic, int8 scores |
+| ------------------------------------- | ----------------- | ---------------- | ----------------------- | ---------------------- |
+| labels changed                        | 0.086%            | 0.092%           | 0.053%                  | 0.039%                 |
+| DER against float32's                 | 0.91%             | 0.94%            | 0.47%                   | 0.37%                  |
+| DER against the truth, from float32's | +0.065 (t 1.6)    | +0.061 (t 1.6)   | -0.071 (t -1.0)         | -0.021 (t -0.8)        |
+| words to another speaker              | 264               | 299              | 17                      | 0                      |
+| words not the true speaker's          | 837               | 848              | 112                     | 129                    |
+
+float32's own words not the true speaker's are 855 and 129. On AMI the C
+is where it was, and on the synthetic set conv5's 17 moved words and its
+speaker fewer are gone. The whole tables, with dBCE and the speakers'
+changes, are in docs/DIARIZATION.md, "The attention in int8".
+
+The 9950X's time over the ten minutes at its default 16 threads, five
+rounds turn about: 0.989 to 0.999 s with float scores, 0.947 to 0.962
+with int8, 4.3% less, the int8 the faster in every pair.
+
+Still not measured: a phone and a Pi 3B+.
