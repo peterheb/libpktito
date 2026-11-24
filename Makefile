@@ -439,11 +439,14 @@ check-tsan:
 	cat tests/data/test.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 -m $(MODEL) - > /dev/null
 	cat tests/data/test.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 --max-chunk 12 -m $(MODEL) - > /dev/null
 	@# the diarizer's passes, on the tiny models: with a transcript, down a
-	@# pipe beside two lanes, and alone
+	@# pipe beside two lanes, and alone, on six threads and on the default,
+	@# where a chip of two kinds of core takes its steps on every core and on
+	@# the fast kind by turns
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 6 -m $(TINY) -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
 	cat tests/data/conv2.wav | TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan -t 8 --max-chunk 4 --json \
 	  -m $(TINY) -m $(TINY_DIAR) - > /dev/null
 	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan speakers -t 6 -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
+	TSAN_OPTIONS=halt_on_error=1 ./tests/pktito-tsan speakers -m $(TINY_DIAR) tests/data/conv2.wav > /dev/null
 	@echo "check-tsan: no race on six threads, on two lanes of four, on the default, down a pipe as it is read, nor in the diarizer"
 
 check-math: tests/mathcheck

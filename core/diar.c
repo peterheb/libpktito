@@ -65,6 +65,11 @@
 static uint32_t min32(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static uint32_t up16(uint32_t x) { return (x + 15) & ~15u; }
 
+/* The race of every core against the fast kind (layers): the steps raced,
+ * two a side, and the most of a step's layers timed */
+#define TUNE_STEPS  4
+#define TUNE_LAYERS 32
+
 typedef struct {
     float *sc;                   /* a block of attention scores: ATT_BLOCK x a step's keys */
     float *row;                  /* a frame of a layer norm's output, or a tile's hidden */
@@ -77,6 +82,14 @@ struct pk_diar {
     const pk_diarw *w;
     pk_pool *pool;
     int nth;
+    /* Every core, or the fast kind alone (pk_os_fast_cores, `fast` of them)
+     * where the cores are of two kinds and the threads are pktito's choice:
+     * `tune` the steps still to race (layers), their layers' times in took,
+     * every core's and the fast kind's; `wide` the threads the passes run
+     * on; `ran` once a step has. */
+    int fast, wide, tune, ran;
+    double took[2][TUNE_STEPS / 2 * TUNE_LAYERS];
+    uint32_t ntook[2];
     uint32_t S, S16, D, F, H, dk, P, U, f;
     uint32_t tmax;               /* a step's most frames: cache, FIFO, chunk and context */
     uint32_t emax;               /* a chunk's most 80 ms frames, its context included */
@@ -325,13 +338,65 @@ static void head(pk_diar *d, uint32_t T) {
             d->prob[r * d->S + s] = pk_sigmoidf(d->logit[r * d->S16 + s]);
 }
 
+/* The median of t[0..n), n > 0, which it sorts */
+static double median(double *t, uint32_t n) {
+    for (uint32_t i = 1; i < n; i++)
+        for (uint32_t j = i; j > 0 && t[j - 1] > t[j]; j--) {
+            double x = t[j];
+            t[j] = t[j - 1];
+            t[j - 1] = x;
+        }
+    return (t[(n - 1) / 2] + t[n / 2]) / 2;
+}
+
+/* Every core, or the fast kind alone? The encoder's question (encoder.c,
+ * layers), and its rule but for the length of a turn: the first
+ * TUNE_STEPS full steps after the diarizer's first run their layers on
+ * each by turns, a step a turn, and the diarizer keeps whichever's layers
+ * took less, each side by the median of its own. A full step is tmax
+ * frames, every one of them the same shapes; the first step is the first
+ * pass over the weights' pages. A recording too short for the turns
+ * leaves the rest to the next.
+ *
+ * A step is one stream, each pass waiting for its slowest item, and the
+ * slow kind's are the last in: the ten minutes took an M5 Ultra's twelve
+ * fast cores 1.26 s and its 36 cores 1.89, a GB10's ten X925s 1.88 s and
+ * its twenty 2.50, while an M4 Pro's twelve and a base M4's ten were their
+ * fastest. The encoder's turns of two layers kept the GB10's ten in 8
+ * races of 14 here: when ten of twenty threads go to sleep, Linux takes
+ * some ten layers, 40 ms, to move the other ten onto the X925s, and a turn
+ * of two never saw them there; a step's 31 layers do, and their median
+ * leaves the move out. Turns of a step kept the ten in 12 runs of 12, the
+ * M5 Ultra's twelve and each M4's every core in 6 of 6
+ * (backend/neon-dp/CLIMB.md, 2026-11-23 and 24). */
+static void layers(pk_diar *d, uint32_t T) {
+    const pk_diarw *w = d->w;
+    const uint32_t L = d->m->n_layers;
+    if (!d->tune || !d->ran || T < d->tmax) {
+        for (uint32_t i = 0; i < L; i++)
+            layer(d, &w->layers[i], T);
+        d->ran = 1;
+        return;
+    }
+    const int side = d->tune % 2;        /* every core's turn first: TUNE_STEPS is even */
+    pk_pool_set_active(d->pool, side ? d->fast : d->nth);
+    for (uint32_t i = 0; i < L; i++) {
+        double t0 = pk_os_now();
+        layer(d, &w->layers[i], T);
+        if (i < TUNE_LAYERS)
+            d->took[side][d->ntook[side]++] = pk_os_now() - t0;
+    }
+    if (--d->tune == 0)
+        d->wide = median(d->took[1], d->ntook[1]) < median(d->took[0], d->ntook[0]) ? d->fast : d->nth;
+    pk_pool_set_active(d->pool, d->wide);
+}
+
 /* The step's T stacked frames in d->in to each 10 ms frame's speaker
  * probabilities, d->prob[U T][S] */
 static void forward(pk_diar *d, uint32_t T) {
     const pk_diarw *w = d->w;
     PROF(PK_P_NORM, norm(d, d->x, d->in, T, w->embed_nw, w->embed_nb));
-    for (uint32_t i = 0; i < d->m->n_layers; i++)
-        layer(d, &w->layers[i], T);
+    layers(d, T);
     PROF(PK_P_QUANT, normq(d, d->x, T, w->final_nw, w->final_nb));
     PROF(PK_P_HEAD, head(d, T));
 }
@@ -675,6 +740,9 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
         return NULL;
     }
     d->nth = pk_pool_threads(d->pool);
+    d->wide = d->nth;
+    d->fast = threads > 0 ? d->nth : pk_os_fast_cores();
+    d->tune = d->fast > 0 && d->fast < d->nth ? TUNE_STEPS : 0;
     d->tws = calloc((size_t)d->nth, sizeof *d->tws);
     if (!d->tws) {
         pk_diar_free(d);
@@ -758,7 +826,7 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
     return d;
 }
 
-int pk_diar_threads(const pk_diar *d) { return d->nth; }
+int pk_diar_threads(const pk_diar *d) { return d->wide; }
 
 void pk_diar_reset(pk_diar *d) {
     d->got = 0;

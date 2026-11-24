@@ -657,8 +657,12 @@ long pk_sentences(const pk_model *m, const pk_tok *t, size_t n, const int32_t *s
  * the same memory. */
 typedef struct pk_diar pk_diar;
 
-/* A diarizer on `threads` threads (0: one a core), which pk_diar_threads
- * says. NULL if m is a recognizer's, or memory or a thread cannot be had. */
+/* A diarizer on `threads` threads (0: one a core). NULL if m is a
+ * recognizer's, or memory or a thread cannot be had. With 0, on a chip
+ * whose cores are of two kinds, the four whole chunks after its first, of
+ * one recording or several, are heard on every core and on the fast kind
+ * alone by turns, and the diarizer keeps the faster; pk_diar_threads says
+ * how many it runs on. */
 pk_diar *pk_diar_new(const pk_model *m, int threads);
 void     pk_diar_free(pk_diar *d);
 int      pk_diar_threads(const pk_diar *d);

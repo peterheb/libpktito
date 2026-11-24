@@ -4135,3 +4135,182 @@ a third of the diarizer.
 `speakers` on the ten minutes and on test.wav, at 12 threads and at 3,
 `--speakers` with v2 and `probs` are c7960e4's (md5), and `probs` is
 PKTITO_KERNELS=ref's. make check-c and make check-tsan pass.
+
+## 2026-11-23 - the diarizer on every core, or the fast kind: the encoder's race at its second step (hypothesis)
+
+The diarizer runs on every core (pk_diar_new, pk_os_cores) and has never
+been timed against fewer. `./pktito-c bench -t N -m
+models/nemotron-3-diarization.pkf` on the ten minutes, best of 5, two
+rounds each; the GB10's are pktito-mac's (dd2faed, gcc 13.3, neon-sve,
+three rounds, its server idle beside):
+
+| board                                            | threads: seconds                                                                                          |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| M5 Ultra (12 and 24 cores of two kinds), ab7cc7f | 6: 1.795, 1.794; 12: 1.261, 1.260; 18: 1.418, 1.405; 24: 1.571, 1.559; 30: 1.694, 1.693; 36: 1.889, 1.888 |
+| GB10 (10 X925, 10 A725), dd2faed                 | 10: 1.875, 1.885, 1.904; 20: 2.502, 2.559, 2.469                                                          |
+| M4 Pro (8 and 4), in use, ab7cc7f                | 4: 2.576, 2.580; 6: 2.193, 2.191; 8: 1.760, 1.797; 10: 1.596, 1.593; 12: 1.554, 1.713                     |
+| base M4 (4 and 6), c7960e4                       | 4: 3.251, 3.336; 6: 2.768, 2.796; 8: 2.633, 2.678; 10: 2.399, 2.422                                       |
+
+The M5 Ultra's default, 36 threads, is half again its twelve fast cores'
+time, and the GB10's twenty a third more than its ten: what the encoder
+showed on the GB10 and its race settled (2026-10-27, H8). The two M4s are
+fastest on every core. On the M5 Ultra (make PROFILE=1, ms a run at 12, 24
+and 36 threads) the small passes grow with the threads and the large ones
+do not shrink: norm + quantize 77.9, 234.5, 362.1; q k v 171.1, 286.3,
+388.0; rotation 25.3, 73.2, 114.4; attention out 60.4, 103.9, 135.7;
+attention 412.6, 361.1, 353.6; ff + GELU 470.9, 442.4, 462.5.
+
+Where the time goes, on the M4 Pro: core/pool.c with counters in a
+scratch copy (ab7cc7f; `speakers` of the ten minutes, one run each), and
+the polls before a worker parks, PK_SPIN, read from the environment:
+
+|                                             | 12 threads, 20000 polls (the tree) | 12, 2,000,000 | 8, 20000       | 8, 2,000,000 |
+| ------------------------------------------- | ---------------------------------- | ------------- | -------------- | ------------ |
+| the 8901 passes, wall, ms                   | 1715                               | 3117          | 1872           | 1713         |
+| their items' time, summed over threads, s   | 14.39                              | 16.38         | 11.76          | 11.33        |
+| the caller waiting after its last item, ms  | 288                                | 1740          | 383            | 283          |
+| threads that took an item, a pass           | 10.0                               | 11.3          | 7.9            | 8.0          |
+| workers in a pass that came from parked     | 66937 of 97911                     | 3808          | 29729 of 62307 | 187          |
+| a pass's start to a worker's look, mean, us | 29.1                               | 16.6          | 8.0            | 0.5          |
+
+One thread's whole run is 5.4 s, and twelve threads' items take 14.4 s:
+the threads past a cluster's two at the SME unit run SDOT and FMLA, and
+four of them are efficiency cores. A pass waits for its slowest item.
+With every worker awake at a pass's start (2,000,000 polls, 0.6 ms) the
+efficiency cores take a twelfth of the items each and the caller waits
+1.74 s of the 3.1 for them; the tree's 20000 polls are 6 us here
+(core/pool.c, PK_SPIN), two workers in three start a pass parked, and the
+slow to wake take fewer items, which is how twelve threads come out level
+with eight. `bench` at 12 threads and 20000, 200,000, 2,000,000 and
+20,000,000 polls: 1.712 and 1.674 s, 2.050 and 1.956, 2.642 and 2.617,
+2.952 and 3.003. Polling longer is rejected for a pool of two kinds; on
+the fast kind alone it gave 8% (1872 to 1713 ms), a lead for a pool that
+knows which it is on.
+
+Hypothesis: the diarizer takes the encoder's race, by H8's rule, as the
+encoder runs it: with no thread count asked for and cores of two kinds
+(pk_os_fast_cores under pk_os_cores), the second step of 100 frames or
+more runs its layers in turns of two, on every core and on the fast kind
+alone, 28 of Nemotron 3's 31 layers, and the diarizer keeps whichever's
+median layer took less. The first step is the first pass over the
+weights' pages, as the encoder's first recording is. The race moves to
+core/pool.c as pk_pool_race, which core/encoder.c's layers and
+core/diar.c's both call, so that the rule is written once; the encoder's
+turns, medians and counts are as they were. A step's bits are the same on
+any threads (core/diar.c), so nothing but the time can change.
+
+Predict, the ten minutes at the default threads: the M5 Ultra 1.889 to
+about 1.28 s (its twelve, less the half step raced on 36); the GB10 2.6
+to about 1.9; the M4 Pro and the base M4 level with the better of their
+two counts in every round, the M4 Pro's race reading either way (8 and 12
+are 5 to 10% apart, and the machine is in use). The recognizer's race
+keeps what it kept: 12 on the M4 Pro.
+
+## 2026-11-24 - the diarizer's race in the encoder's turns of two layers (result: rejected, on the GB10)
+
+Built as the hypothesis has it, in the working tree and not committed:
+pk_pool_race in core/pool.c, called by core/encoder.c's layers and by
+core/diar.c's on the second step. `./pktito-c bench` of the diarizer over
+the ten minutes, best of 5 in seconds and the threads each default run
+kept; every board's `speakers` and `probs` were ab7cc7f's (md5), and the
+recognizer kept what it kept before (12 on the M4 Pro, 10 on the base M4,
+36 on the M5 Ultra, 20 on the GB10).
+
+| board                  | default: threads kept  | default, s                               | the fast kind, -t  | every core, -t     |
+| ---------------------- | ---------------------- | ---------------------------------------- | ------------------ | ------------------ |
+| M5 Ultra, six rounds   | 12 in all six          | 1.249 to 1.256                           | 12: 1.258 to 1.265 | 36: 1.884 to 1.898 |
+| base M4, nine runs     | 10 in all nine         | 2.151 to 2.164                           | 4: 2.803 to 2.826  | 10: 2.152 to 2.156 |
+| M4 Pro, in use, twelve | 12 in eleven, 8 in one | 1.567 to 1.725                           | 8: 1.697 to 1.888  | 12: 1.538 to 1.726 |
+| GB10 (gcc 13.3), six   | 10, 20, 10, 10, 20, 10 | 1.885, 2.441, 1.915, 1.919, 2.518, 1.926 | 10: 1.906 to 1.943 | 20: 2.469 to 2.565 |
+
+The GB10 kept its twenty in two races of six, and with each raced layer's
+time logged in four more of eight. Those eight races' medians, every
+core's layers and the fast kind's, ms: 3.850 and 3.661, 3.804 and 3.904,
+4.104 and 3.822, 3.771 and 3.777, 3.914 and 3.495, 3.691 and 3.724, 3.716
+and 3.384, 3.927 and 4.055. The fast kind's are 0.89 to 1.03 of every
+core's, where its whole run is 0.77 (1.92 s of 2.50). The encoder's turns
+read 0.886 to 0.940 on this board for a run at 0.76 (2026-10-27, H6's
+races in H7's entry), and H8 kept the ten in 35 of 36; the diarizer's
+read too near 1 to decide on.
+
+Why, on the GB10: whole steps by turns on 20 threads and on 10
+(pk_pool_set_active before a step's layers), each layer's time in ms, the
+first twelve layers and the last three, three runs alike:
+
+| step | threads | layers 1 to 12                                              | 29 to 31       | the 31, ms |
+| ---- | ------- | ----------------------------------------------------------- | -------------- | ---------- |
+| 2    | 20      | 8.66 3.88 3.66 3.79 3.30 3.73 3.48 3.47 2.76 2.95 3.24 3.00 | 3.02 3.02 3.37 | 105.3      |
+| 3    | 10      | 4.04 3.73 3.41 3.85 4.02 3.83 4.39 3.74 3.88 3.12 2.92 3.17 | 2.63 2.63 2.60 | 93.8       |
+| 4    | 20      | 3.93 3.70 4.28 4.26 3.54 2.81 3.08 3.60 3.14 3.00 2.97 3.51 | 3.17 2.91 3.00 | 105.2      |
+| 5    | 10      | 3.00 2.78 2.63 2.60 2.60 2.72 2.73 2.58 2.62 2.62 2.62 2.61 | 2.62 2.61 2.57 | 82.7       |
+| 6    | 20      | 4.85 4.54 3.96 4.42 4.00 3.40 3.93 3.98 4.24 4.29 3.78 3.09 | 4.58 3.72 3.14 | 112.7      |
+| 7    | 10      | 2.96 2.78 2.63 2.57 2.62 2.58 2.56 2.62 2.62 2.56 2.59 2.58 | 2.62 2.61 2.60 | 81.1       |
+
+When ten of the twenty threads go to sleep the other ten stay where they
+were, some on A725s, and Linux takes nine to twelve layers, about 40 ms,
+to have them on the X925s the first time and one to eight after; a turn of
+two layers, 7 ms, is over before that. The step's 31 layers on ten threads
+took less than on twenty in every pair of the three runs, the first
+included (93.8 to 100.8 ms against 100.6 to 112.7; 81.1 to 88.4 after).
+On the Macs a turn of two was enough.
+
+The pool's counters on the M5 Ultra (ab7cc7f, `speakers` of the ten
+minutes), as the M4 Pro's above:
+
+|                                             | 12 threads     | 36 threads       |
+| ------------------------------------------- | -------------- | ---------------- |
+| the 8901 passes, wall, ms                   | 1240           | 1890             |
+| their items' time, summed over threads, s   | 12.21          | 15.13            |
+| the caller waiting after its last item, ms  | 119            | 804              |
+| threads that took an item, a pass           | 11.0           | 15.1             |
+| workers in a pass that came from parked     | 37169 of 97911 | 277769 of 311535 |
+| a pass's start to a worker's look, mean, us | 10.5           | 96.0             |
+
+## 2026-11-24 - the diarizer's race in turns of a step (result: kept; the M5 Ultra's ten minutes 1.812 to 1.254 s, the GB10's 2.497 to 1.929)
+
+The rule is H8's with a step for a turn, written in core/diar.c's layers;
+core/pool.c and core/encoder.c are as they were. With no thread count
+asked for and cores of two kinds, the first four full steps (tmax frames:
+the same shapes) after the diarizer's first step run their layers on
+every core, the fast kind, every core, the fast kind, each layer timed,
+and the diarizer keeps whichever's 62 layers have the lesser median.
+A recording that ends before the four leaves the rest to the next one the
+diarizer hears; pk_diar_threads says the count kept. Expected before the
+runs: the GB10 keeps its ten every time, the M5 Ultra its twelve, the M4s
+every core; a first run pays two steps on the slower side.
+
+`./pktito-c bench` of the diarizer over the ten minutes, best of 5 in
+seconds, ab7cc7f's binary beside it at the default threads:
+
+| board                          | default: threads kept | default, s     | ab7cc7f, default, s | the fast kind, -t  | every core, -t     |
+| ------------------------------ | --------------------- | -------------- | ------------------- | ------------------ | ------------------ |
+| M5 Ultra, six rounds           | 12 in all six         | 1.249 to 1.257 | 1.807 to 1.815      | 12: 1.199 to 1.268 | 36: 1.887 to 1.896 |
+| GB10 (gcc 13.3), twelve rounds | 10 in all twelve      | 1.916 to 1.990 | 2.398 to 2.559      | 10: 1.920 to 1.931 | 20: 2.446 to 2.584 |
+| base M4, six rounds            | 10 in all six         | 2.150 to 2.171 | 2.164 to 2.170      | 4: 2.806 to 2.816  | 10: 2.160 to 2.176 |
+| M4 Pro, in use, six rounds     | 12 in all six         | 1.621 to 1.693 |                     | 8: 1.696 to 1.870  | 12: 1.534 to 1.691 |
+
+Medians: the M5 Ultra 1.812 to 1.254 s (-30.8%, five rounds turn about),
+the GB10 2.497 to 1.929 (-22.7%, twelve), the base M4 2.167 and 2.167.
+The M5 Ultra's test.wav, best of 5, 0.211 to 0.120 s. One process over
+the ten minutes, `time pktito-c speakers`, four runs each: the M5 Ultra
+1.86 to 1.38 s, the GB10 2.52 to 2.57 down to 2.04 to 2.08, the base M4
+2.20 to 2.21 up to 2.26 to 2.28, its two steps on four cores. One process
+over test.wav, which has one full step and so finishes no race: the M5
+Ultra 0.24 s before and after.
+
+The recognizer is as it was: an M5 Ultra's v2 keeps 36 threads, test.wav
+0.172 to 0.174 s before and 0.171 to 0.174 after, the ten minutes 0.916
+and 0.914.
+`speakers` and `probs` are ab7cc7f's on the four boards (md5), and make
+check-c passes on each (Apple clang 21; the GB10's gcc 13.3). make
+check-tsan now runs the tiny diarizer on the default threads as well as
+on six, where this Mac's eight and four take the turns, and passes.
+
+Not measured: a phone. Leads left where they are. Polling longer before a
+worker parks gave 8% on the M4 Pro's fast kind alone and cost 55% on every
+core (2026-11-23, above). A second thread a core on x86, from
+pktito-mac's rounds of the ten minutes: an i9-12900HK took 4.31 to 4.33 s
+on its six P-cores, 4.29 to 4.30 on its 14 cores, the default, and 3.96 to
+4.02 on 20 threads, 7% less; a 9950X under WSL2 1.090 to 1.094 on 8, 1.002
+to 1.011 on its 16, and 2.45 to 2.70 on 32. Neither has a slow kind that
+costs it, and a third side for the i9's 7% would be a race of its own.
