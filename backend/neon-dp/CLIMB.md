@@ -4314,3 +4314,68 @@ on its six P-cores, 4.29 to 4.30 on its 14 cores, the default, and 3.96 to
 4.02 on 20 threads, 7% less; a 9950X under WSL2 1.090 to 1.094 on 8, 1.002
 to 1.011 on its 16, and 2.45 to 2.70 on 32. Neither has a slow kind that
 costs it, and a third side for the i9's 7% would be a race of its own.
+
+## 2026-11-24 - c7960e4 and ab7cc7f on the base M4, the M5 Ultra and the other boards (a measurement)
+
+The two commits before the race, each against the one before it, binaries
+turn about, medians in seconds; the ten minutes is test.wav ten times
+over. Every board's transcripts, `speakers` and `probs` are the commit
+before's (md5), and make check-c passes on each: neon-sme's 2525 kcheck
+cases on the three Macs (Apple clang 21), and c7960e4's 2244 a backend on
+an i9-12900HK (gcc 15.2: avx2-vnni, avx2), a Pi 5 (gcc 14.2: neon-dp-a76,
+neon-dp, neon) and a GB10 (gcc 13.3 and clang 18.1: neon-sve, neon-i8mm,
+neon-dp-a76, neon-dp, neon).
+
+FMOPA, dd2faed to c7960e4:
+
+|                                 | base M4 (10 threads) | M5 Ultra, 36 threads | M5 Ultra, -t 12 | M5 Ultra, -t 24 |
+| ------------------------------- | -------------------- | -------------------- | --------------- | --------------- |
+| diarizer, the ten minutes       | 2.940 to 2.425       | 1.940 to 1.875       | 1.608 to 1.435  | 1.747 to 1.645  |
+| v2, test.wav                    | 0.377 to 0.356       | 0.175 to 0.174       |                 |                 |
+| v2, the ten minutes             | 3.770 to 3.476       | 0.934 to 0.914       | 1.993 to 1.771  | 1.196 to 1.212  |
+| v2, the minute whole            | 0.486 to 0.410       | 0.205 to 0.196       |                 |                 |
+| v2, the minute whole, 4 threads | 0.527 to 0.477       |                      |                 |                 |
+| v2, the minute whole, 1 thread  | 1.262 to 1.016       |                      |                 |                 |
+
+The M5 Ultra's one row the wrong way, v2's ten minutes at 24 threads, is
+inside its rounds: 1.176 to 1.223 before, 1.136 to 1.217 after.
+
+A unit's threads at FMOPA where a cluster is six cores (the M5 Ultra, 36
+threads; c7960e4 with the count read from the environment, the SMOPA
+count left at 2):
+
+| threads a unit | diarizer, the ten minutes | v2, the ten minutes | v2, the minute whole |
+| -------------- | ------------------------- | ------------------- | -------------------- |
+| 2 (the tree)   | 1.870                     | 0.915               | 0.195                |
+| 1              | 1.898                     | 0.928               | 0.198                |
+| 3              | 1.865                     | 0.908               | 0.196                |
+| 4              | 1.868                     | 0.912               | 0.196                |
+| 6              | 1.895                     | 0.914               | 0.199                |
+| none (FMLA)    | 1.942                     | 0.935               | 0.207                |
+
+Two, three and four are within 0.8% of each other on every row, as on the
+M4 Pro's clusters of four: PK_SME_THREADS stays 2 for both products.
+
+The diarizer's columns packed once, c7960e4 to ab7cc7f, the diarizer
+alone:
+
+|                          | base M4        | M5 Ultra       |
+| ------------------------ | -------------- | -------------- |
+| the ten minutes, default | 2.436 to 2.168 | 1.871 to 1.818 |
+| the ten minutes, -t 4    | 3.346 to 2.810 |                |
+| the ten minutes, -t 12   |                | 1.437 to 1.260 |
+| the ten minutes, -t 24   |                | 1.646 to 1.577 |
+| test.wav, 1 thread       | 0.631 to 0.555 | 0.592 to 0.523 |
+
+11 to 16% on the base M4 and 12% on the M5 Ultra's twelve, against the M4
+Pro's 2.9% at twelve threads and 8.3% at one. Why the M4 Pro's twelve gain
+the least was not measured.
+
+Rejected by a probe, with no kernel written: the GELU and the softmax's
+exp in streaming-mode SVE, sixteen lanes on the unit. A degree-7 Horner
+polynomial with exp's rounding, conversion and scaling over 16384 floats
+(svefma.c, a scratch program, not in the tree; M4 Pro, best of 200): NEON
+at four vectors a step 0.18 to 0.24 ns a value, streaming SVE 0.67 at
+one, two and four vectors a step. FMLA alone in eight chains: 33.8 G
+multiply-adds a second in NEON, 15.4 in streaming SVE. The unit pays for
+the outer products and nothing else.
