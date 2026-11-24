@@ -463,7 +463,7 @@ static double behind(pk_diar *d) {
  * (pk_os_cores_but_slowest): of two kinds the fast one, and of a phone's
  * three its prime and big cores, a Galaxy S24's six of eight, where the
  * ten minutes took 7.55 to 7.60 s on six threads and 8.76 to 8.78 on
- * eight in three cooled rounds.
+ * eight in three cooled rounds, and the race kept the six in 3 of 3.
  *
  * The order and the TUNE_BY-th are for clocks that move while the turns
  * run. A Snapdragon X Elite laptop under Windows, twelve cores alike of

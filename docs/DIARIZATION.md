@@ -980,8 +980,9 @@ twelve in 7 of 7 with them so.
 Measured on 2026-11-24 over ten minutes of sound (test.wav ten times over,
 `pktito-c bench`): an M5 Ultra keeps its twelve fast cores, 1.25 s where
 its 36 cores take 1.81; a GB10 its ten X925s, 1.93 s against its twenty's
-2.50; a base M4 keeps all ten, 2.17 s against its four fast cores' 2.81,
-and an M4 Pro all twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
+2.50; a Galaxy S24 six of its eight, 7.69 s against 8.67; a base M4 keeps
+all ten, 2.17 s against its four fast cores' 2.81, and an M4 Pro all
+twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
 The attention's scores were float in those runs; with them in int8 ("The
 attention in int8", above) the kept threads' ten minutes are 1.21 s on the
 M5 Ultra, 1.80 on the GB10 and 2.05 on the base M4.
