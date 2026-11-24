@@ -5097,3 +5097,30 @@ passes on an M5 Ultra (neon-sme) and on a GB10 under gcc 13.3 and clang
 
 So pk_gemm_on's three rounds lose nowhere measured, mixed cores
 included, where its whole-width-first rule of 2026-11-03 had.
+
+The final figures for the entry above, six rounds on every board, trees
+by turns with the order swapped each round, the median of the rounds'
+bests (libpktito-mac-hillclimb; logs and its tab.py on the M4 Pro in
+~/pktito-share/libpktito/x86-diar-climb-8054cc0-arm/). The interim's
+GB10 rows were gcc only and four rounds; pi5a's gcc re-read: Debian
+14.2.0-19. check-c passes on the M4 Pro and the base M4 too (neon-sme);
+`probs --no-hold` of test10.wav and v2's transcript of it the same bytes
+in both trees on all four boards.
+
+| board, ten minutes    | default          | a given count         | all cores             |
+| --------------------- | ---------------- | --------------------- | --------------------- |
+| M5 Ultra              | 1.216 to 1.141 s | -t 12: 1.214 to 1.105 | -t 36: 1.788 to 1.139 |
+| GB10, gcc 13.3        | 1.763 to 1.560 s | -t 10: 1.764 to 1.561 | -t 20: 2.254 to 1.879 |
+| GB10, clang 18.1      | 1.760 to 1.546 s | -t 10: 1.765 to 1.546 | -t 20: 2.253 to 1.868 |
+| base M4 (4 P + 6 E)   | 2.042 to 1.960 s | -t 4: 2.630 to 2.558  | -t 10: 4.0% faster    |
+| M4 Pro, in use, noisy | 1.622 to 1.454 s | -t 12: 1.504 to 1.504 | -t 8: 1.659 to 1.640  |
+
+The GB10 held to 3 X925 and 5 A725 (taskset -c 5-7,10-14): gcc 4.113 to
+3.370 s (18.1%), clang 4.057 to 3.418 (15.8%). The GB10 keeps its ten and
+the base M4 its ten in 6 of 6 in both trees; the M4 Pro kept twelve in 5
+of 6 before and 6 of 6 after; its 30 runs' means, default 1.656 to 1.593,
+read as level to a few percent faster. The recognizer (v2, test10.wav)
+level everywhere: M5 Ultra 0.914 to 0.911, GB10 2.518 to 2.512 (gcc) and
+2.494 to 2.498 (clang), base M4 3.467 to 3.463. test.wav on the GB10's
+twenty cores, the case 2026-11-03's whole-width rule lost by 5.5 to 7.3%:
+gcc 0.304 to 0.297 s, clang 0.299 to 0.294; base M4 0.350 to 0.350.
