@@ -483,9 +483,12 @@ def load_words(path):
         return None
     with open(path, encoding="utf-8") as f:
         j = json.load(f)
-    # pktito/1: the sentences' words, in order (README, "JSON")
+    # pktito/1: the sentences' words, in order (README, "JSON"); "chunks" is
+    # the layout before it, which the study's word files of 2026-11-08 have
     return [
-        (w["start"], w["end"], w["word"]) for s in j["segments"] for w in s["words"]
+        (w["start"], w["end"], w["word"])
+        for s in j.get("segments", j.get("chunks", []))
+        for w in s["words"]
     ]
 
 
