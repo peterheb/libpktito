@@ -709,11 +709,12 @@ static int bind_sortformer(pk_file *f, pk_model *m) {
         return -1;
     const uint32_t D = m->d_model, F = m->ff_dim, H = m->n_heads, P = w->proj_dim;
     const uint32_t dk = D % H ? 0 : D / H, S16 = (w->n_spk + 15) & ~15u;
-    /* the shapes the kernels take, as a recognizer's: 16-row panels,
-     * 32-input blocks, heads that are whole panels, and pairs of a head's
-     * dimensions for the rotation; and a cache that holds each speaker's
-     * silence frames and a frame of its own */
-    if ((m->n_fft & (m->n_fft - 1)) || D % 32 || F % 32 || P % 32 || !dk || dk % 16
+    /* the shapes the kernels take, as a recognizer's: 16-row panels and
+     * 32-input blocks, and heads that are whole blocks, a head's
+     * dimensions being the input of its scores' int8 product (core/diar.c,
+     * keys_item) and in pairs for the rotation; and a cache that holds
+     * each speaker's silence frames and a frame of its own */
+    if ((m->n_fft & (m->n_fft - 1)) || D % 32 || F % 32 || P % 32 || !dk || dk % 32
         || (w->stack * m->n_mels) % 32)
         return fail(f->err, f->errlen, "the model's shapes are not ones pktito's kernels take");
     /* a row of probabilities is a whole number of samples */

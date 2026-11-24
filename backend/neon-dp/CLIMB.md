@@ -4379,3 +4379,116 @@ at four vectors a step 0.18 to 0.24 ns a value, streaming SVE 0.67 at
 one, two and four vectors a step. FMLA alone in eight chains: 33.8 G
 multiply-adds a second in NEON, 15.4 in streaming SVE. The unit pays for
 the outer products and nothing else.
+
+## 2026-11-24 - the diarizer's scores in int8, the mean key off (hypothesis)
+
+Of the diarizer's products the attention's two are the float ones, and
+the attention is 30.1% of the ten minutes on the M4 Pro's twelve threads
+(make PROFILE=1 at 299d03a: 517 ms of 1.72 s) and 36.1% of test.wav on
+neon-dp at one (518 ms of 1.43 s). docs/DIARIZATION.md, "The attention in
+int8" (2026-11-23, tools/diarquant.py's qk8), measured the first of the
+two, Q Kᵀ, rounded as an int8 product would round it, and it passed: each
+head's mean key over the step's frames taken off its keys, which moves a
+query's scores by one amount that its softmax undoes; the queries as
+activations in blocks of 32 of a head's 64 dimensions; the keys as
+weights, a scale a key. In C that is pk_k_gemm_q8 with a head's keys as a
+PK_Q8 matrix of a step's frames by 64, built each layer.
+
+A probe first (qkprobe.c, a scratch program, not in the tree): a layer's
+scores at a full step, 684 frames and 8 heads, one thread of the M4 Pro,
+best of 30, in ms. Float is the keys into pk_k_gemm_f32's panels and the
+product; int8 is the queries quantized, the keys' mean taken off, the
+keys quantized and laid in PK_Q8's panels, and pk_k_gemm_q8. The softmax
+that follows either is beside them.
+
+|            | float: panels, product | int8: queries, keys, product | softmax |
+| ---------- | ---------------------- | ---------------------------- | ------- |
+| `neon-sme` | 0.059, 0.499           | 0.049, 0.090, 0.477          | 1.79    |
+| `neon-dp`  | 0.061, 4.043           | 0.052, 0.101, 1.397          | 1.84    |
+| `neon`     | 0.063, 4.080           | 0.052, 0.100, 3.738          | 1.79    |
+
+The product is 64 inputs wide, two blocks, so each output's two
+conversions and fused multiply-adds weigh as much as its sums: SDOT is
+2.9 times FMLA here where the int8 product is four times the float one a
+multiply-add, and on the unit SMOPA's sixteen outer products with their
+two rounds of ZA's rows are level with FMOPA's 64.
+
+Expected: on a board whose float product is FMLA, 2.55 ms less a layer,
+a tenth of the diarizer at one thread (neon-dp's test.wav is 1.43 s); on
+an SME Mac nothing on a unit's two threads (0.06 ms more a layer of 7.9)
+and FMLA's gain on the cluster's others, so a few percent at the default
+threads; x86 is not probed, and VNNI against FMA should stand as SDOT
+against FMLA. Kept only if the diarizer is no slower on an SME Mac, a
+NEON board without SME and an x86 one, and faster on one of them: this
+changes ref's bits, every board's, and its rows (`pktito-c probs`,
+diarquant.py's rows:DIR) are then measured against float32 before it
+merges. P·V stays float: the same section finds it the less safe half,
+and the two together a step past the rule.
+
+## 2026-11-24 - the diarizer's scores in int8 (result: kept, 3 to 8% at the default threads; an SME unit's one thread 1 to 2% slower)
+
+core/diar.c: the rotation's items quantize the queries they have just
+turned, a head's 64 dimensions in two blocks; keys_item, a head an item,
+takes the head's mean key off its keys (a float32 chain a dimension in
+frame order, divided by the frames), quantizes each key as one block and
+lays its bytes in PK_Q8's panels; att_item's scores are pk_k_gemm_q8. K's
+float panels, 1.41 MB at a full step, give way to 0.77 MB of int8 operands
+and their scales. pk_k_gemm_q8 takes its inputs in 32s, so a diarizer's
+heads are whole blocks now (core/model.c asks dk % 32 where it asked 16;
+Nemotron 3's are 64, and the tiny diarizer is regenerated with two heads
+of 32 where it had four of 16).
+
+The bits: `probs` of conv2.wav is one md5 from ref and from every backend
+run, at its default threads and the M4 Pro's at three - neon-sme, neon-dp and neon on the M4 Pro, neon-sme
+on a base M4 and an M5 Ultra, neon-sve on a GB10 under gcc and clang,
+neon-dp-a76 on a Pi 5, avx2-vnni on an i9-12900HK - and another than the
+float scores' on each. conv2's stretches of speech move at one boundary,
+48.820 to 48.830 s (tests/data/conv2.speakers.txt, rewritten by ref), and
+its words keep their speakers (conv2.v2.json and the three beside it are
+unchanged). tests/kcheck has the scores' shapes, 688 rows by 64 inputs
+for 16 columns and for 12: 2250 cases a backend, neon-sme's 2533. make
+check-c passes on the seven boards and compilers of the table,
+check-sanitize and check-tsan on the M4 Pro.
+
+`pktito-c bench` of the diarizer, float scores (299d03a) to int8, the two
+binaries turn about, medians in seconds of 3 to 6 rounds (the Pi 5's ten
+minutes one round):
+
+|                        | backend, threads   | test.wav               | test.wav, 1 thread     | the ten minutes        |
+| ---------------------- | ------------------ | ---------------------- | ---------------------- | ---------------------- |
+| Pi 5, gcc 14.2         | neon-dp-a76, 4     | 1.504 to 1.400 (-6.9%) | 5.554 to 5.163 (-7.0%) | 17.18 to 15.78 (-8.1%) |
+| GB10, gcc 13.3         | neon-sve, 10 of 20 | 0.168 to 0.160 (-4.8%) | 1.147 to 1.059 (-7.7%) | 1.911 to 1.795 (-6.1%) |
+| GB10, clang 18.1       | neon-sve, 10 of 20 | 0.168 to 0.159 (-5.4%) | 1.110 to 1.034 (-6.8%) | 1.908 to 1.786 (-6.4%) |
+| i9-12900HK, gcc 15.2   | avx2-vnni, 14      | 0.388 to 0.370 (-4.6%) | 1.272 to 1.172 (-7.9%) | 4.283 to 4.045 (-5.5%) |
+| base M4                | neon-sme, 10       | 0.196 to 0.187 (-4.6%) | 0.555 to 0.561 (+1.1%) | 2.163 to 2.054 (-5.0%) |
+| M5 Ultra               | neon-sme, 12 of 36 | 0.121 to 0.116 (-4.1%) | 0.522 to 0.528 (+1.1%) | 1.254 to 1.212 (-3.3%) |
+| M4 Pro, in use         | neon-sme, 12       |                        | 0.540 to 0.550 (+1.9%) | 1.645 to 1.611 (-2.1%) |
+| M4 Pro, PKTITO_KERNELS | neon-dp, 12        |                        | 1.433 to 1.306 (-8.9%) | 2.531 to 2.287 (-9.6%) |
+
+The M5 Ultra at -t 12 is 1.265 to 1.226 and at -t 36 1.894 to 1.871. The
+M4 Pro's twelve are level, not faster: its rounds ran 1.574 to 1.800 s
+before and 1.559 to 1.623 after.
+
+Against the hypothesis: the FMLA and FMA boards gain 7 to 9% at one
+thread where a tenth was expected, and 5 to 8% at their default threads.
+On SME the one thread loses 1.1 to 1.9% where 0.4% was expected, cleanly
+(the base M4's rounds 0.555 to 0.555 against 0.561 to 0.562): the scores
+are level on the unit and their operands' rounding is more work than K's
+panels were. The Macs gain at the default threads because a unit is two
+threads' at a time (PK_SME_THREADS) and a cluster's others had the float
+product on FMLA: the base M4's ten 5.0%, the M5 Ultra's twelve 3.3%, its
+36 only 1.2%. A machine whose every thread has a place at a unit, two a
+cluster or fewer, would lose the one thread's 1 to 2%; none of these is
+one at its default.
+
+Kept on that: a gain on every board without SME, and nothing slower at
+the default threads. Not measured: the C's rows against float32 (the
+study's are diarquant.py's rounding), a phone, the 9950X's avx512-vnni,
+and a Pi 3B+, whose `neon` the probe puts at 3.74 ms a layer against
+4.08.
+
+Leads, neither taken: the queries with one scale a head, a block of 64,
+would halve SMOPA's drains and every backend's conversions, and is a
+question for diarquant.py first; and the softmax is now the attention's
+largest part on a unit, 1.8 ms a layer on one thread beside the scores'
+0.5.

@@ -424,11 +424,13 @@ Each operation and what has it (backend/kernels.h), or what is new:
   1536 at once), the attention's output, the feed-forward (512 to 2048 and
   back), the projection (512 to 192), the upsampler (576 to 1536) and the
   head (192 to 192; 192 to 8, padded to 16 at conversion).
-- **the attention's products**: `pk_k_gemm_f32`, as core/encoder.c lays
-  them out, without the position half that Parakeet's needs: heads of 64,
-  no padding, `pk_k_softmax` with a scale of 1/8.
+- **the attention's products**: the scores are `pk_k_gemm_q8`'s too, a
+  head's queries against its keys as int8 weights ("The attention in
+  int8", below), and the weighted sum is `pk_k_gemm_f32`'s, as
+  core/encoder.c lays it out. No position half as Parakeet's needs: heads
+  of 64, no padding, `pk_k_softmax` with a scale of 1/8.
 - **the rotation (new)**: the queries and keys, after their products and
-  before K is laid out as panels, each pair (x_i, x_i+32) of a head turned
+  before the scores' operands are rounded, each pair (x_i, x_i+32) of a head turned
   to (x_i cos - x_i+32 sin, x_i+32 cos + x_i sin) by the frame's angle: a
   loop in core/, the same bits on every backend. The angles are the
   position (0 to 683) times 10000^(-i/32), a float32 product as NeMo forms
@@ -807,15 +809,38 @@ What it shows:
   to zero.
 - **Both together are a step past the rule**, +0.049 (t 2.2), about what
   the int8 weights alone cost before their activations were rounded too.
-- **So the attention's int8 is `qk8`, and P·V stays float.** The C does
-  not do it yet: it changes ref's bits, every backend's with them, so it
-  is taken only if the C computes it faster than float on each kind of
-  board. Measured since on the M4s, the scores' share is smaller than
-  the table's 36.5% suggests: pk_k_gemm_f32 on SME's FMOPA (libpktito
-  branch diar-climb, ref's bits) takes the attention from 857 to 534 ms
-  of ten minutes, the scores about a quarter of what is left, so `qk8`
-  would save some 5% of the diarizer there and more on boards without
-  SME, where the attention is still on NEON or AVX.
+- **So the attention's int8 is `qk8`, and P·V stays float.**
+
+The C computes its scores so (core/diar.c, keys_item): each head's mean
+key a float32 sum over the step's frames in their order, the queries and
+the keys through `pk_k_quantize`, the product `pk_k_gemm_q8`, the same
+bits on every backend. It changes ref's bits, every board's with them, so
+it was taken on the boards' times: the diarizer with float scores and
+with these, `pktito-c bench` by turns, medians in seconds, on 2026-11-24
+(backend/neon-dp/CLIMB.md has the rounds):
+
+| float scores to int8     | backend, threads     | the ten minutes        | test.wav on one thread |
+| ------------------------ | -------------------- | ---------------------- | ---------------------- |
+| Pi 5 (gcc 14.2)          | `neon-dp-a76`, 4     | 17.18 to 15.78 (-8.1%) | 5.554 to 5.163 (-7.0%) |
+| GB10 (gcc 13.3)          | `neon-sve`, 10 of 20 | 1.911 to 1.795 (-6.1%) | 1.147 to 1.059 (-7.7%) |
+| GB10 (clang 18.1)        | `neon-sve`, 10 of 20 | 1.908 to 1.786 (-6.4%) | 1.110 to 1.034 (-6.8%) |
+| i9-12900HK (gcc 15.2)    | `avx2-vnni`, 14      | 4.283 to 4.045 (-5.5%) | 1.272 to 1.172 (-7.9%) |
+| base M4 (Apple clang 21) | `neon-sme`, 10       | 2.163 to 2.054 (-5.0%) | 0.555 to 0.561 (+1.1%) |
+| M5 Ultra                 | `neon-sme`, 12 of 36 | 1.254 to 1.212 (-3.3%) | 0.522 to 0.528 (+1.1%) |
+| M4 Pro, in use           | `neon-sme`, 12       | 1.645 to 1.611 (-2.1%) | 0.540 to 0.550 (+1.9%) |
+
+The M4 Pro's twelve are level: its rounds ran 1.574 to 1.800 s and 1.559
+to 1.623. Where the float product was FMLA's or FMA's the scores are SDOT's, SMMLA's
+or VNNI's now, at under two fifths of their time (4.10 to 1.55 ms a layer
+on one thread of an M4 Pro held to `neon-dp`, their operands' rounding
+included). On an SME Mac the unit's FMOPA
+already ran them as fast as its SMOPA runs a product 64 inputs wide, whose
+sums leave the tile block by block, so a Mac gains on the threads that
+are off the unit and one thread alone is 1 to 2% slower. The tables above
+are diarquant.py's rounding, which the C's differs from at float32's own
+rounding (the mean's order of summing, a reciprocal where numpy divides);
+the C's own rows, `pktito-c probs` scored under `rows:DIR` as the rule's
+were, are not among them.
 
 The runs are in ~/diar-int8 on the 9950X: cache/ with one directory per
 configuration (w8row+a8b32;qk8 and the rest), results/att-ami-fa.json and
@@ -898,6 +923,9 @@ Measured on 2026-11-24 over ten minutes of sound (test.wav ten times over,
 its 36 cores take 1.81; a GB10 its ten X925s, 1.93 s against its twenty's
 2.50; a base M4 keeps all ten, 2.17 s against its four fast cores' 2.81,
 and an M4 Pro all twelve (backend/neon-dp/CLIMB.md, 2026-11-23 and 24).
+The attention's scores were float in those runs; with them in int8 ("The
+attention in int8", above) the kept threads' ten minutes are 1.21 s on the
+M5 Ultra, 1.80 on the GB10 and 2.05 on the base M4.
 
 The latency is paid in compute: every step encodes the cache again, so
 shorter chunks pay for it more often. The card's 1.04 s configuration
@@ -1252,8 +1280,8 @@ full:
   `pk_sigmoidf` and the cut's logarithms `pk_logf`. No libm function
   reaches a label. (Stage 2.)
 - **Every matrix product through backend/kernels.h, ref the definition.**
-  Every matrix is `pk_k_gemm_q8`, the attention's products
-  `pk_k_gemm_f32`, the norms `pk_k_layernorm`, the softmax `pk_k_softmax`;
+  Every matrix is `pk_k_gemm_q8`, and the attention's scores with them;
+  its weighted sum is `pk_k_gemm_f32`, the norms `pk_k_layernorm`, the softmax `pk_k_softmax`;
   GELU is a new kernel, `pk_k_gelu`, in ref first and then in each tuned
   backend, held to ref bit for bit by tests/kcheck. The rotation and the
   cut's 80 ms means are plain loops in core/ over activations and

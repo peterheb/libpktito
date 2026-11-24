@@ -38,18 +38,20 @@
  *
  * Every matrix product is pk_k_gemm_q8, int8 weights against activations
  * quantized in blocks of 32, the recognizer's rule (README, "Why int8";
- * docs/DIARIZATION.md, "Why int8", measures it for this model). The
- * attention's products are float, on pk_k_gemm_f32. Each pass is split over
- * the pool, and no output element depends on how, so a run is the same bits
- * on any number of threads and every backend gives ref's. The rotation, the
- * means and the cache's cut are plain loops here, the same bits on every
- * machine under -ffp-contract=off.
+ * docs/DIARIZATION.md, "Why int8", measures it for this model), and so
+ * are the attention's scores, a head's keys the weights its queries meet
+ * (keys_item). The attention's weighted sum is float, on pk_k_gemm_f32.
+ * Each pass is split over the pool, and no output element depends on how,
+ * so a run is the same bits on any number of threads and every backend
+ * gives ref's. The rotation, the means and the cache's cut are plain loops
+ * here, the same bits on every machine under -ffp-contract=off.
  */
 #include "kernels.h"
 #include "mel.h"
 #include "model.h"
 #include "os.h"
 #include "passes.h"
+#include "pkf.h"
 #include "pool.h"
 #include "vmath.h"
 
@@ -73,6 +75,7 @@ static uint32_t up16(uint32_t x) { return (x + 15) & ~15u; }
 typedef struct {
     float *sc;                   /* a block of attention scores: ATT_BLOCK x a step's keys */
     float *row;                  /* a frame of a layer norm's output, or a tile's hidden */
+    int8_t *kq;                  /* sixteen keys in int8, on their way into a panel */
     float *mel;                  /* pk_mel_block's scratch */
     const float **win;           /* a block of feature frames' windows */
 } diar_ws;
@@ -110,7 +113,10 @@ struct pk_diar {
     float *in;                   /* [tmax][D]: the cache, the FIFO and the chunk, stacked */
     float *x, *q, *k, *o;        /* [tmax][D]: the stream; the queries, keys, attention */
     float *u;                    /* [tmax][F]: the feed-forward's hidden */
-    float *kp, *vp;              /* K and V as pk_k_gemm_f32 panels */
+    int8_t *q8, *k8;             /* the scores' operands (keys_item): the queries, [H][tmax][dk],
+                                  * and each head's keys, a PK_Q8 matrix of a step's frames by dk */
+    float *qd, *ks;              /* their scales: a query's blocks', a key's */
+    float *vp;                   /* V as pk_k_gemm_f32 panels */
     float *cosr, *sinr;          /* [tmax][dk/2]: the rotary positions' */
     float *pj;                   /* [tmax][P]: the projection */
     float *ups;                  /* [U tmax][P]: the upsampled frames */
@@ -188,6 +194,13 @@ static void geluq_tile(void *arg, uint32_t r0, uint32_t nr, uint32_t c0, uint32_
 
 typedef struct { pk_diar *d; uint32_t T; } frames_job;
 
+/* Head h's queries [t0, t0 + nt) of a step, a product's activations: a
+ * head's dk dimensions in blocks of QB */
+static pk_act queries(const pk_diar *d, uint32_t h, uint32_t t0, uint32_t nt) {
+    const size_t at = (size_t)h * d->tmax + t0;
+    return (pk_act){ d->q8 + at * d->dk, d->qd + at * (d->dk / QB), d->dk, QB, nt };
+}
+
 /* Each frame's queries and keys turned by its rotary angles: in each head,
  * dimensions i and i + dk/2 as a pair (torch's "rotate half"),
  *
@@ -198,8 +211,8 @@ static void rope_item(void *arg, int i, int th) {
     (void)th;
     frames_job *j = arg;
     pk_diar *d = j->d;
-    const uint32_t h2 = d->dk / 2;
-    for (uint32_t t = (uint32_t)i * 16; t < min32((uint32_t)i * 16 + 16, j->T); t++) {
+    const uint32_t h2 = d->dk / 2, t0 = (uint32_t)i * 16, nt = min32(16, j->T - t0);
+    for (uint32_t t = t0; t < t0 + nt; t++) {
         const float *c = d->cosr + (size_t)t * h2, *s = d->sinr + (size_t)t * h2;
         float *v[2] = { d->q + (size_t)t * d->D, d->k + (size_t)t * d->D };
         for (int which = 0; which < 2; which++)
@@ -212,22 +225,74 @@ static void rope_item(void *arg, int i, int th) {
                 }
             }
     }
+    /* the queries are the scores' activations (keys_item), quantized here
+     * while this core has them */
+    for (uint32_t h = 0; h < d->H; h++) {
+        pk_act a = queries(d, h, t0, nt);
+        pk_k_quantize(&a, d->q + (size_t)t0 * d->D + h * d->dk, d->D);
+    }
 }
 
-typedef struct { pk_panels pn; uint32_t D; } kpan_job;
+/* The scores are an int8 product, Q the activations and a head's keys the
+ * weights, rounded as every matrix here is: a query's dk dimensions in
+ * blocks of QB, a key with a scale of its own, PK_Q8's row. First the
+ * head's mean key over the step's frames comes off its keys,
+ *
+ *   mean[c] = (k[0][c] + k[1][c] + ... + k[T-1][c]) / T      in that order
+ *   k[t][c] = k[t][c] - mean[c]
+ *
+ * which moves all of a query's scores by one amount, q . mean, that its
+ * softmax undoes, and leaves a key's scale to cover what tells it from
+ * the others instead of the offset they share. Then each key is
+ * pk_k_quantize's block, its bytes laid into PK_Q8's panels (core/pkf.h:
+ * 16 keys a panel, a group the same 4 dimensions of each), the keys past
+ * the step's last zeros. An item is a head.
+ *
+ * docs/DIARIZATION.md, "The attention in int8", measures the rounding
+ * against float32: AMI's DER 0.006 points more with the mean key off (t
+ * 0.2), 0.048 without. And the time: the product is SDOT's or VNNI's where the
+ * float one was FMLA's or FMA's, the ten minutes 6% less on a GB10 and an
+ * i9-12900HK and 8% on a Pi 5; an SME unit's SMOPA is level with its
+ * FMOPA at 64 inputs, so a Mac gains on its threads off the unit (a base
+ * M4 5%), and one thread alone loses 1 to 2% (backend/neon-dp/CLIMB.md,
+ * 2026-11-24). */
+static void keys_item(void *arg, int item, int th) {
+    frames_job *j = arg;
+    pk_diar *d = j->d;
+    const uint32_t D = d->D, dk = d->dk, T = j->T, Tp = up16(T), h = (uint32_t)item;
+    float *k = d->k + (size_t)h * dk, *mean = d->tws[th].row;
+    memset(mean, 0, dk * sizeof *mean);
+    for (uint32_t t = 0; t < T; t++)
+        for (uint32_t c = 0; c < dk; c++)
+            mean[c] += k[(size_t)t * D + c];
+    for (uint32_t c = 0; c < dk; c++)
+        mean[c] = mean[c] / (float)T;
 
-/* K, turned, into pk_k_gemm_f32's panels: 64 frames an item */
-static void kpan_item(void *arg, int i, int th) {
-    kpan_job *j = arg;
-    const uint32_t c0 = (uint32_t)i * 64;
-    pk_panels_tile(&j->pn, 0, j->D, c0, min32(64, j->pn.n - c0), th);
+    int8_t *w = d->k8 + (size_t)h * Tp * dk, *kq = d->tws[th].kq;
+    float *ws = d->ks + (size_t)h * Tp;
+    for (uint32_t t0 = 0; t0 < T; t0 += 16, w += (size_t)16 * dk) {
+        const uint32_t nt = min32(16, T - t0);
+        for (uint32_t t = t0; t < t0 + nt; t++)
+            for (uint32_t c = 0; c < dk; c++)
+                k[(size_t)t * D + c] -= mean[c];
+        pk_act a = { kq, ws + t0, dk, dk, nt };
+        pk_k_quantize(&a, k + (size_t)t0 * D, D);
+        if (nt < 16) {
+            memset(w, 0, (size_t)16 * dk);
+            memset(ws + t0 + nt, 0, (16 - nt) * sizeof *ws);
+        }
+        for (uint32_t r = 0; r < nt; r++)
+            for (uint32_t g = 0; g < dk / PK_QG; g++)
+                memcpy(w + (size_t)g * PK_QR * PK_QG + r * PK_QG, kq + (size_t)r * dk + g * PK_QG, PK_QG);
+    }
 }
 
 typedef struct { pk_diar *d; uint32_t T, Tp; } att_job;
 
-/* One head over ATT_BLOCK queries: their scores against every key,
- * divided by sqrt(dk) and softmaxed, and the weighted sum of the values.
- * No positions here: the rotation put them in the queries and keys. */
+/* One head over ATT_BLOCK queries: their scores against every key, the
+ * int8 product (keys_item), divided by sqrt(dk) and softmaxed, and the
+ * weighted sum of the values, a float one. No positions here: the
+ * rotation put them in the queries and keys. */
 static void att_item(void *arg, int item, int th) {
     att_job *j = arg;
     pk_diar *d = j->d;
@@ -235,8 +300,8 @@ static void att_item(void *arg, int item, int th) {
     const uint32_t h = (uint32_t)item / nb, i0 = ((uint32_t)item % nb) * ATT_BLOCK;
     const uint32_t nq = min32(ATT_BLOCK, T - i0);
     float *sc = d->tws[th].sc;
-    pk_k_gemm_f32(sc, j->Tp, d->kp + (size_t)h * j->Tp * dk, dk, j->Tp, dk, d->q + (size_t)i0 * D + h * dk,
-                  D, nq, NULL, 0, 0);
+    const pk_act a = queries(d, h, i0, nq);
+    pk_k_gemm_q8(sc, j->Tp, d->k8 + (size_t)h * j->Tp * dk, d->ks + (size_t)h * j->Tp, NULL, j->Tp, &a, 0);
     const float scale = 1.0f / sqrtf((float)dk);
     for (uint32_t i = 0; i < nq; i++)
         pk_k_softmax(sc + (size_t)i * j->Tp, T, scale);
@@ -294,8 +359,7 @@ static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, &d->packed, d->vp, (size_t)T * 16, &L->v, &d->act));
     frames_job fj = { d, T };
     PROF(PK_P_POS, pk_pool_run(d->pool, rope_item, &fj, (int)((T + 15) / 16)));
-    kpan_job kj = { { d->kp, d->k, T, Tp, D, d->dk }, D };
-    PROF(PK_P_ATT, pk_pool_run(d->pool, kpan_item, &kj, (int)((T + 63) / 64)));
+    PROF(PK_P_ATT, pk_pool_run(d->pool, keys_item, &fj, (int)d->H));
     att_job aj = { d, T, Tp };
     PROF(PK_P_ATT, pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB));
@@ -775,7 +839,10 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
         CARVE(d->k, T * D, sizeof(float));
         CARVE(d->o, T * D, sizeof(float));
         CARVE(d->u, T * F, sizeof(float));
-        CARVE(d->kp, Tp * D, sizeof(float));
+        CARVE(d->q8, T * D, 1);
+        CARVE(d->qd, T * D / QB, sizeof(float));
+        CARVE(d->k8, Tp * D, 1);
+        CARVE(d->ks, Tp * d->H, sizeof(float));
         CARVE(d->vp, T * D, sizeof(float));
         CARVE(d->cosr, T * (d->dk / 2), sizeof(float));
         CARVE(d->sinr, T * (d->dk / 2), sizeof(float));
@@ -807,6 +874,7 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
             diar_ws *ws = &d->tws[i];
             CARVE(ws->sc, (size_t)ATT_BLOCK * Tp, sizeof(float));
             CARVE(ws->row, D > 256 ? D : 256, sizeof(float));   /* a frame, or a product's slice */
+            CARVE(ws->kq, (size_t)16 * d->dk, 1);
             CARVE(ws->mel, pk_mel_thread_scratch(m), sizeof(float));
             CARVE(ws->win, PK_MEL_BLOCK, sizeof(float *));
         }

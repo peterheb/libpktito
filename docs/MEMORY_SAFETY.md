@@ -80,7 +80,8 @@ Byte-valid is not model-valid. The binder then:
 - reads every param the model needs by its key, with its kind and its range -
   the sample rate 16000, n_fft a power of two from 64 to 4096, win_length at
   most n_fft, the widths multiples of 32, the heads dividing d_model into
-  widths that are multiples of 16, an odd convolution of at most 63 taps, 1 to
+  widths that are multiples of 16 (of 32 in a diarizer, whose scores are an
+  int8 product over a head's width), an odd convolution of at most 63 taps, 1 to
   16 durations, the guards against zero (log_guard, norm_eps, ln_eps) at least
   1e-30 - and refuses a param it did not read, as it refuses a tensor it did
   not bind: either is a file made for something this build does not

@@ -555,6 +555,17 @@ static void fast_cases(const char *model) {
         model_cases(model, 64);
 }
 
+/* The diarizer's scores (core/diar.c, keys_item): a head's 64 dimensions
+ * in two blocks against a full step's keys as weights, 688 rows, for an
+ * item's 16 queries and for a step's last 12; and the operands as they are
+ * quantized from a stream 512 wide, a key one block of 64, a query two. */
+static void scores_cases(void) {
+    gemm_q8_case("scores", 688, 64, 16, 32, 0, 0, NULL, NULL, NULL);
+    gemm_q8_case("scores", 688, 64, 12, 32, 0, 0, NULL, NULL, NULL);
+    quant_case(16, 64, 64, 512, 1.0f);
+    quant_case(12, 64, 32, 512, 1.0f);
+}
+
 /* Products of more columns than a backend takes at a time. x86's copy
  * 192 KB of activations, 48 columns of 4096 inputs and 192 of 1024, and
  * tile them by 4, 6 or 12: these end a block on its edge, one column
@@ -796,6 +807,7 @@ static void run(const char *model) {
     blocks_cases();         /* likewise */
     shared_cases();
     f32_wide_cases();       /* likewise */
+    scores_cases();         /* likewise */
 }
 
 /* Each backend sees the same cases: the generator starts again for each.
