@@ -3857,3 +3857,210 @@ opposite sign: a build's layout, not the change.
 The files: results/m4climb-<type>/ in the bench bucket (sysinfo, both
 check-c logs, the rounds, and the instance's own log, which traces the
 batch's script line by line).
+
+## 2026-11-23 - neon-sme: the float products on FMOPA, at ref's bits with a tile that holds a NaN done again by FMLA (hypothesis)
+
+pktito-mac's reading of the diarizer on the M4 Pro, ten minutes (test.wav
+ten times over), single runs with the machine in use: neon-dp 2.297 s,
+neon-sme at dd2faed 2.088, 9% where v2's speech gains 35. The attention's
+float products (pk_k_gemm_f32: the scores, and the values' weighted sum)
+did not move, 863 to 853 ms, and are 40% of the run. Here, make PROFILE=1
+at dd2faed, the same file at 12 threads: 2.119 s, attention 856.9 ms, ff
+and GELU 735.8, q k v 292.1, attention out 91.8, norm and quantize 81.9.
+
+FMOPA (SME's, single precision, non-widening; hw.optional.arm.SME_F32F32
+on the M4 Pro) adds the outer product of two vectors of 16 floats to a
+tile: ZA[i][j] += zn[i] zm[j], 256 fused multiply-adds an instruction
+where FMLA's is 4. ref's product is one fmaf chain an output in k order,
+and a panel's 16 rows at one k are 16 floats in a row as core lays them
+out, so they are zm as they stand; zn is 16 columns' x at that k, which
+is a 16 by n transpose.
+
+Its bits. The Arm ARM (D22.6, floating-point behaviors for instructions
+that target the SME ZA array): such an instruction does a fused
+multiply-add an element with no rounding of the product, honours FPCR's
+FZ, RMode, AH and FIZ, and generates the default NaN as if DN were 1.
+~/pktito-share/sme/fmopa_sem.c on the M4 Pro: 512,000 elements of chains
+of 64 are fmaf's; a subnormal operand, result and addend, a sum that
+cancels to a subnormal, the zeros' signs, an overflow, inf times 0 and
+inf less inf are fmaf's; a NaN with a payload, in either operand or the
+addend, comes out 7fc00000 where fmaf keeps the payload (and FPCR is 0
+inside streaming mode as outside). A NaN stays one down a chain, so an
+output is a NaN here exactly where it is one in ref, and every other
+output is ref's bits: a block whose tiles hold a NaN is done again by
+FMLA. The tiles are read four rows at a time and folded by FMAX on the
+way to memory, which finds one.
+
+~/pktito-share/sme/fmopa_rate.c, the attention's shapes, 16 columns a
+call, against backend/ref's bits (400 shapes with subnormals, and with
+NaNs and infinities put in: 89 differ with no test, none with it) and
+neon-dp's FMLA tile. One thread, G multiply-adds a second, two runs, the
+machine in use:
+
+|                                  | FMLA     | FMOPA, x turned by NEON | x turned in ZA |
+| -------------------------------- | -------- | ----------------------- | -------------- |
+| diarizer, scores: 688 rows, n 64 | 56 to 64 | 470 to 604              | 604 to 650     |
+| diarizer, values: 64 rows, n 684 | 58 to 63 | 300 to 306              | 467 to 600     |
+| v2, scores: 384 rows, n 128      | 58 to 63 | 510 to 674              | 590 to 755     |
+| v2, positions: 400 rows, n 128   | 63 to 65 | 504 to 615              | 678 to 702     |
+| v2, values: 128 rows, n 382      | 58 to 63 | 391 to 400              | 537 to 722     |
+| v2, values of a minute: n 750    | 61 to 63 | 434 to 461              | 696 to 709     |
+
+Four tiles of a panel each take one k's FMOPAs, a group's four chains
+apart, and x's 16 columns are turned in ZA itself before them (16 rows
+loaded across a tile, 16 columns stored down it), which is 32
+instructions for 256 floats where NEON's 4 by 4 transposes are 256: the
+values' product, one group of four panels to a turn of 684, is half as
+fast with NEON's. Threads at once (x turned by NEON, the system placing
+them), scores and values: 12 on FMLA 434 and 409 G; 2 on FMOPA and 10 on
+FMLA 1396 and 827; 4 and 8, 1593 and 1028.
+
+The change: backend/neon's pk_k_gemm_f32, in the neon-sme build, takes a
+call's columns in sixteens on FMOPA where the unit has a place
+(sme_enter, the place SMOPA's threads take) and by FMLA where it has not,
+and its last columns as SMOPA's are (sme_takes). The turned columns are
+the thread's own, 64 KB for an n of 1024 (a chunk of 82 s is 1024
+frames); a longer product is FMLA's. A bias is added and ReLU taken on
+the way out of the tile, in SVE as ref writes them; a call whose bias is
+its out is FMLA's, since a block done again would read what it wrote.
+
+Expected: the diarizer's attention, 857 ms of 2119, to under 500 if the
+products are two thirds of it (the softmax between them is the rest and
+does not move), so the ten minutes to about 1.75 s; v2's attention a
+quarter to a third faster where it is 128 ms of the minute whole at 8
+threads, test.wav 0.255 s to about 0.24. kcheck's float cases take
+columns of 16 and more with every tile count, a NaN's payload and sign,
+and the shared calls that q8's have. A unit's threads for FMOPA to be
+measured: 2 is SMOPA's.
+
+## 2026-11-23 - neon-sme: the float products on FMOPA (result: kept; the diarizer's ten minutes 2.278 to 1.716 s on the M4 Pro, v2's 2.505 to 2.265)
+
+As the hypothesis has it, with three things it did not: where a call's
+last columns go, what the other builds compile to, and the 0.0f.
+
+The code. backend/neon's k_gemm_f32 is as it was and is neon-sme's FMLA;
+k_gemm_f32_sme, the kernel in that build alone, gives a call's columns to
+sme_f32_cols in blocks of 16 from the first at which the unit has a place
+and to k_gemm_f32 until then. A first form renamed the NEON kernel and
+gave every build a kernel that called it: Apple clang's neon-dp came out
+with another frame and other registers (1446 lines of its disassembly),
+which is every other board's attention moved by no one's measurement. As
+it stands the text of neon, neon-dp, neon-dp-a76 and neon-i8mm is
+dd2faed's byte for byte under Apple clang 21 (otool -tv), and gcc's
+no-schedule-insns region closes after neon-sme's kernel, with nothing
+between for the others.
+
+A tile's row goes to memory through ref's last line: the bias or 0.0f
+added, then FMAXNM with zero for a ReLU. The 0.0f is not nothing: a chain
+of products that underflow from below ends at -0, and ref's sum makes it
++0.
+
+Bits. tests/kcheck has 348 float cases more (neon-sme 2525, the others
+2244, which run them too): every count of columns a block can be left
+with (2, 3, 15, 16, a seventeenth alone, 35) by every count of panels a
+group can (1, 3, 4, 5, 11) by n of 1, 17, 64 and 130; a NaN with a sign and a payload in
+x, in the matrix and in the bias; an infinity by a zero; chains that end
+at -0; the bias as out, with a NaN and without; 16 columns past each out
+that no call may write, the cases there were given them too; and 48
+calls at once on a pool of 8 at the
+attention's two shapes and one that leaves columns and panels over.
+Nine mutations of the kernel, each in a copy:
+
+| mutation                               | kcheck                                |
+| -------------------------------------- | ------------------------------------- |
+| a block with a NaN not done again      | fails, the NaN in x and in the matrix |
+| a NaN's block counted as finished      | fails, the same                       |
+| no 0.0f added where there is no bias   | fails, the chains that end at -0      |
+| the turned columns one buffer for all  | fails, 30 of the calls on 8 threads   |
+| a call whose bias is its out taken     | fails, the bias as out with a NaN     |
+| FMAXNM left out                        | fails, the ReLU's cases               |
+| a last block's 16 rows all written     | fails, the columns past out           |
+| a last column alone given a block more | fails, the columns past out           |
+| x's load not masked past n             | passes: it changes no value           |
+
+The last reads up to 15 floats past a column's n and stores none of
+them. ~/pktito-share/sme/guard.c ends x at a page no one may read: the
+kernel as it stands reads nothing past it at five shapes, neon-dp's
+neither, and the mutation faults. make check-c passes. pktito-c's output
+is dd2faed's on five runs (md5): v2 and v3 on test.wav, v2 on the ten
+minutes, `speakers` on the ten minutes, v2 with `--speakers`.
+
+A call's last columns. ~/pktito-share/sme/fshort.c, ns a call by its
+columns, medians, one thread: FMLA; FMOPA with the unit to itself; FMOPA
+with one other thread at FMOPA on the same cluster (pk_os_cluster of
+both, read around each sample):
+
+|                 | FMLA: 1 | 2    | 4    | 16    | FMOPA alone: 1 | 4    | 16   | shared: 4 | 16   |
+| --------------- | ------- | ---- | ---- | ----- | -------------- | ---- | ---- | --------- | ---- |
+| 688 rows, n 64  | 1805    | 2184 | 3056 | 12158 | 915            | 972  | 1474 | 1750      | 2474 |
+| 64 rows, n 684  | 1513    | 2669 | 3056 | 12211 | 1095           | 1139 | 1263 | 1847      | 2105 |
+| 384 rows, n 128 | 2004    | 2724 | 3415 | 13647 | 1004           | 1046 | 1353 | 1800      | 2294 |
+| 128 rows, n 375 | 1749    | 2869 | 3348 | 13353 | 1060           | 1106 | 1235 | 1803      | 2000 |
+| 64 rows, n 96   | 135     | 323  | 425  | 1701  | 208            | 213  | 276  | 328       | 417  |
+| 16 rows, n 48   | 27      | 38   | 50   | 210   | 146            | 149  | 152  |           | 249  |
+
+A block costs FMOPA nearly the same whatever its columns, and a thread
+that shares a unit gets 0.55 to 0.62 of it. One column on a shared unit
+is a tie with FMLA's (1660 to 1790 ns in the few samples there were),
+two are FMOPA's, 1750 to 1850 ns against 2184 to 2869, so PK_SME_FSHORT
+is 2 and not sme_takes' rule, which is SMOPA's against SDOT. Entering
+streaming mode and making ZA its own is about 150 ns a call, what the 16
+by 48 row shows: the VAD's batched products, 64 rows by 128 and more,
+are past it, and its one column a call as it streams stays FMLA's.
+
+Threads at once with x turned in ZA, as the kernel turns it (the
+hypothesis's were with NEON's), fmopa_rate.c, G multiply-adds a second,
+the system placing the threads:
+
+|                  | 1 at FMOPA | 2    | 4    | 2, and 10 at FMLA | 4 and 8 | 12 at FMLA |
+| ---------------- | ---------- | ---- | ---- | ----------------- | ------- | ---------- |
+| diarizer, scores | 622        | 1250 | 1503 | 1477              | 1664    | 469        |
+| diarizer, values | 581        | 1160 | 1387 | 1448              | 1607    | 467        |
+| v2, values       | 656        | 1335 | 1622 | 1455              | 1733    | 447        |
+
+A unit's threads. An experiment build with the count in the environment,
+interleaved medians of 3 (5 for the minute), 12 threads:
+
+| threads of a unit at FMOPA | diarizer, ten minutes | v2, ten minutes | v2, the minute whole |
+| -------------------------- | --------------------- | --------------- | -------------------- |
+| 1                          | 1.792                 | 2.467           | 0.303                |
+| 2                          | 1.701                 | 2.308           | 0.298                |
+| 3                          | 1.689                 | 2.330           | 0.293                |
+| 4                          | 1.689                 | 2.316           | 0.294                |
+| none (FMLA)                | 2.207                 |                 |                      |
+
+2 to 4 are inside one another's rounds, so it stays SMOPA's 2 and one
+count for both products. The M4 Pro's clusters are of four; a cluster of
+six (the M5 Ultra) is still to be read.
+
+Timing: the M4 Pro, Apple clang 21, the machine in use, dd2faed's binary
+and this one turn about (ab.py), medians and each side's least and most:
+
+|                                   | rounds | dd2faed                | FMOPA                  |        |
+| --------------------------------- | ------ | ---------------------- | ---------------------- | ------ |
+| diarizer, ten minutes, 12 threads | 5      | 2.278 (2.163 to 2.313) | 1.716 (1.701 to 1.792) | -24.7% |
+| diarizer, test.wav, 1 thread      | 3      | 0.946 (0.941 to 0.951) | 0.615 (0.605 to 0.632) | -35.0% |
+| v2, test.wav, 12 threads          | 7      | 0.258 (0.254 to 0.265) | 0.241 (0.237 to 0.245) | -6.6%  |
+| v2, ten minutes, 12 threads       | 5      | 2.505 (2.464 to 2.540) | 2.265 (2.236 to 2.320) | -9.6%  |
+| v2, the minute whole, 12 threads  | 5      | 0.344 (0.341 to 0.351) | 0.292 (0.286 to 0.300) | -15.1% |
+| v2, the minute whole, 8 threads   | 5      | 0.403 (0.402 to 0.404) | 0.319 (0.318 to 0.320) | -20.8% |
+| v2, test.wav, 1 thread            | 3      | 1.261 (1.258 to 1.262) | 1.020 (1.006 to 1.034) | -19.1% |
+| v3, test.wav, 12 threads          | 5      | 0.261 (0.256 to 0.266) | 0.246 (0.244 to 0.247) | -5.7%  |
+
+make PROFILE=1, the diarizer's ten minutes: attention 856.9 to 555.6 ms
+a run, not the under 500 expected. A copy with clocks in att_item, its
+thread-seconds over a bench: on FMLA (PKTITO_KERNELS=neon-dp) the scores
+20.2, the softmax 8.9, the values 19.7; here 8.0, 11.4 and 8.9. The
+products are 2.4 times faster with two threads a cluster at the unit and
+the rest on FMLA, and the softmax, which did not move, is now the largest
+of the three. v2's minute whole at 8 threads: attention 127.8
+to 46.2 ms of 405 and 321.
+
+What the diarizer's run is now (PROFILE, 1.833 s): ff and GELU 765 ms,
+attention 556, q k v 306, attention out 96, norm and quantize 87. Its
+int8 products, the first, third and fourth of those, still pack their
+columns a call (pk_k_gemm_q8), which costs one thread a third of SMOPA's
+rate (2026-11-23, above); that is next.
+
+neon-sme is built on macOS alone and Apple clang 21 is the one compiler
+here: no second to bench under. The base M4 and the M5 Ultra follow.

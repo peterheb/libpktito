@@ -17,9 +17,10 @@
  * first Snapdragon X's); and built as backend/neon-sme (PK_NEON_SME) a
  * product of 16 columns or more is SME2's SMOPA's, a panel by 16 columns
  * an instruction, where a cluster's SME unit gives its cores more than
- * their own SDOT (the M4 Pro).
- * The int8 product is the only kernel where they differ: the rest is fp32,
- * the same instructions on every core.
+ * their own SDOT (the M4 Pro), and the float product of two columns or
+ * more its FMOPA's.
+ * The int8 product is the kernel where they differ, and in neon-sme the
+ * float product: the rest is fp32, the same instructions on every core.
  *
  * Every kernel computes backend/ref's bits (tests/kcheck). The int8
  * products' inner sums are integers, exact in any order; their few float
@@ -1717,6 +1718,154 @@ static void k_gemm_f32(float *out, size_t os, const float *w, uint32_t ld, uint3
     }
 }
 
+#ifdef PK_NEON_SME
+/* The float products on SME's FMOPA (the neon-sme build), which adds the
+ * outer product of two vectors of 16 floats to a tile: ZA[i][j] += zn[i]
+ * zm[j], each element one fused multiply-add - 256 an instruction where
+ * FMLA's is 4. A panel's 16 rows at one k are 16 floats in a row, so zm is
+ * the matrix as it lies; zn is 16 columns' x at that k, and a tile's row j
+ * is then column j's 16 outputs with their chains in ref's order. Up to
+ * four panels take a k's FMOPAs at once, a tile each, which is what keeps
+ * four chains between an element's own two. One thread with a unit to
+ * itself does 470 to 750 G multiply-adds a second at the attention's
+ * shapes where the FMLA tile above does 56 to 65, and an M4 Pro's 12
+ * threads 1600 to 1730 G with four of them here and eight at FMLA,
+ * against 450 to 470 with all at FMLA (CLIMB.md, 2026-11-23).
+ *
+ * Its bits are fmaf's but for a NaN: an instruction that writes ZA honours
+ * FPCR's rounding and its subnormals as FMLA does and generates the default
+ * NaN where FMLA keeps an operand's sign and payload (the Arm ARM, D22.6;
+ * CLIMB.md's probe). A NaN stays one down its chain, so an output is one
+ * here exactly where ref's is, and every other output is ref's bits: the
+ * tiles are folded by FMAX on their way out, which keeps a NaN, and a
+ * block of columns that held one is done again by FMLA. */
+
+/* The longest product FMOPA takes: 16 columns of it turned are 64 KB of
+ * the thread's own. The attention's longest is a chunk's frames, 1024 of
+ * them 82 s; a longer one is FMLA's. */
+#define PK_SME_FN 1024
+
+/* A call's last column, when it is one alone, is FMLA's: FMOPA multiplies
+ * 16 whatever it is given, and a block of the attention's of four columns
+ * or fewer costs it 1660 to 1850 ns on a unit shared with one other thread
+ * and 915 to 1140 ns on its own, where one column costs FMLA 1510 to 2000
+ * ns and two 2180 to 2870 (CLIMB.md, 2026-11-23, by columns). */
+#define PK_SME_FSHORT 2
+
+/* one k of tile p: x's 16 columns by the 16 rows of the panel at wq */
+#define SME_F32_K(p, wq) svmopa_za32_f32_m(p, pg, pg, xv, svld1_f32(pg, (wq) + 16 * (size_t)k))
+/* row j + i of tile p, column c + j + i's outputs of panel r / 16 + p, as
+ * ref ends them: the bias or ref's 0.0f added (a chain can end at -0, which
+ * the sum makes +0), then v > 0 ? v : 0, which FMAXNM is for a NaN too */
+#define SME_F32_ROW(p, i)                                                               \
+    if (j + (i) < nt) {                                                                 \
+        const size_t at = (size_t)(c + j + (i));                                        \
+        svfloat32_t y = svget4_f32(v, i);                                               \
+        y = svadd_f32_x(pg, y, bias ? svld1_f32(pg, bias + at * bs + r + 16 * (p)) : zero); \
+        if (relu)                                                                       \
+            y = svmaxnm_f32_x(pg, y, zero);                                             \
+        svst1_f32(pg, out + at * os + r + 16 * (p), y);                                 \
+    }
+/* tile p out, four rows a read, folded into nan on the way */
+#define SME_F32_OUT(p)                                                                  \
+    for (uint32_t j = 0; j < nt; j += 4) {                                              \
+        const svfloat32x4_t v = svread_hor_za32_f32_vg4(p, j);                          \
+        nan = svmax_f32_x4(nan, v);                                                     \
+        SME_F32_ROW(p, 0) SME_F32_ROW(p, 1) SME_F32_ROW(p, 2) SME_F32_ROW(p, 3)         \
+    }
+
+/* Columns [0, nc) of x by every panel of the call, 16 columns a block, on
+ * FMOPA: the columns it finished, which are nc, or fewer where a block's
+ * tiles held a NaN - that block, the first not counted, is written and is
+ * to be done again. xp is 16 * n floats of the thread's own.
+ *
+ * A block's x is turned first, in ZA itself: 16 k of each column are
+ * loaded across a tile's rows and stored down its columns, 32 instructions
+ * for 256 floats where NEON's 4 by 4 transposes are 256. The values'
+ * product, one group of panels to a turn of a chunk's frames, runs half as
+ * fast with NEON's (300 G against 470 to 600, CLIMB.md, 2026-11-23). The
+ * rows of columns past nc stay the zeros svzero_za left, whose chains stay
+ * 0, and a load past n is masked. */
+__arm_new("za") __arm_locally_streaming
+static uint32_t sme_f32_cols(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows,
+                             uint32_t n, const float *x, size_t xs, uint32_t nc,
+                             const float *bias, size_t bs, int relu, float *xp) {
+    const svbool_t pg = svptrue_b32();
+    const svfloat32_t zero = svdup_f32(0.0f);
+    for (uint32_t c = 0; c < nc; c += 16) {
+        const uint32_t nt = nc - c < 16 ? nc - c : 16;
+        svfloat32x4_t nan = svcreate4_f32(zero, zero, zero, zero);
+        svzero_za();
+        for (uint32_t k = 0; k < n; k += 16) {
+            const svbool_t pk = svwhilelt_b32_u32(k, n);
+            for (uint32_t j = 0; j < nt; j++)
+                svld1_hor_za32(0, j, pk, x + (size_t)(c + j) * xs + k);
+            for (uint32_t i = 0; i < 16 && k + i < n; i++)
+                svst1_ver_za32(0, i, pg, xp + 16 * (size_t)(k + i));
+        }
+        for (uint32_t r = 0; r < rows; r += 64) {
+            const uint32_t np = rows - r < 64 ? (rows - r) / 16 : 4;
+            const float *w0 = w + (size_t)r * ld, *w1 = w0 + (size_t)16 * ld;
+            const float *w2 = w1 + (size_t)16 * ld, *w3 = w2 + (size_t)16 * ld;
+            svzero_za();
+            for (uint32_t k = 0; k < n; k++) {
+                const svfloat32_t xv = svld1_f32(pg, xp + 16 * (size_t)k);
+                SME_F32_K(0, w0);
+                if (np > 1) SME_F32_K(1, w1);
+                if (np > 2) SME_F32_K(2, w2);
+                if (np > 3) SME_F32_K(3, w3);
+            }
+            SME_F32_OUT(0)
+            if (np > 1) SME_F32_OUT(1)
+            if (np > 2) SME_F32_OUT(2)
+            if (np > 3) SME_F32_OUT(3)
+        }
+        const svfloat32_t m = svmax_f32_x(pg, svmax_f32_x(pg, svget4_f32(nan, 0), svget4_f32(nan, 1)),
+                                          svmax_f32_x(pg, svget4_f32(nan, 2), svget4_f32(nan, 3)));
+        if (svptest_any(pg, svcmpuo_f32(pg, m, m)))
+            return c;
+    }
+    return nc;
+}
+#undef SME_F32_K
+#undef SME_F32_ROW
+#undef SME_F32_OUT
+
+/* pk_k_gemm_f32 in the neon-sme build: a call's columns on FMOPA from the
+ * first sixteen at which the unit has a place (sme_enter, the place
+ * SMOPA's threads take), by FMLA (k_gemm_f32, above) in sixteens until
+ * then, and a last one alone by FMLA (PK_SME_FSHORT): the VAD's one column
+ * a call as it streams never leaves NEON. A call whose bias is its out is
+ * FMLA's whole, since a block done again would read the bias it had
+ * written over. */
+static void k_gemm_f32_sme(float *out, size_t os, const float *w, uint32_t ld, uint32_t rows,
+                           uint32_t n, const float *x, size_t xs, uint32_t T,
+                           const float *bias, size_t bs, int relu) {
+    static _Thread_local _Alignas(64) float xp[16 * PK_SME_FN];
+    const uint32_t Ts = n > PK_SME_FN || bias == out ? 0 : T % 16 >= PK_SME_FSHORT ? T : T & ~15u;
+    for (uint32_t t = 0; t < Ts;) {
+        const int u = sme_enter();
+        if (u >= 0) {
+            t += sme_f32_cols(out + (size_t)t * os, os, w, ld, rows, n, x + (size_t)t * xs, xs, Ts - t,
+                              bias ? bias + (size_t)t * bs : NULL, bs, relu, xp);
+            sme_leave(u);
+            if (t == Ts)
+                break;
+        }
+        /* no place at the unit, or a block that held a NaN: FMLA's sixteen */
+        const uint32_t nc = Ts - t < 16 ? Ts - t : 16;
+        k_gemm_f32(out + (size_t)t * os, os, w, ld, rows, n, x + (size_t)t * xs, xs, nc,
+                   bias ? bias + (size_t)t * bs : NULL, bs, relu);
+        t += nc;
+    }
+    if (Ts < T)
+        k_gemm_f32(out + (size_t)Ts * os, os, w, ld, rows, n, x + (size_t)Ts * xs, xs, T - Ts,
+                   bias ? bias + (size_t)Ts * bs : NULL, bs, relu);
+}
+#endif /* PK_NEON_SME */
+
+/* down to here: a caller of the tiles that took them inline outside it
+ * would compile them with the pass on */
 #if defined(__GNUC__) && !defined(__clang__) && defined(PK_NEON_DOTPROD)
 #pragma GCC pop_options
 #endif
@@ -2155,7 +2304,7 @@ static void k_resample(float *y, const float *x, uint32_t nb, uint32_t orig, uin
 static const char *const needs[] = { "asimddp", "sme2", NULL };
 const pk_kernels pk_kernels_neon_sme = {
     .id = "neon-sme",
-    .name = "neon-sme (NEON and SME2: SMOPA int8, fp32)",
+    .name = "neon-sme (NEON and SME2: SMOPA int8, FMOPA fp32 products)",
     .competes = 1,
 #elif defined(PK_NEON_SVE)
 /* SVE for the loop's MOVPRFX. A core with I8MM and no SVE has neon-i8mm's
@@ -2200,8 +2349,10 @@ const pk_kernels pk_kernels_neon = {
 #ifdef PK_NEON_SME
     .act_pack = k_act_pack,
     .gemm_q8_packed = k_gemm_q8_packed,
-#endif
+    .gemm_f32 = k_gemm_f32_sme,
+#else
     .gemm_f32 = k_gemm_f32,
+#endif
     .layernorm = k_layernorm,
     .softmax = k_softmax,
     .silu = k_silu,
