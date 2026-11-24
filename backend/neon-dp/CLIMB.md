@@ -4064,3 +4064,74 @@ rate (2026-11-23, above); that is next.
 
 neon-sme is built on macOS alone and Apple clang 21 is the one compiler
 here: no second to bench under. The base M4 and the M5 Ultra follow.
+
+## 2026-11-23 - neon-sme: the diarizer's int8 products from columns packed once (hypothesis)
+
+core/diar.c gives pk_gemm_on no pk_packed, so on neon-sme each of a
+product's items packs the columns it reads (pk_k_gemm_q8): a
+feed-forward's up product, 2048 rows in items of 64, packs each sixteen
+of its 684 columns 32 times, and one thread packing a call does 511 to
+578 G multiply-adds a second where from packed columns it does 786 to
+804 (2026-11-23, above). The recognizer's products have had theirs
+packed once since that entry, 0.292 to 0.263 s on test.wav.
+
+After c7960e4 the diarizer's ten minutes at 12 threads are (PROFILE,
+1.833 s): ff and GELU 765 ms, attention 556, q k v 306, attention out
+96, norm and quantize 87. The first, third and fourth are these
+products, 1167 ms, 64% of the run.
+
+The change: a pk_packed of the diarizer's own, the size of the largest
+of its products' inputs (the feed-forward's hidden, a step's 688 frames
+of 2048: 1.4 MB, and 0.18 MB of scales; nothing where the backend does
+not pack), given to every pk_gemm_on and pk_gemm_panels_on in
+core/diar.c. No kernel changes, and no bit: pk_k_gemm_q8_packed is held
+to ref by kcheck from the same columns.
+
+Expected: what the recognizer got of its int8 stages, a tenth to a
+seventh of 1167 ms, so the ten minutes 1.716 to about 1.58 s. Less if
+the threads at the unit are a smaller share here: two of a cluster's
+are SMOPA's and the rest SDOT's, which packs nothing.
+
+## 2026-11-23 - neon-sme: the diarizer's int8 products from columns packed once (result: kept; the ten minutes 1.708 to 1.659 s, one thread's minute 0.593 to 0.544)
+
+core/diar.c as the hypothesis has it: a pk_packed carved with the
+diarizer's other arrays, the size of the largest of its products' inputs
+in sixteens of columns (688 by 2048 for Nemotron 3: 1.41 MB, 0.18 MB of
+scales, 2.8 KB of states), 0 where the backend does not pack, and given
+to its eleven products. Peak memory footprint of `speakers` on the ten
+minutes, 58.97 to 59.64 MB.
+
+M4 Pro, the machine in use, c7960e4's binary and this one turn about,
+medians and each side's least and most:
+
+|                                   | rounds | c7960e4                | packed once            |       |
+| --------------------------------- | ------ | ---------------------- | ---------------------- | ----- |
+| diarizer, ten minutes, 12 threads | 5      | 1.708 (1.694 to 1.780) | 1.659 (1.603 to 1.682) | -2.9% |
+| diarizer, test.wav, 12 threads    | 5      | 0.162 (0.161 to 0.164) | 0.155 (0.146 to 0.158) | -4.3% |
+| diarizer, test.wav, 1 thread      | 3      | 0.593 (0.593 to 0.594) | 0.544 (0.543 to 0.544) | -8.3% |
+| v2, test.wav, 12 threads          | 3      | 0.243 (0.243 to 0.245) | 0.244 (0.243 to 0.244) |       |
+
+make PROFILE=1, one build after the other, ms a run:
+
+|               | ten minutes, 12 threads | test.wav, 1 thread |
+| ------------- | ----------------------- | ------------------ |
+| q k v         | 287.8 to 251.9          | 85.0 to 50.7       |
+| attention out | 90.8 to 85.2            | 20.7 to 19.2       |
+| ff and GELU   | 720.6 to 681.4          | 279.1 to 265.8     |
+
+81 ms of 1099 at 12 threads, 7%, where a tenth to a seventh was
+expected: two threads of a cluster are at the unit and the rest are
+SDOT's, which never packed. One thread shows what the packing was: q, k
+and v, three products from one input that each packed it, 40% less.
+
+It shows the feed-forward too. At one thread q, k, v and the attention's
+output, 1.05 M multiply-adds a frame, are 70 ms; the feed-forward's two
+products are 2.1 M, so about 140 of its 266 ms by that rate, and the
+other 125, a quarter of the run, would be the tile's GELU and the
+hidden's quantizing, NEON's both. With the softmax, the largest part of
+the attention's 176 ms, the float kernels that are not products are now
+a third of the diarizer.
+
+`speakers` on the ten minutes and on test.wav, at 12 threads and at 3,
+`--speakers` with v2 and `probs` are c7960e4's (md5), and `probs` is
+PKTITO_KERNELS=ref's. make check-c and make check-tsan pass.

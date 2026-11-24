@@ -106,6 +106,7 @@ struct pk_diar {
     float *prob;                 /* [U tmax][S]: each 10 ms frame's probabilities */
     float *p80;                  /* [tmax][S]: each 80 ms frame's, their mean */
     pk_act act, hid, a1;         /* int8: a product's input; the hidden; the projection's */
+    pk_packed packed;            /* a product's input in the backend's order (passes.h) */
     diar_ws *tws;
     void *mem;                   /* the block every array here is carved from */
 
@@ -275,9 +276,9 @@ static void taps_item(void *arg, int i, int th) {
 static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     const uint32_t D = d->D, F = d->F, Tp = up16(T);
     PROF(PK_P_QUANT, normq(d, d->x, T, L->att_nw, L->att_nb));
-    PROF(PK_P_QKV, pk_gemm_on(d->pool, NULL, d->q, D, &L->q, NULL, &d->act, 0, NULL, NULL));
-    PROF(PK_P_QKV, pk_gemm_on(d->pool, NULL, d->k, D, &L->k, NULL, &d->act, 0, NULL, NULL));
-    PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, NULL, d->vp, (size_t)T * 16, &L->v, &d->act));
+    PROF(PK_P_QKV, pk_gemm_on(d->pool, &d->packed, d->q, D, &L->q, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_QKV, pk_gemm_on(d->pool, &d->packed, d->k, D, &L->k, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, &d->packed, d->vp, (size_t)T * 16, &L->v, &d->act));
     frames_job fj = { d, T };
     PROF(PK_P_POS, pk_pool_run(d->pool, rope_item, &fj, (int)((T + 15) / 16)));
     kpan_job kj = { { d->kp, d->k, T, Tp, D, d->dk }, D };
@@ -285,14 +286,14 @@ static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     att_job aj = { d, T, Tp };
     PROF(PK_P_ATT, pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB));
-    PROF(PK_P_ATTO, pk_gemm_on(d->pool, NULL, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL));
+    PROF(PK_P_ATTO, pk_gemm_on(d->pool, &d->packed, d->x, D, &L->o, L->o_b, &d->act, 1, NULL, NULL));
 
     PROF(PK_P_QUANT, normq(d, d->x, T, L->ff_nw, L->ff_nb));
     d->hid.n = F;
     d->hid.qb = QB;
     d->hid.T = T;
-    PROF(PK_P_FF, pk_gemm_on(d->pool, NULL, d->u, F, &L->up, L->up_b, &d->act, 0, geluq_tile, d));
-    PROF(PK_P_FF, pk_gemm_on(d->pool, NULL, d->x, D, &L->down, L->down_b, &d->hid, 1, NULL, NULL));
+    PROF(PK_P_FF, pk_gemm_on(d->pool, &d->packed, d->u, F, &L->up, L->up_b, &d->act, 0, geluq_tile, d));
+    PROF(PK_P_FF, pk_gemm_on(d->pool, &d->packed, d->x, D, &L->down, L->down_b, &d->hid, 1, NULL, NULL));
 }
 
 /* The final layer norm's T frames, quantized in d->act, to each 10 ms
@@ -301,7 +302,7 @@ static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
 static void head(pk_diar *d, uint32_t T) {
     const pk_diarw *w = d->w;
     const uint32_t P = d->P, U = d->U;
-    pk_gemm_on(d->pool, NULL, d->pj, P, &w->proj, w->proj_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->pj, P, &w->proj, w->proj_b, &d->act, 0, NULL, NULL);
 
     pk_quantize_on(d->pool, &d->a1, d->pj, P, T, P, QB);
     d->act.n = 3 * P;
@@ -309,16 +310,16 @@ static void head(pk_diar *d, uint32_t T) {
     d->act.T = T;
     frames_job fj = { d, T };
     pk_pool_run(d->pool, taps_item, &fj, (int)((T + 15) / 16));
-    pk_gemm_on(d->pool, NULL, d->ups, (size_t)U * P, &w->up, w->up_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->ups, (size_t)U * P, &w->up, w->up_b, &d->act, 0, NULL, NULL);
 
     /* the head, on U T frames of P: row t U + j of ups is 10 ms frame j of
      * 80 ms frame t */
     relu(d, d->ups, (size_t)U * T * P);
     pk_quantize_on(d->pool, &d->act, d->ups, P, U * T, P, QB);
-    pk_gemm_on(d->pool, NULL, d->hh, P, &w->head_hidden, w->head_hidden_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->hh, P, &w->head_hidden, w->head_hidden_b, &d->act, 0, NULL, NULL);
     relu(d, d->hh, (size_t)U * T * P);
     pk_quantize_on(d->pool, &d->act, d->hh, P, U * T, P, QB);
-    pk_gemm_on(d->pool, NULL, d->logit, d->S16, &w->head_out, w->head_out_b, &d->act, 0, NULL, NULL);
+    pk_gemm_on(d->pool, &d->packed, d->logit, d->S16, &w->head_out, w->head_out_b, &d->act, 0, NULL, NULL);
     for (size_t r = 0; r < (size_t)U * T; r++)
         for (uint32_t s = 0; s < d->S; s++)
             d->prob[r * d->S + s] = pk_sigmoidf(d->logit[r * d->S16 + s]);
@@ -560,7 +561,7 @@ static int chunk(pk_diar *d, int64_t stt, int64_t end, int64_t left, int64_t rig
     memcpy(d->in + (size_t)nc * D, d->fifo, (size_t)nf * D * sizeof *d->in);
     float *in = d->in + (size_t)(nc + nf) * D;
     PROF(PK_P_SUB, pk_quantize_on(d->pool, &d->act, d->feat, (size_t)f * M, ne, f * M, QB));
-    PROF(PK_P_SUB, pk_gemm_on(d->pool, NULL, in, D, &d->w->stack_w, NULL, &d->act, 0, NULL, NULL));
+    PROF(PK_P_SUB, pk_gemm_on(d->pool, &d->packed, in, D, &d->w->stack_w, NULL, &d->act, 0, NULL, NULL));
     forward(d, T);
     /* each 80 ms frame's probabilities, the mean of its U, which the cache
      * scores (SortformerModules.downsample_preds) */
@@ -686,6 +687,15 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
     if (T * 3 * P > wide) wide = T * 3 * P;
     if (U * T * P > wide) wide = U * T * P;
     const uint64_t cap = (E8 + 2) * m->hop + m->n_fft + 1 + 65536;
+    /* the largest of d->act and d->hid in sixteens of columns, where the
+     * backend packs a product's (passes.h) */
+    uint64_t packed = 0;
+    if (pk_k_packs()) {
+        const uint64_t in[][2] = { { T, F }, { T, D }, { T, 3 * P }, { U * T, P }, { d->emax, d->f * M } };
+        for (size_t i = 0; i < sizeof in / sizeof in[0]; i++)
+            if (PK_PACKED_CAP(in[i][0], in[i][1]) > packed)
+                packed = PK_PACKED_CAP(in[i][0], in[i][1]);
+    }
     for (int pass = 0; pass < 2; pass++) {
         uint64_t p = pass ? ((uintptr_t)d->mem + 63) & ~(uintptr_t)63 : 0;
         CARVE(d->buf, cap, sizeof(float));
@@ -713,6 +723,9 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
         CARVE(d->hid.d, T * F / QB, sizeof(float));
         CARVE(d->a1.q, T * P, 1);
         CARVE(d->a1.d, T * P / QB, sizeof(float));
+        CARVE(d->packed.x, packed, 1);
+        CARVE(d->packed.d, packed / 32, sizeof(float));
+        CARVE(d->packed.st, packed / 512, 1);
         CARVE(d->cache, C * D, sizeof(float));
         CARVE(d->cache_p, C * S, sizeof(float));
         CARVE(d->fifo, ((size_t)w->fifo_len + w->chunk_len) * D, sizeof(float));
@@ -735,6 +748,7 @@ pk_diar *pk_diar_new(const pk_model *m, int threads) {
         }
     }
     d->buf_cap = (size_t)cap;
+    d->packed.cap = (size_t)packed;
     /* the rotary positions' sines and cosines, position t of a step times
      * each frequency, the product a float32 multiply as NeMo forms it */
     const uint32_t h2 = d->dk / 2;
