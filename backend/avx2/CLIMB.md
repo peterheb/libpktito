@@ -3820,3 +3820,41 @@ normq 36, rotation 28, the keys 25 and their means 16, pk_quantize_on
 same bits) moved nothing: 0.820 to 0.833 s each against 0.823 to 0.833,
 three rounds. An item's time there is mostly P·V's float product, at its
 FMAs' bound.
+
+## 2026-11-24 - the diarizer's q, k, v, rotation and keys as one job (hypothesis)
+
+After the three above, a layer's attention half is six jobs before the
+scores: q, k, V's panels, the rotation, the keys' means, the keys; 44 +
+28 + 16 + 25 ms a run of them besides the two products, each a round
+trip of the pool and a read of lines another core wrote.
+
+H4. One job of three products' items: k first, a whole head an item
+(every column, so its tile is the head's every key: the rotation, the
+mean in frame order, the subtraction and the keys' panels done in the
+tile while it is in the core's cache), then q's items (each rotating and
+quantizing its tile's queries), then V's. The same operations in the same
+order on every value, so the same bits. Predicted: the rotation's,
+means' and keys' 69 ms mostly gone, two jobs fewer a layer; the run 5 to
+8% faster at 16 threads. The 8 whole heads are the largest items and go
+first, so they end before the job does at 16 threads; at 2 to 8 threads
+they are a larger share and the gain smaller.
+
+## 2026-11-24 - the diarizer's q, k, v, rotation and keys as one job (result: kept)
+
+Built as the hypothesis has it (pk_parts_on, pk_gemm_part,
+pk_panels_part in core/passes.c). test10.wav's rows the same bytes as
+before, test3.wav's through ref, avx2, avx2-vnni and avx512-vnni. The
+ten minutes at 16 threads, four interleaved rounds, best of 5 each:
+
+| compiler     | before           | one job          |
+| ------------ | ---------------- | ---------------- |
+| gcc 15.2     | 0.818 to 0.822 s | 0.793 to 0.801 s |
+| clang 21.1.8 | 0.840 to 0.844   | 0.812 to 0.814   |
+
+3.0 and 3.3%, where 5 to 8 was predicted. At fewer threads, the three
+minutes (test3.wav), two rounds, gcc: 1 thread 1.682-1.687 to
+1.671-1.680, 2 0.886-0.893 to 0.884-0.888, 4 0.473-0.477 to 0.472, 8
+0.270-0.274 to 0.269-0.272: no loss where the 8 whole heads are a larger
+share of the job. Arm is built (aarch64 gcc, cross) and not run: its
+packed path takes the three parts' columns from one pk, which
+packed_for resets three times before the job starts.
