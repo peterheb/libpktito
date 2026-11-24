@@ -253,7 +253,10 @@ static void rope_item(void *arg, int i, int th) {
  * the others instead of the offset they share. Then each key is
  * pk_k_quantize's block, its bytes laid into PK_Q8's panels (core/pkf.h:
  * 16 keys a panel, a group the same 4 dimensions of each), the keys past
- * the step's last zeros. An item is a head.
+ * the step's last zeros. Two jobs: the means, 16 dimensions an item, and
+ * the keys, 16 of a head an item. A head an item, the job was 8 items, and
+ * sixteen threads on the 9950X waited out half of it: the ten minutes 1.6%
+ * slower (backend/avx2/CLIMB.md, 2026-11-24).
  *
  * docs/DIARIZATION.md, "The attention in int8", measures the rounding
  * against float32: AMI's DER 0.006 points more with the mean key off (t
@@ -264,35 +267,38 @@ static void rope_item(void *arg, int i, int th) {
  * FMOPA at 64 inputs, so a Mac gains on its threads off the unit (a base
  * M4 5%), and one thread alone loses 1 to 2% (backend/neon-dp/CLIMB.md,
  * 2026-11-24). */
+static void means_item(void *arg, int item, int th) {
+    (void)th;
+    frames_job *j = arg;
+    pk_diar *d = j->d;
+    const uint32_t D = d->D, T = j->T;
+    float *k = d->k + (size_t)item * 16, mean[16] = {0};
+    for (uint32_t t = 0; t < T; t++)
+        for (uint32_t c = 0; c < 16; c++)
+            mean[c] += k[(size_t)t * D + c];
+    for (uint32_t c = 0; c < 16; c++)
+        mean[c] = mean[c] / (float)T;
+    for (uint32_t t = 0; t < T; t++)
+        for (uint32_t c = 0; c < 16; c++)
+            k[(size_t)t * D + c] -= mean[c];
+}
+
 static void keys_item(void *arg, int item, int th) {
     frames_job *j = arg;
     pk_diar *d = j->d;
-    const uint32_t D = d->D, dk = d->dk, T = j->T, Tp = up16(T), h = (uint32_t)item;
-    float *k = d->k + (size_t)h * dk, *mean = d->tws[th].row;
-    memset(mean, 0, dk * sizeof *mean);
-    for (uint32_t t = 0; t < T; t++)
-        for (uint32_t c = 0; c < dk; c++)
-            mean[c] += k[(size_t)t * D + c];
-    for (uint32_t c = 0; c < dk; c++)
-        mean[c] = mean[c] / (float)T;
-
-    int8_t *w = d->k8 + (size_t)h * Tp * dk, *kq = d->tws[th].kq;
+    const uint32_t D = d->D, dk = d->dk, T = j->T, Tp = up16(T), np = Tp / 16;
+    const uint32_t h = (uint32_t)item / np, t0 = (uint32_t)item % np * 16, nt = min32(16, T - t0);
+    int8_t *w = d->k8 + ((size_t)h * Tp + t0) * dk, *kq = d->tws[th].kq;
     float *ws = d->ks + (size_t)h * Tp;
-    for (uint32_t t0 = 0; t0 < T; t0 += 16, w += (size_t)16 * dk) {
-        const uint32_t nt = min32(16, T - t0);
-        for (uint32_t t = t0; t < t0 + nt; t++)
-            for (uint32_t c = 0; c < dk; c++)
-                k[(size_t)t * D + c] -= mean[c];
-        pk_act a = { kq, ws + t0, dk, dk, nt };
-        pk_k_quantize(&a, k + (size_t)t0 * D, D);
-        if (nt < 16) {
-            memset(w, 0, (size_t)16 * dk);
-            memset(ws + t0 + nt, 0, (16 - nt) * sizeof *ws);
-        }
-        for (uint32_t r = 0; r < nt; r++)
-            for (uint32_t g = 0; g < dk / PK_QG; g++)
-                memcpy(w + (size_t)g * PK_QR * PK_QG + r * PK_QG, kq + (size_t)r * dk + g * PK_QG, PK_QG);
+    pk_act a = { kq, ws + t0, dk, dk, nt };
+    pk_k_quantize(&a, d->k + (size_t)t0 * D + (size_t)h * dk, D);
+    if (nt < 16) {
+        memset(w, 0, (size_t)16 * dk);
+        memset(ws + t0 + nt, 0, (16 - nt) * sizeof *ws);
     }
+    for (uint32_t r = 0; r < nt; r++)
+        for (uint32_t g = 0; g < dk / PK_QG; g++)
+            memcpy(w + (size_t)g * PK_QR * PK_QG + r * PK_QG, kq + (size_t)r * dk + g * PK_QG, PK_QG);
 }
 
 typedef struct { pk_diar *d; uint32_t T, Tp; } att_job;
@@ -367,7 +373,8 @@ static void layer(pk_diar *d, const pk_tlayer *L, uint32_t T) {
     PROF(PK_P_QKV, pk_gemm_panels_on(d->pool, &d->packed, d->vp, (size_t)T * 16, &L->v, &d->act));
     frames_job fj = { d, T };
     PROF(PK_P_POS, pk_pool_run(d->pool, rope_item, &fj, (int)((T + 15) / 16)));
-    PROF(PK_P_ATT, pk_pool_run(d->pool, keys_item, &fj, (int)d->H));
+    PROF(PK_P_ATT, pk_pool_run(d->pool, means_item, &fj, (int)(D / 16)));
+    PROF(PK_P_ATT, pk_pool_run(d->pool, keys_item, &fj, (int)(d->H * (Tp / 16))));
     att_job aj = { d, T, Tp };
     PROF(PK_P_ATT, pk_pool_run(d->pool, att_item, &aj, (int)(d->H * ((T + ATT_BLOCK - 1) / ATT_BLOCK))));
     PROF(PK_P_QUANT, pk_quantize_on(d->pool, &d->act, d->o, D, T, D, QB));
