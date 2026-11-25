@@ -169,6 +169,20 @@
 #define SEAM_FRAMES 4
 #define SEAM_TOKS   64          /* tokens kept of those words, at most */
 
+/* Where a chunk heard to its cut alone meets the next, as a speech chunk
+ * meets the gap's piece after it, a word the cut fell in is written whole
+ * by the one and its end by the other: of LIB-18's song, "misunderstood. |
+ * Understood my role", the word ending 0.16 s before the cut and its end
+ * starting 0.24 s after (v3). So the chunk's first word goes where it
+ * starts within EDGE_S of the cut, the last chunk's last word ends within
+ * EDGE_END_S before it, and its letters are the end of that word's,
+ * EDGE_LETTERS or more, and fewer: "reve" of "grieve", never "very | very".
+ * At a pause, where speech chunks meet with nothing heard past the cut, it
+ * is a second or more, and the cut half way into it. */
+#define EDGE_S       1.0
+#define EDGE_END_S   0.4
+#define EDGE_LETTERS 3
+
 void pk_transcribe_defaults(pk_transcribe_opts *o) {
     /* 3072 mel frames, 384 encoder frames: the length the Neural Engine's
      * encoder is built for, which pads a shorter chunk to it - at 30 s,
@@ -301,6 +315,11 @@ typedef struct pk_steps {
     pk_tok tail[SEAM_TOKS];
     int ntail;
     int64_t tail_end;
+    /* the last chunk's last word where its window ended at its cut and the
+     * word near it: its tokens, and the cut */
+    pk_tok edge[SEAM_TOKS];
+    int nedge;
+    int64_t edge_cut;
 } run;
 
 static int grow(void **p, size_t *cap, size_t need, size_t size) {
@@ -517,6 +536,26 @@ static int same_letters(const pk_model *m, const pk_tok *a, int na, const pk_tok
     return k[0] && k[0] == k[1] && !memcmp(l[0], l[1], k[0] * sizeof l[0][0]);
 }
 
+/* Whether na tokens a are the end of nb tokens b and shorter, case and
+ * punctuation aside, of EDGE_LETTERS letters or more */
+static int end_of(const pk_model *m, const pk_tok *a, int na, const pk_tok *b, int nb) {
+    uint32_t l[2][48];
+    size_t k[2] = { 0, 0 };
+    for (int side = 0; side < 2; side++)
+        for (int q = 0; q < (side ? nb : na); q++) {
+            size_t len;
+            const char *s = pk_piece(m, (side ? b : a)[q].id, &len), *end = s + len;
+            if (len >= 3 && !memcmp(s, "\xe2\x96\x81", 3))
+                s += 3;
+            while (s < end) {
+                const uint32_t c = utf8(&s, end);
+                if (!punct_char(c) && k[side] < 48)
+                    l[side][k[side]++] = lower(c);
+            }
+        }
+    return k[0] >= EDGE_LETTERS && k[0] < k[1] && !memcmp(l[0], l[1] + (k[1] - k[0]), k[0] * sizeof l[0][0]);
+}
+
 /* qn of the last chunk's tokens past its cut, from r->seam + q0, to r->t
  * + k, their frames from this chunk's start */
 static void put(run *r, const pk_seg *ch, size_t k, int q0, int qn, int64_t spf) {
@@ -637,6 +676,17 @@ static int take_chunk(run *r, const pk_tok *toks, long nt) {
         tail_end = ch->start + (int64_t)last->end * spf;
     }
     int64_t head = 0;           /* frames the last chunk's words cover */
+    const int64_t edge = (int64_t)(EDGE_S * pk_model_rate(m));
+    if (r->nedge && n && ch->start == r->edge_cut && pk_words(m, r->t, n, r->w)) {
+        const pk_word *w = &r->w[0];
+        if ((int64_t)w->start * spf < edge && end_of(m, r->t + w->tok, w->ntok, r->edge, r->nedge)) {
+            const size_t drop = (size_t)(w->tok + w->ntok);
+            memmove(r->t, r->t + drop, (n - drop) * sizeof *r->t);
+            n -= drop;
+            head = (int64_t)w->end;
+        }
+    }
+    r->nedge = 0;
     if (r->ntail) {
         if (n)
             n = repeat(r, ch, n);
@@ -651,6 +701,17 @@ static int take_chunk(run *r, const pk_tok *toks, long nt) {
     r->ntail = ntail;
     memcpy(r->tail, tail, (size_t)ntail * sizeof *tail);
     r->tail_end = tail_end;
+    /* the last word, where the chunk was heard to its cut alone */
+    const size_t nw = wn->end == ch->end && n ? pk_words(m, r->t, n, r->w) : 0;
+    if (nw) {
+        const pk_word *w = &r->w[nw - 1];
+        if (ch->start + (int64_t)w->end * spf > ch->end - (int64_t)(EDGE_END_S * pk_model_rate(m))
+            && w->ntok <= SEAM_TOKS) {
+            memcpy(r->edge, r->t + w->tok, (size_t)w->ntok * sizeof *r->t);
+            r->nedge = w->ntok;
+            r->edge_cut = ch->end;
+        }
+    }
     long nst = 0;
     r->maybe = 0;
     if (r->retry && !r->late) {
@@ -889,8 +950,8 @@ static int cut_chunks(run *r) {
         if (!pk_chunk_at(r->cs, r->ncs, r->pad_cut.has ? r->pad_cut.held.start : -1, r->ended,
                          r->ended ? r->length : r->heard, r->ci, r->max_len, r->ctx, pause, &c, &w, &last))
             return 0;
-        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, c.start, r->max_len) + 1)
-            || pk_gap_chunks(&r->x, r->cut_done, c.start, r->max_len, r->c, r->win, &r->nc))
+        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, c.start, r->max_len, r->ctx) + 1)
+            || pk_gap_chunks(&r->x, r->cut_done, c.start, r->max_len, r->ctx, w.end, r->c, r->win, &r->nc))
             return -1;
         r->c[r->nc] = c;
         r->win[r->nc++] = w;
@@ -898,8 +959,8 @@ static int cut_chunks(run *r) {
         r->ci = last + 1;
     }
     if (r->ended) {
-        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, r->length, r->max_len))
-            || pk_gap_chunks(&r->x, r->cut_done, r->length, r->max_len, r->c, r->win, &r->nc))
+        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, r->length, r->max_len, r->ctx))
+            || pk_gap_chunks(&r->x, r->cut_done, r->length, r->max_len, r->ctx, r->length, r->c, r->win, &r->nc))
             return -1;
         r->cut_over = 1;
     }
