@@ -951,6 +951,9 @@ void pk_audio_turns_free(pk_turns *t) { pk_lock_free(t->lock); }
  * heard "Yeah." or the like in 27, and from 3 s up in none (README, "Long
  * recordings"). Nor in a silent piece, which holds nothing to hear. */
 #define PK_GAP_MIN    48000      /* 3 s */
+/* A shorter piece heard on into speech is one too, from PK_GAP_SHORT up:
+ * under it no word fits (test.wav at 30.72 s has a 16-sample gap) */
+#define PK_GAP_SHORT  16000      /* 1 s */
 /* a 32 ms frame with a mean square under this is silent: 50 dB below full
  * scale, 18 dB under the quietest of 42 pieces of that music at its loudest */
 #define PK_GAP_SILENT 1e-5
@@ -981,32 +984,41 @@ static int silent(const pk_audio *x, int64_t at, int64_t n, float *buf) {
 }
 
 /* The pieces of the gap [a, b): the fewest of at most max_len, all of a
- * length. */
-int64_t pk_gap_pieces(int64_t a, int64_t b, int64_t max_len) {
-    return b > a ? (b - a + max_len - 1) / max_len : 0;
+ * length; with ctx, of at most max_len - ctx, room left past each for it. */
+int64_t pk_gap_pieces(int64_t a, int64_t b, int64_t max_len, int64_t ctx) {
+    const int64_t len = max_len - ctx;
+    return b > a ? (b - a + len - 1) / len : 0;
 }
 
 /* The gap [a, b) as chunks from out[*k] on: its pieces but those shorter
  * than PK_GAP_MIN or silent. Silero cannot say where a gap's words are, so
- * its cuts fall where they fall. 0, or -1 if a read fails or memory runs
- * out. */
-int pk_gap_chunks(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out,
-                  pk_seg *win, size_t *k) {
-    const int64_t m = pk_gap_pieces(a, b, max_len);
+ * its cuts fall where they fall, in a word as often as not. With ctx, each
+ * piece is heard ctx past its cut, up to lim (the end of the next speech
+ * chunk's window, or of the recording), as a speech chunk is at a short
+ * pause; and a piece of PK_GAP_SHORT to PK_GAP_MIN is a chunk where it is
+ * audible and has the whole ctx past it to hear: on its own it would be
+ * made words of, heard on into speech it is not (README, "Between the
+ * speech"). 0, or -1 if a read fails or memory runs out. */
+int pk_gap_chunks(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, int64_t ctx, int64_t lim,
+                  pk_seg *out, pk_seg *win, size_t *k) {
+    const int64_t m = pk_gap_pieces(a, b, max_len, ctx);
     float *buf = m ? malloc(PK_GAP_READ * sizeof *buf) : NULL;
     if (m && !buf)
         return -1;
     int rc = 0;
     for (int64_t i = 0; i < m && rc == 0; i++) {
         int64_t pa = a + (b - a) * i / m, pb = a + (b - a) * (i + 1) / m;
-        const int quiet = pb - pa >= PK_GAP_MIN ? silent(x, pa, pb - pa, buf) : 1;
+        const int heard = pb - pa >= PK_GAP_MIN || (ctx && pb - pa >= PK_GAP_SHORT && pb + ctx <= lim);
+        const int quiet = heard ? silent(x, pa, pb - pa, buf) : 1;
         if (quiet < 0)
             rc = -1;
         else if (!quiet) {
             out[*k].start = pa;
             out[*k].end = pb;
-            if (win)
+            if (win) {
                 win[*k] = out[*k];
+                win[*k].end = pb + ctx < lim ? pb + ctx : lim;
+            }
             (*k)++;
         }
     }
@@ -1088,7 +1100,7 @@ long pk_chunks_past(const pk_audio *x, const pk_seg *s, size_t n, int64_t max_le
         pk_seg c, w;
         size_t last;
         pk_chunk_at(s, n, -1, 1, total, i, max_len, ctx, pause, &c, &w, &last);
-        if (pk_gap_chunks(x, done, c.start, max_len, out, win, &k))
+        if (pk_gap_chunks(x, done, c.start, max_len, ctx, w.end, out, win, &k))
             return -1;
         out[k] = c;
         if (win)
@@ -1097,5 +1109,5 @@ long pk_chunks_past(const pk_audio *x, const pk_seg *s, size_t n, int64_t max_le
         done = c.end;
         i = last + 1;
     }
-    return pk_gap_chunks(x, done, total, max_len, out, win, &k) ? -1 : (long)k;
+    return pk_gap_chunks(x, done, total, max_len, ctx, total, out, win, &k) ? -1 : (long)k;
 }

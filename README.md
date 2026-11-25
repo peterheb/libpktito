@@ -480,9 +480,10 @@ does, in order:
    chunk for that ("Where chunks meet").
 3. **Keeps what lies between the speech.** Silero hears voices, not words,
    so singing and speech over music are not speech to it. What lies between
-   the speech chunks is transcribed too, in pieces of at most a chunk, but
-   not a silent piece, nor one under 3 s, of which the model makes words
-   out of anything ("Between the speech").
+   the speech chunks is transcribed too, in pieces of at most a chunk, each
+   heard 2 s past its cut, but not a silent piece, nor one under 3 s, of
+   which the model makes words out of anything, unless it is 1 s or more
+   and has speech past it to hear on into ("Between the speech").
 4. **Transcribes each chunk** as `pk_asr_run` would, the same bits, the
    search over one chunk running beside the next chunk's encoder: 1.2 to
    5.6% less time where there are more than four cores. Of a chunk heard
@@ -881,6 +882,46 @@ dB, which is silent now. v3 makes a phrase of music now and then ("And then
 we're not going to be able to do that.", over 23 s of Investigations), as
 NeMo's own v3 transcript of the whole of Sneaky Snitch has a sentence; a
 gap's words are kept as they come.
+
+A gap's cuts fall where they fall, since Silero cannot say where its words
+are, and a word cut in two was written by both pieces, or by neither. Of
+another song, 4.5 minutes sung over music (Peter's, 2026-11-24, LIB-18),
+Silero hears no speech from 41 s to 200 s, and on one decoding of it a cut
+at 29.98 s fell in a sung "motive", which both sides wrote ("and a motive.
+Motive needs a soul"); on another the 3 s that held "my role. Deception
+needs a motive" lay between two speech chunks, under 3 s, and was left
+out. So each piece is heard 2 s past its cut, as a speech chunk is at a
+short pause, and keeps the words that start before it, the next chunk
+opening with that piece's copies of its first words ("Where chunks meet");
+and a piece of 1 to 3 s that is not silent is transcribed too where the
+whole 2 s past it is there, heard on into the speech after it. Both lines
+come out whole. Against each recording's transcript whole (`--max-chunk
+3600`), runs of three words or more lost in six decodings of four songs
+went from 45 to 32 words with v2 and from 38 to 23 with v3, and the words
+written twice at a cut from 1 to 0. Of 40 of LibriSpeech's long40 with 1.5
+to 6 s of those songs in each of their pauses, at 3 dB under the speech,
+v2 left out 821 of the reference's words where it left out 831, v3 774
+where 769. long40 itself, and 12 of its recordings with their pauses taken
+out, with a song under them at 10 and 0 dB and with six other readers
+under them at 5 dB, come out as they did with both models, word for word;
+the talks (their 28 recordings) have 3 chunks more, and one of them, from
+Apollo 11, four words different.
+
+What did not work, on the same recordings:
+
+- **A speech chunk heard 2 s past its end** where music follows it: the
+  model drops speech from a window that ends in music - one chunk's 62
+  words came out as 17 - and v2 left out 82 more of the 40 recordings'
+  words, v3 55.
+- **A short gap given to a speech chunk** whole, rather than heard as a
+  piece: as the head of the chunk after it, the window opens in music and
+  v2 left out 47 more words of 12 of those recordings; as the tail of the
+  one before it, v3 72 more of the 40.
+- **A gap's cuts at its quietest 96 ms** within 3 s of where they fall:
+  the songs' lost runs went from 32 to 52 words with v2.
+- **A short piece with nothing past it** to hear, at a recording's end:
+  "Mm-hmm", "Yeah" and the like at the ends of 6 of long40's recordings
+  and 12 of the 12 with a song under them at 10 dB.
 
 A recording that fits in a chunk is one chunk if it has speech and a gap if
 it has none, so the VAD runs on it too: 8 ms of the 0.25 s a 30 s recording

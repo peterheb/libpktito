@@ -889,8 +889,8 @@ static int cut_chunks(run *r) {
         if (!pk_chunk_at(r->cs, r->ncs, r->pad_cut.has ? r->pad_cut.held.start : -1, r->ended,
                          r->ended ? r->length : r->heard, r->ci, r->max_len, r->ctx, pause, &c, &w, &last))
             return 0;
-        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, c.start, r->max_len) + 1)
-            || pk_gap_chunks(&r->x, r->cut_done, c.start, r->max_len, r->c, r->win, &r->nc))
+        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, c.start, r->max_len, r->ctx) + 1)
+            || pk_gap_chunks(&r->x, r->cut_done, c.start, r->max_len, r->ctx, w.end, r->c, r->win, &r->nc))
             return -1;
         r->c[r->nc] = c;
         r->win[r->nc++] = w;
@@ -898,8 +898,8 @@ static int cut_chunks(run *r) {
         r->ci = last + 1;
     }
     if (r->ended) {
-        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, r->length, r->max_len))
-            || pk_gap_chunks(&r->x, r->cut_done, r->length, r->max_len, r->c, r->win, &r->nc))
+        if (chunk_room(r, (size_t)pk_gap_pieces(r->cut_done, r->length, r->max_len, r->ctx))
+            || pk_gap_chunks(&r->x, r->cut_done, r->length, r->max_len, r->ctx, r->length, r->c, r->win, &r->nc))
             return -1;
         r->cut_over = 1;
     }

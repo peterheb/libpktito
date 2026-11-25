@@ -184,14 +184,17 @@ size_t pk_vad_run_frames(const pk_pool *pool);
  * pieces (core/asr.c has each). */
 int pk_chunk_at(const pk_seg *s, size_t n, int64_t peek, int ended, int64_t total, size_t i,
                 int64_t max_len, int64_t ctx, int64_t pause, pk_seg *c, pk_seg *w, size_t *last);
-int64_t pk_gap_pieces(int64_t a, int64_t b, int64_t max_len);
-int pk_gap_chunks(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, pk_seg *out,
-                  pk_seg *win, size_t *k);
+int64_t pk_gap_pieces(int64_t a, int64_t b, int64_t max_len, int64_t ctx);
+int pk_gap_chunks(const pk_audio *x, int64_t a, int64_t b, int64_t max_len, int64_t ctx, int64_t lim,
+                  pk_seg *out, pk_seg *win, size_t *k);
 
 /* pk_chunks, with what each chunk is heard in (core/transcribe.c): win[k]
  * is out[k] and, where out[k]'s cut falls in a silence shorter than pause,
- * ctx of the recording past it, room left for that in its max_len. With
- * ctx 0, out is pk_chunks', and win NULL is allowed. */
+ * ctx of the recording past it, room left for that in its max_len. A gap's
+ * pieces are of at most max_len - ctx, each heard ctx past its cut, and
+ * one of 1 to 3 s is a chunk where it is audible and ctx past it is
+ * there (pk_gap_chunks). out has room for 2 n + 2 + x->n / (max_len - ctx).
+ * With ctx 0, out is pk_chunks', and win NULL is allowed. */
 long pk_chunks_past(const pk_audio *x, const pk_seg *s, size_t n, int64_t max_len, int64_t ctx,
                     int64_t pause, pk_seg *out, pk_seg *win);
 

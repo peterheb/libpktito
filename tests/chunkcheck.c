@@ -21,7 +21,10 @@
  *            chunk is heard in itself and, past a cut in a silence under a
  *            second, 2 s more or to the recording's end, in no more than
  *            max_len where the chunk leaves room, and every segment is
- *            still in one chunk
+ *            still in one chunk; a gap's pieces are of at most max_len -
+ *            2 s, each heard 2 s past its cut or to the end of what the
+ *            next speech chunk is heard in, and one of 1 to 3 s is a chunk
+ *            exactly when it is audible and has the whole 2 s past it
  *   reads    every stretch the chunking reads is inside the recording, and a
  *            read failing, wherever it falls among them, fails the chunking:
  *            -1, never fewer chunks
@@ -125,21 +128,35 @@ static pk_seg *chunks(const float *x, const pk_seg *s, size_t n, int64_t total, 
     return c;
 }
 
+/* The end of what the first speech chunk after chunk i is heard in, or
+ * the recording's end */
+static int64_t next_heard(const pk_seg *s, size_t n, const pk_seg *c, const pk_seg *w, size_t nc, size_t i,
+                          int64_t total) {
+    for (size_t j = i + 1; j < nc; j++)
+        if (holds_speech(c[j], s, n))
+            return w[j].end;
+    return total;
+}
+
 /* The speech chunks and the gaps between them over x: c's chunks that hold
- * no segment must be exactly each gap's audible pieces of 3 s and more. */
+ * no segment must be exactly each gap's audible pieces of 3 s and more, of
+ * at most max_len; with ctx, of at most max_len - ctx, and those under 3 s
+ * too, of 1 s or more, that have ctx to hear past them (w, what each is
+ * heard in) */
 static void gaps_are_pieces(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len,
-                            const pk_seg *c, size_t nc, const char *what) {
+                            int64_t ctx, const pk_seg *c, const pk_seg *w, size_t nc, const char *what) {
     size_t k = 0;
     int64_t from = 0;
     for (size_t i = 0; i <= nc; i++) {
         if (i < nc && !holds_speech(c[i], s, n))
             continue;
         int64_t to = i < nc ? c[i].start : total;
+        const int64_t lim = i < nc ? w[i].end : total;
         if (to > from) {
-            int64_t m = (to - from + max_len - 1) / max_len;
+            int64_t m = (to - from + (max_len - ctx) - 1) / (max_len - ctx);
             for (int64_t p = 0; p < m; p++) {
                 int64_t a = from + (to - from) * p / m, b = from + (to - from) * (p + 1) / m;
-                if (b - a < GAP_MIN || !audible(x, a, b))
+                if ((b - a < GAP_MIN && !(ctx && b - a >= RATE && b + ctx <= lim)) || !audible(x, a, b))
                     continue;
                 while (k < nc && holds_speech(c[k], s, n))
                     k++;
@@ -167,7 +184,7 @@ static void gaps_are_pieces(const float *x, const pk_seg *s, size_t n, int64_t t
 static void past_case(const float *x, const pk_seg *s, size_t n, int64_t total, int64_t max_len,
                       const pk_seg *c0, size_t n0, const char *what) {
     const int64_t ctx = 2 * RATE, pause = RATE;
-    size_t room = 2 * n + 2 + (size_t)(total / max_len);
+    size_t room = 2 * n + 2 + (size_t)(total / (max_len - ctx));
     pk_seg *c = malloc(room * sizeof *c), *w = malloc(room * sizeof *w);
     reader r = { x, total, 0, 0, 0 };
     const pk_audio X = { total, reader_read, &r, NULL };
@@ -201,7 +218,11 @@ static void past_case(const float *x, const pk_seg *s, size_t n, int64_t total, 
             if (j > 0 && j < n)
                 gap = s[j].start - s[j - 1].end;
         }
-        const int64_t want = gap < pause ? (total - c[i].end < ctx ? total - c[i].end : ctx) : 0;
+        int64_t want = gap < pause ? (total - c[i].end < ctx ? total - c[i].end : ctx) : 0;
+        if (!holds_speech(c[i], s, n)) {  /* a gap's piece: to the next speech chunk's end at most */
+            const int64_t lim = next_heard(s, n, c, w, nc, i, total);
+            want = lim - c[i].end < ctx ? lim - c[i].end : ctx;
+        }
         cases++;
         if (w[i].end - c[i].end != want && !(w[i].end == c[i].end && c[i].end - c[i].start + want > max_len))
             FAIL("%s: chunk %zu heard %lld past its cut, not %lld", what, i, (long long)(w[i].end - c[i].end),
@@ -215,6 +236,8 @@ static void past_case(const float *x, const pk_seg *s, size_t n, int64_t total, 
         if (in != 1)
             FAIL("%s: past, segment %zu is in %zu chunks", what, i, in);
     }
+    if (nc <= room && total > max_len)
+        gaps_are_pieces(x, s, n, total, max_len, ctx, c, w, nc, what);
     free(c);
     free(w);
 }
@@ -289,8 +312,8 @@ static void layout_case(int it) {
     }
 
     /* gaps */
-    gaps_are_pieces(loud, s, n, total, max_len, cl, nl, what);
-    gaps_are_pieces(mixed, s, n, total, max_len, cm, nm, what);
+    gaps_are_pieces(loud, s, n, total, max_len, 0, cl, cl, nl, what);
+    gaps_are_pieces(mixed, s, n, total, max_len, 0, cm, cm, nm, what);
 
     /* past */
     past_case(quiet, s, n, total, max_len, cq, nq, what);
