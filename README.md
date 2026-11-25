@@ -894,8 +894,13 @@ out. So each piece is heard 2 s past its cut, as a speech chunk is at a
 short pause, and keeps the words that start before it, the next chunk
 opening with that piece's copies of its first words ("Where chunks meet");
 and a piece of 1 to 3 s that is not silent is transcribed too where the
-whole 2 s past it is there, heard on into the speech after it. Both lines
-come out whole. Against each recording's transcript whole (`--max-chunk
+whole 2 s past it is there, heard on into the speech after it. Where a
+speech chunk ends and a piece begins, nothing is heard past the cut, and a
+word it fell in comes out whole from the one and as its end from the
+other ("misunderstood. | Understood my role"): so the piece's first word
+goes where its letters are the end of the last word's, it starts within a
+second of the cut, and that word ends within 0.4 s before it - at a pause
+it ends half a second or more before. Both lines come out whole. Against each recording's transcript whole (`--max-chunk
 3600`), runs of three words or more lost in six decodings of four songs
 went from 45 to 32 words with v2 and from 38 to 23 with v3, and the words
 written twice at a cut from 1 to 0. Of 40 of LibriSpeech's long40 with 1.5
